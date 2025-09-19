@@ -1,0 +1,38 @@
+{
+  "algorithm": "MATD3",
+  "timestamp": "20250919_223436",
+  "training_start_time": "2025-09-19T22:34:36.440701",
+  "training_config": {
+    "num_episodes": 1,
+    "training_time_hours": 0.00011603991190592448,
+    "max_steps_per_episode": 200
+  },
+  "episode_rewards": [
+    230.8455152907567
+  ],
+  "episode_metrics": {
+    "avg_task_delay": [
+      0.0
+    ],
+    "total_energy_consumption": [
+      0.04031055794757408
+    ],
+    "task_completion_rate": [
+      0.0
+    ],
+    "cache_hit_rate": [
+      1.0
+    ],
+    "migration_success_rate": [
+      0.8
+    ],
+    "data_loss_rate": [
+      0.0
+    ]
+  },
+  "final_performance": {
+    "avg_reward": 230.8455152907567,
+    "avg_delay": 0.0,
+    "avg_completion": 0.0
+  }
+}

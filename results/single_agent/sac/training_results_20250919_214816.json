@@ -1,0 +1,36 @@
+{
+  "algorithm": "SAC",
+  "agent_type": "single_agent",
+  "timestamp": "20250919_214816",
+  "training_start_time": "2025-09-19T21:48:16.446635",
+  "training_config": {
+    "num_episodes": 2,
+    "training_time_hours": 0.00027566002474890816,
+    "max_steps_per_episode": 100
+  },
+  "episode_rewards": [
+    -684.3228001137845,
+    -631.2719389962699
+  ],
+  "episode_metrics": {
+    "avg_delay": [],
+    "total_energy": [],
+    "task_completion_rate": [
+      0.4782608695652174,
+      0.5588235294117647
+    ],
+    "cache_hit_rate": [
+      0.0,
+      0.0
+    ],
+    "migration_success_rate": [
+      0.8,
+      0.8
+    ]
+  },
+  "final_performance": {
+    "avg_reward": -657.7973695550272,
+    "avg_delay": 0.5902684172603097,
+    "avg_completion": 0.5185421994884911
+  }
+}

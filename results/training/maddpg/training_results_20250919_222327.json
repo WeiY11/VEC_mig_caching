@@ -1,0 +1,45 @@
+{
+  "algorithm": "MADDPG",
+  "timestamp": "20250919_222327",
+  "training_start_time": "2025-09-19T22:23:27.302361",
+  "training_config": {
+    "num_episodes": 2,
+    "training_time_hours": 0.0012580835156970555,
+    "max_steps_per_episode": 200
+  },
+  "episode_rewards": [
+    215.85126992956273,
+    234.30608440258857
+  ],
+  "episode_metrics": {
+    "avg_task_delay": [
+      0.0,
+      0.0
+    ],
+    "total_energy_consumption": [
+      0.03760920343785421,
+      2000.0
+    ],
+    "task_completion_rate": [
+      0.0,
+      0.0
+    ],
+    "cache_hit_rate": [
+      0.0,
+      0.0
+    ],
+    "migration_success_rate": [
+      0.8,
+      0.8
+    ],
+    "data_loss_rate": [
+      0.0,
+      0.0
+    ]
+  },
+  "final_performance": {
+    "avg_reward": 225.07867716607564,
+    "avg_delay": 0.0,
+    "avg_completion": 0.0
+  }
+}

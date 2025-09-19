@@ -1,0 +1,25 @@
+{
+  "algorithm": "MADDPG",
+  "episodes": 3,
+  "reward_history": [
+    62.32200136778969,
+    62.12728578130816,
+    60.09750631488885
+  ],
+  "delay_statistics": {
+    "mean": 0.6014925760756701,
+    "std": 0.019139682858322703,
+    "min": 0.5834306426723418,
+    "max": 0.6279825264584096,
+    "median": 0.5930645590962585,
+    "count": 3,
+    "invalid_count": 0
+  },
+  "cache_performance": {
+    "overall_hit_rate": 0.30798479087452474,
+    "total_requests": 526,
+    "total_hits": 162,
+    "unique_contents": 91
+  },
+  "timestamp": "2025-09-19T20:30:44.991411"
+}
