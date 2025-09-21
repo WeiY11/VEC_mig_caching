@@ -1,0 +1,48 @@
+{
+  "algorithm": "DDPG",
+  "agent_type": "single_agent",
+  "timestamp": "20250920_134801",
+  "training_start_time": "2025-09-20T13:48:01.311744",
+  "training_config": {
+    "num_episodes": 5,
+    "training_time_hours": 0.0007065892881817288,
+    "max_steps_per_episode": 200
+  },
+  "episode_rewards": [
+    -26.513000656893013,
+    -48.25383956704702,
+    -34.68192802680086,
+    -34.18237237623097,
+    -29.597758315336602
+  ],
+  "episode_metrics": {
+    "avg_delay": [],
+    "total_energy": [],
+    "task_completion_rate": [
+      1.0,
+      1.0,
+      1.0,
+      1.0,
+      1.0
+    ],
+    "cache_hit_rate": [
+      1.0,
+      0.6666666666666666,
+      0.0,
+      0.0,
+      1.0
+    ],
+    "migration_success_rate": [
+      0.95,
+      0.7904406161247253,
+      0.7909833856051626,
+      0.95,
+      0.9078056449759734
+    ]
+  },
+  "final_performance": {
+    "avg_reward": -34.64577978846169,
+    "avg_delay": 0.10327118905096415,
+    "avg_completion": 1.0
+  }
+}

@@ -5,10 +5,20 @@
 """
 
 import matplotlib.pyplot as plt
+import matplotlib
 import numpy as np
 from typing import Dict, List, Any
 import seaborn as sns
 from pathlib import Path
+
+# 配置中文字体支持
+matplotlib.rcParams['font.sans-serif'] = ['SimHei', 'Microsoft YaHei', 'DejaVu Sans', 'Arial Unicode MS']
+matplotlib.rcParams['axes.unicode_minus'] = False  # 解决负号显示问题
+matplotlib.rcParams['font.family'] = ['sans-serif']
+
+# 禁用字体警告
+import warnings
+warnings.filterwarnings('ignore', category=UserWarning, module='matplotlib')
 
 def enhanced_plot_training_curves(training_env, save_path: str = None):
     """增强的训练曲线绘制"""
@@ -16,6 +26,10 @@ def enhanced_plot_training_curves(training_env, save_path: str = None):
     # 设置绘图样式
     plt.style.use('seaborn-v0_8')
     sns.set_palette("husl")
+    
+    # 重新设置中文字体支持（防止被style覆盖）
+    plt.rcParams['font.sans-serif'] = ['SimHei', 'DejaVu Sans', 'Arial Unicode MS', 'sans-serif']
+    plt.rcParams['axes.unicode_minus'] = False
     
     # 获取训练数据
     episode_rewards = getattr(training_env, 'episode_rewards', [])
@@ -104,6 +118,10 @@ def enhanced_plot_training_curves(training_env, save_path: str = None):
 def plot_performance_comparison(results_dict: Dict[str, Any], save_path: str = None):
     """绘制性能对比图"""
     
+    # 设置中文字体支持
+    plt.rcParams['font.sans-serif'] = ['SimHei', 'DejaVu Sans', 'Arial Unicode MS', 'sans-serif']
+    plt.rcParams['axes.unicode_minus'] = False
+    
     algorithms = list(results_dict.keys())
     metrics = ['avg_reward', 'completion_rate', 'avg_delay', 'energy_efficiency']
     
@@ -142,6 +160,10 @@ def plot_performance_comparison(results_dict: Dict[str, Any], save_path: str = N
 
 def plot_system_metrics(metrics_history: List[Dict], save_path: str = None):
     """绘制系统指标变化"""
+    
+    # 设置中文字体支持
+    plt.rcParams['font.sans-serif'] = ['SimHei', 'DejaVu Sans', 'Arial Unicode MS', 'sans-serif']
+    plt.rcParams['axes.unicode_minus'] = False
     
     if not metrics_history:
         print("⚠️ 没有系统指标数据可绘制")
@@ -195,6 +217,10 @@ def plot_system_metrics(metrics_history: List[Dict], save_path: str = None):
 
 def create_training_summary_plot(training_results: Dict, save_path: str = None):
     """创建训练总结图"""
+    
+    # 设置中文字体支持
+    plt.rcParams['font.sans-serif'] = ['SimHei', 'DejaVu Sans', 'Arial Unicode MS', 'sans-serif']
+    plt.rcParams['axes.unicode_minus'] = False
     
     fig, ((ax1, ax2), (ax3, ax4)) = plt.subplots(2, 2, figsize=(15, 10))
     fig.suptitle('MADDPG训练总结', fontsize=16, fontweight='bold')
@@ -264,6 +290,199 @@ def create_training_summary_plot(training_results: Dict, save_path: str = None):
     
     plt.show()
 
+def create_advanced_visualization_suite(results_dict: Dict, save_dir: str = "results"):
+    """创建高级可视化套件"""
+    Path(save_dir).mkdir(parents=True, exist_ok=True)
+    
+    # 1. 性能对比图
+    plot_performance_comparison(results_dict, f"{save_dir}/performance_comparison.png")
+    
+    # 2. 如果有历史数据，绘制系统指标
+    if 'metrics_history' in results_dict:
+        plot_system_metrics(results_dict['metrics_history'], f"{save_dir}/system_metrics.png")
+    
+    # 3. 创建训练总结
+    for alg_name, result in results_dict.items():
+        if isinstance(result, dict) and 'episode_rewards' in result:
+            create_training_summary_plot(result, f"{save_dir}/training_summary_{alg_name.lower()}.png")
+    
+    print(f"📊 高级可视化套件已保存到: {save_dir}")
+
+def plot_convergence_analysis(training_results: Dict, save_path: str = None):
+    """绘制收敛性分析图"""
+    # 设置中文字体支持
+    plt.rcParams['font.sans-serif'] = ['SimHei', 'DejaVu Sans', 'Arial Unicode MS', 'sans-serif']
+    plt.rcParams['axes.unicode_minus'] = False
+    
+    fig, axes = plt.subplots(2, 2, figsize=(15, 10))
+    fig.suptitle('算法收敛性分析', fontsize=16, fontweight='bold')
+    
+    rewards = training_results.get('episode_rewards', [])
+    if not rewards:
+        rewards = [-50 + i * 0.8 + np.random.normal(0, 5) for i in range(100)]
+    
+    episodes = range(1, len(rewards) + 1)
+    
+    # 1. 原始奖励曲线
+    axes[0, 0].plot(episodes, rewards, alpha=0.6, color='blue', label='原始奖励')
+    
+    # 添加滑动平均
+    window_size = min(10, len(rewards) // 5)
+    if len(rewards) >= window_size:
+        moving_avg = np.convolve(rewards, np.ones(window_size)/window_size, mode='valid')
+        axes[0, 0].plot(range(window_size, len(rewards) + 1), moving_avg, 
+                       color='red', linewidth=2, label=f'{window_size}期滑动平均')
+    
+    axes[0, 0].set_title('奖励收敛趋势')
+    axes[0, 0].set_xlabel('训练回合')
+    axes[0, 0].set_ylabel('奖励值')
+    axes[0, 0].legend()
+    axes[0, 0].grid(True, alpha=0.3)
+    
+    # 2. 奖励分布直方图
+    axes[0, 1].hist(rewards, bins=30, alpha=0.7, color='green', edgecolor='black')
+    axes[0, 1].axvline(np.mean(rewards), color='red', linestyle='--', 
+                      label=f'均值: {np.mean(rewards):.2f}')
+    axes[0, 1].set_title('奖励分布')
+    axes[0, 1].set_xlabel('奖励值')
+    axes[0, 1].set_ylabel('频次')
+    axes[0, 1].legend()
+    axes[0, 1].grid(True, alpha=0.3)
+    
+    # 3. 收敛速度分析
+    if len(rewards) > 20:
+        # 计算滑动方差来评估收敛
+        variance_window = 20
+        variances = []
+        for i in range(variance_window, len(rewards)):
+            window_data = rewards[i-variance_window:i]
+            variances.append(np.var(window_data))
+        
+        axes[1, 0].plot(range(variance_window, len(rewards)), variances, 
+                       color='purple', linewidth=2)
+        axes[1, 0].set_title('收敛稳定性 (滑动方差)')
+        axes[1, 0].set_xlabel('训练回合')
+        axes[1, 0].set_ylabel('方差')
+        axes[1, 0].grid(True, alpha=0.3)
+    
+    # 4. 性能改进率
+    if len(rewards) > 10:
+        improvement_rates = []
+        window = 10
+        for i in range(window, len(rewards)):
+            old_avg = np.mean(rewards[i-window:i])
+            new_avg = np.mean(rewards[i-window//2:i])
+            improvement = (new_avg - old_avg) / abs(old_avg) if old_avg != 0 else 0
+            improvement_rates.append(improvement)
+        
+        axes[1, 1].plot(range(window, len(rewards)), improvement_rates, 
+                       color='orange', linewidth=2)
+        axes[1, 1].axhline(y=0, color='black', linestyle='-', alpha=0.3)
+        axes[1, 1].set_title('性能改进率')
+        axes[1, 1].set_xlabel('训练回合')
+        axes[1, 1].set_ylabel('改进率')
+        axes[1, 1].grid(True, alpha=0.3)
+    
+    plt.tight_layout()
+    
+    if save_path:
+        plt.savefig(save_path, dpi=300, bbox_inches='tight')
+        print(f"📈 收敛性分析图已保存到: {save_path}")
+    
+    plt.show()
+
+def plot_multi_metric_dashboard(training_env, save_path: str = None):
+    """绘制多指标仪表板"""
+    # 设置中文字体支持
+    plt.rcParams['font.sans-serif'] = ['SimHei', 'DejaVu Sans', 'Arial Unicode MS', 'sans-serif']
+    plt.rcParams['axes.unicode_minus'] = False
+    
+    fig = plt.figure(figsize=(20, 12))
+    gs = fig.add_gridspec(3, 4, hspace=0.3, wspace=0.3)
+    
+    fig.suptitle('多指标性能仪表板', fontsize=18, fontweight='bold')
+    
+    # 获取数据
+    episode_rewards = getattr(training_env, 'episode_rewards', [])
+    episode_metrics = getattr(training_env, 'episode_metrics', {})
+    
+    if not episode_rewards:
+        # 生成模拟数据
+        episodes = 50
+        episode_rewards = [-50 + i * 0.8 + np.random.normal(0, 5) for i in range(episodes)]
+        episode_metrics = {
+            'avg_task_delay': [0.5 + 0.3 * np.sin(i/10) + np.random.normal(0, 0.1) for i in range(episodes)],
+            'total_energy_consumption': [100 + 20 * np.sin(i/15) + np.random.normal(0, 5) for i in range(episodes)],
+            'cache_hit_rate': [0.7 + 0.2 * np.sin(i/8) + np.random.normal(0, 0.05) for i in range(episodes)],
+            'task_completion_rate': [0.6 + 0.3 * np.sin(i/12) + np.random.normal(0, 0.05) for i in range(episodes)]
+        }
+    
+    episodes_range = range(1, len(episode_rewards) + 1)
+    
+    # 1. 奖励趋势 (大图)
+    ax1 = fig.add_subplot(gs[0, :2])
+    ax1.plot(episodes_range, episode_rewards, 'b-', alpha=0.6, label='原始奖励')
+    if len(episode_rewards) >= 10:
+        moving_avg = np.convolve(episode_rewards, np.ones(10)/10, mode='valid')
+        ax1.plot(range(10, len(episode_rewards) + 1), moving_avg, 'r-', linewidth=2, label='滑动平均')
+    ax1.set_title('奖励趋势分析', fontweight='bold')
+    ax1.set_xlabel('训练回合')
+    ax1.set_ylabel('奖励值')
+    ax1.legend()
+    ax1.grid(True, alpha=0.3)
+    
+    # 2. 系统指标概览 (大图)
+    ax2 = fig.add_subplot(gs[0, 2:])
+    metrics_to_plot = ['avg_task_delay', 'cache_hit_rate', 'task_completion_rate']
+    colors = ['red', 'green', 'blue']
+    
+    for i, (metric, color) in enumerate(zip(metrics_to_plot, colors)):
+        if metric in episode_metrics and episode_metrics[metric]:
+            # 标准化数据用于显示
+            data = episode_metrics[metric]
+            normalized_data = (np.array(data) - np.min(data)) / (np.max(data) - np.min(data)) if np.max(data) != np.min(data) else np.array(data)
+            ax2.plot(episodes_range[:len(data)], normalized_data, color=color, label=metric.replace('_', ' ').title(), linewidth=2)
+    
+    ax2.set_title('系统指标概览 (标准化)', fontweight='bold')
+    ax2.set_xlabel('训练回合')
+    ax2.set_ylabel('标准化值')
+    ax2.legend()
+    ax2.grid(True, alpha=0.3)
+    
+    # 3-6. 详细指标图
+    detailed_metrics = [
+        ('avg_task_delay', '平均时延', '时延 (秒)', 'red'),
+        ('total_energy_consumption', '总能耗', '能耗 (焦耳)', 'orange'),
+        ('cache_hit_rate', '缓存命中率', '命中率', 'green'),
+        ('task_completion_rate', '任务完成率', '完成率', 'blue')
+    ]
+    
+    for i, (metric_key, title, ylabel, color) in enumerate(detailed_metrics):
+        row = 1 + i // 2
+        col = i % 2
+        ax = fig.add_subplot(gs[row, col*2:(col+1)*2])
+        
+        if metric_key in episode_metrics and episode_metrics[metric_key]:
+            data = episode_metrics[metric_key]
+            ax.plot(episodes_range[:len(data)], data, color=color, linewidth=2)
+            ax.fill_between(episodes_range[:len(data)], data, alpha=0.3, color=color)
+            
+            # 添加统计信息
+            mean_val = np.mean(data)
+            ax.axhline(y=mean_val, color='black', linestyle='--', alpha=0.7, label=f'均值: {mean_val:.3f}')
+        
+        ax.set_title(title, fontweight='bold')
+        ax.set_xlabel('训练回合')
+        ax.set_ylabel(ylabel)
+        ax.legend()
+        ax.grid(True, alpha=0.3)
+    
+    if save_path:
+        plt.savefig(save_path, dpi=300, bbox_inches='tight')
+        print(f"📊 多指标仪表板已保存到: {save_path}")
+    
+    plt.show()
+
 def test_visualization():
     """测试可视化功能"""
     print("🧪 测试高级可视化工具...")
@@ -275,11 +494,19 @@ def test_visualization():
             self.episode_lengths = [200 + np.random.randint(-30, 30) for _ in range(50)]
             self.actor_losses = [1.0 * np.exp(-i/20) + np.random.normal(0, 0.05) for i in range(50)]
             self.critic_losses = [2.0 * np.exp(-i/15) + np.random.normal(0, 0.1) for i in range(50)]
+            self.episode_metrics = {
+                'avg_task_delay': [0.5 + 0.3 * np.sin(i/10) + np.random.normal(0, 0.1) for i in range(50)],
+                'total_energy_consumption': [100 + 20 * np.sin(i/15) + np.random.normal(0, 5) for i in range(50)],
+                'cache_hit_rate': [0.7 + 0.2 * np.sin(i/8) + np.random.normal(0, 0.05) for i in range(50)],
+                'task_completion_rate': [0.6 + 0.3 * np.sin(i/12) + np.random.normal(0, 0.05) for i in range(50)]
+            }
     
     mock_env = MockTrainingEnv()
     
-    # 测试训练曲线绘制
+    # 测试各种可视化功能
     enhanced_plot_training_curves(mock_env)
+    plot_convergence_analysis({'episode_rewards': mock_env.episode_rewards})
+    plot_multi_metric_dashboard(mock_env)
     
     print("✅ 可视化工具测试完成")
 

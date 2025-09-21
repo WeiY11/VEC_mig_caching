@@ -303,11 +303,17 @@ class MultiAgentTrainingEnvironment:
     def _calculate_system_metrics(self, step_stats: Dict) -> Dict:
         """计算系统性能指标 - 改进版本，更准确的指标计算"""
         # 导入验证函数
-        try:
-            from utils.energy_validator import validate_energy_consumption
-        except ImportError:
-            # 如果导入失败，使用简单验证
-            def validate_energy_consumption(energy, context):
+        def local_validate_energy(energy, context):
+            try:
+                from utils.energy_validator import validate_energy_consumption as validate_energy_func
+                energy_data = {'total_system': [energy]}
+                result = validate_energy_func(energy_data)
+                is_valid = result['is_valid']
+                corrected_energy = min(energy, 2000.0) if not is_valid else energy
+                warning = "; ".join(result['errors'][:1]) if result['errors'] else ""
+                return is_valid, corrected_energy, warning
+            except ImportError:
+                # 如果导入失败，使用简单验证
                 return energy <= 2000.0, min(energy, 2000.0), ""
         
         # 时延验证函数 - 优化版本，减少不必要的警告
@@ -365,7 +371,7 @@ class MultiAgentTrainingEnvironment:
             cache_hit_rate = 0.0
         
         # 能耗验证：使用专门的验证函数
-        is_valid, corrected_energy, warning = validate_energy_consumption(total_energy, "slot")
+        is_valid, corrected_energy, warning = local_validate_energy(total_energy, "slot")
         if warning:
             print(warning)
         total_energy = corrected_energy
@@ -376,13 +382,69 @@ class MultiAgentTrainingEnvironment:
         # 带宽利用率（简化计算）
         avg_bandwidth_utilization = min(1.0, processed_tasks / max(1, 30))
         
+        # 集成增强迁移管理器
+        if not hasattr(self, 'migration_manager'):
+            from utils.enhanced_migration import EnhancedTaskMigrationManager
+            self.migration_manager = EnhancedTaskMigrationManager()
+        
+        # 模拟节点状态供迁移管理器使用
+        migration_node_states = {}
+        migration_positions = {}
+        
+        # 创建简化的节点状态用于迁移
+        from models.data_structures import NodeState, NodeType, Position
+        for i in range(len(self.simulator.vehicles)):
+            vehicle = self.simulator.vehicles[i]
+            state = NodeState(
+                node_id=f'vehicle_{i}',
+                node_type=NodeType.VEHICLE,
+                position=Position(vehicle['position'][0], vehicle['position'][1], 0),
+                load_factor=len(vehicle.get('tasks', [])) / 10.0
+            )
+            migration_node_states[f'vehicle_{i}'] = state
+            migration_positions[f'vehicle_{i}'] = state.position
+        
+        for i in range(len(self.simulator.rsus)):
+            rsu = self.simulator.rsus[i]
+            state = NodeState(
+                node_id=f'rsu_{i}',
+                node_type=NodeType.RSU,
+                position=Position(rsu['position'][0], rsu['position'][1], 0),
+                load_factor=len(rsu.get('computation_queue', [])) / 10.0
+            )
+            migration_node_states[f'rsu_{i}'] = state
+            migration_positions[f'rsu_{i}'] = state.position
+        
+        for i in range(len(self.simulator.uavs)):
+            uav = self.simulator.uavs[i]
+            state = NodeState(
+                node_id=f'uav_{i}',
+                node_type=NodeType.UAV,
+                position=Position(uav['position'][0], uav['position'][1], uav['position'][2]),
+                load_factor=len(uav.get('cache', {})) / uav.get('cache_capacity', 100)
+            )
+            # 设置UAV电池电量
+            setattr(state, 'battery_level', uav.get('battery_level', 0.8))
+            migration_node_states[f'uav_{i}'] = state
+            migration_positions[f'uav_{i}'] = state.position
+        
+        # 运行迁移管理器步骤
+        migration_step_stats = self.migration_manager.step(
+            migration_node_states, 
+            migration_positions, 
+            {}  # 简化的任务状态
+        )
+        
+        # 获取动态迁移成功率
+        dynamic_migration_rate = migration_step_stats.get('dynamic_success_rate', 0.8)
+        
         return {
             'avg_task_delay': max(0.0, avg_task_delay),
             'total_energy_consumption': max(0.0, total_energy),
             'data_loss_rate': np.clip(data_loss_rate, 0.0, 1.0),
             'task_completion_rate': np.clip(completion_rate, 0.0, 1.0),
             'cache_hit_rate': np.clip(cache_hit_rate, 0.0, 1.0),
-            'migration_success_rate': step_stats.get('migration_success_rate', 0.8),
+            'migration_success_rate': dynamic_migration_rate,
             'system_load_ratio': system_load_ratio,
             'avg_bandwidth_utilization': avg_bandwidth_utilization,
             # 添加调试信息
@@ -396,60 +458,18 @@ class MultiAgentTrainingEnvironment:
         }
     
     def _calculate_rewards(self, system_metrics: Dict) -> Dict[str, float]:
-        """计算智能体奖励 - 改进版本，更稳定的奖励设计"""
-        # 归一化的奖励分量，确保数值稳定性
+        """计算智能体奖励 - 使用标准化奖励函数"""
+        from utils.standardized_reward import calculate_standardized_reward
         
-        # 时延奖励：时延越低奖励越高，使用指数衰减
-        avg_delay = system_metrics.get('avg_task_delay', 1.0)
-        delay_reward = np.exp(-avg_delay / 0.5)  # 0.5秒为参考时延
-        
-        # 能耗惩罚：能耗越高惩罚越大，但限制惩罚范围
-        total_energy = system_metrics.get('total_energy_consumption', 0.0)
-        energy_penalty = -np.tanh(total_energy / 200.0) * 0.5  # 限制在[-0.5, 0]
-        
-        # 完成率奖励：线性奖励，鼓励高完成率
-        completion_rate = system_metrics.get('task_completion_rate', 0.0)
-        completion_reward = completion_rate * 2.0
-        
-        # 缓存奖励：鼓励缓存命中
-        cache_hit_rate = system_metrics.get('cache_hit_rate', 0.0)
-        cache_reward = cache_hit_rate * 0.5
-        
-        # 数据丢失惩罚
-        data_loss_rate = system_metrics.get('data_loss_rate', 0.0)
-        loss_penalty = -data_loss_rate * 1.0
-        
-        # 基础奖励组合
-        base_reward = delay_reward + energy_penalty + completion_reward + cache_reward + loss_penalty
-        
-        # 为不同智能体分配特定奖励
         rewards = {}
         agent_ids = ['vehicle_agent', 'rsu_agent', 'uav_agent']
         
+        # 为不同智能体计算标准化奖励
         for agent_id in agent_ids:
-            if agent_id == 'vehicle_agent':
-                # 车辆智能体：关注本地处理效率和卸载决策
-                local_efficiency_bonus = 0.2 if completion_rate > 0.8 else 0.0
-                rewards[agent_id] = base_reward + local_efficiency_bonus
-                
-            elif agent_id == 'rsu_agent':
-                # RSU智能体：关注缓存命中率和负载均衡
-                cache_bonus = cache_hit_rate * 0.3
-                load_balance_bonus = 0.1 if 0.3 < completion_rate < 0.9 else 0.0  # 鼓励适中负载
-                rewards[agent_id] = base_reward + cache_bonus + load_balance_bonus
-                
-            elif agent_id == 'uav_agent':
-                # UAV智能体：关注能效和覆盖效果
-                energy_efficiency_bonus = 0.2 if total_energy < 100.0 else 0.0
-                coverage_bonus = delay_reward * 0.2  # 低时延说明覆盖效果好
-                rewards[agent_id] = base_reward + energy_efficiency_bonus + coverage_bonus
-                
-            else:
-                rewards[agent_id] = base_reward
-        
-        # 确保奖励在合理范围内
-        for agent_id in rewards:
-            rewards[agent_id] = np.clip(rewards[agent_id], -5.0, 5.0)
+            rewards[agent_id] = calculate_standardized_reward(
+                system_metrics, 
+                agent_type=agent_id
+            )
         
         return rewards
     
@@ -957,9 +977,35 @@ def plot_training_curves(algorithm: str, training_env: MultiAgentTrainingEnviron
     
     print(f"📈 {algorithm}训练曲线已保存到 {filepath}")
     
-    # 🎨 新增：高级可视化（置信区间 + 滑动平滑）
-    from tools.advanced_visualization import enhanced_plot_training_curves
-    enhanced_plot_training_curves(training_env, f"results/training/{algorithm.lower()}/training_curves.png")
+    # 🎨 新增：高级可视化套件
+    from tools.advanced_visualization import enhanced_plot_training_curves, plot_convergence_analysis, plot_multi_metric_dashboard
+    from tools.performance_dashboard import create_performance_dashboard, create_real_time_monitor
+    
+    # 1. 增强训练曲线
+    enhanced_plot_training_curves(training_env, f"results/training/{algorithm.lower()}/enhanced_training_curves.png")
+    
+    # 2. 收敛性分析
+    plot_convergence_analysis(
+        {'episode_rewards': training_env.episode_rewards}, 
+        f"results/training/{algorithm.lower()}/convergence_analysis.png"
+    )
+    
+    # 3. 多指标仪表板
+    plot_multi_metric_dashboard(
+        training_env, 
+        f"results/training/{algorithm.lower()}/multi_metric_dashboard.png"
+    )
+    
+    # 4. 性能仪表板
+    create_performance_dashboard(
+        training_env, 
+        f"results/training/{algorithm.lower()}/performance_dashboard.png"
+    )
+    
+    # 5. 实时监控界面
+    create_real_time_monitor(
+        f"results/training/{algorithm.lower()}/realtime_monitor.png"
+    )
 
 
 def compare_algorithms(algorithms: List[str], num_episodes: Optional[int] = None) -> Dict:

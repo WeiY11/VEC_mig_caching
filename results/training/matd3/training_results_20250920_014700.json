@@ -1,0 +1,66 @@
+{
+  "algorithm": "MATD3",
+  "timestamp": "20250920_014700",
+  "training_start_time": "2025-09-20T01:47:00.189555",
+  "training_config": {
+    "num_episodes": 5,
+    "training_time_hours": 0.0030479871564441257,
+    "max_steps_per_episode": 200
+  },
+  "episode_rewards": [
+    378.29863540203405,
+    452.3485878602319,
+    490.51200347462765,
+    365.10610540897693,
+    407.761369961601
+  ],
+  "episode_metrics": {
+    "avg_task_delay": [
+      0.0,
+      0.038940312317438996,
+      0.0,
+      1.0,
+      0.005214666144454821
+    ],
+    "total_energy_consumption": [
+      0.0,
+      0.16668715669967185,
+      0.0,
+      2000.0,
+      0.01408616098033496
+    ],
+    "task_completion_rate": [
+      0.0,
+      1.0,
+      0.0,
+      1.0,
+      1.0
+    ],
+    "cache_hit_rate": [
+      0.0,
+      0.6666666666666666,
+      0.0,
+      0.0,
+      1.0
+    ],
+    "migration_success_rate": [
+      0.8,
+      0.8,
+      0.8,
+      0.8,
+      0.8
+    ],
+    "data_loss_rate": [
+      1.0,
+      0.0,
+      1.0,
+      0.0,
+      0.0
+    ]
+  },
+  "final_performance": {
+    "avg_reward": 418.8053404214943,
+    "avg_delay": 0.20883099569237876,
+    "avg_completion": 0.6
+  }
+}

@@ -66,33 +66,81 @@ class TaskConfig:
     
     def __init__(self):
         self.num_priority_levels = 4
-        self.task_compute_density = 1000  # cycles/bit
-        self.arrival_rate = 2.0  # tasks/second
-        self.data_size_range = (1e5, 1e7)  # bytes
+        self.task_compute_density = 500  # cycles/bit - 符合内存规范
+        self.arrival_rate = 1.35  # tasks/second - 精细调整为理想负载
+        
+        # 统一的任务数据大小配置 (bytes)
+        self.data_size_range = (5e6, 25e6)  # 5MB - 25MB - 符合内存规范
+        self.task_data_size_range = self.data_size_range  # 兼容性别名
+        
+        # 计算周期配置 (自动计算，确保一致性)
         self.compute_cycles_range = (1e8, 1e10)  # cycles
+        
+        # 截止时间配置
         self.deadline_range = (1.0, 10.0)  # seconds
+        
+        # 输出比例配置
+        self.task_output_ratio = 0.05  # 输出大小是输入大小的5%
+        
+        # 任务类型阈值 (时隙数)
+        self.delay_thresholds = {
+            'extremely_sensitive': 2,    # τ₁ = 2 时隙
+            'sensitive': 5,              # τ₂ = 5 时隙 
+            'moderately_tolerant': 10,   # τ₃ = 10 时隙
+        }
+    
+    def get_task_type(self, max_delay_slots: int) -> int:
+        """
+        根据最大延迟时隙数确定任务类型
+        对应论文第3.1节任务分类框架
+        
+        Args:
+            max_delay_slots: 任务最大可容忍延迟时隙数
+            
+        Returns:
+            任务类型值 (1-4)
+        """
+        if max_delay_slots <= self.delay_thresholds['extremely_sensitive']:
+            return 1  # EXTREMELY_DELAY_SENSITIVE
+        elif max_delay_slots <= self.delay_thresholds['sensitive']:
+            return 2  # DELAY_SENSITIVE
+        elif max_delay_slots <= self.delay_thresholds['moderately_tolerant']:
+            return 3  # MODERATELY_DELAY_TOLERANT
+        else:
+            return 4  # DELAY_TOLERANT
 
 class ComputeConfig:
     """计算配置类"""
     
     def __init__(self):
         self.parallel_efficiency = 0.8
+        
+        # 车辆能耗参数 - 对应论文式(5)-(9)
         self.vehicle_kappa1 = 1e-28
         self.vehicle_kappa2 = 1e-26
         self.vehicle_static_power = 0.5  # W
+        self.vehicle_idle_power = 0.1   # W (空闲功耗)
+        
+        # RSU能耗参数 - 对应论文式(20)-(21)
         self.rsu_kappa = 1e-27
         self.rsu_kappa2 = 1e-26
+        self.rsu_static_power = 2.0  # W
+        
+        # UAV能耗参数 - 对应论文式(25)-(30)
         self.uav_kappa = 1e-27
+        self.uav_kappa3 = 1e-27  # 修复缺失的参数
+        self.uav_static_power = 1.0  # W
+        self.uav_hover_power = 50.0  # W (悬停功耗)
         
-        # CPU频率范围
-        self.vehicle_cpu_freq_range = (1e9, 3e9)  # 1-3 GHz
-        self.rsu_cpu_freq_range = (2e9, 5e9)  # 2-5 GHz
-        self.uav_cpu_freq_range = (1e9, 2e9)  # 1-2 GHz
+        # CPU频率范围 - 符合内存规范
+        self.vehicle_cpu_freq_range = (8e9, 25e9)  # 8-25 GHz
+        self.rsu_cpu_freq_range = (45e9, 55e9)  # 50 GHz左右
+        self.uav_cpu_freq_range = (7e9, 9e9)  # 8 GHz左右
         
-        # 默认CPU频率
-        self.vehicle_default_freq = 2e9  # 2 GHz
-        self.rsu_default_freq = 3e9  # 3 GHz
-        self.uav_default_freq = 1.5e9  # 1.5 GHz
+        # 默认CPU频率 - 符合内存规范
+        self.vehicle_default_freq = 16e9  # 16 GHz
+        self.rsu_default_freq = 50e9  # 50 GHz
+        self.uav_default_freq = 8e9  # 8 GHz
         
         # 节点CPU频率（用于初始化）
         self.vehicle_cpu_freq = self.vehicle_default_freq
@@ -111,7 +159,7 @@ class NetworkConfig:
     """网络配置类"""
     
     def __init__(self):
-        self.time_slot_duration = 0.1  # seconds
+        self.time_slot_duration = 0.2  # seconds - 优化为更合理的时隙长度
         self.bandwidth = 20e6  # Hz
         self.carrier_frequency = 2.4e9  # Hz
         self.noise_power = -174  # dBm/Hz
@@ -121,13 +169,13 @@ class NetworkConfig:
         self.handover_threshold = 0.2
         
         # 节点数量配置
-        self.num_vehicles = 50
-        self.num_rsus = 10
-        self.num_uavs = 5
+        self.num_vehicles = 12  # 恢复到原始设置
+        self.num_rsus = 6       # 恢复到原始设置
+        self.num_uavs = 2       # 恢复到原始设置，符合论文要求
         
         # 网络拓扑参数
-        self.area_width = 5000  # meters
-        self.area_height = 5000  # meters
+        self.area_width = 2500  # meters - 缩小仿真区域
+        self.area_height = 2500  # meters
         self.min_distance = 50  # meters
         
         # 连接参数
@@ -144,8 +192,8 @@ class CommunicationConfig:
         self.circuit_power = 0.1  # W
         self.noise_figure = 9  # dB
         
-        # 带宽配置
-        self.total_bandwidth = 20e6  # 20 MHz
+        # 带宽配置 - 符合内存规范
+        self.total_bandwidth = 50e6  # 50 MHz
         self.channel_bandwidth = 1e6  # 1 MHz per channel
         self.uplink_bandwidth = 10e6  # 10 MHz
         self.downlink_bandwidth = 10e6  # 10 MHz
@@ -167,14 +215,26 @@ class MigrationConfig:
         self.migration_threshold = 0.8
         self.migration_cost_factor = 0.1
         
+        # 迁移触发阈值
+        self.rsu_overload_threshold = 0.8
+        self.uav_overload_threshold = 0.7
+        self.rsu_underload_threshold = 0.3
+        
         # UAV迁移参数
         self.uav_min_battery = 0.2  # 20%
         self.migration_delay_threshold = 1.0  # seconds
         self.max_migration_distance = 1000  # meters
         
         # 迁移成本参数
+        self.migration_alpha_comp = 0.4  # 计算成本权重
+        self.migration_alpha_tx = 0.3    # 传输成本权重
+        self.migration_alpha_lat = 0.3   # 延迟成本权重
+        
         self.migration_energy_cost = 0.1  # J per bit
         self.migration_time_penalty = 0.05  # seconds
+        
+        # 冷却期参数
+        self.cooldown_period = 10.0  # seconds
 
 class CacheConfig:
     """缓存配置类"""
@@ -205,13 +265,13 @@ class SystemConfig:
         self.random_seed = int(os.environ.get('RANDOM_SEED', '42'))
         
         # 网络配置
-        self.num_vehicles = 12
-        self.num_rsus = 6
-        self.num_uavs = 2
+        self.num_vehicles = 12  # 恢复到原始设置
+        self.num_rsus = 6       # 恢复到原始设置
+        self.num_uavs = 2       # 恢复到原始设置，符合论文要求
         
         # 仿真配置
         self.simulation_time = 1000
-        self.time_slot = 0.1
+        self.time_slot = 0.2
         
         # 性能配置
         self.enable_performance_optimization = True

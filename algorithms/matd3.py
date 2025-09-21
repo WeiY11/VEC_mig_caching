@@ -356,7 +356,7 @@ class MATD3Environment:
             # 网络状态
             vehicle_features.extend([
                 system_metrics.get('avg_bandwidth_utilization', 0.0),  # 带宽利用率
-                system_metrics.get('migration_success_rate', 0.8),  # 迁移成功率
+                system_metrics.get('migration_success_rate', 0.0),  # 使用真实的迁移成功率
                 np.random.uniform(0.8, 1.0),  # 信道质量（简化）
                 np.clip(system_metrics.get('system_load_ratio', 0.0), 0, 1),  # 系统负载比
             ])
@@ -410,11 +410,45 @@ class MATD3Environment:
     
     def calculate_rewards(self, prev_metrics: Dict, current_metrics: Dict) -> Dict[str, float]:
         """
-        计算智能体奖励 - 对应论文目标函数
+        计算智能体奖励 - 使用标准化奖励函数
+        确保奖励计算的一致性，严格对应论文目标函数
         """
+        from utils.standardized_reward import calculate_standardized_reward
+        
         rewards = {}
         
-        # 计算性能变化
+        # 为每个智能体计算标准化的基础奖励
+        for agent_id in self.agents.keys():
+            # 使用标准化奖励计算函数
+            base_reward = calculate_standardized_reward(current_metrics, agent_id)
+            
+            # 计算性能变化奖励 (可选的额外奖励)
+            change_bonus = self._calculate_performance_change_bonus(
+                prev_metrics, current_metrics, agent_id)
+            
+            # 组合最终奖励
+            final_reward = base_reward + change_bonus
+            
+            # 确保奖励在合理范围内
+            rewards[agent_id] = np.clip(final_reward, -10.0, 5.0)
+        
+        return rewards
+    
+    def _calculate_performance_change_bonus(self, prev_metrics: Dict, 
+                                          current_metrics: Dict, 
+                                          agent_id: str) -> float:
+        """
+        计算性能变化奖励 - 奖励性能改善
+        
+        Args:
+            prev_metrics: 前一步的系统指标
+            current_metrics: 当前步的系统指标  
+            agent_id: 智能体ID
+            
+        Returns:
+            性能变化奖励
+        """
+        # 计算关键指标的变化
         delay_change = (prev_metrics.get('avg_task_delay', 0.0) - 
                        current_metrics.get('avg_task_delay', 0.0))
         energy_change = (prev_metrics.get('total_energy_consumption', 0.0) - 
@@ -422,39 +456,24 @@ class MATD3Environment:
         loss_change = (prev_metrics.get('data_loss_rate', 0.0) - 
                       current_metrics.get('data_loss_rate', 0.0))
         
-        # 归一化变化
-        delay_reward = delay_change / 1.0
-        energy_reward = energy_change / 100.0
-        loss_reward = loss_change / 0.1
+        # 归一化变化 (改善为正，恶化为负)
+        delay_bonus = np.tanh(delay_change / 0.1) * 0.1   # 延迟减少奖励
+        energy_bonus = np.tanh(energy_change / 50.0) * 0.1  # 能耗减少奖励
+        loss_bonus = np.tanh(loss_change / 0.05) * 0.1    # 丢失率减少奖励
         
-        # 计算加权奖励
-        base_reward = (self.reward_weights['delay'] * delay_reward + 
-                      self.reward_weights['energy'] * energy_reward + 
-                      self.reward_weights['loss'] * loss_reward)
-        
-        # 为不同智能体分配特定奖励
-        for agent_id in self.agents.keys():
-            if agent_id == 'vehicle_agent':
-                # 车辆智能体关注本地计算效率
-                local_efficiency = current_metrics.get('local_processing_ratio', 0.0)
-                rewards[agent_id] = base_reward + 0.1 * local_efficiency
-            
-            elif agent_id == 'rsu_agent':
-                # RSU智能体关注缓存命中率和负载均衡
-                cache_bonus = current_metrics.get('cache_hit_rate', 0.0) * 0.2
-                load_balance = 1.0 - abs(0.5 - current_metrics.get('avg_rsu_utilization', 0.5)) * 2
-                rewards[agent_id] = base_reward + cache_bonus + 0.1 * load_balance
-            
-            elif agent_id == 'uav_agent':
-                # UAV智能体关注电池效率和覆盖效果
-                battery_efficiency = current_metrics.get('avg_uav_battery', 1.0)
-                coverage_bonus = current_metrics.get('uav_coverage_ratio', 0.0) * 0.1
-                rewards[agent_id] = base_reward + 0.1 * battery_efficiency + coverage_bonus
-            
-            else:
-                rewards[agent_id] = base_reward
-        
-        return rewards
+        # 智能体特定的变化奖励权重
+        if agent_id == 'vehicle_agent':
+            # 车辆智能体更关注本地处理效率
+            return 0.8 * delay_bonus + 0.6 * energy_bonus + 0.4 * loss_bonus
+        elif agent_id == 'rsu_agent':
+            # RSU智能体更关注整体系统性能
+            return 0.6 * delay_bonus + 0.4 * energy_bonus + 0.8 * loss_bonus
+        elif agent_id == 'uav_agent':
+            # UAV智能体更关注能效
+            return 0.5 * delay_bonus + 0.9 * energy_bonus + 0.3 * loss_bonus
+        else:
+            # 默认权重
+            return 0.6 * delay_bonus + 0.6 * energy_bonus + 0.6 * loss_bonus
     
     def train_step(self, states: Dict[str, np.ndarray], actions: Dict[str, np.ndarray],
                   rewards: Dict[str, float], next_states: Dict[str, np.ndarray],

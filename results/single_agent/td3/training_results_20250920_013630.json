@@ -1,0 +1,40 @@
+{
+  "algorithm": "TD3",
+  "agent_type": "single_agent",
+  "timestamp": "20250920_013630",
+  "training_start_time": "2025-09-20T01:36:30.285428",
+  "training_config": {
+    "num_episodes": 3,
+    "training_time_hours": 0.00011076264911227755,
+    "max_steps_per_episode": 200
+  },
+  "episode_rewards": [
+    -30.009044437825303,
+    -42.5207999867166,
+    -25.81940342172765
+  ],
+  "episode_metrics": {
+    "avg_delay": [],
+    "total_energy": [],
+    "task_completion_rate": [
+      0.5,
+      0.0,
+      0.0
+    ],
+    "cache_hit_rate": [
+      0.0,
+      0.0,
+      0.0
+    ],
+    "migration_success_rate": [
+      0.8,
+      0.8,
+      0.8
+    ]
+  },
+  "final_performance": {
+    "avg_reward": -32.78308261542318,
+    "avg_delay": 0.042362236495940925,
+    "avg_completion": 0.16666666666666666
+  }
+}

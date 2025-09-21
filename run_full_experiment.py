@@ -221,33 +221,40 @@ class FullExperimentRunner:
         return vehicles, rsus, uavs
     
     def generate_tasks(self, vehicles: List[VehicleNode], arrival_rate: float) -> List[Task]:
-        """生成测试任务"""
+        """
+        生成测试任务 - 使用统一的配置参数
+        对应论文第2.1节任务模型
+        """
         tasks = []
         
         for vehicle in vehicles:
             if np.random.random() < arrival_rate * config.network.time_slot_duration:
-                # 随机任务类型
-                task_type = np.random.choice(list(TaskType))
+                # 随机任务类型 - 使用简单的选择方式
+                task_type_values = [1, 2, 3, 4]  # 对应四种任务类型
+                task_type_value = np.random.choice(task_type_values)
+                task_type = TaskType(task_type_value)
                 
-                # 根据任务类型确定参数
-                if task_type == TaskType.EXTREMELY_DELAY_SENSITIVE:
-                    data_size = np.random.uniform(0.1, 0.5)
-                    compute_cycles = np.random.uniform(100, 500)
-                elif task_type == TaskType.DELAY_SENSITIVE:
-                    data_size = np.random.uniform(0.5, 2.0)
-                    compute_cycles = np.random.uniform(500, 2000)
-                elif task_type == TaskType.DELAY_TOLERANT:
-                    data_size = np.random.uniform(2.0, 5.0)
-                    compute_cycles = np.random.uniform(2000, 5000)
-                else:  # DELAY_INSENSITIVE
-                    data_size = np.random.uniform(5.0, 10.0)
-                    compute_cycles = np.random.uniform(5000, 10000)
+                # 使用配置中的参数范围 - 确保一致性
+                data_size_range = config.task.data_size_range
+                data_size = np.random.uniform(data_size_range[0], data_size_range[1])  # bytes
+                
+                # 根据数据大小和计算密度计算周期 - 符合论文公式
+                compute_cycles = data_size * 8 * config.task.task_compute_density  # bytes -> bits -> cycles
+                
+                # 输出结果大小
+                result_size = data_size * config.task.task_output_ratio
+                
+                # 生成截止时间
+                deadline_range = config.task.deadline_range
+                deadline_offset = np.random.uniform(deadline_range[0], deadline_range[1])
                 
                 task = Task(
                     task_id=f"task_{vehicle.node_id}_{len(tasks)}",
                     task_type=task_type,
                     data_size=data_size,
                     compute_cycles=compute_cycles,
+                    result_size=result_size,
+                    deadline=time.time() + deadline_offset,
                     source_vehicle_id=vehicle.node_id,
                     generation_time=time.time()
                 )

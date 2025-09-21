@@ -6,6 +6,9 @@
 from .logger import Logger
 from .metrics import Metrics, MovingAverage, PerformanceTracker
 from .data_processor import DataProcessor
+from .data_validator import SystemMetricsValidator
+from .reward_calculator import UnifiedRewardCalculator
+from .energy_validator import EnergyValidator, validate_energy_consumption
 
 # 添加缺失的工具函数
 import numpy as np
@@ -34,7 +37,15 @@ def calculate_3d_distance(pos1, pos2):
     if isinstance(pos1, tuple) and isinstance(pos2, tuple):
         return np.sqrt((pos1[0] - pos2[0])**2 + (pos1[1] - pos2[1])**2 + (pos1[2] - pos2[2])**2)
     else:
-        return np.sqrt((pos1.x - pos2.x)**2 + (pos1.y - pos2.y)**2 + (pos1.z - pos2.z)**2)
+        # 处理具有x,y,z属性的对象
+        try:
+            # type: ignore - 这里假设对象有x,y,z属性
+            return np.sqrt((pos1.x - pos2.x)**2 + (pos1.y - pos2.y)**2 + (pos1.z - pos2.z)**2)  # type: ignore
+        except AttributeError:
+            # 如果没有x,y,z属性，尝试作为数组处理
+            pos1_arr = np.array(pos1)
+            pos2_arr = np.array(pos2)
+            return np.sqrt(np.sum((pos1_arr - pos2_arr)**2))
 
 class ExponentialMovingAverage:
     """指数移动平均"""
@@ -50,4 +61,5 @@ class ExponentialMovingAverage:
         return self.value
 
 __all__ = ['Logger', 'Metrics', 'MovingAverage', 'PerformanceTracker', 'DataProcessor', 
+           'SystemMetricsValidator', 'UnifiedRewardCalculator', 'EnergyValidator', 'validate_energy_consumption',
            'generate_poisson_arrivals', 'db_to_linear', 'sigmoid', 'calculate_3d_distance', 'ExponentialMovingAverage']

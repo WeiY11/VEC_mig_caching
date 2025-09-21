@@ -65,8 +65,8 @@ class VECActionSpace:
         self.uav_actions = 6        # 计算资源分配、移动策略等
         
         self.num_vehicles = config.network.num_vehicles  # 12
-        self.num_rsus = config.network.num_rsu          # 6
-        self.num_uavs = config.network.num_uav          # 2
+        self.num_rsus = config.network.num_rsus          # 6  
+        self.num_uavs = config.network.num_uavs          # 2
         
         self.total_dim = (
             self.num_vehicles * self.vehicle_actions +  # 12 * 5 = 60
@@ -120,12 +120,12 @@ class VECStateSpace:
         # 如果提供了配置，使用提供的配置，否则使用默认配置
         if system_config is not None:
             self.num_vehicles = system_config.network.num_vehicles
-            self.num_rsus = system_config.network.num_rsu
-            self.num_uavs = system_config.network.num_uav
+            self.num_rsus = system_config.network.num_rsus
+            self.num_uavs = system_config.network.num_uavs
         else:
             self.num_vehicles = config.network.num_vehicles
-            self.num_rsus = config.network.num_rsu
-            self.num_uavs = config.network.num_uav
+            self.num_rsus = config.network.num_rsus
+            self.num_uavs = config.network.num_uavs
         
         # 状态维度计算
         self.vehicle_state_dim = 5  # 位置x,y + 速度x,y + 队列利用率
@@ -198,7 +198,7 @@ class VECStateSpace:
             system_metrics.get('data_loss_rate', 0.1),
             system_metrics.get('task_completion_rate', 0.8),
             system_metrics.get('cache_hit_rate', 0.6),
-            system_metrics.get('migration_success_rate', 0.8),
+            system_metrics.get('migration_success_rate', 0.0),
             system_metrics.get('network_utilization', 0.5),
             system_metrics.get('load_balance_index', 0.5),
         ]
@@ -379,7 +379,7 @@ class OptimizedTD3Environment:
         global_action = self.agent.select_action(state, training)
         return self.decompose_action(global_action)
     
-    def calculate_reward(self, system_metrics: Dict, prev_metrics: Dict = None) -> float:
+    def calculate_reward(self, system_metrics: Dict, prev_metrics: Optional[Dict] = None) -> float:
         """计算奖励 - 带归一化和平滑机制"""
         try:
             # 固定权重配置 - 极简设计

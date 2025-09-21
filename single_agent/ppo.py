@@ -466,25 +466,9 @@ class PPOEnvironment:
         return self.decompose_action(action), log_prob, value
     
     def calculate_reward(self, system_metrics: Dict) -> float:
-        """计算奖励 - 统一为基于成本的形式 reward = -cost"""
-        from config import config
-        w_T = config.rl.reward_weight_delay
-        w_E = config.rl.reward_weight_energy
-        w_D = config.rl.reward_weight_loss
-
-        normalized_delay = system_metrics.get('avg_task_delay', 0.0) / 1.0
-        normalized_energy = system_metrics.get('total_energy_consumption', 0.0) / 1000.0
-        normalized_loss = system_metrics.get('data_loss_rate', 0.0)
-
-        cost = w_T * normalized_delay + w_E * normalized_energy + w_D * normalized_loss
-        base_reward = -cost
-
-        task_completion_rate = system_metrics.get('task_completion_rate', 0.0)
-        cache_hit_rate = system_metrics.get('cache_hit_rate', 0.0)
-        cache_reward = float(np.tanh(cache_hit_rate * 2.0))
-        performance_bonus = 0.01 * (task_completion_rate + cache_reward)
-
-        return base_reward + performance_bonus
+        """计算奖励 - 使用标准化奖励函数"""
+        from utils.standardized_reward import calculate_standardized_reward
+        return calculate_standardized_reward(system_metrics, agent_type='single_agent')
     
     def save_models(self, filepath: str):
         """保存模型"""

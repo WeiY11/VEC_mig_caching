@@ -1,0 +1,613 @@
+"""
+通信与计算模型 - 对应论文第5节
+实现VEC系统中的无线通信模型和计算能耗模型
+"""
+import numpy as np
+import math
+from typing import Dict, Tuple, Optional, Union, Any
+from dataclasses import dataclass
+
+from models.data_structures import Position, CommunicationLink, Task
+from config import config
+from utils import db_to_linear, linear_to_db, dbm_to_watts
+
+
+@dataclass
+class ChannelState:
+    """信道状态信息"""
+    distance: float = 0.0
+    los_probability: float = 0.0
+    path_loss_db: float = 0.0
+    shadowing_db: float = 0.0
+    channel_gain_linear: float = 0.0
+    interference_power: float = 0.0
+
+
+class WirelessCommunicationModel:
+    """
+    无线通信模型 - 对应论文第5.2节
+    实现3GPP标准的VEC无线通信信道模型
+    """
+    
+    def __init__(self):
+        # 通信参数 - 从配置获取
+        self.carrier_frequency = config.communication.carrier_frequency  # f_c
+        self.los_threshold = config.communication.los_threshold_distance  # d_0
+        self.los_decay_factor = config.communication.los_decay_factor  # α_LoS
+        self.shadowing_std_los = config.communication.shadowing_std_los  # X_σ,LoS
+        self.shadowing_std_nlos = config.communication.shadowing_std_nlos  # X_σ,NLoS
+        self.coding_efficiency = config.communication.coding_efficiency  # η_coding
+        self.processing_delay = config.communication.processing_delay  # T_proc
+        self.noise_power = config.communication.noise_power_linear  # 噪声功率 (线性)
+        
+        # 天线增益和快衰落参数
+        self.antenna_gain_db = 0.0  # 天线增益 (dB)
+        self.fast_fading_factor = 1.0  # 快衰落因子
+    
+    def calculate_channel_state(self, pos_a: Position, pos_b: Position) -> ChannelState:
+        """
+        计算信道状态 - 对应论文式(11)-(16)
+        
+        Args:
+            pos_a: 发送节点位置
+            pos_b: 接收节点位置
+            
+        Returns:
+            信道状态信息
+        """
+        # 1. 计算距离 - 论文式(10)
+        distance = pos_a.distance_to(pos_b)
+        
+        # 2. 计算视距概率 - 论文式(11)
+        los_probability = self._calculate_los_probability(distance)
+        
+        # 3. 计算路径损耗 - 论文式(12)-(13)
+        path_loss_db = self._calculate_path_loss(distance, los_probability)
+        
+        # 4. 计算阴影衰落 - 随机变量
+        shadowing_db = self._generate_shadowing(los_probability)
+        
+        # 5. 计算信道增益 - 论文式(14)
+        channel_gain_linear = self._calculate_channel_gain(path_loss_db, shadowing_db)
+        
+        # 6. 计算干扰功率 (简化)
+        interference_power = self._calculate_interference_power(pos_b)
+        
+        return ChannelState(
+            distance=distance,
+            los_probability=los_probability,
+            path_loss_db=path_loss_db,
+            shadowing_db=shadowing_db,
+            channel_gain_linear=channel_gain_linear,
+            interference_power=interference_power
+        )
+    
+    def _calculate_los_probability(self, distance: float) -> float:
+        """
+        计算视距概率 - 对应论文式(11)
+        P_LoS(d) = 1 if d ≤ d_0, exp(-(d-d_0)/α_LoS) if d > d_0
+        """
+        if distance <= self.los_threshold:
+            return 1.0
+        else:
+            return math.exp(-(distance - self.los_threshold) / self.los_decay_factor)
+    
+    def _calculate_path_loss(self, distance: float, los_probability: float) -> float:
+        """
+        计算路径损耗 - 对应论文式(12)-(13)
+        """
+        # LoS路径损耗 - 论文式(12)
+        los_path_loss = 32.4 + 20 * math.log10(self.carrier_frequency / 1e9) + 20 * math.log10(distance / 1000)
+        
+        # NLoS路径损耗 - 论文式(13)
+        nlos_path_loss = 32.4 + 20 * math.log10(self.carrier_frequency / 1e9) + 30 * math.log10(distance / 1000)
+        
+        # 综合路径损耗
+        combined_path_loss = los_probability * los_path_loss + (1 - los_probability) * nlos_path_loss
+        
+        return combined_path_loss
+    
+    def _generate_shadowing(self, los_probability: float) -> float:
+        """生成阴影衰落"""
+        if np.random.random() < los_probability:
+            # LoS情况
+            return np.random.normal(0, self.shadowing_std_los)
+        else:
+            # NLoS情况
+            return np.random.normal(0, self.shadowing_std_nlos)
+    
+    def _calculate_channel_gain(self, path_loss_db: float, shadowing_db: float) -> float:
+        """
+        计算信道增益 - 对应论文式(14)
+        h = 10^(-L/10) * g_antenna * g_fading
+        """
+        # 转换为线性值
+        path_loss_linear = db_to_linear(path_loss_db)
+        shadowing_linear = db_to_linear(shadowing_db)
+        antenna_gain_linear = db_to_linear(self.antenna_gain_db)
+        
+        # 总信道增益
+        channel_gain = antenna_gain_linear * self.fast_fading_factor / (path_loss_linear * shadowing_linear)
+        
+        return channel_gain
+    
+    def _calculate_interference_power(self, receiver_pos: Position) -> float:
+        """
+        计算干扰功率 - 对应论文式(15)
+        简化实现：基于位置的固定干扰模型
+        """
+        # 基础干扰功率
+        base_interference = 1e-12  # W
+        
+        # 位置相关的干扰变化 (简化)
+        interference_factor = 1.0 + 0.1 * math.sin(receiver_pos.x / 1000) * math.cos(receiver_pos.y / 1000)
+        
+        return base_interference * interference_factor
+    
+    def calculate_sinr(self, tx_power: float, channel_gain: float, 
+                      interference_power: float, bandwidth: float) -> float:
+        """
+        计算信噪干扰比 - 对应论文式(16)
+        SINR = (P_tx * h) / (I_ext + N_0 * B)
+        添加数值稳定性保障
+        """
+        # 检查输入参数的有效性
+        if tx_power <= 0 or channel_gain <= 0 or bandwidth <= 0:
+            return 0.0
+        
+        signal_power = tx_power * channel_gain
+        noise_power = self.noise_power * bandwidth
+        total_interference_noise = interference_power + noise_power
+        
+        # 防止除以零或过小值
+        min_interference_noise = 1e-15  # 最小噪声功率
+        if total_interference_noise <= min_interference_noise:
+            total_interference_noise = min_interference_noise
+        
+        sinr_linear = signal_power / total_interference_noise
+        
+        # 限制SINR在合理范围内
+        max_sinr = 1e6  # 防止过大值
+        sinr_linear = min(sinr_linear, max_sinr)
+        
+        return sinr_linear
+    
+    def calculate_data_rate(self, sinr_linear: float, bandwidth: float) -> float:
+        """
+        计算传输速率 - 对应论文式(17)
+        R = B * log2(1 + SINR) * η_coding
+        """
+        if sinr_linear <= 0:
+            return 0.0
+        
+        rate = bandwidth * math.log2(1 + sinr_linear) * self.coding_efficiency
+        return rate
+    
+    def calculate_transmission_delay(self, data_size: float, distance: float, 
+                                   tx_power: float, bandwidth: float,
+                                   pos_a: Position, pos_b: Position) -> Tuple[float, Dict]:
+        """
+        计算传输时延 - 对应论文式(18)
+        T_trans = D/R + T_prop + T_proc
+        
+        Returns:
+            (总时延, 详细信息字典)
+        """
+        # 1. 计算信道状态
+        channel_state = self.calculate_channel_state(pos_a, pos_b)
+        
+        # 2. 计算SINR
+        sinr_linear = self.calculate_sinr(tx_power, channel_state.channel_gain_linear,
+                                        channel_state.interference_power, bandwidth)
+        
+        # 3. 计算数据速率
+        data_rate = self.calculate_data_rate(sinr_linear, bandwidth)
+        
+        # 4. 计算各部分时延
+        if data_rate > 0:
+            transmission_delay = data_size / data_rate
+        else:
+            transmission_delay = float('inf')
+        
+        propagation_delay = distance / 3e8  # 光速传播
+        total_delay = transmission_delay + propagation_delay + self.processing_delay
+        
+        # 详细信息
+        details = {
+            'channel_state': channel_state,
+            'sinr_linear': sinr_linear,
+            'sinr_db': linear_to_db(sinr_linear),
+            'data_rate': data_rate,
+            'transmission_delay': transmission_delay,
+            'propagation_delay': propagation_delay,
+            'processing_delay': self.processing_delay,
+            'total_delay': total_delay
+        }
+        
+        return total_delay, details
+
+
+class ComputeEnergyModel:
+    """
+    计算能耗模型 - 对应论文第5.1节、第5.3节、第5.5节
+    实现不同节点类型的计算能耗计算
+    """
+    
+    def __init__(self):
+        # 车辆能耗参数 - 论文式(5)-(9)
+        self.vehicle_kappa1 = config.compute.vehicle_kappa1
+        self.vehicle_kappa2 = config.compute.vehicle_kappa2
+        self.vehicle_static_power = config.compute.vehicle_static_power
+        self.vehicle_idle_power = config.compute.vehicle_idle_power
+        
+        # RSU能耗参数 - 论文式(20)-(21)
+        self.rsu_kappa2 = config.compute.rsu_kappa2
+        
+        # UAV能耗参数 - 论文式(25)-(30)
+        self.uav_kappa3 = config.compute.uav_kappa3
+        self.uav_hover_power = config.compute.uav_hover_power
+        
+        # 并行处理效率
+        self.parallel_efficiency = config.compute.parallel_efficiency
+    
+    def calculate_vehicle_compute_energy(self, task: Task, cpu_frequency: float, 
+                                       processing_time: float, time_slot_duration: float) -> Dict[str, float]:
+        """
+        计算车辆计算能耗 - 对应论文式(5)-(9)
+        
+        Returns:
+            能耗详细信息字典
+        """
+        # 计算CPU利用率
+        utilization = min(1.0, processing_time / time_slot_duration)
+        
+        # 动态功率模型 - 论文式(7)
+        dynamic_power = (self.vehicle_kappa1 * (cpu_frequency ** 3) +
+                        self.vehicle_kappa2 * (cpu_frequency ** 2) * utilization +
+                        self.vehicle_static_power)
+        
+        # 计算能耗 - 论文式(8)
+        active_time = processing_time
+        idle_time = max(0, time_slot_duration - active_time)
+        
+        compute_energy = dynamic_power * active_time
+        idle_energy = self.vehicle_idle_power * idle_time
+        total_energy = compute_energy + idle_energy
+        
+        return {
+            'dynamic_power': dynamic_power,
+            'compute_energy': compute_energy,
+            'idle_energy': idle_energy,
+            'total_energy': total_energy,
+            'utilization': utilization,
+            'active_time': active_time,
+            'idle_time': idle_time
+        }
+    
+    def calculate_rsu_compute_energy(self, task: Task, cpu_frequency: float, 
+                                   processing_time: float, is_active: bool = True) -> Dict[str, float]:
+        """
+        计算RSU计算能耗 - 对应论文式(20)-(22)
+        
+        Returns:
+            能耗详细信息字典
+        """
+        if not is_active:
+            return {
+                'processing_power': 0.0,
+                'compute_energy': 0.0,
+                'total_energy': 0.0
+            }
+        
+        # RSU处理功率 - 论文式(22)
+        processing_power = self.rsu_kappa2 * (cpu_frequency ** 3)
+        
+        # 计算能耗
+        compute_energy = processing_power * processing_time
+        
+        return {
+            'processing_power': processing_power,
+            'compute_energy': compute_energy,
+            'total_energy': compute_energy
+        }
+    
+    def calculate_uav_compute_energy(self, task: Task, cpu_frequency: float, 
+                                   processing_time: float, battery_level: float = 1.0) -> Dict[str, float]:
+        """
+        计算UAV计算能耗 - 对应论文式(25)-(28)
+        
+        Returns:
+            能耗详细信息字典
+        """
+        # 考虑电池电量对性能的影响
+        battery_factor = max(0.5, battery_level)
+        effective_frequency = cpu_frequency * battery_factor
+        
+        # UAV计算能耗 - 论文式(28)
+        compute_energy = self.uav_kappa3 * (effective_frequency ** 2) * processing_time
+        
+        return {
+            'effective_frequency': effective_frequency,
+            'battery_factor': battery_factor,
+            'compute_energy': compute_energy,
+            'total_energy': compute_energy
+        }
+    
+    def calculate_uav_hover_energy(self, time_duration: float) -> Dict[str, float]:
+        """
+        计算UAV悬停能耗 - 对应论文式(29)-(30)
+        
+        Returns:
+            悬停能耗信息字典
+        """
+        # 悬停能耗 - 论文式(29)-(30)简化版
+        hover_energy = self.uav_hover_power * time_duration
+        
+        return {
+            'hover_power': self.uav_hover_power,
+            'hover_time': time_duration,
+            'hover_energy': hover_energy,
+            'total_energy': hover_energy
+        }
+
+
+class CommunicationEnergyModel:
+    """
+    通信能耗模型 - 对应论文式(19)和第5.5.1节
+    计算无线传输的能耗
+    """
+    
+    def __init__(self):
+        # 传输功率参数
+        self.vehicle_tx_power = config.communication.vehicle_tx_power
+        self.rsu_tx_power = config.communication.rsu_tx_power
+        self.uav_tx_power = config.communication.uav_tx_power
+        
+        # 电路功率
+        self.circuit_power = config.communication.circuit_power
+        
+        # 接收功率 (通常比发射功率小)
+        self.rx_power_factor = 0.1  # 接收功率为发射功率的10%
+    
+    def calculate_transmission_energy(self, data_size: float, transmission_time: float, 
+                                    node_type: str, include_circuit: bool = True) -> Dict[str, float]:
+        """
+        计算传输能耗 - 对应论文式(19)
+        E^tx = P_tx * τ_tx + P_circuit * τ_active
+        
+        Args:
+            data_size: 传输数据大小 (bits)
+            transmission_time: 传输时间 (秒)
+            node_type: 节点类型 ("vehicle", "rsu", "uav")
+            include_circuit: 是否包含电路功耗
+            
+        Returns:
+            传输能耗详细信息
+        """
+        # 获取发射功率
+        if node_type == "vehicle":
+            tx_power = self.vehicle_tx_power
+        elif node_type == "rsu":
+            tx_power = self.rsu_tx_power
+        elif node_type == "uav":
+            tx_power = self.uav_tx_power
+        else:
+            tx_power = self.vehicle_tx_power  # 默认值
+        
+        # 传输能耗
+        transmission_energy = tx_power * transmission_time
+        
+        # 电路能耗
+        if include_circuit:
+            circuit_energy = self.circuit_power * transmission_time
+        else:
+            circuit_energy = 0.0
+        
+        total_energy = transmission_energy + circuit_energy
+        
+        return {
+            'tx_power': tx_power,
+            'transmission_time': transmission_time,
+            'transmission_energy': transmission_energy,
+            'circuit_energy': circuit_energy,
+            'total_energy': total_energy,
+            'data_size': data_size
+        }
+    
+    def calculate_reception_energy(self, data_size: float, reception_time: float, 
+                                 node_type: str) -> Dict[str, float]:
+        """
+        计算接收能耗 - 对应论文第5.5.1节
+        
+        Returns:
+            接收能耗详细信息
+        """
+        # 获取对应的接收功率
+        if node_type == "vehicle":
+            base_power = self.vehicle_tx_power
+        elif node_type == "rsu":
+            base_power = self.rsu_tx_power
+        elif node_type == "uav":
+            base_power = self.uav_tx_power
+        else:
+            base_power = self.vehicle_tx_power
+        
+        rx_power = base_power * self.rx_power_factor
+        
+        # 接收能耗
+        reception_energy = rx_power * reception_time
+        circuit_energy = self.circuit_power * reception_time
+        
+        total_energy = reception_energy + circuit_energy
+        
+        return {
+            'rx_power': rx_power,
+            'reception_time': reception_time,
+            'reception_energy': reception_energy,
+            'circuit_energy': circuit_energy,
+            'total_energy': total_energy,
+            'data_size': data_size
+        }
+    
+    def calculate_communication_energy_total(self, task: Task, link_info: Dict, 
+                                           tx_node_type: str, rx_node_type: str) -> Dict[str, Union[float, Dict[str, float]]]:
+        """
+        计算完整通信过程的能耗 (发送+接收)
+        
+        Args:
+            task: 任务信息
+            link_info: 链路信息 (包含上传和下载时延)
+            tx_node_type: 发送节点类型
+            rx_node_type: 接收节点类型
+            
+        Returns:
+            总通信能耗信息
+        """
+        # 上传能耗 (数据上传)
+        upload_time = link_info.get('upload_delay', 0.0)
+        upload_tx_energy = self.calculate_transmission_energy(
+            task.data_size, upload_time, tx_node_type)
+        upload_rx_energy = self.calculate_reception_energy(
+            task.data_size, upload_time, rx_node_type)
+        
+        # 下载能耗 (结果下载)
+        download_time = link_info.get('download_delay', 0.0)
+        download_tx_energy = self.calculate_transmission_energy(
+            task.result_size, download_time, rx_node_type)
+        download_rx_energy = self.calculate_reception_energy(
+            task.result_size, download_time, tx_node_type)
+        
+        # 总能耗
+        total_tx_energy = upload_tx_energy['total_energy'] + download_rx_energy['total_energy']
+        total_rx_energy = upload_rx_energy['total_energy'] + download_tx_energy['total_energy']
+        total_energy = total_tx_energy + total_rx_energy
+        
+        return {
+            'upload_tx_energy': upload_tx_energy,
+            'upload_rx_energy': upload_rx_energy,
+            'download_tx_energy': download_tx_energy,
+            'download_rx_energy': download_rx_energy,
+            'total_tx_energy': total_tx_energy,
+            'total_rx_energy': total_rx_energy,
+            'total_communication_energy': total_energy
+        }
+
+
+class IntegratedCommunicationComputeModel:
+    """
+    集成通信计算模型
+    整合论文第5节的所有通信和计算模型
+    """
+    
+    def __init__(self):
+        self.comm_model = WirelessCommunicationModel()
+        self.compute_energy_model = ComputeEnergyModel()
+        self.comm_energy_model = CommunicationEnergyModel()
+    
+    def evaluate_processing_option(self, task: Task, source_pos: Position, 
+                                 target_pos: Position, target_node_info: Dict,
+                                 processing_mode: str) -> Dict[str, Any]:
+        """
+        全面评估处理选项的时延和能耗
+        
+        Args:
+            task: 待处理任务
+            source_pos: 源节点位置
+            target_pos: 目标节点位置  
+            target_node_info: 目标节点信息
+            processing_mode: 处理模式 ("local", "rsu", "uav")
+            
+        Returns:
+            评估结果字典
+        """
+        results: Dict[str, Any] = {
+            'total_delay': 0.0,
+            'total_energy': 0.0,
+            'communication_delay': 0.0,
+            'computation_delay': 0.0,
+            'communication_energy': 0.0,
+            'computation_energy': 0.0
+        }
+        
+        if processing_mode == "local":
+            # 本地处理 - 无通信时延，只有计算
+            cpu_freq = target_node_info.get('cpu_frequency', config.compute.vehicle_cpu_freq_range[1])
+            processing_time = task.compute_cycles / (cpu_freq * self.compute_energy_model.parallel_efficiency)
+            
+            # 计算能耗
+            energy_info = self.compute_energy_model.calculate_vehicle_compute_energy(
+                task, cpu_freq, processing_time, config.network.time_slot_duration)
+            
+            results.update({
+                'total_delay': processing_time,
+                'computation_delay': processing_time,
+                'total_energy': energy_info['total_energy'],
+                'computation_energy': energy_info['total_energy']
+            })
+        
+        elif processing_mode in ["rsu", "uav"]:
+            # 远程处理 - 通信 + 计算
+            
+            # 1. 通信时延和能耗
+            upload_delay, upload_details = self.comm_model.calculate_transmission_delay(
+                task.data_size, source_pos.distance_to(target_pos),
+                config.communication.vehicle_tx_power,
+                config.communication.total_bandwidth / 4,  # 分配带宽
+                source_pos, target_pos
+            )
+            
+            download_delay, download_details = self.comm_model.calculate_transmission_delay(
+                task.result_size, source_pos.distance_to(target_pos),
+                target_node_info.get('tx_power', config.communication.rsu_tx_power),
+                config.communication.total_bandwidth / 4,
+                target_pos, source_pos
+            )
+            
+            comm_delay = upload_delay + download_delay
+            
+            # 通信能耗
+            link_info = {'upload_delay': upload_delay, 'download_delay': download_delay}
+            comm_energy_info = self.comm_energy_model.calculate_communication_energy_total(
+                task, link_info, "vehicle", processing_mode)
+            
+            # 2. 计算时延和能耗
+            cpu_freq = target_node_info.get('cpu_frequency', config.compute.rsu_cpu_freq)
+            processing_time = task.compute_cycles / cpu_freq
+            
+            if processing_mode == "rsu":
+                compute_energy_info = self.compute_energy_model.calculate_rsu_compute_energy(
+                    task, cpu_freq, processing_time)
+            else:  # uav
+                battery_level = target_node_info.get('battery_level', 1.0)
+                compute_energy_info = self.compute_energy_model.calculate_uav_compute_energy(
+                    task, cpu_freq, processing_time, battery_level)
+                
+                # 添加悬停能耗
+                total_time = comm_delay + processing_time
+                hover_energy_info = self.compute_energy_model.calculate_uav_hover_energy(total_time)
+                compute_energy_info['total_energy'] += hover_energy_info['total_energy']
+            
+            # 汇总结果
+            total_comm_energy = comm_energy_info['total_communication_energy']
+            total_compute_energy = compute_energy_info['total_energy']
+            
+            # 确保能耗值是数值类型
+            if isinstance(total_comm_energy, dict):
+                total_comm_energy = 0.0  # 默认值，这种情况不应该出现
+            if isinstance(total_compute_energy, dict):
+                total_compute_energy = 0.0  # 默认值，这种情况不应该出现
+            
+            results.update({
+                'total_delay': comm_delay + processing_time,
+                'communication_delay': comm_delay,
+                'computation_delay': processing_time,
+                'total_energy': total_comm_energy + total_compute_energy,
+                'communication_energy': total_comm_energy,
+                'computation_energy': total_compute_energy,
+                'upload_details': upload_details,
+                'download_details': download_details,
+                'comm_energy_details': comm_energy_info,
+                'compute_energy_details': compute_energy_info
+            })
+        
+        return results

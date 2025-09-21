@@ -12,7 +12,7 @@ DDPG (Deep Deterministic Policy Gradient) 单智能体算法实现
 """
 # 性能优化 - 必须在其他导入之前
 try:
-    from performance_optimization import OPTIMIZED_BATCH_SIZES
+    from tools.performance_optimization import OPTIMIZED_BATCH_SIZES
 except ImportError:
     OPTIMIZED_BATCH_SIZES = {'DDPG': 128}  # 默认值
 
@@ -401,55 +401,9 @@ class DDPGEnvironment:
         return self.decompose_action(global_action)
     
     def calculate_reward(self, system_metrics: Dict) -> float:
-        """改进的奖励函数 - 更好的收敛性和学习稳定性"""
-        import numpy as np
-        
-        # 安全获取指标
-        def safe_get_metric(key: str, default: float = 0.0) -> float:
-            value = system_metrics.get(key, default)
-            if np.isnan(value) or np.isinf(value):
-                return default
-            return max(0.0, value)
-
-        # 获取关键指标
-        task_completion_rate = safe_get_metric('task_completion_rate', 0.0)
-        avg_delay = safe_get_metric('avg_task_delay', 0.0)
-        data_loss_rate = safe_get_metric('data_loss_rate', 0.0)
-        cache_hit_rate = safe_get_metric('cache_hit_rate', 0.0)
-        
-        # 1. 基础性能奖励 (0-10分)
-        # 任务完成率是最重要的指标
-        completion_reward = task_completion_rate * 10.0
-        
-        # 2. 延迟惩罚 (-5到0分)
-        # 延迟越小越好，使用指数衰减
-        if avg_delay > 0:
-            delay_penalty = -5.0 * min(1.0, avg_delay / 0.1)  # 0.1秒为基准
-        else:
-            delay_penalty = 0.0
-        
-        # 3. 数据丢失惩罚 (-10到0分)
-        loss_penalty = -10.0 * data_loss_rate
-        
-        # 4. 缓存效率奖励 (0-2分)
-        cache_reward = 2.0 * cache_hit_rate
-        
-        # 5. 组合奖励
-        total_reward = completion_reward + delay_penalty + loss_penalty + cache_reward
-        
-        # 6. 添加稳定性机制
-        # 如果性能很好，给额外奖励
-        if task_completion_rate > 0.8 and data_loss_rate < 0.1:
-            total_reward += 5.0  # 稳定性奖励
-        
-        # 如果性能很差，给额外惩罚
-        if task_completion_rate < 0.5 or data_loss_rate > 0.3:
-            total_reward -= 5.0  # 不稳定惩罚
-        
-        # 7. 限制奖励范围，提高学习稳定性
-        final_reward = np.clip(total_reward, -20.0, 20.0)
-        
-        return final_reward
+        """计算奖励 - 使用标准化奖励函数"""
+        from utils.standardized_reward import calculate_standardized_reward
+        return calculate_standardized_reward(system_metrics, agent_type='single_agent')
     
     def train_step(self, state: np.ndarray, action: Union[np.ndarray, int], reward: float,
                    next_state: np.ndarray, done: bool) -> Dict:
