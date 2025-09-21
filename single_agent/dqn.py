@@ -36,8 +36,8 @@ class DQNConfig:
     hidden_dim: int = 256
     lr: float = 1e-4
     
-    # 训练参数
-    batch_size: int = 32
+    # 训练参数 - 🔧 修复：增加批次大小解决梯度估计问题
+    batch_size: int = 128  # 从32增加到128，解决诊断发现的批次过小问题
     buffer_size: int = 50000
     target_update_freq: int = 1000
     gamma: float = 0.99

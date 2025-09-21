@@ -36,7 +36,7 @@ class StandardizedRewardFunction:
     
     def calculate_paper_reward(self, system_metrics: Dict) -> float:
         """
-        严格按照论文目标函数计算奖励
+        修复版本：因为之前的奖励信号过弱，需要增强信号强度
         对应论文式(24): min(ω_T * T + ω_E * E + ω_D * D)
         """
         # 提取系统指标
@@ -62,41 +62,46 @@ class StandardizedRewardFunction:
         # 转换为奖励 (成本的负值)
         base_reward = -cost
         
-        # 应用奖励范围限制
-        clipped_reward = np.clip(base_reward, self.min_reward, self.max_reward)
+        # 🔧 修复：放大信号强度解决诊断发现的信号过弱问题
+        amplified_reward = base_reward * 8.0  # 8倍放大，使奖励变化更显著
+        
+        # 应用放大后的奖励范围限制
+        clipped_reward = np.clip(amplified_reward, -40.0, 20.0)  # 扩大范围保持信号强度
         
         return clipped_reward
     
     def calculate_with_performance_bonus(self, system_metrics: Dict, 
                                        agent_type: Optional[str] = None) -> float:
         """
-        在论文奖励基础上添加性能激励 (可选)
+        修复版本：在论文奖励基础上添加性能激励，解决相关性问题
         """
-        # 基础论文奖励
+        # 基础论文奖励 (已放大)
         base_reward = self.calculate_paper_reward(system_metrics)
         
-        # 轻量级性能激励 (不影响主要优化目标)
+        # 🔧 修复：强化性能激励解决相关性问题
         completion_rate = system_metrics.get('task_completion_rate', 0.0)
         cache_hit_rate = system_metrics.get('cache_hit_rate', 0.0)
         
-        # 非常小的性能奖励，不干扰主要目标函数
-        performance_bonus = 0.01 * (completion_rate + np.tanh(cache_hit_rate))
+        # 显著增强性能奖励，确保与性能指标强相关
+        performance_bonus = 5.0 * completion_rate + 3.0 * cache_hit_rate  # 显著增强相关性
         
         # 智能体特定奖励 (针对多智能体场景)
         agent_bonus = 0.0
         if agent_type:
             if agent_type == 'vehicle_agent':
                 local_efficiency = system_metrics.get('local_processing_ratio', 0.0)
-                agent_bonus = 0.005 * local_efficiency
+                agent_bonus = 1.0 * local_efficiency  # 增强智能体奖励
             elif agent_type == 'rsu_agent':
                 load_balance = 1.0 - abs(0.7 - system_metrics.get('avg_rsu_utilization', 0.7))
-                agent_bonus = 0.005 * load_balance
+                agent_bonus = 1.0 * load_balance
             elif agent_type == 'uav_agent':
                 battery_level = system_metrics.get('avg_uav_battery', 1.0)
-                agent_bonus = 0.005 * battery_level
+                agent_bonus = 1.0 * battery_level
         
         final_reward = base_reward + performance_bonus + agent_bonus
-        return np.clip(final_reward, self.min_reward, self.max_reward)
+        
+        # 放大后的范围限制
+        return np.clip(final_reward, -80.0, 50.0)
 
 
 # 创建全局标准化奖励函数实例

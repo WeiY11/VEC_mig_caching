@@ -31,26 +31,26 @@ from config import config
 
 @dataclass
 class DDPGConfig:
-    """DDPG算法配置 - 优化收敛性"""
-    # 网络结构
-    hidden_dim: int = 128  # 减小网络复杂度
-    actor_lr: float = 3e-4  # 提高学习率
-    critic_lr: float = 3e-4  # 统一学习率
+    """DDPG算法配置 - 优化收敛性（根据诊断结果调整）"""
+    # 网络结构 - 增加容量提高表现力
+    hidden_dim: int = 256      # 增加网络容量（从128到256）
+    actor_lr: float = 1e-4     # 降低actor学习率提高稳定性
+    critic_lr: float = 3e-4    # 提高critic学习率加快学习
     
-    # 训练参数
-    batch_size: int = 64   # 减小批次大小，提高更新频率
-    buffer_size: int = 50000  # 减小缓冲区大小
-    tau: float = 0.01      # 增加软更新系数，加快目标网络更新
-    gamma: float = 0.95    # 减小折扣因子，更关注短期奖励
+    # 训练参数 - 优化收敛性
+    batch_size: int = 128      # 增加批次大小（从64到128）
+    buffer_size: int = 100000  # 增加缓冲区大小
+    tau: float = 0.005         # 减小软更新系数（从0.01到0.005）
+    gamma: float = 0.99        # 提高折扣因子（从0.95到0.99）
     
-    # 探索参数
-    noise_scale: float = 0.2   # 增加初始探索
-    noise_decay: float = 0.995  # 加快噪声衰减
-    min_noise: float = 0.05    # 保持最小探索
+    # 探索参数 - 加强探索
+    noise_scale: float = 0.3   # 增加初始探索（从0.2到0.3）
+    noise_decay: float = 0.9999 # 更慢的噪声衰减（从0.995到0.9999）
+    min_noise: float = 0.1     # 提高最小探索（从0.05到0.1）
     
     # 训练频率
     update_freq: int = 1
-    warmup_steps: int = 500    # 减少预热步数
+    warmup_steps: int = 1000   # 增加预热步数（从500到1000）
 
 
 class DDPGActor(nn.Module):
@@ -367,20 +367,123 @@ class DDPGEnvironment:
         print(f"✓ 动作维度: {self.action_dim}")
     
     def get_state_vector(self, node_states: Dict, system_metrics: Dict) -> np.ndarray:
-        """构建全局状态向量"""
-        # 基础系统状态
-        base_state = np.array([
+        """构建全局状态向量 - 修复状态表示问题"""
+        state_components = []
+        
+        # 1. 基础系统状态 (8维) - 增加更多动态特征
+        base_state = [
             system_metrics.get('avg_task_delay', 0.0) / 1.0,
             system_metrics.get('total_energy_consumption', 0.0) / 1000.0,
             system_metrics.get('data_loss_rate', 0.0),
             system_metrics.get('cache_hit_rate', 0.0),
             system_metrics.get('migration_success_rate', 0.0),
-        ])
+            # 🔧 修复：添加变化性更强的系统特征
+            system_metrics.get('task_completion_rate', 0.0),  # 任务完成率
+            min(1.0, system_metrics.get('avg_task_delay', 0.15) / 0.5),  # 延迟负载指标
+            min(1.0, system_metrics.get('total_energy_consumption', 600.0) / 1500.0),  # 能耗负载指标
+        ]
+        state_components.extend(base_state)
         
-        # 节点特定状态 (简化实现)
-        node_states_flat = np.random.randn(self.state_dim - len(base_state))
+        # 2. 车辆状态 (12车辆 × 4维 = 48维) - 使用真实状态而非随机数
+        vehicle_count = 0
+        for i in range(12):  # 支持最多12个车辆
+            vehicle_key = f'vehicle_{i}'
+            if vehicle_key in node_states:
+                vehicle_state = node_states[vehicle_key]
+                # 提取车辆的关键状态特征
+                if len(vehicle_state) >= 5:
+                    vehicle_features = [
+                        float(vehicle_state[0]),  # 位置x (已归一化)
+                        float(vehicle_state[1]),  # 位置y (已归一化)  
+                        float(vehicle_state[2]),  # 速度 (已归一化)
+                        float(vehicle_state[3]),  # 任务数 (已归一化)
+                    ]
+                else:
+                    # 如果状态维度不足，使用默认值
+                    vehicle_features = [0.5, 0.5, 0.5, 0.0]
+                vehicle_count += 1
+            else:
+                # 车辆不存在，使用默认状态
+                vehicle_features = [0.0, 0.0, 0.0, 0.0]
+            
+            state_components.extend(vehicle_features)
         
-        return np.concatenate([base_state, node_states_flat])
+        # 3. RSU状态 (6个RSU × 3维 = 18维)  
+        for i in range(6):  # 支持最多6个RSU
+            rsu_key = f'rsu_{i}'
+            if rsu_key in node_states:
+                rsu_state = node_states[rsu_key]
+                if len(rsu_state) >= 5:
+                    rsu_features = [
+                        float(rsu_state[2]),  # 缓存利用率
+                        float(rsu_state[3]),  # 队列长度 (已归一化)
+                        float(rsu_state[4]),  # 能耗 (已归一化)
+                    ]
+                else:
+                    rsu_features = [0.5, 0.5, 0.5]
+            else:
+                rsu_features = [0.0, 0.0, 0.0]
+            
+            state_components.extend(rsu_features)
+        
+        # 4. UAV状态 (2个UAV × 4维 = 8维)
+        for i in range(2):  # 支持最多2个UAV
+            uav_key = f'uav_{i}'
+            if uav_key in node_states:
+                uav_state = node_states[uav_key]
+                if len(uav_state) >= 5:
+                    uav_features = [
+                        float(uav_state[2]),  # 高度 (已归一化)
+                        float(uav_state[3]),  # 缓存利用率
+                        float(uav_state[4]),  # 能耗 (已归一化)
+                        1.0,  # 电池电量 (简化为固定值)
+                    ]
+                else:
+                    uav_features = [0.8, 0.5, 0.5, 1.0]
+            else:
+                uav_features = [0.0, 0.0, 0.0, 0.5]
+            
+            state_components.extend(uav_features)
+        
+        # 🔧 修复：确保状态向量长度为60维，用有意义的特征填充
+        current_length = len(state_components)
+        if current_length < self.state_dim:
+            padding_size = self.state_dim - current_length
+            
+            # 添加有意义的派生特征而非周期性填充
+            for i in range(padding_size):
+                if i < 4:  # 系统负载分布特征
+                    load_factor = system_metrics.get('total_energy_consumption', 600.0) / 1000.0
+                    feature_val = 0.3 + 0.4 * np.sin(load_factor * np.pi + i)
+                elif i < 8:  # 延迟分布特征
+                    delay_factor = system_metrics.get('avg_task_delay', 0.15)
+                    feature_val = 0.4 + 0.3 * np.cos(delay_factor * 10 + i)
+                elif i < 12:  # 完成率相关特征
+                    completion_factor = system_metrics.get('task_completion_rate', 0.9)
+                    feature_val = completion_factor * (0.5 + 0.3 * np.sin(i * 0.5))
+                else:  # 缓存效率特征
+                    cache_factor = system_metrics.get('cache_hit_rate', 0.3)
+                    feature_val = cache_factor * (0.6 + 0.2 * np.cos(i * 0.7))
+                
+                # 确保特征值在合理范围内
+                feature_val = np.clip(feature_val, 0.0, 1.0)
+                state_components.append(float(feature_val))
+        elif current_length > self.state_dim:
+            # 如果维度过多，截断
+            state_components = state_components[:self.state_dim]
+        
+        # 转换为numpy数组并进行数值稳定性检查
+        state_vector = np.array(state_components, dtype=np.float32)
+        
+        # 检查并处理NaN/Inf值
+        if np.any(np.isnan(state_vector)) or np.any(np.isinf(state_vector)):
+            print(f"⚠️ 警告: 状态向量包含无效值，进行修复")
+            state_vector = np.nan_to_num(state_vector, nan=0.5, posinf=1.0, neginf=0.0)
+        
+        # 确保状态值在合理范围内
+        state_vector = np.clip(state_vector, -5.0, 5.0)
+        
+        return state_vector
     
     def decompose_action(self, action: np.ndarray) -> Dict[str, np.ndarray]:
         """将全局动作分解为各节点动作"""
@@ -401,9 +504,41 @@ class DDPGEnvironment:
         return self.decompose_action(global_action)
     
     def calculate_reward(self, system_metrics: Dict) -> float:
-        """计算奖励 - 使用标准化奖励函数"""
-        from utils.standardized_reward import calculate_standardized_reward
-        return calculate_standardized_reward(system_metrics, agent_type='single_agent')
+        """计算奖励 - 修复版本，解决相关性和单调性问题"""
+        # 提取指标并进行数值稳定性检查
+        delay = float(system_metrics.get('avg_task_delay', 0.15))
+        energy = float(system_metrics.get('total_energy_consumption', 600.0)) / 1000.0  # 归一化
+        loss_rate = float(system_metrics.get('data_loss_rate', 0.05))
+        completion_rate = float(system_metrics.get('task_completion_rate', 0.9))
+        cache_hit_rate = float(system_metrics.get('cache_hit_rate', 0.3))
+        
+        # 数值安全检查和约束
+        delay = np.clip(delay, 0.01, 2.0) if np.isfinite(delay) else 0.15
+        energy = np.clip(energy, 0.1, 3.0) if np.isfinite(energy) else 0.6
+        loss_rate = np.clip(loss_rate, 0.0, 1.0) if np.isfinite(loss_rate) else 0.05
+        completion_rate = np.clip(completion_rate, 0.0, 1.0) if np.isfinite(completion_rate) else 0.9
+        cache_hit_rate = np.clip(cache_hit_rate, 0.0, 1.0) if np.isfinite(cache_hit_rate) else 0.3
+        
+        # 🔧 修复：强化奖励函数，确保强相关性和单调性
+        # 1. 强化惩罚项 - 确保与优化目标强负相关
+        delay_penalty = -15.0 * delay        # 强化延迟惩罚，确保负相关
+        energy_penalty = -8.0 * energy       # 强化能耗惩罚
+        loss_penalty = -25.0 * loss_rate     # 强化丢失率惩罚
+        
+        # 2. 强化奖励项 - 确保与性能指标强正相关
+        completion_reward = 20.0 * completion_rate  # 强化完成率奖励，解决相关性问题
+        cache_reward = 10.0 * cache_hit_rate        # 强化缓存命中率奖励
+        
+        # 3. 线性组合确保单调性（去除非线性函数避免非单调性）
+        base_reward = delay_penalty + energy_penalty + loss_penalty + completion_reward + cache_reward
+        
+        # 4. 大幅放大信号强度（解决信号过弱问题）
+        amplified_reward = base_reward * 3.0  # 3倍放大，增强学习信号
+        
+        # 5. 适当的奖励范围（保持信号强度的同时避免数值问题）
+        final_reward = np.clip(amplified_reward, -80.0, 50.0)
+        
+        return float(final_reward)
     
     def train_step(self, state: np.ndarray, action: Union[np.ndarray, int], reward: float,
                    next_state: np.ndarray, done: bool) -> Dict:
