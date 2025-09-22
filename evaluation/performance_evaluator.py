@@ -33,13 +33,34 @@ class PerformanceEvaluator:
             'drop_rate': stats.get('drop_rate', 0.0)
         }
         
+        # 3GPP标准相关指标
+        performance.update({
+            'avg_sinr': stats.get('avg_sinr', 0.0),
+            'avg_throughput': stats.get('avg_throughput', 0.0),
+            'handover_success_rate': stats.get('handover_success_rate', 1.0),
+            'path_loss_avg': stats.get('path_loss_avg', 0.0),
+            'interference_level': stats.get('interference_level', 0.0),
+            'channel_quality': stats.get('channel_quality', 0.0)
+        })
+        
+        # 分层学习相关指标
+        performance.update({
+            'strategic_reward': stats.get('strategic_reward', 0.0),
+            'tactical_reward': stats.get('tactical_reward', 0.0),
+            'operational_reward': stats.get('operational_reward', 0.0),
+            'coordination_efficiency': stats.get('coordination_efficiency', 0.0),
+            'decision_consistency': stats.get('decision_consistency', 0.0)
+        })
+        
         # 计算衍生指标
         if performance['completed_tasks'] > 0:
             performance['energy_efficiency'] = performance['completed_tasks'] / max(performance['total_energy'], 1)
             performance['delay_efficiency'] = 1.0 / max(performance['avg_delay'], 0.001)
+            performance['spectral_efficiency'] = performance['avg_throughput'] / max(stats.get('bandwidth_used', 1), 1)
         else:
             performance['energy_efficiency'] = 0.0
             performance['delay_efficiency'] = 0.0
+            performance['spectral_efficiency'] = 0.0
         
         # 综合性能分数
         performance['composite_score'] = self.calculate_composite_score(performance)
@@ -51,10 +72,12 @@ class PerformanceEvaluator:
         """计算综合性能分数"""
         # 权重设置
         weights = {
-            'completion_rate': 0.3,
-            'delay_efficiency': 0.25,
+            'completion_rate': 0.25,
+            'delay_efficiency': 0.2,
             'energy_efficiency': 0.2,
-            'cache_hit_rate': 0.25
+            'cache_hit_rate': 0.15,
+            'sinr_quality': 0.1,
+            'handover_success_rate': 0.1
         }
         
         # 归一化处理
@@ -62,12 +85,14 @@ class PerformanceEvaluator:
             'completion_rate': performance['completion_rate'],
             'delay_efficiency': min(performance['delay_efficiency'], 10.0) / 10.0,
             'energy_efficiency': min(performance['energy_efficiency'] / 1000, 1.0),
-            'cache_hit_rate': performance['cache_hit_rate']
+            'cache_hit_rate': performance['cache_hit_rate'],
+            'sinr_quality': performance.get('avg_sinr', 0.0) / 30.0,  # 假设最大SINR为30dB
+            'handover_success_rate': performance.get('handover_success_rate', 1.0)
         }
         
         # 加权求和
         composite_score = sum(
-            weights[metric] * normalized_scores[metric]
+            weights[metric] * min(max(normalized_scores[metric], 0.0), 1.0)
             for metric in weights.keys()
         )
         

@@ -152,10 +152,13 @@ class SingleAgentTrainingEnvironment:
         
         return state
     
-    def step(self, action, state) -> Tuple[np.ndarray, float, bool, Dict]:
-        """执行一步仿真"""
-        # 执行仿真步骤
-        step_stats = self.simulator.run_simulation_step(0)
+    def step(self, action, state, actions_dict: Optional[Dict] = None) -> Tuple[np.ndarray, float, bool, Dict]:
+        """执行一步仿真，应用智能体动作到仿真器"""
+        # 构造传递给仿真器的动作（将连续动作映射为本地/RSU/UAV偏好）
+        sim_actions = self._build_simulator_actions(actions_dict)
+        
+        # 执行仿真步骤（传入动作）
+        step_stats = self.simulator.run_simulation_step(0, sim_actions)
         
         # 收集下一步状态
         node_states = {}
@@ -251,8 +254,10 @@ class SingleAgentTrainingEnvironment:
         dropped_tasks = int(safe_get('dropped_tasks', 0))
         data_loss_rate = min(1.0, dropped_tasks / generated_tasks)
         
-        # 简化迁移成功率计算（避免过复杂操作）
-        migration_success_rate = 0.8  # 固定值，避免复杂计算
+        # 迁移成功率（来自仿真器统计）
+        migrations_executed = int(safe_get('migrations_executed', 0))
+        migrations_successful = int(safe_get('migrations_successful', 0))
+        migration_success_rate = (migrations_successful / migrations_executed) if migrations_executed > 0 else 0.0
         
         return {
             'avg_task_delay': avg_delay,
@@ -305,8 +310,8 @@ class SingleAgentTrainingEnvironment:
                     actions_dict = actions_result[0] if isinstance(actions_result, tuple) else actions_result
                 action = self._encode_continuous_action(actions_dict)
             
-            # 执行动作
-            next_state, reward, done, info = self.step(action, state)
+            # 执行动作（将动作字典传入以影响仿真器卸载偏好）
+            next_state, reward, done, info = self.step(action, state, actions_dict)
             
             # 初始化training_info
             training_info = {}
@@ -379,7 +384,7 @@ class SingleAgentTrainingEnvironment:
             action = self._encode_continuous_action(actions_dict)
             
             # 执行动作
-            next_state, reward, done, info = self.step(action, state)
+            next_state, reward, done, info = self.step(action, state, actions_dict)
             
             # 存储经验 - 所有算法都支持统一接口
             # 确保参数类型正确
@@ -427,6 +432,55 @@ class SingleAgentTrainingEnvironment:
             'system_metrics': system_metrics,
             'steps': step + 1
         }
+
+    def _build_simulator_actions(self, actions_dict: Optional[Dict]) -> Optional[Dict]:
+        """将算法动作字典转换为仿真器可消费的简单控制信号。
+        轻量映射：
+        - vehicle_agent 前3维 → 本地/RSU/UAV 概率
+        - rsu_agent 前N维(N=RSU数) → 指定RSU概率
+        - uav_agent 前M维(M=UAV数) → 指定UAV概率
+        """
+        if not isinstance(actions_dict, dict):
+            return None
+        vehicle_action = actions_dict.get('vehicle_agent')
+        if vehicle_action is None:
+            return None
+        try:
+            import numpy as np
+            # 取前三维，映射到[0,1]并softmax为概率
+            raw = np.array(vehicle_action[:3], dtype=np.float32).reshape(-1)
+            # 数值安全
+            raw = np.clip(raw, -5.0, 5.0)
+            exp = np.exp(raw - np.max(raw))
+            probs = exp / np.sum(exp)
+            sim_actions = {
+                'vehicle_offload_pref': {
+                    'local': float(probs[0]),
+                    'rsu': float(probs[1] if probs.size > 1 else 0.33),
+                    'uav': float(probs[2] if probs.size > 2 else 0.34)
+                }
+            }
+            # RSU选择概率
+            num_rsus = len(getattr(self.simulator, 'rsus', []))
+            rsu_action = actions_dict.get('rsu_agent')
+            if isinstance(rsu_action, (list, tuple, np.ndarray)) and num_rsus > 0:
+                rsu_raw = np.array(rsu_action[:num_rsus], dtype=np.float32)
+                rsu_raw = np.clip(rsu_raw, -5.0, 5.0)
+                rsu_exp = np.exp(rsu_raw - np.max(rsu_raw))
+                rsu_probs = rsu_exp / np.sum(rsu_exp)
+                sim_actions['rsu_selection_probs'] = [float(x) for x in rsu_probs]
+            # UAV选择概率
+            num_uavs = len(getattr(self.simulator, 'uavs', []))
+            uav_action = actions_dict.get('uav_agent')
+            if isinstance(uav_action, (list, tuple, np.ndarray)) and num_uavs > 0:
+                uav_raw = np.array(uav_action[:num_uavs], dtype=np.float32)
+                uav_raw = np.clip(uav_raw, -5.0, 5.0)
+                uav_exp = np.exp(uav_raw - np.max(uav_raw))
+                uav_probs = uav_exp / np.sum(uav_exp)
+                sim_actions['uav_selection_probs'] = [float(x) for x in uav_probs]
+            return sim_actions
+        except Exception:
+            return None
     
     def _encode_continuous_action(self, actions_dict) -> np.ndarray:
         """将动作字典编码为连续动作向量"""
@@ -634,7 +688,8 @@ def evaluate_single_model(algorithm: str, training_env: SingleAgentTrainingEnvir
                     actions_dict = {}
                 action = training_env._encode_continuous_action(actions_dict)
             
-            next_state, reward, done, info = training_env.step(action, state)
+            # 评估时也传入动作字典，确保偏好生效
+            next_state, reward, done, info = training_env.step(action, state, actions_dict)
             
             # 安全处理奖励和指标
             safe_reward = safe_value(reward, -1.0, 100.0)

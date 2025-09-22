@@ -175,12 +175,13 @@ class SACCritic(nn.Module):
 
 
 class SACReplayBuffer:
-    """SAC经验回放缓冲区"""
+    """SAC优先级经验回放缓冲区"""
     
-    def __init__(self, capacity: int, state_dim: int, action_dim: int):
+    def __init__(self, capacity: int, state_dim: int, action_dim: int, alpha: float = 0.6):
         self.capacity = capacity
         self.ptr = 0
         self.size = 0
+        self.alpha = alpha
         
         # 预分配内存
         self.states = np.zeros((capacity, state_dim), dtype=np.float32)
@@ -188,6 +189,10 @@ class SACReplayBuffer:
         self.rewards = np.zeros(capacity, dtype=np.float32)
         self.next_states = np.zeros((capacity, state_dim), dtype=np.float32)
         self.dones = np.zeros(capacity, dtype=np.float32)
+        
+        # 优先级数组
+        self.priorities = np.zeros(capacity, dtype=np.float32)
+        self.max_priority = 1.0
     
     def push(self, state: np.ndarray, action: np.ndarray, reward: float, 
              next_state: np.ndarray, done: bool):
@@ -198,20 +203,42 @@ class SACReplayBuffer:
         self.next_states[self.ptr] = next_state
         self.dones[self.ptr] = float(done)
         
+        # 新经验使用最大优先级
+        self.priorities[self.ptr] = self.max_priority
+        
         self.ptr = (self.ptr + 1) % self.capacity
         self.size = min(self.size + 1, self.capacity)
     
-    def sample(self, batch_size: int) -> Tuple[torch.Tensor, ...]:
-        """采样经验批次"""
-        indices = np.random.choice(self.size, batch_size, replace=False)
+    def sample(self, batch_size: int, beta: float = 0.4) -> Tuple[torch.Tensor, ...]:
+        """优先级采样经验批次"""
+        if self.size == 0:
+            raise ValueError("Buffer is empty")
+        
+        # 计算采样概率
+        priorities = self.priorities[:self.size] ** self.alpha
+        probabilities = priorities / priorities.sum()
+        
+        # 采样索引
+        indices = np.random.choice(self.size, batch_size, p=probabilities)
+        
+        # 计算重要性采样权重
+        weights = (self.size * probabilities[indices]) ** (-beta)
+        weights = weights / weights.max()  # 归一化
         
         batch_states = torch.FloatTensor(self.states[indices])
         batch_actions = torch.FloatTensor(self.actions[indices])
         batch_rewards = torch.FloatTensor(self.rewards[indices]).unsqueeze(1)
         batch_next_states = torch.FloatTensor(self.next_states[indices])
         batch_dones = torch.FloatTensor(self.dones[indices]).unsqueeze(1)
+        weights = torch.FloatTensor(weights).unsqueeze(1)
         
-        return batch_states, batch_actions, batch_rewards, batch_next_states, batch_dones
+        return batch_states, batch_actions, batch_rewards, batch_next_states, batch_dones, indices, weights
+    
+    def update_priorities(self, indices: np.ndarray, td_errors: np.ndarray):
+        """更新优先级"""
+        for idx, td_error in zip(indices, td_errors):
+            self.priorities[idx] = abs(td_error) + 1e-6
+            self.max_priority = max(self.max_priority, self.priorities[idx])
     
     def __len__(self):
         return self.size
@@ -243,16 +270,26 @@ class SACAgent:
         self.actor_optimizer = optim.Adam(self.actor.parameters(), lr=config.actor_lr)
         self.critic_optimizer = optim.Adam(self.critic.parameters(), lr=config.critic_lr)
         
+        # 学习率调度器 - 提高收敛稳定性
+        self.actor_scheduler = optim.lr_scheduler.StepLR(self.actor_optimizer, step_size=10000, gamma=0.9)
+        self.critic_scheduler = optim.lr_scheduler.StepLR(self.critic_optimizer, step_size=10000, gamma=0.9)
+        
         # 温度参数 (自动调节熵)
         if config.auto_entropy_tuning:
             self.target_entropy = config.target_entropy_ratio * action_dim
             self.log_alpha = torch.zeros(1, requires_grad=True, device=self.device)
             self.alpha_optimizer = optim.Adam([self.log_alpha], lr=config.alpha_lr)
+            self.alpha_scheduler = optim.lr_scheduler.StepLR(self.alpha_optimizer, step_size=10000, gamma=0.9)
         else:
             self.log_alpha = torch.log(torch.FloatTensor([config.initial_temperature])).to(self.device)
+            self.alpha_scheduler = None
         
-        # 经验回放缓冲区
-        self.replay_buffer = SACReplayBuffer(config.buffer_size, state_dim, action_dim)
+        # 经验回放缓冲区 - 支持优先级经验回放
+        self.replay_buffer = SACReplayBuffer(config.buffer_size, state_dim, action_dim, alpha=0.6)
+        
+        # PER beta参数
+        self.beta = 0.4
+        self.beta_increment = (1.0 - 0.4) / max(1, 100000)  # 100k步内从0.4增加到1.0
         
         # 训练统计
         self.actor_losses = []
@@ -295,19 +332,26 @@ class SACAgent:
         if self.step_count < self.config.warmup_steps:
             return {}
         
-        # 采样经验批次
-        batch_states, batch_actions, batch_rewards, batch_next_states, batch_dones = \
-            self.replay_buffer.sample(self.config.batch_size)
+        # 采样经验批次 - 支持优先级经验回放
+        batch_states, batch_actions, batch_rewards, batch_next_states, batch_dones, indices, weights = \
+            self.replay_buffer.sample(self.config.batch_size, self.beta)
+        
+        # 更新beta
+        self.beta = min(1.0, self.beta + self.beta_increment)
         
         batch_states = batch_states.to(self.device)
         batch_actions = batch_actions.to(self.device)
         batch_rewards = batch_rewards.to(self.device)
         batch_next_states = batch_next_states.to(self.device)
         batch_dones = batch_dones.to(self.device)
+        weights = weights.to(self.device)
         
-        # 更新Critic
-        critic_loss = self._update_critic(batch_states, batch_actions, batch_rewards, 
-                                        batch_next_states, batch_dones)
+        # 更新Critic并获取TD误差
+        critic_loss, td_errors = self._update_critic(batch_states, batch_actions, batch_rewards, 
+                                        batch_next_states, batch_dones, weights)
+        
+        # 更新优先级
+        self.replay_buffer.update_priorities(indices, td_errors.detach().cpu().numpy())
         
         # 更新Actor和温度参数
         actor_loss, alpha_loss = self._update_actor_and_alpha(batch_states)
@@ -316,17 +360,26 @@ class SACAgent:
         if self.step_count % self.config.target_update_freq == 0:
             self.soft_update(self.target_critic, self.critic, self.config.tau)
         
+        # 更新学习率调度器
+        if self.step_count % 100 == 0:  # 每100步更新一次
+            self.actor_scheduler.step()
+            self.critic_scheduler.step()
+            if self.alpha_scheduler is not None:
+                self.alpha_scheduler.step()
+        
         return {
             'actor_loss': actor_loss,
             'critic_loss': critic_loss,
             'alpha_loss': alpha_loss,
-            'alpha': self.alpha.item()
+            'alpha': self.alpha.item(),
+            'actor_lr': self.actor_optimizer.param_groups[0]['lr'],
+            'critic_lr': self.critic_optimizer.param_groups[0]['lr']
         }
     
     def _update_critic(self, states: torch.Tensor, actions: torch.Tensor, 
                       rewards: torch.Tensor, next_states: torch.Tensor, 
-                      dones: torch.Tensor) -> float:
-        """更新Critic网络"""
+                      dones: torch.Tensor, weights: torch.Tensor) -> Tuple[float, torch.Tensor]:
+        """更新Critic网络并返回TD误差"""
         with torch.no_grad():
             next_actions, next_log_probs, _ = self.actor.sample(next_states)
             target_q1, target_q2 = self.target_critic(next_states, next_actions)
@@ -335,14 +388,26 @@ class SACAgent:
         
         current_q1, current_q2 = self.critic(states, actions)
         
-        critic_loss = F.mse_loss(current_q1, target_q) + F.mse_loss(current_q2, target_q)
+        # 计算TD误差
+        td_errors1 = torch.abs(current_q1 - target_q)
+        td_errors2 = torch.abs(current_q2 - target_q)
+        td_errors = torch.max(td_errors1, td_errors2).squeeze()
+        
+        # 使用重要性采样权重
+        critic_loss1 = (weights * F.mse_loss(current_q1, target_q, reduction='none')).mean()
+        critic_loss2 = (weights * F.mse_loss(current_q2, target_q, reduction='none')).mean()
+        critic_loss = critic_loss1 + critic_loss2
         
         self.critic_optimizer.zero_grad()
         critic_loss.backward()
+        
+        # 添加梯度裁剪提高稳定性
+        torch.nn.utils.clip_grad_norm_(self.critic.parameters(), max_norm=1.0)
+        
         self.critic_optimizer.step()
         
         self.critic_losses.append(critic_loss.item())
-        return critic_loss.item()
+        return critic_loss.item(), td_errors
     
     def _update_actor_and_alpha(self, states: torch.Tensor) -> Tuple[float, float]:
         """更新Actor网络和温度参数"""
@@ -356,6 +421,10 @@ class SACAgent:
         # 更新Actor
         self.actor_optimizer.zero_grad()
         actor_loss.backward()
+        
+        # 添加梯度裁剪提高稳定性
+        torch.nn.utils.clip_grad_norm_(self.actor.parameters(), max_norm=1.0)
+        
         self.actor_optimizer.step()
         
         self.actor_losses.append(actor_loss.item())
@@ -367,6 +436,10 @@ class SACAgent:
             
             self.alpha_optimizer.zero_grad()
             alpha_loss.backward()
+            
+            # 温度参数也需要梯度裁剪
+            torch.nn.utils.clip_grad_norm_([self.log_alpha], max_norm=1.0)
+            
             self.alpha_optimizer.step()
             
             self.alpha_losses.append(alpha_loss.item())

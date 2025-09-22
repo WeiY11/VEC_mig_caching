@@ -81,18 +81,46 @@ class Critic(nn.Module):
 
 
 class ReplayBuffer:
-    """经验回放缓冲区"""
+    """MATD3优先级经验回放缓冲区"""
     
-    def __init__(self, capacity: int):
+    def __init__(self, capacity: int, alpha: float = 0.6):
+        self.capacity = capacity
         self.buffer = deque(maxlen=capacity)
+        self.priorities = deque(maxlen=capacity)
+        self.alpha = alpha
+        self.max_priority = 1.0
     
     def push(self, state, action, reward, next_state, done):
         self.buffer.append((state, action, reward, next_state, done))
+        self.priorities.append(self.max_priority)
     
-    def sample(self, batch_size: int):
-        batch = random.sample(self.buffer, batch_size)
+    def sample(self, batch_size: int, beta: float = 0.4):
+        if len(self.buffer) == 0:
+            raise ValueError("Buffer is empty")
+        
+        # 计算采样概率
+        priorities = np.array(self.priorities) ** self.alpha
+        probabilities = priorities / priorities.sum()
+        
+        # 采样索引
+        indices = np.random.choice(len(self.buffer), batch_size, p=probabilities)
+        
+        # 计算重要性采样权重
+        weights = (len(self.buffer) * probabilities[indices]) ** (-beta)
+        weights = weights / weights.max()  # 归一化
+        
+        # 获取经验
+        batch = [self.buffer[idx] for idx in indices]
         state, action, reward, next_state, done = map(np.stack, zip(*batch))
-        return state, action, reward, next_state, done
+        
+        return state, action, reward, next_state, done, indices, weights
+    
+    def update_priorities(self, indices, td_errors):
+        """更新优先级"""
+        for idx, td_error in zip(indices, td_errors):
+            priority = abs(td_error) + 1e-6
+            self.priorities[idx] = priority
+            self.max_priority = max(self.max_priority, priority)
     
     def __len__(self):
         return len(self.buffer)
@@ -140,8 +168,16 @@ class MATD3Agent:
         self.actor_optimizer = optim.Adam(self.actor.parameters(), lr=self.actor_lr)
         self.critic_optimizer = optim.Adam(self.critic.parameters(), lr=self.critic_lr)
         
-        # 经验回放
-        self.replay_buffer = ReplayBuffer(config.rl.buffer_size)
+        # 学习率调度器 - 提高收敛稳定性
+        self.actor_scheduler = optim.lr_scheduler.StepLR(self.actor_optimizer, step_size=5000, gamma=0.95)
+        self.critic_scheduler = optim.lr_scheduler.StepLR(self.critic_optimizer, step_size=5000, gamma=0.95)
+        
+        # 经验回放 - 支持优先级经验回放
+        self.replay_buffer = ReplayBuffer(config.rl.buffer_size, alpha=0.6)
+        
+        # PER beta参数
+        self.beta = 0.4
+        self.beta_increment = (1.0 - 0.4) / max(1, 50000)  # 50k步内从0.4增加到1.0
         
         # 训练计数
         self.total_it = 0
@@ -170,8 +206,11 @@ class MATD3Agent:
         
         self.total_it += 1
         
-        # 采样经验
-        state, action, reward, next_state, done = self.replay_buffer.sample(batch_size_val)
+        # 采样经验 - 支持优先级经验回放
+        state, action, reward, next_state, done, indices, weights = self.replay_buffer.sample(batch_size_val, self.beta)
+        
+        # 更新beta
+        self.beta = min(1.0, self.beta + self.beta_increment)
         
         # 移动到GPU进行加速计算
         state = torch.FloatTensor(state).to(self.device)
@@ -179,6 +218,7 @@ class MATD3Agent:
         reward = torch.FloatTensor(reward).unsqueeze(1).to(self.device)
         next_state = torch.FloatTensor(next_state).to(self.device)
         done = torch.FloatTensor(done).unsqueeze(1).to(self.device)
+        weights = torch.FloatTensor(weights).unsqueeze(1).to(self.device)
         
         # 计算目标Q值
         with torch.no_grad():
@@ -194,11 +234,26 @@ class MATD3Agent:
         # 更新Critic网络
         current_q1, current_q2 = self.critic(state, action)
         
-        critic_loss = F.mse_loss(current_q1, target_q) + F.mse_loss(current_q2, target_q)
+        # 计算TD误差
+        td_errors1 = torch.abs(current_q1 - target_q)
+        td_errors2 = torch.abs(current_q2 - target_q)
+        td_errors = torch.max(td_errors1, td_errors2).squeeze()
+        
+        # 使用重要性采样权重
+        critic_loss1 = (weights * F.mse_loss(current_q1, target_q, reduction='none')).mean()
+        critic_loss2 = (weights * F.mse_loss(current_q2, target_q, reduction='none')).mean()
+        critic_loss = critic_loss1 + critic_loss2
         
         self.critic_optimizer.zero_grad()
         critic_loss.backward()
+        
+        # 添加梯度裁剪提高稳定性
+        torch.nn.utils.clip_grad_norm_(self.critic.parameters(), max_norm=1.0)
+        
         self.critic_optimizer.step()
+        
+        # 更新优先级
+        self.replay_buffer.update_priorities(indices, td_errors.detach().cpu().numpy())
         
         # 延迟更新Actor网络
         if self.total_it % self.policy_delay == 0:
@@ -207,15 +262,26 @@ class MATD3Agent:
             
             self.actor_optimizer.zero_grad()
             actor_loss.backward()
+            
+            # 添加梯度裁剪提高稳定性
+            torch.nn.utils.clip_grad_norm_(self.actor.parameters(), max_norm=1.0)
+            
             self.actor_optimizer.step()
             
             # 软更新目标网络
             self._soft_update(self.actor_target, self.actor, self.tau)
             self._soft_update(self.critic_target, self.critic, self.tau)
             
+            # 更新学习率调度器
+            if self.total_it % 100 == 0:  # 每100步更新一次
+                self.actor_scheduler.step()
+                self.critic_scheduler.step()
+            
             return {
                 'critic_loss': critic_loss.item(),
-                'actor_loss': actor_loss.item()
+                'actor_loss': actor_loss.item(),
+                'actor_lr': self.actor_optimizer.param_groups[0]['lr'],
+                'critic_lr': self.critic_optimizer.param_groups[0]['lr']
             }
         else:
             return {

@@ -234,7 +234,7 @@ class DDPGAgent:
         self.replay_buffer.push(state, action, reward, next_state, done)
     
     def update(self) -> Dict[str, float]:
-        """更新网络参数"""
+        """更新网络参数 - 改进版，增加稳定性"""
         if len(self.replay_buffer) < self.config.batch_size:
             return {}
         
@@ -242,6 +242,10 @@ class DDPGAgent:
         
         # 预热期不更新
         if self.step_count < self.config.warmup_steps:
+            return {}
+        
+        # 🔧 添加更新频率控制，提高训练稳定性
+        if self.step_count % self.config.update_freq != 0:
             return {}
         
         # 采样经验批次
@@ -254,25 +258,39 @@ class DDPGAgent:
         batch_next_states = batch_next_states.to(self.device)
         batch_dones = batch_dones.to(self.device)
         
-        # 更新Critic
-        critic_loss = self._update_critic(batch_states, batch_actions, batch_rewards, 
-                                        batch_next_states, batch_dones)
+        # 🔧 添加奖励标准化，减少训练方差
+        reward_mean = torch.mean(batch_rewards)
+        reward_std = torch.std(batch_rewards) + 1e-8
+        batch_rewards = (batch_rewards - reward_mean) / reward_std
         
-        # 更新Actor
-        actor_loss = self._update_actor(batch_states)
+        # 更新Critic - 重复更新提高稳定性
+        critic_losses = []
+        for _ in range(2):  # Critic更新2次
+            critic_loss = self._update_critic(batch_states, batch_actions, batch_rewards, 
+                                            batch_next_states, batch_dones)
+            critic_losses.append(critic_loss)
+        
+        # 更新Actor - 频率降低，提高稳定性  
+        actor_loss = 0.0
+        if self.step_count % (self.config.update_freq * 2) == 0:  # Actor更新频率降低
+            actor_loss = self._update_actor(batch_states)
         
         # 软更新目标网络
         self.soft_update(self.target_actor, self.actor, self.config.tau)
         self.soft_update(self.target_critic, self.critic, self.config.tau)
         
-        # 衰减噪声
-        self.noise_scale = max(self.config.min_noise, 
-                              self.noise_scale * self.config.noise_decay)
+        # 自适应噪声衰减
+        buffer_fullness = len(self.replay_buffer) / self.config.buffer_size
+        adaptive_decay = self.config.noise_decay + (1.0 - self.config.noise_decay) * (1.0 - buffer_fullness)
+        self.noise_scale = max(self.config.min_noise, self.noise_scale * adaptive_decay)
         
         return {
             'actor_loss': actor_loss,
-            'critic_loss': critic_loss,
-            'noise_scale': self.noise_scale
+            'critic_loss': np.mean(critic_losses),
+            'noise_scale': self.noise_scale,
+            'buffer_size': len(self.replay_buffer),
+            'reward_mean': float(reward_mean),
+            'reward_std': float(reward_std)
         }
     
     def _update_critic(self, states: torch.Tensor, actions: torch.Tensor, 
@@ -504,41 +522,9 @@ class DDPGEnvironment:
         return self.decompose_action(global_action)
     
     def calculate_reward(self, system_metrics: Dict) -> float:
-        """计算奖励 - 修复版本，解决相关性和单调性问题"""
-        # 提取指标并进行数值稳定性检查
-        delay = float(system_metrics.get('avg_task_delay', 0.15))
-        energy = float(system_metrics.get('total_energy_consumption', 600.0)) / 1000.0  # 归一化
-        loss_rate = float(system_metrics.get('data_loss_rate', 0.05))
-        completion_rate = float(system_metrics.get('task_completion_rate', 0.9))
-        cache_hit_rate = float(system_metrics.get('cache_hit_rate', 0.3))
-        
-        # 数值安全检查和约束
-        delay = np.clip(delay, 0.01, 2.0) if np.isfinite(delay) else 0.15
-        energy = np.clip(energy, 0.1, 3.0) if np.isfinite(energy) else 0.6
-        loss_rate = np.clip(loss_rate, 0.0, 1.0) if np.isfinite(loss_rate) else 0.05
-        completion_rate = np.clip(completion_rate, 0.0, 1.0) if np.isfinite(completion_rate) else 0.9
-        cache_hit_rate = np.clip(cache_hit_rate, 0.0, 1.0) if np.isfinite(cache_hit_rate) else 0.3
-        
-        # 🔧 修复：强化奖励函数，确保强相关性和单调性
-        # 1. 强化惩罚项 - 确保与优化目标强负相关
-        delay_penalty = -15.0 * delay        # 强化延迟惩罚，确保负相关
-        energy_penalty = -8.0 * energy       # 强化能耗惩罚
-        loss_penalty = -25.0 * loss_rate     # 强化丢失率惩罚
-        
-        # 2. 强化奖励项 - 确保与性能指标强正相关
-        completion_reward = 20.0 * completion_rate  # 强化完成率奖励，解决相关性问题
-        cache_reward = 10.0 * cache_hit_rate        # 强化缓存命中率奖励
-        
-        # 3. 线性组合确保单调性（去除非线性函数避免非单调性）
-        base_reward = delay_penalty + energy_penalty + loss_penalty + completion_reward + cache_reward
-        
-        # 4. 大幅放大信号强度（解决信号过弱问题）
-        amplified_reward = base_reward * 3.0  # 3倍放大，增强学习信号
-        
-        # 5. 适当的奖励范围（保持信号强度的同时避免数值问题）
-        final_reward = np.clip(amplified_reward, -80.0, 50.0)
-        
-        return float(final_reward)
+        """计算奖励 - 使用标准化奖励函数确保一致性"""
+        from utils.standardized_reward import calculate_standardized_reward
+        return calculate_standardized_reward(system_metrics, agent_type='single_agent')
     
     def train_step(self, state: np.ndarray, action: Union[np.ndarray, int], reward: float,
                    next_state: np.ndarray, done: bool) -> Dict:

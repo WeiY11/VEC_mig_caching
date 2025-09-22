@@ -982,7 +982,7 @@ def plot_training_curves(algorithm: str, training_env: MultiAgentTrainingEnviron
     from tools.performance_dashboard import create_performance_dashboard, create_real_time_monitor
     
     # 1. 增强训练曲线
-    enhanced_plot_training_curves(training_env, f"results/training/{algorithm.lower()}/enhanced_training_curves.png")
+    enhanced_plot_training_curves(training_env, f"results/training/{algorithm.lower()}/enhanced_training_curves.png", algorithm)
     
     # 2. 收敛性分析
     plot_convergence_analysis(

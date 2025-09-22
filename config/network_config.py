@@ -39,13 +39,21 @@ class NetworkConfig:
             'battery_capacity': 5000     # J
         }
         
-        # 通信配置
+        # 3GPP标准通信配置
         self.communication_config = {
-            'frequency': 2.4,            # GHz
-            'bandwidth': 20,             # MHz
-            'noise_power': -100,         # dBm
-            'path_loss_exponent': 2.5,
-            'shadowing_std': 8           # dB
+            'carrier_frequency': 2.0e9,  # 2 GHz - 3GPP标准频率
+            'bandwidth': 20e6,           # 20 MHz
+            'thermal_noise_density': -174.0,  # dBm/Hz - 3GPP标准
+            'los_threshold': 50.0,       # m - 3GPP TS 38.901
+            'los_decay_factor': 100.0,   # m - 3GPP标准
+            'shadowing_std_los': 4.0,    # dB - 3GPP标准
+            'shadowing_std_nlos': 8.0,   # dB - 3GPP标准
+            'antenna_gain_rsu': 15.0,    # dBi
+            'antenna_gain_uav': 5.0,     # dBi
+            'antenna_gain_vehicle': 3.0, # dBi
+            'max_tx_power_rsu': 46.0,    # dBm (40W)
+            'max_tx_power_uav': 30.0,    # dBm (1W)
+            'max_tx_power_vehicle': 23.0 # dBm (200mW)
         }
         
         # 任务配置

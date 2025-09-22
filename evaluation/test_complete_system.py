@@ -37,6 +37,9 @@ class CompleteSystemSimulator:
             'cache_hits': 0,
             'cache_misses': 0
         }
+        # 跨时隙在制任务管理
+        self.active_tasks: List[Dict] = []  # 每项: {id, vehicle_id, arrival_time, deadline, work_remaining, node_type, node_idx}
+        self.task_counter = 0
         
         # 初始化组件
         self.initialize_components()
@@ -101,6 +104,13 @@ class CompleteSystemSimulator:
             self.uavs.append(uav)
         
         print(f"✓ 创建了 {self.num_vehicles} 车辆, {self.num_rsus} RSU, {self.num_uavs} UAV")
+        # 懒加载迁移管理器
+        try:
+            from migration.migration_manager import TaskMigrationManager
+            if not hasattr(self, 'migration_manager') or self.migration_manager is None:
+                self.migration_manager = TaskMigrationManager()
+        except Exception:
+            self.migration_manager = None
     
     def _setup_scenario(self):
         """设置仿真场景"""
@@ -110,14 +120,15 @@ class CompleteSystemSimulator:
     
     def generate_task(self, vehicle_id: str) -> Dict:
         """生成计算任务"""
+        self.task_counter += 1
         task = {
-            'id': f'task_{self.stats["total_tasks"]}',
+            'id': f'task_{self.task_counter}',
             'vehicle_id': vehicle_id,
             'arrival_time': self.current_time,
             'data_size': np.random.exponential(1.0),  # MB
-            'computation_requirement': np.random.exponential(100),  # MIPS
-            'deadline': self.current_time + np.random.exponential(1.0),  # 截止时间
-            'content_id': f'content_{np.random.randint(0, 100)}',  # 内容ID
+            'computation_requirement': np.random.exponential(120),  # MIPS（略增以提高跨时隙概率）
+            'deadline': self.current_time + np.random.uniform(0.5, 3.0),  # 0.5~3s窗口，允许跨时隙
+            'content_id': f'content_{np.random.randint(0, 100)}',
             'priority': np.random.uniform(0.1, 1.0)
         }
         
@@ -173,7 +184,8 @@ class CompleteSystemSimulator:
         # 简化的传输时延模型
         bandwidth_mhz = self.config['bandwidth']
         # 考虑距离对信号衰减的影响
-        path_loss = 32.45 + 20 * np.log10(distance/1000) + 20 * np.log10(2.4)  # 2.4GHz
+        d_m = max(float(distance), 1.0)  # 数值稳定：最小1米，避免log10(0)
+        path_loss = 32.45 + 20 * np.log10(d_m/1000) + 20 * np.log10(2.4)  # 2.4GHz
         snr = 30 - path_loss  # 假设发射功率30dBm
         
         # Shannon公式计算容量
@@ -214,6 +226,8 @@ class CompleteSystemSimulator:
         computation_time = self.calculate_computation_delay(
             task['computation_requirement'], processing_node
         )
+        # 数值稳定与上限约束，避免异常能耗冲击学习
+        computation_time = float(np.clip(computation_time, 0.0, 5.0))
         computation_energy = computation_power * computation_time
         
         total_energy = transmission_energy + computation_energy
@@ -225,7 +239,7 @@ class CompleteSystemSimulator:
         return total_energy
     
     def process_task(self, task: Dict, agents_actions: Dict = None) -> Dict:
-        """处理单个任务"""
+        """处理单个任务（单时隙下可直接完成，否则转入在制任务池）"""
         vehicle = next(v for v in self.vehicles if v['id'] == task['vehicle_id'])
         
         # 默认决策：就近卸载
@@ -246,10 +260,34 @@ class CompleteSystemSimulator:
                 processing_node = vehicle
                 node_type = 'Vehicle'
         else:
-            # 使用智能体决策
-            # 这里可以根据agents_actions来选择处理节点
-            processing_node = nearest_rsu or nearest_uav or vehicle
-            node_type = 'RSU' if processing_node in self.rsus else 'UAV' if processing_node in self.uavs else 'Vehicle'
+            # 使用智能体的卸载偏好选择节点（本地/RSU/UAV），并在同类中进一步按概率选择具体节点
+            aa = (agents_actions or {})
+            pref = aa.get('vehicle_offload_pref', {})
+            p_local = float(pref.get('local', 0.34))
+            p_rsu = float(pref.get('rsu', 0.33))
+            p_uav = float(pref.get('uav', 0.33))
+            # 大类选择
+            choice = np.random.choice(['Vehicle', 'RSU', 'UAV'], p=[p_local, p_rsu, p_uav])
+            if choice == 'RSU' and self.rsus:
+                # 若给出rsu_selection_probs则按其分布选择，否则选择最近RSU
+                rsu_probs = aa.get('rsu_selection_probs')
+                if isinstance(rsu_probs, list) and len(rsu_probs) == len(self.rsus):
+                    idx = np.random.choice(range(len(self.rsus)), p=np.array(rsu_probs))
+                    processing_node = self.rsus[idx]
+                else:
+                    processing_node = nearest_rsu or vehicle
+                node_type = 'RSU' if processing_node in self.rsus else 'Vehicle'
+            elif choice == 'UAV' and self.uavs:
+                uav_probs = aa.get('uav_selection_probs')
+                if isinstance(uav_probs, list) and len(uav_probs) == len(self.uavs):
+                    idx = np.random.choice(range(len(self.uavs)), p=np.array(uav_probs))
+                    processing_node = self.uavs[idx]
+                else:
+                    processing_node = nearest_uav or vehicle
+                node_type = 'UAV' if processing_node in self.uavs else 'Vehicle'
+            else:
+                processing_node = vehicle
+                node_type = 'Vehicle'
         
         # 检查缓存命中
         cache_hit = self.check_cache_hit(task['content_id'], processing_node)
@@ -262,15 +300,13 @@ class CompleteSystemSimulator:
         
         # 计算时延
         if cache_hit:
-            # 缓存命中，只需传输时延
             total_delay = self.calculate_transmission_delay(task['data_size'], distance)
+            compute_time_needed = 0.0
         else:
-            # 缓存未命中，需要传输+计算时延
             transmission_delay = self.calculate_transmission_delay(task['data_size'], distance)
-            computation_delay = self.calculate_computation_delay(
-                task['computation_requirement'], processing_node
-            )
+            computation_delay = self.calculate_computation_delay(task['computation_requirement'], processing_node)
             total_delay = transmission_delay + computation_delay
+            compute_time_needed = computation_delay
         
         # 数值修正
         if not np.isfinite(total_delay) or total_delay > 10:
@@ -281,7 +317,7 @@ class CompleteSystemSimulator:
         
         # 检查是否满足截止时间
         completion_time = task['arrival_time'] + total_delay
-        if completion_time <= task['deadline']:
+        if completion_time <= task['deadline'] and total_delay <= self.time_slot:
             # 任务成功完成
             self.stats['completed_tasks'] += 1
             self.stats['total_delay'] += total_delay
@@ -304,15 +340,31 @@ class CompleteSystemSimulator:
                 'cache_hit': cache_hit
             }
         else:
-            # 任务超时，丢弃
-            self.stats['dropped_tasks'] += 1
+            # 未在本时隙完成：进入在制任务池，记录剩余工作量与当前绑定节点
+            node_type = node_type
+            node_idx = None
+            if node_type == 'RSU':
+                node_idx = self.rsus.index(processing_node) if processing_node in self.rsus else None
+            elif node_type == 'UAV':
+                node_idx = self.uavs.index(processing_node) if processing_node in self.uavs else None
+            work_remaining = max(0.0, compute_time_needed - self.time_slot) if not cache_hit else 0.0
+            self.active_tasks.append({
+                'id': task['id'],
+                'vehicle_id': task['vehicle_id'],
+                'arrival_time': task['arrival_time'],
+                'deadline': task['deadline'],
+                'work_remaining': work_remaining,
+                'node_type': node_type,
+                'node_idx': node_idx,
+                'content_id': task['content_id'],
+            })
             result = {
                 'task_id': task['id'],
-                'status': 'dropped',
-                'delay': float('inf'),
-                'energy': 0,
-                'processing_node': None,
-                'cache_hit': False
+                'status': 'in_progress',
+                'delay': 0.0,
+                'energy': energy_consumption,
+                'processing_node': processing_node['id'] if node_idx is not None else None,
+                'cache_hit': cache_hit
             }
         
         return result
@@ -354,6 +406,53 @@ class CompleteSystemSimulator:
         
         # 更新移动性
         self.update_mobility()
+
+        # 先推进在制任务（车辆跟随 + 过载到空闲），并按概率使用智能体偏好
+        advanced_tasks = []
+        for t in list(self.active_tasks):
+            # 找到车辆位置与最近RSU/UAV
+            vehicle = next(v for v in self.vehicles if v['id'] == t['vehicle_id'])
+            nearest_rsu = self.find_nearest_rsu(vehicle['position'])
+            nearest_uav = self.find_nearest_uav(vehicle['position'])
+            # 车辆跟随迁移：若绑定RSU且与最近RSU不同，按一定概率切换，避免频繁抖动
+            if t['node_type'] == 'RSU' and nearest_rsu is not None:
+                current_node = self.rsus[t['node_idx']] if t['node_idx'] is not None else None
+                if current_node is None or current_node is not nearest_rsu:
+                    # 使用温和门限：仅当距离差显著或队列差显著时切换
+                    from config import config
+                    should_switch = True
+                    if current_node is not None:
+                        d_cur = self.calculate_distance(vehicle['position'], current_node['position'])
+                        d_new = self.calculate_distance(vehicle['position'], nearest_rsu['position'])
+                        q_cur = len(current_node.get('computation_queue', []))
+                        q_new = len(nearest_rsu.get('computation_queue', []))
+                        should_switch = ((d_cur - d_new) > config.migration.follow_handover_distance) or ((q_cur - q_new) > config.migration.queue_switch_diff)
+                    if should_switch:
+                        t['node_idx'] = self.rsus.index(nearest_rsu)
+            # 过载到空闲：若当前绑定为RSU且队列过长，则切到队列更短的RSU
+            if t['node_type'] == 'RSU' and t['node_idx'] is not None:
+                q_len = len(self.rsus[t['node_idx']].get('computation_queue', []))
+                from config import config
+                if q_len > config.migration.rsu_queue_overload_len:
+                    # 找最短队列RSU
+                    best_idx = min(range(len(self.rsus)), key=lambda i: len(self.rsus[i].get('computation_queue', [])))
+                    t['node_idx'] = best_idx
+            # 执行一时隙的工作推进（小幅随机性，模拟服务速率波动）
+            from config import config
+            j = config.migration.service_jitter_ratio
+            service = np.random.uniform(1.0 - j, 1.0 + j) * self.time_slot
+            t['work_remaining'] = max(0.0, t['work_remaining'] - service)
+            # 完成/超时判断
+            self.current_time = getattr(self, 'current_time', 0.0)
+            if t['work_remaining'] <= 0.0:
+                self.stats['completed_tasks'] += 1
+                # 估计一次能耗（简化：按时间槽功耗）
+                self.stats['total_energy'] += 0.1
+            elif self.current_time >= t['deadline']:
+                self.stats['dropped_tasks'] += 1
+            else:
+                advanced_tasks.append(t)
+        self.active_tasks = advanced_tasks
         
         # 为每个车辆生成任务 - 优化任务生成逻辑
         for vehicle in self.vehicles:
@@ -376,6 +475,34 @@ class CompleteSystemSimulator:
             result = self.process_task(task, agents_actions)
             results.append(result)
         
+        # 集成迁移：在处理完任务后调用迁移一步
+        if self.migration_manager is not None:
+            # 简化节点状态与位置适配
+            class _Pos:
+                def __init__(self, x, y, z=0.0):
+                    self.x, self.y, self.z = x, y, z
+                def distance_to(self, other):
+                    oz = getattr(other, 'z', 0.0)
+                    return float(np.linalg.norm(np.array([self.x, self.y, self.z]) - np.array([other.x, other.y, oz])))
+            class _State:
+                def __init__(self, load_factor=0.0, cpu_frequency=1.0, battery_level=1.0):
+                    self.load_factor = load_factor
+                    self.cpu_frequency = cpu_frequency
+                    self.battery_level = battery_level
+            node_states, node_positions = {}, {}
+            # RSU
+            for i, rsu in enumerate(self.rsus):
+                q_len = len(rsu.get('computation_queue', []))
+                node_states[f"rsu_{i}"] = _State(load_factor=min(0.99, q_len/10.0), cpu_frequency=self.config['computation_capacity'])
+                node_positions[f"rsu_{i}"] = _Pos(rsu['position'][0], rsu['position'][1], 0.0)
+            # UAV
+            for i, uav in enumerate(self.uavs):
+                q_len = len(uav.get('computation_queue', []))
+                node_states[f"uav_{i}"] = _State(load_factor=min(0.99, q_len/10.0), cpu_frequency=self.config['computation_capacity'], battery_level=1.0)
+                node_positions[f"uav_{i}"] = _Pos(uav['position'][0], uav['position'][1], uav['position'][2])
+            self._last_migration_step_stats = self.migration_manager.step(node_states, node_positions)
+        else:
+            self._last_migration_step_stats = {'migrations_planned': 0, 'migrations_executed': 0, 'migrations_successful': 0}
         return results
     
     def run_simulation(self, num_time_slots: int = 1000, agents_actions: Dict = None) -> Dict:
@@ -480,13 +607,13 @@ class CompleteSystemSimulator:
         }
         self.current_time = 0
     
-    def run_simulation_step(self, step: int) -> Dict:
+    def run_simulation_step(self, step: int, agents_actions: Dict = None) -> Dict:
         """运行单个仿真步骤"""
         # 更新当前时间
         self.current_time = step * self.time_slot
         
         # 运行一个时隙的仿真
-        results = self.simulate_time_slot()
+        results = self.simulate_time_slot(agents_actions)
         
         # 计算步骤统计 - 修正字段名以匹配train_multi_agent.py的期望
         completed_results = [r for r in results if r['status'] == 'completed']
@@ -501,6 +628,10 @@ class CompleteSystemSimulator:
             'total_energy': sum(r['energy'] for r in results),  # 总能耗
             'cache_hits': sum(1 for r in results if r.get('cache_hit', False)),  # 缓存命中数
             'cache_misses': sum(1 for r in results if not r.get('cache_hit', False)),  # 缓存未命中数
+            # 迁移统计
+            'migrations_planned': (getattr(self, '_last_migration_step_stats', {}) or {}).get('migrations_planned', 0),
+            'migrations_executed': (getattr(self, '_last_migration_step_stats', {}) or {}).get('migrations_executed', 0),
+            'migrations_successful': (getattr(self, '_last_migration_step_stats', {}) or {}).get('migrations_successful', 0),
             
             # 保持原有字段以兼容其他代码
             'tasks_generated': len(results),

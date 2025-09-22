@@ -7,7 +7,7 @@
 import matplotlib.pyplot as plt
 import matplotlib
 import numpy as np
-from typing import Dict, List, Any
+from typing import Dict, List, Any, Optional
 import seaborn as sns
 from pathlib import Path
 
@@ -20,7 +20,7 @@ matplotlib.rcParams['font.family'] = ['sans-serif']
 import warnings
 warnings.filterwarnings('ignore', category=UserWarning, module='matplotlib')
 
-def enhanced_plot_training_curves(training_env, save_path: str = None):
+def enhanced_plot_training_curves(training_env, save_path: Optional[str] = None, algorithm_name: Optional[str] = None):
     """增强的训练曲线绘制"""
     
     # 设置绘图样式
@@ -47,7 +47,9 @@ def enhanced_plot_training_curves(training_env, save_path: str = None):
     
     # 创建子图
     fig, axes = plt.subplots(2, 2, figsize=(15, 10))
-    fig.suptitle('MADDPG训练过程分析', fontsize=16, fontweight='bold')
+    # 动态标题，根据算法名称调整
+    title = f'{algorithm_name}训练过程分析' if algorithm_name else '训练过程分析'
+    fig.suptitle(title, fontsize=16, fontweight='bold')
     
     # 1. 回合奖励
     ax1 = axes[0, 0]
@@ -115,7 +117,7 @@ def enhanced_plot_training_curves(training_env, save_path: str = None):
     
     plt.show()
 
-def plot_performance_comparison(results_dict: Dict[str, Any], save_path: str = None):
+def plot_performance_comparison(results_dict: Dict[str, Any], save_path: Optional[str] = None):
     """绘制性能对比图"""
     
     # 设置中文字体支持
@@ -158,7 +160,7 @@ def plot_performance_comparison(results_dict: Dict[str, Any], save_path: str = N
     
     plt.show()
 
-def plot_system_metrics(metrics_history: List[Dict], save_path: str = None):
+def plot_system_metrics(metrics_history: List[Dict], save_path: Optional[str] = None):
     """绘制系统指标变化"""
     
     # 设置中文字体支持
@@ -215,7 +217,7 @@ def plot_system_metrics(metrics_history: List[Dict], save_path: str = None):
     
     plt.show()
 
-def create_training_summary_plot(training_results: Dict, save_path: str = None):
+def create_training_summary_plot(training_results: Dict, save_path: Optional[str] = None):
     """创建训练总结图"""
     
     # 设置中文字体支持
@@ -308,7 +310,7 @@ def create_advanced_visualization_suite(results_dict: Dict, save_dir: str = "res
     
     print(f"📊 高级可视化套件已保存到: {save_dir}")
 
-def plot_convergence_analysis(training_results: Dict, save_path: str = None):
+def plot_convergence_analysis(training_results: Dict, save_path: Optional[str] = None):
     """绘制收敛性分析图"""
     # 设置中文字体支持
     plt.rcParams['font.sans-serif'] = ['SimHei', 'DejaVu Sans', 'Arial Unicode MS', 'sans-serif']
@@ -391,7 +393,7 @@ def plot_convergence_analysis(training_results: Dict, save_path: str = None):
     
     plt.show()
 
-def plot_multi_metric_dashboard(training_env, save_path: str = None):
+def plot_multi_metric_dashboard(training_env, save_path: Optional[str] = None):
     """绘制多指标仪表板"""
     # 设置中文字体支持
     plt.rcParams['font.sans-serif'] = ['SimHei', 'DejaVu Sans', 'Arial Unicode MS', 'sans-serif']
@@ -469,7 +471,7 @@ def plot_multi_metric_dashboard(training_env, save_path: str = None):
             
             # 添加统计信息
             mean_val = np.mean(data)
-            ax.axhline(y=mean_val, color='black', linestyle='--', alpha=0.7, label=f'均值: {mean_val:.3f}')
+            ax.axhline(y=float(mean_val), color='black', linestyle='--', alpha=0.7, label=f'均值: {mean_val:.3f}')
         
         ax.set_title(title, fontweight='bold')
         ax.set_xlabel('训练回合')
@@ -504,7 +506,7 @@ def test_visualization():
     mock_env = MockTrainingEnv()
     
     # 测试各种可视化功能
-    enhanced_plot_training_curves(mock_env)
+    enhanced_plot_training_curves(mock_env, None, "测试算法")
     plot_convergence_analysis({'episode_rewards': mock_env.episode_rewards})
     plot_multi_metric_dashboard(mock_env)
     

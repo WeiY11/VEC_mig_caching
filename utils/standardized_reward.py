@@ -65,43 +65,41 @@ class StandardizedRewardFunction:
         # 🔧 修复：放大信号强度解决诊断发现的信号过弱问题
         amplified_reward = base_reward * 8.0  # 8倍放大，使奖励变化更显著
         
-        # 应用放大后的奖励范围限制
-        clipped_reward = np.clip(amplified_reward, -40.0, 20.0)  # 扩大范围保持信号强度
+        # 确保奖励始终为负值（因为是成本的负值）
+        clipped_reward = np.clip(amplified_reward, -40.0, 0.0)  # 上限设为0，确保严格遵循 Reward = -Cost
         
         return clipped_reward
     
     def calculate_with_performance_bonus(self, system_metrics: Dict, 
                                        agent_type: Optional[str] = None) -> float:
         """
-        修复版本：在论文奖励基础上添加性能激励，解决相关性问题
+        修复版本：严格遵循论文奖励逻辑 Reward = -Cost
+        不添加可能导致正值的performance bonus，确保奖励始终为负值
         """
-        # 基础论文奖励 (已放大)
-        base_reward = self.calculate_paper_reward(system_metrics)
+        # 严格使用论文奖励函数，不添加正值奖励
+        paper_reward = self.calculate_paper_reward(system_metrics)
         
-        # 🔧 修复：强化性能激励解决相关性问题
-        completion_rate = system_metrics.get('task_completion_rate', 0.0)
-        cache_hit_rate = system_metrics.get('cache_hit_rate', 0.0)
-        
-        # 显著增强性能奖励，确保与性能指标强相关
-        performance_bonus = 5.0 * completion_rate + 3.0 * cache_hit_rate  # 显著增强相关性
-        
-        # 智能体特定奖励 (针对多智能体场景)
-        agent_bonus = 0.0
+        # 智能体特定的成本调整 (仍然保持负值逻辑)
+        agent_cost_adjustment = 0.0
         if agent_type:
             if agent_type == 'vehicle_agent':
+                # 本地处理效率低时增加成本
                 local_efficiency = system_metrics.get('local_processing_ratio', 0.0)
-                agent_bonus = 1.0 * local_efficiency  # 增强智能体奖励
+                agent_cost_adjustment = -0.5 * (1.0 - local_efficiency)  # 低效率时增加成本
             elif agent_type == 'rsu_agent':
-                load_balance = 1.0 - abs(0.7 - system_metrics.get('avg_rsu_utilization', 0.7))
-                agent_bonus = 1.0 * load_balance
+                # 负载不均衡时增加成本
+                avg_utilization = system_metrics.get('avg_rsu_utilization', 0.7)
+                load_imbalance = abs(0.7 - avg_utilization)
+                agent_cost_adjustment = -0.5 * load_imbalance
             elif agent_type == 'uav_agent':
+                # 电池电量低时增加成本
                 battery_level = system_metrics.get('avg_uav_battery', 1.0)
-                agent_bonus = 1.0 * battery_level
+                agent_cost_adjustment = -0.5 * (1.0 - battery_level)
         
-        final_reward = base_reward + performance_bonus + agent_bonus
+        final_reward = paper_reward + agent_cost_adjustment
         
-        # 放大后的范围限制
-        return np.clip(final_reward, -80.0, 50.0)
+        # 确保奖励始终为负值或零
+        return np.clip(final_reward, -80.0, 0.0)  # 上限设为0，确保不会有正值
 
 
 # 创建全局标准化奖励函数实例

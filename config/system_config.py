@@ -45,12 +45,12 @@ class RLConfig:
         self.buffer_size = 100000
         self.warmup_steps = 1000
         
-        # 奖励权重
-        self.reward_weight_delay = 0.3
-        self.reward_weight_energy = 0.2
-        self.reward_weight_completion = 0.3
-        self.reward_weight_cache = 0.2
-        self.reward_weight_loss = 0.1
+        # 奖励权重 - 对应论文目标函数权重
+        self.reward_weight_delay = 0.4     # ω_T: 时延权重
+        self.reward_weight_energy = 0.3    # ω_E: 能耗权重
+        self.reward_weight_loss = 0.3      # ω_D: 数据丢失权重
+        self.reward_weight_completion = 0.2
+        self.reward_weight_cache = 0.1
 
 class QueueConfig:
     """队列配置类"""
@@ -183,25 +183,37 @@ class NetworkConfig:
         self.connection_timeout = 30  # seconds
 
 class CommunicationConfig:
-    """通信配置类"""
+    """3GPP标准通信配置类"""
     
     def __init__(self):
-        self.vehicle_tx_power = 23  # dBm
-        self.rsu_tx_power = 30  # dBm
-        self.uav_tx_power = 20  # dBm
-        self.circuit_power = 0.1  # W
-        self.noise_figure = 9  # dB
+        # 3GPP标准发射功率
+        self.vehicle_tx_power = 23.0  # dBm (200mW) - 3GPP标准
+        self.rsu_tx_power = 46.0      # dBm (40W) - 3GPP标准
+        self.uav_tx_power = 30.0      # dBm (1W) - 3GPP标准
+        self.circuit_power = 0.1      # W
+        self.noise_figure = 9.0       # dB - 3GPP标准
         
-        # 带宽配置 - 符合内存规范
-        self.total_bandwidth = 50e6  # 50 MHz
+        # 3GPP标准带宽配置
+        self.total_bandwidth = 20e6   # 20 MHz - 3GPP标准
         self.channel_bandwidth = 1e6  # 1 MHz per channel
         self.uplink_bandwidth = 10e6  # 10 MHz
         self.downlink_bandwidth = 10e6  # 10 MHz
         
-        # 传播参数
-        self.carrier_frequency = 2.4e9  # 2.4 GHz
-        self.speed_of_light = 3e8  # m/s
-        self.antenna_gain = 1.0  # dBi
+        # 3GPP标准传播参数
+        self.carrier_frequency = 2.0e9  # 2 GHz - 3GPP标准频率
+        self.speed_of_light = 3e8       # m/s
+        self.thermal_noise_density = -174.0  # dBm/Hz - 3GPP标准
+        
+        # 3GPP标准天线增益
+        self.antenna_gain_rsu = 15.0     # dBi
+        self.antenna_gain_uav = 5.0      # dBi
+        self.antenna_gain_vehicle = 3.0  # dBi
+        
+        # 3GPP标准路径损耗参数
+        self.los_threshold = 50.0        # m - 3GPP TS 38.901
+        self.los_decay_factor = 100.0    # m
+        self.shadowing_std_los = 4.0     # dB
+        self.shadowing_std_nlos = 8.0    # dB
         
         # 调制参数
         self.modulation_order = 4  # QPSK
@@ -219,6 +231,11 @@ class MigrationConfig:
         self.rsu_overload_threshold = 0.8
         self.uav_overload_threshold = 0.7
         self.rsu_underload_threshold = 0.3
+        # 队列/切换阈值（用于车辆跟随与过载切换）
+        self.follow_handover_distance = 30.0  # meters，车辆跟随触发的最小距离改善
+        self.queue_switch_diff = 3            # 个，目标RSU较当前RSU队列至少少N个才切换
+        self.rsu_queue_overload_len = 8       # 个，认为RSU队列过载的长度阈值
+        self.service_jitter_ratio = 0.2       # 服务速率±20%抖动
         
         # UAV迁移参数
         self.uav_min_battery = 0.2  # 20%

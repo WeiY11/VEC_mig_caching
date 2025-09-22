@@ -30,27 +30,32 @@ class WirelessCommunicationModel:
     """
     
     def __init__(self):
-        # 通信参数 - 从配置获取
-        self.carrier_frequency = config.communication.carrier_frequency  # f_c
-        self.los_threshold = config.communication.los_threshold_distance  # d_0
-        self.los_decay_factor = config.communication.los_decay_factor  # α_LoS
-        self.shadowing_std_los = config.communication.shadowing_std_los  # X_σ,LoS
-        self.shadowing_std_nlos = config.communication.shadowing_std_nlos  # X_σ,NLoS
-        self.coding_efficiency = config.communication.coding_efficiency  # η_coding
-        self.processing_delay = config.communication.processing_delay  # T_proc
-        self.noise_power = config.communication.noise_power_linear  # 噪声功率 (线性)
+        # 3GPP标准通信参数
+        self.carrier_frequency = 2.0e9  # 2 GHz - 3GPP标准频率
+        self.los_threshold = 50.0  # d_0 = 50m - 3GPP TS 38.901
+        self.los_decay_factor = 100.0  # α_LoS = 100m - 3GPP标准
+        self.shadowing_std_los = 4.0  # X_σ,LoS = 4 dB - 3GPP标准
+        self.shadowing_std_nlos = 8.0  # X_σ,NLoS = 8 dB - 3GPP标准
+        self.coding_efficiency = 0.8  # η_coding - 编码效率
+        self.processing_delay = 0.001  # T_proc = 1ms - 处理时延
+        self.thermal_noise_density = -174.0  # dBm/Hz - 热噪声密度
         
-        # 天线增益和快衰落参数
-        self.antenna_gain_db = 0.0  # 天线增益 (dB)
+        # 3GPP天线增益参数
+        self.antenna_gain_rsu = 15.0  # 15 dBi - RSU天线增益
+        self.antenna_gain_uav = 5.0   # 5 dBi - UAV天线增益
+        self.antenna_gain_vehicle = 3.0  # 3 dBi - 车辆天线增益
         self.fast_fading_factor = 1.0  # 快衰落因子
     
-    def calculate_channel_state(self, pos_a: Position, pos_b: Position) -> ChannelState:
+    def calculate_channel_state(self, pos_a: Position, pos_b: Position, 
+                               tx_node_type: str = 'vehicle', rx_node_type: str = 'rsu') -> ChannelState:
         """
-        计算信道状态 - 对应论文式(11)-(16)
+        计算信道状态 - 3GPP标准式(11)-(16)
         
         Args:
             pos_a: 发送节点位置
             pos_b: 接收节点位置
+            tx_node_type: 发送节点类型 ('vehicle', 'rsu', 'uav')
+            rx_node_type: 接收节点类型 ('vehicle', 'rsu', 'uav')
             
         Returns:
             信道状态信息
@@ -58,17 +63,17 @@ class WirelessCommunicationModel:
         # 1. 计算距离 - 论文式(10)
         distance = pos_a.distance_to(pos_b)
         
-        # 2. 计算视距概率 - 论文式(11)
+        # 2. 计算视距概率 - 3GPP标准式(11)
         los_probability = self._calculate_los_probability(distance)
         
-        # 3. 计算路径损耗 - 论文式(12)-(13)
+        # 3. 计算路径损耗 - 3GPP标准式(12)-(13)
         path_loss_db = self._calculate_path_loss(distance, los_probability)
         
         # 4. 计算阴影衰落 - 随机变量
         shadowing_db = self._generate_shadowing(los_probability)
         
-        # 5. 计算信道增益 - 论文式(14)
-        channel_gain_linear = self._calculate_channel_gain(path_loss_db, shadowing_db)
+        # 5. 计算信道增益 - 3GPP标准式(14)
+        channel_gain_linear = self._calculate_channel_gain(path_loss_db, shadowing_db, tx_node_type, rx_node_type)
         
         # 6. 计算干扰功率 (简化)
         interference_power = self._calculate_interference_power(pos_b)
@@ -94,13 +99,20 @@ class WirelessCommunicationModel:
     
     def _calculate_path_loss(self, distance: float, los_probability: float) -> float:
         """
-        计算路径损耗 - 对应论文式(12)-(13)
+        计算路径损耗 - 3GPP TS 38.901标准
+        LoS: PL = 32.4 + 20*log10(fc) + 20*log10(d)
+        NLoS: PL = 32.4 + 20*log10(fc) + 30*log10(d)
+        其中 fc单位为GHz，d单位为km
         """
-        # LoS路径损耗 - 论文式(12)
-        los_path_loss = 32.4 + 20 * math.log10(self.carrier_frequency / 1e9) + 20 * math.log10(distance / 1000)
+        # 确保距离至少为1米，避免log10(0)
+        distance_km = max(distance / 1000.0, 0.001)
+        frequency_ghz = self.carrier_frequency / 1e9
         
-        # NLoS路径损耗 - 论文式(13)
-        nlos_path_loss = 32.4 + 20 * math.log10(self.carrier_frequency / 1e9) + 30 * math.log10(distance / 1000)
+        # LoS路径损耗 - 3GPP标准式(12)
+        los_path_loss = 32.4 + 20 * math.log10(frequency_ghz) + 20 * math.log10(distance_km)
+        
+        # NLoS路径损耗 - 3GPP标准式(13)
+        nlos_path_loss = 32.4 + 20 * math.log10(frequency_ghz) + 30 * math.log10(distance_km)
         
         # 综合路径损耗
         combined_path_loss = los_probability * los_path_loss + (1 - los_probability) * nlos_path_loss
@@ -116,18 +128,35 @@ class WirelessCommunicationModel:
             # NLoS情况
             return np.random.normal(0, self.shadowing_std_nlos)
     
-    def _calculate_channel_gain(self, path_loss_db: float, shadowing_db: float) -> float:
+    def _calculate_channel_gain(self, path_loss_db: float, shadowing_db: float, 
+                               tx_node_type: str = 'vehicle', rx_node_type: str = 'rsu') -> float:
         """
-        计算信道增益 - 对应论文式(14)
-        h = 10^(-L/10) * g_antenna * g_fading
+        计算信道增益 - 3GPP标准式(14)
+        h = 10^(-L/10) * g_tx * g_rx * g_fading
         """
+        # 根据节点类型选择天线增益
+        tx_gain_map = {
+            'vehicle': self.antenna_gain_vehicle,
+            'rsu': self.antenna_gain_rsu,
+            'uav': self.antenna_gain_uav
+        }
+        rx_gain_map = {
+            'vehicle': self.antenna_gain_vehicle,
+            'rsu': self.antenna_gain_rsu,
+            'uav': self.antenna_gain_uav
+        }
+        
+        tx_antenna_gain_db = tx_gain_map.get(tx_node_type, self.antenna_gain_vehicle)
+        rx_antenna_gain_db = rx_gain_map.get(rx_node_type, self.antenna_gain_rsu)
+        
         # 转换为线性值
         path_loss_linear = db_to_linear(path_loss_db)
-        shadowing_linear = db_to_linear(shadowing_db)
-        antenna_gain_linear = db_to_linear(self.antenna_gain_db)
+        shadowing_linear = db_to_linear(abs(shadowing_db))  # 阴影衰落取绝对值
+        tx_antenna_gain_linear = db_to_linear(tx_antenna_gain_db)
+        rx_antenna_gain_linear = db_to_linear(rx_antenna_gain_db)
         
         # 总信道增益
-        channel_gain = antenna_gain_linear * self.fast_fading_factor / (path_loss_linear * shadowing_linear)
+        channel_gain = (tx_antenna_gain_linear * rx_antenna_gain_linear * self.fast_fading_factor) / (path_loss_linear * shadowing_linear)
         
         return channel_gain
     
@@ -147,17 +176,22 @@ class WirelessCommunicationModel:
     def calculate_sinr(self, tx_power: float, channel_gain: float, 
                       interference_power: float, bandwidth: float) -> float:
         """
-        计算信噪干扰比 - 对应论文式(16)
+        计算信噪干扰比 - 3GPP标准式(16)
         SINR = (P_tx * h) / (I_ext + N_0 * B)
-        添加数值稳定性保障
+        其中 N_0 = -174 dBm/Hz (3GPP标准热噪声密度)
         """
         # 检查输入参数的有效性
         if tx_power <= 0 or channel_gain <= 0 or bandwidth <= 0:
             return 0.0
         
         signal_power = tx_power * channel_gain
-        noise_power = self.noise_power * bandwidth
-        total_interference_noise = interference_power + noise_power
+        
+        # 3GPP标准噪声功率计算: N = N_0 + 10*log10(B)
+        # N_0 = -174 dBm/Hz, 转换为线性功率
+        noise_power_dbm = self.thermal_noise_density + 10 * math.log10(bandwidth)
+        noise_power_linear = dbm_to_watts(noise_power_dbm)
+        
+        total_interference_noise = interference_power + noise_power_linear
         
         # 防止除以零或过小值
         min_interference_noise = 1e-15  # 最小噪声功率
