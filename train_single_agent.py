@@ -227,32 +227,39 @@ class SingleAgentTrainingEnvironment:
                 return default
             return max(0.0, value)  # 确保非负
         
-        # 修复：任务完成率应该是已处理任务数除以生成任务数
-        generated_tasks = max(1, int(safe_get('generated_tasks', 1)))
-        processed_tasks = int(safe_get('processed_tasks', 0))
-        completion_rate = min(1.0, processed_tasks / generated_tasks)
+        # 🔧 修复：任务完成率计算 - 使用累计统计而非单步数据
+        # generated_tasks 是本步新生成的，processed_tasks 是累计完成的
+        new_generated = max(1, int(safe_get('generated_tasks', 1)))  # 本步生成
+        total_processed = int(safe_get('processed_tasks', 0))  # 累计完成
+        total_dropped = int(safe_get('dropped_tasks', 0))  # 累计丢弃
+        
+        # 累计总任务数 = 已完成 + 已丢弃 + 在制中
+        active_count = int(safe_get('active_tasks_count', 0))  # 在制任务数
+        total_generated = total_processed + total_dropped + active_count
+        
+        # 完成率 = 已完成 / 总任务数
+        completion_rate = min(1.0, total_processed / max(1, total_generated)) if total_generated > 0 else 0.0
         
         cache_hits = int(safe_get('cache_hits', 0))
         cache_misses = int(safe_get('cache_misses', 0))
         cache_requests = max(1, cache_hits + cache_misses)
         cache_hit_rate = cache_hits / cache_requests
         
-        # 安全计算平均延迟
+        # 🔧 修复：安全计算平均延迟 - 使用累计统计
         total_delay = safe_get('total_delay', 0.0)
-        processed_for_delay = max(1, processed_tasks)
+        processed_for_delay = max(1, total_processed)  # 使用累计完成数
         avg_delay = total_delay / processed_for_delay
         
         # 限制延迟在合理范围内（关键修复）
-        avg_delay = np.clip(avg_delay, 0.01, 1.0)  # 0.01-1.0秒范围
+        avg_delay = np.clip(avg_delay, 0.01, 5.0)  # 扩大到0.01-5.0秒范围，适应跨时隙处理
         
         # 安全获取能耗（关键修复）
         total_energy = safe_get('total_energy', 0.0)
         # 限制能耗在VEC系统合理范围内
         total_energy = np.clip(total_energy, 10.0, 2000.0)  # 10-2000焦耳范围
         
-        # 计算丢失率
-        dropped_tasks = int(safe_get('dropped_tasks', 0))
-        data_loss_rate = min(1.0, dropped_tasks / generated_tasks)
+        # 🔧 修复：数据丢失率计算 - 使用累计统计
+        data_loss_rate = min(1.0, total_dropped / max(1, total_generated)) if total_generated > 0 else 0.0
         
         # 迁移成功率（来自仿真器统计）
         migrations_executed = int(safe_get('migrations_executed', 0))
@@ -551,6 +558,27 @@ def train_single_algorithm(algorithm: str, num_episodes: Optional[int] = None, e
     # 使用配置中的默认值
     if num_episodes is None:
         num_episodes = config.experiment.num_episodes
+    
+    # 🔧 自动调整评估间隔和保存间隔
+    def auto_adjust_intervals(total_episodes: int):
+        """根据总轮数自动调整间隔"""
+        # 评估间隔：总轮数的5-8%，范围[10, 100]
+        auto_eval = max(10, min(100, int(total_episodes * 0.06)))
+        
+        # 保存间隔：总轮数的15-20%，范围[50, 500]  
+        auto_save = max(50, min(500, int(total_episodes * 0.18)))
+        
+        return auto_eval, auto_save
+    
+    # 应用自动调整（仅当用户未指定时）
+    if eval_interval is None or save_interval is None:
+        auto_eval, auto_save = auto_adjust_intervals(num_episodes)
+        if eval_interval is None:
+            eval_interval = auto_eval
+        if save_interval is None:
+            save_interval = auto_save
+    
+    # 最终回退到配置默认值
     if eval_interval is None:
         eval_interval = config.experiment.eval_interval
     if save_interval is None:
@@ -565,8 +593,8 @@ def train_single_algorithm(algorithm: str, num_episodes: Optional[int] = None, e
     print(f"训练配置:")
     print(f"  算法: {algorithm}")
     print(f"  总轮次: {num_episodes}")
-    print(f"  评估间隔: {eval_interval}")
-    print(f"  保存间隔: {save_interval}")
+    print(f"  评估间隔: {eval_interval} (自动调整)" if eval_interval != config.experiment.eval_interval else f"  评估间隔: {eval_interval}")
+    print(f"  保存间隔: {save_interval} (自动调整)" if save_interval != config.experiment.save_interval else f"  保存间隔: {save_interval}")
     print("-" * 60)
     
     # 创建结果目录
@@ -767,96 +795,33 @@ def save_single_training_results(algorithm: str, training_env: SingleAgentTraini
 
 
 def plot_single_training_curves(algorithm: str, training_env: SingleAgentTrainingEnvironment):
-    """绘制训练曲线"""
-    plt.rcParams['font.sans-serif'] = ['SimHei']
-    plt.rcParams['axes.unicode_minus'] = False
+    """绘制训练曲线 - 简洁优美版"""
     
-    # 传统可视化
-    fig, axes = plt.subplots(2, 3, figsize=(18, 12))
+    # 🎨 使用新的简洁可视化系统
+    from visualization.clean_charts import create_training_chart, cleanup_old_charts, plot_objective_function_breakdown
     
-    # 奖励曲线
-    axes[0, 0].plot(training_env.episode_rewards)
-    axes[0, 0].set_title(f'{algorithm} 单智能体训练奖励曲线')
-    axes[0, 0].set_xlabel('训练轮次')
-    axes[0, 0].set_ylabel('平均奖励')
-    axes[0, 0].grid(True)
+    # 创建算法目录
+    algorithm_dir = f"results/single_agent/{algorithm.lower()}"
     
-    # 时延曲线
-    if training_env.episode_metrics['avg_delay']:
-        axes[0, 1].plot(training_env.episode_metrics['avg_delay'])
-        axes[0, 1].set_title('平均任务时延')
-        axes[0, 1].set_xlabel('训练轮次')
-        axes[0, 1].set_ylabel('时延 (秒)')
-        axes[0, 1].grid(True)
+    # 清理旧的冗余图表
+    cleanup_old_charts(algorithm_dir)
     
-    # 完成率曲线
-    if training_env.episode_metrics['task_completion_rate']:
-        axes[0, 2].plot(training_env.episode_metrics['task_completion_rate'])
-        axes[0, 2].set_title('任务完成率')
-        axes[0, 2].set_xlabel('训练轮次')
-        axes[0, 2].set_ylabel('完成率')
-        axes[0, 2].grid(True)
+    # 生成核心图表
+    chart_path = f"{algorithm_dir}/training_overview.png"
+    create_training_chart(training_env, algorithm, chart_path)
     
-    # 缓存命中率曲线
-    if training_env.episode_metrics['cache_hit_rate']:
-        axes[1, 0].plot(training_env.episode_metrics['cache_hit_rate'])
-        axes[1, 0].set_title('缓存命中率')
-        axes[1, 0].set_xlabel('训练轮次')
-        axes[1, 0].set_ylabel('命中率')
-        axes[1, 0].grid(True)
+    # 🎯 生成目标函数分解图（显示时延、能耗、数据丢失的权重贡献）
+    objective_path = f"{algorithm_dir}/objective_analysis.png"
+    plot_objective_function_breakdown(training_env, algorithm, objective_path)
     
-    # 能耗曲线
-    if training_env.episode_metrics['total_energy']:
-        axes[1, 1].plot(training_env.episode_metrics['total_energy'])
-        axes[1, 1].set_title('总能耗')
-        axes[1, 1].set_xlabel('训练轮次')
-        axes[1, 1].set_ylabel('能耗 (焦耳)')
-        axes[1, 1].grid(True)
+    print(f"📈 {algorithm} 训练可视化已完成")
+    print(f"   训练总览: {chart_path}")
+    print(f"   目标分析: {objective_path}")
     
-    # 迁移成功率曲线（替换数据丢失率）
-    if training_env.episode_metrics['migration_success_rate']:
-        axes[1, 2].plot(training_env.episode_metrics['migration_success_rate'])
-        axes[1, 2].set_title('迁移成功率')
-        axes[1, 2].set_xlabel('训练轮次')
-        axes[1, 2].set_ylabel('成功率')
-        axes[1, 2].grid(True)
-    
-    plt.tight_layout()
-    filepath = f"results/single_agent/{algorithm.lower()}/training_curves.png"
-    plt.savefig(filepath, dpi=300, bbox_inches='tight')
-    plt.close()
-    
-    print(f"📈 {algorithm}训练曲线已保存到 {filepath}")
-    
-    # 🎨 新增：高级可视化套件
-    from tools.advanced_visualization import enhanced_plot_training_curves, plot_convergence_analysis, plot_multi_metric_dashboard
-    from tools.performance_dashboard import create_performance_dashboard, create_real_time_monitor
-    
-    # 1. 增强训练曲线
-    enhanced_plot_training_curves(training_env, f"results/single_agent/{algorithm.lower()}/enhanced_training_curves.png")
-    
-    # 2. 收敛性分析
-    plot_convergence_analysis(
-        {'episode_rewards': training_env.episode_rewards}, 
-        f"results/single_agent/{algorithm.lower()}/convergence_analysis.png"
-    )
-    
-    # 3. 多指标仪表板
-    plot_multi_metric_dashboard(
-        training_env, 
-        f"results/single_agent/{algorithm.lower()}/multi_metric_dashboard.png"
-    )
-    
-    # 4. 性能仪表板
-    create_performance_dashboard(
-        training_env, 
-        f"results/single_agent/{algorithm.lower()}/performance_dashboard.png"
-    )
-    
-    # 5. 实时监控界面
-    create_real_time_monitor(
-        f"results/single_agent/{algorithm.lower()}/realtime_monitor.png"
-    )
+    # 生成训练总结
+    from visualization.clean_charts import get_summary_text
+    summary = get_summary_text(training_env, algorithm)
+    print(f"\n{summary}")
 
 
 def compare_single_algorithms(algorithms: List[str], num_episodes: Optional[int] = None) -> Dict:
@@ -875,8 +840,11 @@ def compare_single_algorithms(algorithms: List[str], num_episodes: Optional[int]
         print(f"\n开始训练 {algorithm}...")
         results[algorithm] = train_single_algorithm(algorithm, num_episodes)
     
-    # 生成比较图表
-    plot_single_algorithm_comparison(results)
+    # 🎨 生成简洁的对比图表
+    from visualization.clean_charts import create_comparison_chart
+    timestamp = generate_timestamp()
+    comparison_chart_path = f"results/single_agent_comparison_{timestamp}.png" if timestamp else "results/single_agent_comparison.png"
+    create_comparison_chart(results, comparison_chart_path)
     
     # 保存比较结果
     timestamp = generate_timestamp()
@@ -907,88 +875,11 @@ def compare_single_algorithms(algorithms: List[str], num_episodes: Optional[int]
     
     print("\n🎯 单智能体算法比较完成！")
     print(f"📄 比较结果已保存到 results/{comparison_filename}")
-    print(f"📈 比较图表已保存到 results/single_agent_comparison_{timestamp}.png")
+    print(f"📊 对比图表已保存到 {comparison_chart_path}")
     
     return comparison_results
 
 
-def plot_single_algorithm_comparison(results: Dict):
-    """绘制单智能体算法比较图表"""
-    timestamp = generate_timestamp()
-    
-    plt.rcParams['font.sans-serif'] = ['SimHei']
-    plt.rcParams['axes.unicode_minus'] = False
-    
-    fig, axes = plt.subplots(3, 2, figsize=(16, 18))
-    
-    # 奖励对比
-    for algorithm, result in results.items():
-        axes[0, 0].plot(result['episode_rewards'], label=algorithm)
-    axes[0, 0].set_title('单智能体算法奖励对比')
-    axes[0, 0].set_xlabel('训练轮次')
-    axes[0, 0].set_ylabel('平均奖励')
-    axes[0, 0].legend()
-    axes[0, 0].grid(True)
-    
-    # 时延对比
-    for algorithm, result in results.items():
-        if result['episode_metrics']['avg_delay']:
-            axes[0, 1].plot(result['episode_metrics']['avg_delay'], label=algorithm)
-    axes[0, 1].set_title('平均时延对比')
-    axes[0, 1].set_xlabel('训练轮次')
-    axes[0, 1].set_ylabel('时延 (秒)')
-    axes[0, 1].legend()
-    axes[0, 1].grid(True)
-    
-    # 完成率对比
-    for algorithm, result in results.items():
-        if result['episode_metrics']['task_completion_rate']:
-            axes[1, 0].plot(result['episode_metrics']['task_completion_rate'], label=algorithm)
-    axes[1, 0].set_title('任务完成率对比')
-    axes[1, 0].set_xlabel('训练轮次')
-    axes[1, 0].set_ylabel('完成率')
-    axes[1, 0].legend()
-    axes[1, 0].grid(True)
-    
-    # 能耗对比
-    for algorithm, result in results.items():
-        if result['episode_metrics']['total_energy']:
-            axes[1, 1].plot(result['episode_metrics']['total_energy'], label=algorithm)
-    axes[1, 1].set_title('总能耗对比')
-    axes[1, 1].set_xlabel('训练轮次')
-    axes[1, 1].set_ylabel('能耗 (焦耳)')
-    axes[1, 1].legend()
-    axes[1, 1].grid(True)
-    
-    # 迁移成功率对比（替换数据丢失率）
-    for algorithm, result in results.items():
-        if result['episode_metrics']['migration_success_rate']:
-            axes[2, 0].plot(result['episode_metrics']['migration_success_rate'], label=algorithm)
-    axes[2, 0].set_title('迁移成功率对比')
-    axes[2, 0].set_xlabel('训练轮次')
-    axes[2, 0].set_ylabel('成功率')
-    axes[2, 0].legend()
-    axes[2, 0].grid(True)
-    
-    # 最终性能对比 (柱状图)
-    algorithms = list(results.keys())
-    final_rewards = [results[alg]['final_performance']['avg_reward'] for alg in algorithms]
-    
-    axes[2, 1].bar(algorithms, final_rewards)
-    axes[2, 1].set_title('最终平均奖励对比')
-    axes[2, 1].set_ylabel('平均奖励')
-    axes[2, 1].tick_params(axis='x', rotation=45)
-    
-    plt.tight_layout()
-    
-    # 使用时间戳文件名
-    chart_filename = f"single_agent_comparison_{timestamp}.png" if timestamp else "single_agent_comparison.png"
-    plt.savefig(f"results/{chart_filename}", dpi=300, bbox_inches='tight')
-    plt.close()
-    
-    # 🎨 新增：高级比较可视化套件
-    from tools.advanced_visualization import create_advanced_visualization_suite
-    create_advanced_visualization_suite(results, "results/advanced_single_agent_comparison")
 
 
 def main():

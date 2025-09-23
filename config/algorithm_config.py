@@ -40,7 +40,7 @@ class AlgorithmConfig:
             'actor_lr': 0.0003,
             'critic_lr': 0.0003,
             'gamma': 0.99,
-            'tau': 0.001,
+            'tau': 0.005,  # 统一为0.005，与实现一致
             'noise_std': 0.2,
             'hidden_dim': 256,
             'batch_size': 64,
