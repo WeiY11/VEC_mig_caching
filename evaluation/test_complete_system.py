@@ -138,30 +138,55 @@ class CompleteSystemSimulator:
         print("✓ 初始化了 6 个缓存管理器")
     
     def generate_task(self, vehicle_id: str) -> Dict:
-        """生成计算任务 - 使用system_config参数"""
+        """生成计算任务 - 使用分层任务类型设计"""
         self.task_counter += 1
         
-        # 统一使用system_config的任务参数
+        # 🔧 新设计：先确定任务类型，再分配对应参数
         if self.sys_config is not None:
-            # 数据大小：从范围采样，单位bytes
-            data_range = getattr(self.sys_config.task, 'data_size_range', (5e6, 25e6))
+            # 随机选择任务类型（1-4）
+            task_type = np.random.randint(1, 5)
+            
+            # 获取任务类型特化参数
+            task_specs = getattr(self.sys_config.task, 'task_type_specs', {})
+            if task_type in task_specs:
+                spec = task_specs[task_type]
+                data_range = spec['data_range']
+                compute_density = spec['compute_density']
+            else:
+                # 回退到通用参数
+                data_range = getattr(self.sys_config.task, 'data_size_range', (0.5e6/8, 15e6/8))
+                compute_density = float(getattr(self.sys_config.task, 'task_compute_density', 400))
+            
+            # 根据任务类型分配deadline
+            delay_thresholds = getattr(self.sys_config.task, 'delay_thresholds', {})
+            time_slot = getattr(self.sys_config.network, 'time_slot_duration', 0.2)
+            
+            if task_type == 1:  # 极敏感
+                max_slots = delay_thresholds.get('extremely_sensitive', 4)
+                deadline_duration = np.random.uniform(0.5, max_slots * time_slot)
+            elif task_type == 2:  # 敏感
+                max_slots = delay_thresholds.get('sensitive', 10)
+                deadline_duration = np.random.uniform(1.0, max_slots * time_slot)
+            elif task_type == 3:  # 中度容忍
+                max_slots = delay_thresholds.get('moderately_tolerant', 25)
+                deadline_duration = np.random.uniform(2.0, max_slots * time_slot)
+            else:  # 延迟容忍
+                deadline_duration = np.random.uniform(5.0, 15.0)
+            
+            # 数据大小：从类型特定范围采样
             data_size_bytes = np.random.uniform(data_range[0], data_range[1])
             data_size_mb = data_size_bytes / 1e6  # 转MB用于兼容
             
-            # 计算密度与截止时间
-            compute_density = float(getattr(self.sys_config.task, 'task_compute_density', 500))
-            deadline_range = getattr(self.sys_config.task, 'deadline_range', (1.0, 10.0))
-            deadline_duration = np.random.uniform(deadline_range[0], deadline_range[1])
-            
-            # 计算需求：基于数据大小和计算密度
+            # 计算需求：基于数据大小和类型特定计算密度
             total_bits = data_size_bytes * 8
             computation_cycles = total_bits * compute_density
             computation_mips = computation_cycles / 1e6  # 转为MIPS单位以兼容旧接口
         else:
             # 回退默认值
-            data_size_mb = np.random.exponential(1.0)
+            task_type = np.random.randint(1, 5)
+            data_size_mb = np.random.exponential(0.5)  # 更小的默认数据
             data_size_bytes = data_size_mb * 1e6
-            computation_mips = np.random.exponential(120)
+            computation_mips = np.random.exponential(80)  # 降低默认计算需求
             deadline_duration = np.random.uniform(0.5, 3.0)
         
         task = {
@@ -173,7 +198,9 @@ class CompleteSystemSimulator:
             'computation_requirement': computation_mips,  # 兼容接口：MIPS
             'deadline': self.current_time + deadline_duration,
             'content_id': f'content_{np.random.randint(0, 100)}',
-            'priority': np.random.uniform(0.1, 1.0)
+            'priority': np.random.uniform(0.1, 1.0),
+            'task_type': task_type,  # 🔧 新增：任务类型标识
+            'compute_density': compute_density  # 🔧 新增：实际使用的计算密度
         }
         
         self.stats['total_tasks'] += 1
@@ -376,10 +403,12 @@ class CompleteSystemSimulator:
                 kappa = float(getattr(self.sys_config.compute, 'vehicle_kappa1', 1e-28))
                 static_power = float(getattr(self.sys_config.compute, 'vehicle_static_power', 0.5))
             
-            # 计算时间
+            # 🔧 修复：计算时间 - 使用任务特定计算密度
+            task_compute_density = task.get('compute_density', 400)  # 获取任务特定密度
             computation_time = self.calculate_computation_delay(
                 task['computation_requirement'], processing_node,
                 data_size_bytes=task.get('data_size_bytes', task['data_size']*1e6),
+                compute_density_cycles_per_bit=task_compute_density,
                 cpu_freq=cpu_freq
             )
             computation_time = float(np.clip(computation_time, 0.0, 5.0))
@@ -396,9 +425,9 @@ class CompleteSystemSimulator:
         
         total_energy = transmission_energy + computation_energy
         
-        # 数值修正：避免异常值
-        if not np.isfinite(total_energy) or total_energy > 10000:
-            total_energy = 2000.0  # 修正为合理值
+        # 数值修正：仅处理无限值和NaN
+        if not np.isfinite(total_energy):
+            total_energy = 100.0  # 仅修正无效值，不限制合理的高值
         
         return total_energy
     
@@ -502,18 +531,24 @@ class CompleteSystemSimulator:
                     cpu_freq = float(getattr(self.sys_config.compute, 'uav_default_freq', 8e9))
                 else:
                     cpu_freq = float(getattr(self.sys_config.compute, 'vehicle_default_freq', 16e9))
+            # 🔧 修复：使用任务特定的计算密度
+            task_compute_density = task.get('compute_density', 
+                float(getattr(self.sys_config.task, 'task_compute_density', 400)) if self.sys_config is not None else 400)
+            
             computation_delay = self.calculate_computation_delay(
                 task['computation_requirement'], processing_node,
                 data_size_bytes=task['data_size']*1e6 if task.get('data_size', 1.0) < 100 else task['data_size'],
-                compute_density_cycles_per_bit=(float(getattr(self.sys_config.task, 'task_compute_density', 500)) if self.sys_config is not None else None),
+                compute_density_cycles_per_bit=task_compute_density,
                 cpu_freq=cpu_freq
             )
             total_delay = transmission_delay + computation_delay
             compute_time_needed = computation_delay
         
-        # 数值修正
-        if not np.isfinite(total_delay) or total_delay > 10:
-            total_delay = 1.0  # 修正为1秒
+        # 🔧 修复：放宽时延阈值，避免过度截断
+        if not np.isfinite(total_delay):
+            total_delay = 1.0  # 仅修正无效值
+        elif total_delay > 15.0:  # 放宽阈值从10s到15s
+            total_delay = min(total_delay, 15.0)  # 软截断，而非硬设为1.0s
         
         # 计算能耗（传入节点类型）
         energy_consumption = self.calculate_energy_consumption(task, processing_node, distance, node_type)

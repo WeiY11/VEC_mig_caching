@@ -253,10 +253,9 @@ class SingleAgentTrainingEnvironment:
         # 限制延迟在合理范围内（关键修复）
         avg_delay = np.clip(avg_delay, 0.01, 5.0)  # 扩大到0.01-5.0秒范围，适应跨时隙处理
         
-        # 安全获取能耗（关键修复）
+        # 🔧 修复：移除能耗人为限制，显示真实计算结果
         total_energy = safe_get('total_energy', 0.0)
-        # 限制能耗在VEC系统合理范围内
-        total_energy = np.clip(total_energy, 10.0, 2000.0)  # 10-2000焦耳范围
+        # 注：移除clip限制，显示真实能耗计算结果
         
         # 🔧 修复：数据丢失率计算 - 使用累计统计
         data_loss_rate = min(1.0, total_dropped / max(1, total_generated)) if total_generated > 0 else 0.0
@@ -622,10 +621,19 @@ def train_single_algorithm(algorithm: str, num_episodes: Optional[int] = None, e
         training_env.performance_tracker['recent_energy'].update(system_metrics.get('total_energy_consumption', 0))
         training_env.performance_tracker['recent_completion'].update(system_metrics.get('task_completion_rate', 0))
         
-        # 记录指标
-        for metric_name, value in system_metrics.items():
-            if metric_name in training_env.episode_metrics:
-                training_env.episode_metrics[metric_name].append(value)
+        # 🔧 修复：记录指标 - 解决键名不匹配问题
+        metric_mapping = {
+            'avg_task_delay': 'avg_delay',
+            'total_energy_consumption': 'total_energy',
+            'task_completion_rate': 'task_completion_rate',
+            'cache_hit_rate': 'cache_hit_rate', 
+            'migration_success_rate': 'migration_success_rate'
+        }
+        
+        for system_key, episode_key in metric_mapping.items():
+            if system_key in system_metrics and episode_key in training_env.episode_metrics:
+                training_env.episode_metrics[episode_key].append(system_metrics[system_key])
+                print(f"✅ 记录指标 {episode_key}: {system_metrics[system_key]:.3f}")  # 调试信息
         
         episode_time = time.time() - episode_start_time
         

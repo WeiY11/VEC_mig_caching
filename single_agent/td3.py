@@ -40,7 +40,7 @@ class TD3Config:
     # 训练参数
     batch_size: int = 256
     buffer_size: int = 100000
-    tau: float = 0.01  # 软更新更快
+    tau: float = 0.005  # 🔧 减小软更新系数，提高稳定性
     gamma: float = 0.99  # 折扣因子
     
     # TD3特有参数
@@ -50,7 +50,7 @@ class TD3Config:
     
     # 探索参数
     exploration_noise: float = 0.2
-    noise_decay: float = 0.9995
+    noise_decay: float = 0.9998  # 🔧 减缓噪声衰减，保持更长时间的探索
     min_noise: float = 0.05
     
     # PER 参数
@@ -60,7 +60,7 @@ class TD3Config:
     
     # 训练频率
     update_freq: int = 1
-    warmup_steps: int = 5000
+    warmup_steps: int = 1000  # 🔧 减少预热步数，确保短期训练能开始学习
 
 
 class TD3Actor(nn.Module):
@@ -243,9 +243,9 @@ class TD3Agent:
         # 优化器
         self.actor_optimizer = optim.Adam(self.actor.parameters(), lr=config.actor_lr)
         self.critic_optimizer = optim.Adam(self.critic.parameters(), lr=config.critic_lr)
-        # 学习率调度器（指数衰减）
-        self.actor_lr_scheduler = optim.lr_scheduler.ExponentialLR(self.actor_optimizer, gamma=0.995)
-        self.critic_lr_scheduler = optim.lr_scheduler.ExponentialLR(self.critic_optimizer, gamma=0.995)
+        # 🔧 暂时禁用学习率调度器，避免短期训练中学习率过快衰减
+        # self.actor_lr_scheduler = optim.lr_scheduler.ExponentialLR(self.actor_optimizer, gamma=0.995)
+        # self.critic_lr_scheduler = optim.lr_scheduler.ExponentialLR(self.critic_optimizer, gamma=0.995)
         
         # 经验回放缓冲区
         # PER beta参数
@@ -383,9 +383,9 @@ class TD3Agent:
         self.actor_optimizer.step()
         
         self.actor_losses.append(actor_loss.item())
-        # 更新学习率
-        self.actor_lr_scheduler.step()
-        self.critic_lr_scheduler.step()
+        # 🔧 暂时禁用学习率调度器
+        # self.actor_lr_scheduler.step()
+        # self.critic_lr_scheduler.step()
         return actor_loss.item()
     
     def soft_update(self, target: nn.Module, source: nn.Module, tau: float):
