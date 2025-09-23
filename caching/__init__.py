@@ -4,7 +4,7 @@
 """
 
 from .cache_policy import CachePolicy
-from .lru_cache import LRUCache
-from .popularity_cache import PopularityBasedCache
+from .cache_manager import CollaborativeCacheManager, HeatBasedCacheStrategy
 
-__all__ = ['CachePolicy', 'LRUCache', 'PopularityBasedCache']
+# 导出核心组件
+__all__ = ['CachePolicy', 'CollaborativeCacheManager', 'HeatBasedCacheStrategy']

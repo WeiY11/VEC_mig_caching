@@ -433,9 +433,11 @@ class TD3Environment:
     def __init__(self):
         self.config = TD3Config()
         
-        # 环境配置 - 整合VEC系统状态
-        self.state_dim = 60  # 整合所有节点状态
-        self.action_dim = 30  # 整合所有节点动作
+        # 🔧 修复：正确计算状态维度
+        # 车辆状态: 12×5=60维 + RSU状态: 6×9=54维 + UAV状态: 2×8=16维 = 130维
+        self.state_dim = 130  # 正确的状态维度
+        # 🤖 扩展动作空间: 11维原有 + 7维缓存迁移控制 = 18维
+        self.action_dim = 18  # 支持自适应缓存迁移控制
         
         # 创建智能体
         self.agent = TD3Agent(self.state_dim, self.action_dim, self.config)
@@ -450,31 +452,89 @@ class TD3Environment:
         print(f"✓ 策略延迟更新: {self.config.policy_delay}")
     
     def get_state_vector(self, node_states: Dict, system_metrics: Dict) -> np.ndarray:
-        """构建全局状态向量"""
-        # 基础系统状态
-        base_state = np.array([
-            system_metrics.get('avg_task_delay', 0.0) / 1.0,
-            system_metrics.get('total_energy_consumption', 0.0) / 1000.0,
-            system_metrics.get('data_loss_rate', 0.0),
-            system_metrics.get('cache_hit_rate', 0.0),
-            system_metrics.get('migration_success_rate', 0.0),
-        ])
+        """
+        🔧 修复：构建真实的130维状态向量，消除随机数填充
+        状态组成: 车辆60维 + RSU54维 + UAV16维 = 130维
+        """
+        state_components = []
         
-        # 节点特定状态 (简化实现)
-        node_states_flat = np.random.randn(self.state_dim - len(base_state))
+        # 1. 车辆状态 (12×5=60维)
+        for i in range(12):
+            vehicle_key = f'vehicle_{i}'
+            if vehicle_key in node_states:
+                vehicle_state = node_states[vehicle_key]
+                # 确保是5维状态
+                if len(vehicle_state) >= 5:
+                    state_components.extend(vehicle_state[:5])
+                else:
+                    # 补齐到5维
+                    padded_state = np.pad(vehicle_state, (0, 5-len(vehicle_state)), mode='constant', constant_values=0.5)
+                    state_components.extend(padded_state)
+            else:
+                # 默认车辆状态: [位置x, 位置y, 速度, 队列, 能耗]
+                state_components.extend([0.5, 0.5, 0.0, 0.0, 0.0])
         
-        return np.concatenate([base_state, node_states_flat])
+        # 2. RSU状态 (6×9=54维)
+        for i in range(6):
+            rsu_key = f'rsu_{i}'
+            if rsu_key in node_states:
+                rsu_state = node_states[rsu_key]
+                # 确保是9维状态 (原5维 + 缓存4维)
+                if len(rsu_state) >= 9:
+                    state_components.extend(rsu_state[:9])
+                else:
+                    # 补齐到9维
+                    padded_state = np.pad(rsu_state, (0, 9-len(rsu_state)), mode='constant', constant_values=0.5)
+                    state_components.extend(padded_state)
+            else:
+                # 默认RSU状态: [位置x, 位置y, 缓存利用率, 队列, 能耗, 缓存参数4维]
+                state_components.extend([0.5, 0.5, 0.0, 0.0, 0.0, 0.8, 0.4, 0.1, 0.5])
+        
+        # 3. UAV状态 (2×8=16维)
+        for i in range(2):
+            uav_key = f'uav_{i}'
+            if uav_key in node_states:
+                uav_state = node_states[uav_key]
+                # 确保是8维状态 (原5维 + 迁移3维)
+                if len(uav_state) >= 8:
+                    state_components.extend(uav_state[:8])
+                else:
+                    # 补齐到8维
+                    padded_state = np.pad(uav_state, (0, 8-len(uav_state)), mode='constant', constant_values=0.5)
+                    state_components.extend(padded_state)
+            else:
+                # 默认UAV状态: [位置x, 位置y, 位置z, 缓存利用率, 能耗, 迁移参数3维]
+                state_components.extend([0.5, 0.5, 0.5, 0.0, 0.0, 0.2, 1.0, 0.5])
+        
+        # 确保状态向量正好是130维
+        state_vector = np.array(state_components[:130], dtype=np.float32)
+        
+        # 如果维度不足130，补齐
+        if len(state_vector) < 130:
+            padding_needed = 130 - len(state_vector)
+            state_vector = np.pad(state_vector, (0, padding_needed), mode='constant', constant_values=0.5)
+        
+        # 数值安全检查
+        state_vector = np.nan_to_num(state_vector, nan=0.5, posinf=1.0, neginf=0.0)
+        
+        return state_vector
     
     def decompose_action(self, action: np.ndarray) -> Dict[str, np.ndarray]:
-        """将全局动作分解为各节点动作"""
+        """
+        将全局动作分解为各节点动作
+        🤖 更新支持18维动作空间：
+        - vehicle_agent: 18维 (11维原有 + 7维缓存迁移控制)
+        """
         actions = {}
-        start_idx = 0
         
-        # 为每个智能体类型分配动作
-        for agent_type in ['vehicle_agent', 'rsu_agent', 'uav_agent']:
-            end_idx = start_idx + 10  # 每个智能体10个动作维度
-            actions[agent_type] = action[start_idx:end_idx]
-            start_idx = end_idx
+        # 🤖 vehicle_agent 获得所有18维动作
+        # 前11维：任务分配(3) + RSU选择(6) + UAV选择(2)
+        # 后7维：缓存控制(4) + 迁移控制(3)
+        actions['vehicle_agent'] = action[:18] if len(action) >= 18 else np.pad(action, (0, 18-len(action)), mode='constant')
+        
+        # RSU和UAV智能体不再需要独立动作，由vehicle_agent统一控制
+        actions['rsu_agent'] = np.zeros(6)  # 兼容性保留
+        actions['uav_agent'] = np.zeros(2)  # 兼容性保留
         
         return actions
     

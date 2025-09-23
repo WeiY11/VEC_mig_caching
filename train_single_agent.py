@@ -23,6 +23,8 @@ from typing import Dict, List, Tuple, Optional
 from config import config
 from evaluation.test_complete_system import CompleteSystemSimulator
 from utils import MovingAverage
+# 🤖 导入自适应控制组件
+from utils.adaptive_control import AdaptiveCacheController, AdaptiveMigrationController, map_agent_actions_to_params
 
 # 导入各种单智能体算法
 from single_agent.ddpg import DDPGEnvironment
@@ -58,7 +60,12 @@ class SingleAgentTrainingEnvironment:
     
     def __init__(self, algorithm: str):
         self.algorithm = algorithm.upper()
-        self.simulator = CompleteSystemSimulator()
+        self.simulator = CompleteSystemSimulator({"num_vehicles": 12, "num_rsus": 6, "num_uavs": 2, "task_arrival_rate": 2.5, "time_slot": 0.2, "simulation_time": 1000, "computation_capacity": 800, "bandwidth": 15, "cache_capacity": 80, "transmission_power": 0.15, "computation_power": 1.2, "high_load_mode": True, "task_complexity_multiplier": 2.0, "rsu_load_divisor": 5.0, "uav_load_divisor": 2.5, "enhanced_task_generation": True})
+        
+        # 🤖 初始化自适应控制组件
+        self.adaptive_cache_controller = AdaptiveCacheController()
+        self.adaptive_migration_controller = AdaptiveMigrationController()
+        print(f"🤖 已启用自适应缓存和迁移控制功能")
         
         # 根据算法创建相应环境
         if self.algorithm == "DDPG":
@@ -178,27 +185,52 @@ class SingleAgentTrainingEnvironment:
             ])
             node_states[f'vehicle_{i}'] = vehicle_state
         
-        # RSU状态
+        # 🤖 RSU增强状态 (原5维 + 缓存控制状态)
         for i, rsu in enumerate(self.simulator.rsus):
-            rsu_state = np.array([
+            # 原有状态
+            base_state = np.array([
                 rsu['position'][0] / 1000,
                 rsu['position'][1] / 1000,
                 len(rsu.get('cache', {})) / rsu.get('cache_capacity', 100),
                 len(rsu.get('computation_queue', [])) / 10,
                 rsu.get('energy_consumed', 0) / 1000
             ])
-            node_states[f'rsu_{i}'] = rsu_state
+            
+            # 🤖 新增缓存控制状态
+            cache_params = self.adaptive_cache_controller.agent_params
+            cache_state = np.array([
+                cache_params['heat_threshold_high'],
+                cache_params['heat_threshold_medium'],
+                len(rsu.get('cache', {})) / max(1, rsu.get('cache_capacity', 100)),  # 缓存利用率
+                self.adaptive_cache_controller.cache_stats.get('total_requests', 0) / 100.0  # 归一化请求数
+            ])
+            
+            # 合并状态
+            enhanced_state = np.concatenate([base_state, cache_state])
+            node_states[f'rsu_{i}'] = enhanced_state
         
-        # UAV状态
+        # 🤖 UAV增强状态 (原5维 + 迁移控制状态)
         for i, uav in enumerate(self.simulator.uavs):
-            uav_state = np.array([
+            # 原有状态
+            base_state = np.array([
                 uav['position'][0] / 1000,
                 uav['position'][1] / 1000,
                 uav['position'][2] / 200,
                 len(uav.get('cache', {})) / uav.get('cache_capacity', 100),
                 uav.get('energy_consumed', 0) / 1000
             ])
-            node_states[f'uav_{i}'] = uav_state
+            
+            # 🤖 新增迁移控制状态
+            migration_params = self.adaptive_migration_controller.agent_params
+            migration_state = np.array([
+                migration_params['uav_battery_threshold'],
+                uav.get('battery_level', 1.0),
+                migration_params['migration_cost_weight']
+            ])
+            
+            # 合并状态
+            enhanced_state = np.concatenate([base_state, migration_state])
+            node_states[f'uav_{i}'] = enhanced_state
         
         # 计算系统指标
         system_metrics = self._calculate_system_metrics(step_stats)
@@ -279,13 +311,30 @@ class SingleAgentTrainingEnvironment:
         migrations_successful = int(safe_get('migrations_successful', 0))
         migration_success_rate = (migrations_successful / migrations_executed) if migrations_executed > 0 else 0.0
         
+        # 🤖 获取自适应控制器指标
+        cache_metrics = self.adaptive_cache_controller.get_cache_metrics()
+        migration_metrics = self.adaptive_migration_controller.get_migration_metrics()
+        
+        # 🤖 更新缓存控制器统计（如果有实际数据）
+        if cache_hit_rate > 0:
+            self.adaptive_cache_controller.cache_stats['current_utilization'] = sum(
+                len(rsu.get('cache', {})) / max(1, rsu.get('cache_capacity', 100))
+                for rsu in self.simulator.rsus
+            ) / max(1, len(self.simulator.rsus))
+        
         return {
             'avg_task_delay': avg_delay,
             'total_energy_consumption': total_energy,
             'data_loss_rate': data_loss_rate,
             'task_completion_rate': completion_rate,
             'cache_hit_rate': cache_hit_rate,
-            'migration_success_rate': migration_success_rate
+            'migration_success_rate': migration_success_rate,
+            # 🤖 新增自适应控制指标
+            'adaptive_cache_effectiveness': cache_metrics.get('effectiveness', 0.0),
+            'adaptive_migration_effectiveness': migration_metrics.get('effectiveness', 0.0),
+            'cache_utilization': cache_metrics.get('utilization', 0.0),
+            'adaptive_cache_params': cache_metrics.get('agent_params', {}),
+            'adaptive_migration_params': migration_metrics.get('agent_params', {})
         }
     
     def run_episode(self, episode: int, max_steps: Optional[int] = None) -> Dict:
@@ -455,10 +504,9 @@ class SingleAgentTrainingEnvironment:
 
     def _build_simulator_actions(self, actions_dict: Optional[Dict]) -> Optional[Dict]:
         """将算法动作字典转换为仿真器可消费的简单控制信号。
-        轻量映射：
-        - vehicle_agent 前3维 → 本地/RSU/UAV 概率
-        - rsu_agent 前N维(N=RSU数) → 指定RSU概率
-        - uav_agent 前M维(M=UAV数) → 指定UAV概率
+        🤖 扩展支持18维动作空间：
+        - vehicle_agent 前11维 → 原有任务分配和节点选择
+        - vehicle_agent 后7维 → 缓存迁移参数控制
         """
         if not isinstance(actions_dict, dict):
             return None
@@ -467,6 +515,8 @@ class SingleAgentTrainingEnvironment:
             return None
         try:
             import numpy as np
+            
+            # =============== 原有11维动作逻辑 (保持兼容) ===============
             # 取前三维，映射到[0,1]并softmax为概率
             raw = np.array(vehicle_action[:3], dtype=np.float32).reshape(-1)
             # 数值安全
@@ -498,25 +548,57 @@ class SingleAgentTrainingEnvironment:
                 uav_exp = np.exp(uav_raw - np.max(uav_raw))
                 uav_probs = uav_exp / np.sum(uav_exp)
                 sim_actions['uav_selection_probs'] = [float(x) for x in uav_probs]
+            
+            # 🤖 =============== 新增7维缓存迁移控制 ===============
+            if isinstance(vehicle_action, (list, tuple, np.ndarray)) and len(vehicle_action) >= 18:
+                # 提取缓存迁移控制动作 (维度11-17)
+                cache_migration_actions = np.array(vehicle_action[11:18], dtype=np.float32)
+                cache_migration_actions = np.clip(cache_migration_actions, -1.0, 1.0)
+                
+                # 映射为参数字典
+                cache_params, migration_params = map_agent_actions_to_params(cache_migration_actions)
+                
+                # 更新自适应控制器参数
+                self.adaptive_cache_controller.update_agent_params(cache_params)
+                self.adaptive_migration_controller.update_agent_params(migration_params)
+                
+                # 将自适应参数传递给仿真器
+                sim_actions.update({
+                    'adaptive_cache_params': cache_params,
+                    'adaptive_migration_params': migration_params,
+                    'cache_controller': self.adaptive_cache_controller,
+                    'migration_controller': self.adaptive_migration_controller
+                })
+            
             return sim_actions
-        except Exception:
+        except Exception as e:
+            print(f"⚠️ 动作构造异常: {e}")
             return None
     
     def _encode_continuous_action(self, actions_dict) -> np.ndarray:
-        """将动作字典编码为连续动作向量"""
+        """
+        🤖 将动作字典编码为连续动作向量 - 支持18维动作空间
+        现在只使用vehicle_agent的18维动作
+        """
         # 处理可能的不同输入类型
         if not isinstance(actions_dict, dict):
-            # 如果不是字典，返回默认动作
-            return np.zeros(30)  # 3个智能体 * 10维动作
+            # 如果不是字典，返回默认18维动作
+            return np.zeros(18)
         
-        action_list = []
-        for agent_type in ['vehicle_agent', 'rsu_agent', 'uav_agent']:
-            if agent_type in actions_dict:
-                action_list.append(actions_dict[agent_type])
+        # 🤖 只使用vehicle_agent的18维动作
+        vehicle_action = actions_dict.get('vehicle_agent')
+        if isinstance(vehicle_action, (list, tuple, np.ndarray)):
+            # 确保是18维
+            if len(vehicle_action) >= 18:
+                return np.array(vehicle_action[:18], dtype=np.float32)
             else:
-                action_list.append(np.zeros(10))  # 默认动作
-        
-        return np.concatenate(action_list)
+                # 如果不足18维，补零
+                action = np.zeros(18, dtype=np.float32)
+                action[:len(vehicle_action)] = vehicle_action
+                return action
+        else:
+            # 默认18维零动作
+            return np.zeros(18, dtype=np.float32)
     
     def _encode_discrete_action(self, actions_dict) -> int:
         """将动作字典编码为离散动作索引"""

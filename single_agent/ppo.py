@@ -414,8 +414,8 @@ class PPOEnvironment:
     def __init__(self):
         self.config = PPOConfig()
         
-        # 环境配置 - 整合VEC系统状态
-        self.state_dim = 60  # 整合所有节点状态
+        # 🔧 修复：正确计算状态维度，与TD3保持一致
+        self.state_dim = 130  # 车辆60 + RSU54 + UAV16 = 130维
         self.action_dim = 30  # 整合所有节点动作
         
         # 创建智能体

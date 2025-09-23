@@ -345,9 +345,9 @@ class DQNEnvironment:
     def __init__(self):
         self.config = DQNConfig()
         
-        # 环境配置 - 离散化VEC系统动作
-        self.state_dim = 60  # 整合所有节点状态
-        self.action_dim = 125  # 5^3 = 125个离散动作组合 (每个节点5个动作选择)
+        # 🔧 修复：正确计算状态维度，与TD3保持一致
+        self.state_dim = 130  # 车辆60 + RSU54 + UAV16 = 130维
+        self.action_dim = 125  # 5^3 = 125个离散动作组合
         
         # 创建智能体
         self.agent = DQNAgent(self.state_dim, self.action_dim, self.config)

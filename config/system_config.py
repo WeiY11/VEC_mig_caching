@@ -67,7 +67,7 @@ class TaskConfig:
     def __init__(self):
         self.num_priority_levels = 4
         self.task_compute_density = 400  # 🔧 降低计算密度，适应现实算力
-        self.arrival_rate = 1.35  # tasks/second - 精细调整为理想负载
+        self.arrival_rate = 2.5   # tasks/second - 🚀 12车辆极高负载优化
         
         # 🔧 重新设计：任务参数 - 分层设计不同复杂度任务
         self.data_size_range = (0.5e6/8, 15e6/8)  # 0.5-15 Mbits = 0.0625-1.875 MB
@@ -289,10 +289,10 @@ class SystemConfig:
         self.num_threads = int(os.environ.get('NUM_THREADS', '4'))
         self.random_seed = int(os.environ.get('RANDOM_SEED', '42'))
         
-        # 网络配置
-        self.num_vehicles = 12  # 恢复到原始设置
-        self.num_rsus = 6       # 恢复到原始设置
-        self.num_uavs = 2       # 恢复到原始设置，符合论文要求
+        # 🚀 12车辆高负载场景网络配置
+        self.num_vehicles = 12  # 保持12车辆，通过其他方式创造高负载
+        self.num_rsus = 6       # 保持RSU数量
+        self.num_uavs = 2       # 保持UAV数量
         
         # 仿真配置
         self.simulation_time = 1000

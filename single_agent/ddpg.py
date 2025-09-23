@@ -369,8 +369,8 @@ class DDPGEnvironment:
     def __init__(self):
         self.config = DDPGConfig()
         
-        # 环境配置 - 整合VEC系统状态
-        self.state_dim = 60  # 整合所有节点状态
+        # 🔧 修复：正确计算状态维度，与TD3保持一致
+        self.state_dim = 130  # 车辆60 + RSU54 + UAV16 = 130维
         self.action_dim = 30  # 整合所有节点动作
         
         # 创建智能体
@@ -463,42 +463,16 @@ class DDPGEnvironment:
             
             state_components.extend(uav_features)
         
-        # 🔧 修复：确保状态向量长度为60维，用有意义的特征填充
-        current_length = len(state_components)
-        if current_length < self.state_dim:
-            padding_size = self.state_dim - current_length
-            
-            # 添加有意义的派生特征而非周期性填充
-            for i in range(padding_size):
-                if i < 4:  # 系统负载分布特征
-                    load_factor = system_metrics.get('total_energy_consumption', 600.0) / 1000.0
-                    feature_val = 0.3 + 0.4 * np.sin(load_factor * np.pi + i)
-                elif i < 8:  # 延迟分布特征
-                    delay_factor = system_metrics.get('avg_task_delay', 0.15)
-                    feature_val = 0.4 + 0.3 * np.cos(delay_factor * 10 + i)
-                elif i < 12:  # 完成率相关特征
-                    completion_factor = system_metrics.get('task_completion_rate', 0.9)
-                    feature_val = completion_factor * (0.5 + 0.3 * np.sin(i * 0.5))
-                else:  # 缓存效率特征
-                    cache_factor = system_metrics.get('cache_hit_rate', 0.3)
-                    feature_val = cache_factor * (0.6 + 0.2 * np.cos(i * 0.7))
-                
-                # 确保特征值在合理范围内
-                feature_val = np.clip(feature_val, 0.0, 1.0)
-                state_components.append(float(feature_val))
-        elif current_length > self.state_dim:
-            # 如果维度过多，截断
-            state_components = state_components[:self.state_dim]
+        # 🔧 修复：确保状态向量正好是130维
+        state_vector = np.array(state_components[:130], dtype=np.float32)
         
-        # 转换为numpy数组并进行数值稳定性检查
-        state_vector = np.array(state_components, dtype=np.float32)
+        # 如果维度不足130，补齐
+        if len(state_vector) < 130:
+            padding_needed = 130 - len(state_vector)
+            state_vector = np.pad(state_vector, (0, padding_needed), mode='constant', constant_values=0.5)
         
-        # 检查并处理NaN/Inf值
-        if np.any(np.isnan(state_vector)) or np.any(np.isinf(state_vector)):
-            print(f"⚠️ 警告: 状态向量包含无效值，进行修复")
-            state_vector = np.nan_to_num(state_vector, nan=0.5, posinf=1.0, neginf=0.0)
-        
-        # 确保状态值在合理范围内
+        # 数值安全检查
+        state_vector = np.nan_to_num(state_vector, nan=0.5, posinf=1.0, neginf=0.0)
         state_vector = np.clip(state_vector, -5.0, 5.0)
         
         return state_vector

@@ -12,7 +12,7 @@ from collections import defaultdict, OrderedDict
 
 from models.data_structures import Task, TaskType
 from config import config
-from utils import calculate_zipf_probability, ExponentialMovingAverage
+from utils.common import calculate_zipf_probability, ExponentialMovingAverage
 
 
 class CacheReplacementPolicy(Enum):

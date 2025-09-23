@@ -110,6 +110,7 @@ def calculate_standardized_reward(system_metrics: Dict, agent_type: Optional[str
                                  use_paper_only: bool = False) -> float:
     """
     标准化奖励计算接口 - 供所有算法调用
+    🤖 扩展支持缓存和迁移奖励
     
     Args:
         system_metrics: 系统性能指标字典
@@ -120,9 +121,59 @@ def calculate_standardized_reward(system_metrics: Dict, agent_type: Optional[str
         标准化计算的奖励值
     """
     if use_paper_only:
-        return _standardized_reward_function.calculate_paper_reward(system_metrics)
+        base_reward = _standardized_reward_function.calculate_paper_reward(system_metrics)
     else:
-        return _standardized_reward_function.calculate_with_performance_bonus(system_metrics, agent_type)
+        base_reward = _standardized_reward_function.calculate_with_performance_bonus(system_metrics, agent_type)
+    
+    # 🤖 添加自适应控制奖励组件
+    adaptive_reward = calculate_adaptive_control_reward(system_metrics)
+    
+    return base_reward + adaptive_reward
+
+
+def calculate_adaptive_control_reward(system_metrics: Dict) -> float:
+    """
+    🤖 计算自适应缓存和迁移控制的奖励组件
+    
+    Args:
+        system_metrics: 包含自适应控制指标的系统指标
+    
+    Returns:
+        自适应控制奖励 (非负值，作为奖励增强)
+    """
+    # 缓存效果奖励
+    cache_effectiveness = system_metrics.get('adaptive_cache_effectiveness', 0.0)
+    cache_hit_rate = system_metrics.get('cache_hit_rate', 0.0)
+    
+    # 缓存奖励：基于效果和命中率的几何平均
+    cache_reward = np.sqrt(cache_effectiveness * cache_hit_rate) * 0.3
+    
+    # 迁移效果奖励
+    migration_effectiveness = system_metrics.get('adaptive_migration_effectiveness', 0.0)
+    migration_success_rate = system_metrics.get('migration_success_rate', 0.0)
+    
+    # 迁移奖励：基于效果和成功率
+    migration_reward = migration_effectiveness * migration_success_rate * 0.2
+    
+    # 参数学习奖励：鼓励智能体调整参数
+    cache_params = system_metrics.get('adaptive_cache_params', {})
+    migration_params = system_metrics.get('adaptive_migration_params', {})
+    
+    # 参数多样性奖励（防止参数stuck）
+    param_diversity = 0.0
+    if cache_params and migration_params:
+        # 计算参数与默认值的偏差，鼓励探索
+        cache_diversity = abs(cache_params.get('heat_threshold_high', 0.8) - 0.8) + \
+                         abs(cache_params.get('heat_threshold_medium', 0.4) - 0.4)
+        migration_diversity = abs(migration_params.get('rsu_overload_threshold', 0.8) - 0.8) + \
+                             abs(migration_params.get('uav_battery_threshold', 0.2) - 0.2)
+        param_diversity = (cache_diversity + migration_diversity) * 0.05
+    
+    # 组合自适应奖励（所有组件均为非负，作为bonus）
+    total_adaptive_reward = cache_reward + migration_reward + param_diversity
+    
+    # 限制范围，避免过度奖励
+    return np.clip(total_adaptive_reward, 0.0, 1.0)
 
 
 def validate_reward_consistency():
