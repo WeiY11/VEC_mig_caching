@@ -147,6 +147,10 @@ class SingleAgentTrainingEnvironment:
             'migration_success_rate': 0.0
         }
         
+        # 🔧 修复：重置能耗追踪器，避免跨episode累积
+        if hasattr(self, '_last_total_energy'):
+            delattr(self, '_last_total_energy')
+        
         # 获取初始状态向量
         state = self.agent_env.get_state_vector(node_states, system_metrics)
         
@@ -253,9 +257,19 @@ class SingleAgentTrainingEnvironment:
         # 限制延迟在合理范围内（关键修复）
         avg_delay = np.clip(avg_delay, 0.01, 5.0)  # 扩大到0.01-5.0秒范围，适应跨时隙处理
         
-        # 🔧 修复：移除能耗人为限制，显示真实计算结果
-        total_energy = safe_get('total_energy', 0.0)
-        # 注：移除clip限制，显示真实能耗计算结果
+        # 🔧 修复：使用能耗增量而非累积值，确保奖励计算正确
+        current_total_energy = safe_get('total_energy', 0.0)
+        
+        # 计算本步能耗增量
+        if not hasattr(self, '_last_total_energy'):
+            self._last_total_energy = 0.0
+        
+        step_energy = current_total_energy - self._last_total_energy
+        step_energy = max(0.0, step_energy)  # 确保非负
+        self._last_total_energy = current_total_energy
+        
+        # 记录累积能耗用于显示，但用增量计算奖励
+        total_energy = step_energy  # 🔧 关键修复：奖励使用增量能耗
         
         # 🔧 修复：数据丢失率计算 - 使用累计统计
         data_loss_rate = min(1.0, total_dropped / max(1, total_generated)) if total_generated > 0 else 0.0

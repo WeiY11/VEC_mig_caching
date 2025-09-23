@@ -456,6 +456,10 @@ class CompleteSystemSimulator:
             # 使用智能体的卸载偏好选择节点（本地/RSU/UAV），并在同类中进一步按概率选择具体节点
             aa = (agents_actions or {})
             pref = aa.get('vehicle_offload_pref', {})
+            
+            # 🔧 修复：预先计算最近节点，避免UnboundLocalError
+            nearest_rsu = self.find_nearest_rsu(vehicle['position'])
+            nearest_uav = self.find_nearest_uav(vehicle['position'])
             p_local = float(pref.get('local', 0.34))
             p_rsu = float(pref.get('rsu', 0.33))
             p_uav = float(pref.get('uav', 0.33))

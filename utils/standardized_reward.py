@@ -22,10 +22,10 @@ class StandardizedRewardFunction:
         self.weight_energy = config.rl.reward_weight_energy   # ω_E  
         self.weight_loss = config.rl.reward_weight_loss       # ω_D
         
-        # 统一的归一化参数 - 基于论文和实际数据范围
-        self.delay_normalizer = 1.0      # 延迟归一化因子 (秒)
-        self.energy_normalizer = 1000.0  # 能耗归一化因子 (J)
-        self.loss_normalizer = 1.0       # 数据丢失率归一化因子
+        # 🔧 修复：等影响力归一化 - 确保三个目标权重平衡
+        self.delay_normalizer = 1.4        # 延迟归一化因子 (秒) - 确保合理影响力
+        self.energy_normalizer = 122623.0  # 能耗归一化因子 (J) - 降低能耗过度主导
+        self.loss_normalizer = 0.030       # 数据丢失率归一化因子 - 提升丢失率影响力
         
         # 奖励范围限制 - 确保数值稳定
         self.min_reward = -10.0
@@ -62,11 +62,11 @@ class StandardizedRewardFunction:
         # 转换为奖励 (成本的负值)
         base_reward = -cost
         
-        # 🔧 修复：放大信号强度解决诊断发现的信号过弱问题
-        amplified_reward = base_reward * 8.0  # 8倍放大，使奖励变化更显著
+        # 🔧 修复：调整信号强度和范围，避免过度限制
+        amplified_reward = base_reward * 2.0  # 降低放大倍数，避免过度放大
         
-        # 确保奖励始终为负值（因为是成本的负值）
-        clipped_reward = np.clip(amplified_reward, -40.0, 0.0)  # 上限设为0，确保严格遵循 Reward = -Cost
+        # 确保奖励始终为负值（因为是成本的负值）- 扩大范围允许更多变化
+        clipped_reward = np.clip(amplified_reward, -200.0, 0.0)  # 🔧 扩大下限，允许更大变化范围
         
         return clipped_reward
     
