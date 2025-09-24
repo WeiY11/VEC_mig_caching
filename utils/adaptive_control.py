@@ -185,13 +185,13 @@ class AdaptiveMigrationController:
     """
     
     def __init__(self):
-        # 🤖 修复迁移机制：大幅降低阈值以启用迁移
+        # 🤖 平衡迁移机制：适中的阈值设置
         self.agent_params = {
-            'rsu_overload_threshold': 0.05,    # 🔧 从0.15降低到0.05 - 队列≥1即触发
-            'uav_battery_threshold': 0.15,     # 🔧 从0.20降低到0.15 - 更早触发
-            'migration_cost_weight': 0.1,      # 🔧 从0.3降低到0.1 - 大幅降低迁移代价
-            'urgency_threshold_rsu': 0.05,     # 🔧 从0.10降低到0.05 - 降低紧急阈值
-            'urgency_threshold_uav': 0.10       # 🔧 从0.15降低到0.10 - 降低紧急阈值
+            'rsu_overload_threshold': 0.2,     # 恢复到适中水平，避免过度迁移
+            'uav_battery_threshold': 0.25,     # 恢复到适中水平
+            'migration_cost_weight': 0.3,      # 恢复迁移成本权重
+            'urgency_threshold_rsu': 0.1,      # 恢复RSU紧急阈值
+            'urgency_threshold_uav': 0.15      # 恢复UAV紧急阈值
         }
         
         # 🎯 扩大参数范围，允许更灵活的迁移策略
@@ -271,7 +271,7 @@ class AdaptiveMigrationController:
         
         # 检查冷却期 (防止频繁迁移)
         if (node_id in self.last_migration_time and 
-            current_time - self.last_migration_time[node_id] < 30.0):  # 🔧 减少到30秒
+            current_time - self.last_migration_time[node_id] < 60.0):  # 🔧 增加到60秒冷却期
             return False, "冷却期内", 0.0
         
         # 获取节点状态
@@ -285,19 +285,19 @@ class AdaptiveMigrationController:
         
         # 🎯 多维度触发条件检查
         if node_id.startswith("rsu_"):
-            # 1️⃣ 资源阈值触发 (85%阈值)
+            # 1️⃣ 资源阈值触发 (降低到60%阈值，更容易触发)
             resource_overload = False
             overload_resources = []
             
-            if cpu_load > 0.85:
+            if cpu_load > 0.85:  # 恢复到85%阈值，避免过度触发
                 resource_overload = True
                 overload_resources.append(f"CPU:{cpu_load:.1%}")
                 
-            if bandwidth_load > 0.85:
+            if bandwidth_load > 0.85:  # 恢复到85%阈值
                 resource_overload = True
                 overload_resources.append(f"带宽:{bandwidth_load:.1%}")
                 
-            if storage_load > 0.85:
+            if storage_load > 0.85:  # 恢复到85%阈值
                 resource_overload = True
                 overload_resources.append(f"存储:{storage_load:.1%}")
             
@@ -335,7 +335,7 @@ class AdaptiveMigrationController:
                     migration_reason = f"负载差过大({max_load_diff:.1%})"
             
             # 触发阈值判断
-            if urgency_score > 0.05:  # 更低的触发阈值
+            if urgency_score > 0.1:  # 恢复合理的触发阈值，防止过度迁移
                 self.migration_stats['total_triggers'] += 1
                 self.last_migration_time[node_id] = current_time
                 return True, migration_reason, urgency_score
@@ -377,10 +377,10 @@ class AdaptiveMigrationController:
                     else:
                         migration_reason = f"与RSU负载差过大({max_load_diff:.1%})"
             
-            if urgency_score > 0.1:
-                self.migration_stats['total_triggers'] += 1
-                self.last_migration_time[node_id] = current_time
-                return True, migration_reason, urgency_score
+                if urgency_score > 0.15:  # 恢复UAV触发阈值，防止过度迁移
+                    self.migration_stats['total_triggers'] += 1
+                    self.last_migration_time[node_id] = current_time
+                    return True, migration_reason, urgency_score
         
         return False, f"无需迁移 (CPU:{cpu_load:.1%}, 电池:{battery_level:.1%})", urgency_score
     

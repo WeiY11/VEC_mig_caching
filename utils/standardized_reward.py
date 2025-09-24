@@ -22,10 +22,10 @@ class StandardizedRewardFunction:
         self.weight_energy = config.rl.reward_weight_energy   # ω_E  
         self.weight_loss = config.rl.reward_weight_loss       # ω_D
         
-        # 🔧 修复：等影响力归一化 - 确保三个目标权重平衡
-        self.delay_normalizer = 1.4        # 延迟归一化因子 (秒) - 确保合理影响力
-        self.energy_normalizer = 122623.0  # 能耗归一化因子 (J) - 降低能耗过度主导
-        self.loss_normalizer = 0.030       # 数据丢失率归一化因子 - 提升丢失率影响力
+        # 🔧 修复：重新调整归一化因子匹配实际数据范围
+        self.delay_normalizer = 1.0        # 延迟归一化因子 (秒)
+        self.energy_normalizer = 100000.0  # 能耗归一化因子，匹配实际100K J范围
+        self.loss_normalizer = 1000.0      # 数据丢失归一化因子，匹配实际GB级范围（单位MB）
         
         # 奖励范围限制 - 确保数值稳定
         self.min_reward = -10.0
@@ -36,23 +36,29 @@ class StandardizedRewardFunction:
     
     def calculate_paper_reward(self, system_metrics: Dict) -> float:
         """
-        修复版本：因为之前的奖励信号过弱，需要增强信号强度
-        对应论文式(24): min(ω_T * T + ω_E * E + ω_D * D)
+        修复版本：使用数据丢失"量"（bytes）而非丢失率，对齐论文 ∑Dj
+        对应论文式(24): min(ω_T * T + ω_E * E + ω_D * ∑Dj)
         """
         # 提取系统指标
         avg_delay = system_metrics.get('avg_task_delay', 0.0)
         total_energy = system_metrics.get('total_energy_consumption', 0.0)
-        data_loss_rate = system_metrics.get('data_loss_rate', 0.0)
+        # 优先使用数据丢失量（bytes），回退到比例
+        data_loss_bytes = system_metrics.get('data_loss_bytes', 0.0)
+        if data_loss_bytes == 0.0:
+            # 回退：使用比例 * 估计的总数据量
+            data_loss_ratio = system_metrics.get('data_loss_ratio_bytes', 0.0)
+            estimated_total_data = system_metrics.get('total_energy_consumption', 1000.0) * 0.1  # 估算
+            data_loss_bytes = data_loss_ratio * estimated_total_data
         
         # 数值有效性检查
         avg_delay = max(0.0, float(avg_delay)) if np.isfinite(avg_delay) else 0.0
         total_energy = max(0.0, float(total_energy)) if np.isfinite(total_energy) else 0.0
-        data_loss_rate = np.clip(float(data_loss_rate), 0.0, 1.0) if np.isfinite(data_loss_rate) else 0.0
+        data_loss_bytes = max(0.0, float(data_loss_bytes)) if np.isfinite(data_loss_bytes) else 0.0
         
         # 归一化指标
         normalized_delay = avg_delay / self.delay_normalizer
         normalized_energy = total_energy / self.energy_normalizer
-        normalized_loss = data_loss_rate / self.loss_normalizer
+        normalized_loss = (data_loss_bytes / 1e6) / self.loss_normalizer  # 转换为MB后归一化
         
         # 计算成本函数 - 严格对应论文式(24)
         cost = (self.weight_delay * normalized_delay + 
@@ -62,11 +68,11 @@ class StandardizedRewardFunction:
         # 转换为奖励 (成本的负值)
         base_reward = -cost
         
-        # 🔧 修复：调整信号强度和范围，避免过度限制
-        amplified_reward = base_reward * 2.0  # 降低放大倍数，避免过度放大
+        # 🔧 修复：优化信号强度，提升奖励变化敏感性
+        amplified_reward = base_reward * 5.0  # 提高放大倍数，增强奖励信号
         
-        # 确保奖励始终为负值（因为是成本的负值）- 扩大范围允许更多变化
-        clipped_reward = np.clip(amplified_reward, -200.0, 0.0)  # 🔧 扩大下限，允许更大变化范围
+        # 奖励范围优化，允许小幅正值以鼓励良好行为
+        clipped_reward = np.clip(amplified_reward, -50.0, 2.0)  # 允许小幅正值，减少下限绝对值
         
         return clipped_reward
     
@@ -96,10 +102,11 @@ class StandardizedRewardFunction:
                 battery_level = system_metrics.get('avg_uav_battery', 1.0)
                 agent_cost_adjustment = -0.5 * (1.0 - battery_level)
         
+        # 组合最终奖励
         final_reward = paper_reward + agent_cost_adjustment
         
-        # 确保奖励始终为负值或零
-        return np.clip(final_reward, -80.0, 0.0)  # 上限设为0，确保不会有正值
+        # 优化奖励范围，允许适度正值鼓励好行为
+        return np.clip(final_reward, -80.0, 5.0)  # 允许适度正值，鼓励良好表现
 
 
 # 创建全局标准化奖励函数实例
