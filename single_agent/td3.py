@@ -34,24 +34,28 @@ class TD3Config:
     """TD3算法配置 (已调优)"""
     # 网络结构
     hidden_dim: int = 400  # 提升容量
-    actor_lr: float = 1e-4
-    critic_lr: float = 1e-4
+    actor_lr: float = 5e-5  # 🔧 从1e-4降低到5e-5 - 防止过拟合
+    critic_lr: float = 1e-4  # 保持Critic学习率
     
     # 训练参数
     batch_size: int = 256
     buffer_size: int = 100000
-    tau: float = 0.005  # 🔧 减小软更新系数，提高稳定性
+    tau: float = 0.003  # 🔧 从0.005降低到0.003 - 更慢的目标网络更新
     gamma: float = 0.99  # 折扣因子
     
-    # TD3特有参数
-    policy_delay: int = 2  # 延迟策略更新
-    target_noise: float = 0.1  # 目标策略噪声
-    noise_clip: float = 0.3  # 噪声裁剪
+    # TD3特有参数 - 抗过拟合优化
+    policy_delay: int = 4   # 🔧 从2增加到4 - 更少的策略更新频率
+    target_noise: float = 0.05  # 🔧 从0.1降低到0.05 - 减少探索噪声
+    noise_clip: float = 0.2  # 🔧 从0.3降低到0.2 - 限制噪声幅度
     
     # 探索参数
     exploration_noise: float = 0.2
     noise_decay: float = 0.9998  # 🔧 减缓噪声衰减，保持更长时间的探索
     min_noise: float = 0.05
+    
+    # 🔧 新增：梯度裁剪防止过拟合
+    gradient_clip_norm: float = 1.0  # 梯度裁剪阈值
+    use_gradient_clip: bool = True   # 启用梯度裁剪
     
     # PER 参数
     per_alpha: float = 0.6  # 0 表示Uniform, 1 表示完全依赖TD误差
@@ -364,7 +368,9 @@ class TD3Agent:
         # 更新Critic
         self.critic_optimizer.zero_grad()
         critic_loss.backward()
-        torch.nn.utils.clip_grad_norm_(self.critic.parameters(), 1.0)
+        # 🔧 使用配置的梯度裁剪参数
+        if self.config.use_gradient_clip:
+            torch.nn.utils.clip_grad_norm_(self.critic.parameters(), self.config.gradient_clip_norm)
         self.critic_optimizer.step()
         
         self.critic_losses.append(critic_loss.item())
@@ -379,7 +385,9 @@ class TD3Agent:
         # 更新Actor
         self.actor_optimizer.zero_grad()
         actor_loss.backward()
-        torch.nn.utils.clip_grad_norm_(self.actor.parameters(), 1.0)
+        # 🔧 使用配置的梯度裁剪参数
+        if self.config.use_gradient_clip:
+            torch.nn.utils.clip_grad_norm_(self.actor.parameters(), self.config.gradient_clip_norm)
         self.actor_optimizer.step()
         
         self.actor_losses.append(actor_loss.item())

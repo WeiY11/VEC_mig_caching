@@ -60,7 +60,7 @@ class SingleAgentTrainingEnvironment:
     
     def __init__(self, algorithm: str):
         self.algorithm = algorithm.upper()
-        self.simulator = CompleteSystemSimulator({"num_vehicles": 12, "num_rsus": 6, "num_uavs": 2, "task_arrival_rate": 2.5, "time_slot": 0.2, "simulation_time": 1000, "computation_capacity": 800, "bandwidth": 15, "cache_capacity": 80, "transmission_power": 0.15, "computation_power": 1.2, "high_load_mode": True, "task_complexity_multiplier": 2.0, "rsu_load_divisor": 5.0, "uav_load_divisor": 2.5, "enhanced_task_generation": True})
+        self.simulator = CompleteSystemSimulator({"num_vehicles": 12, "num_rsus": 6, "num_uavs": 2, "task_arrival_rate": 2.5, "time_slot": 0.2, "simulation_time": 1000, "computation_capacity": 800, "bandwidth": 15, "cache_capacity": 80, "transmission_power": 0.15, "computation_power": 1.2, "high_load_mode": True, "task_complexity_multiplier": 8.0, "rsu_load_divisor": 5.0, "uav_load_divisor": 2.5, "enhanced_task_generation": True})
         
         # 🤖 初始化自适应控制组件
         self.adaptive_cache_controller = AdaptiveCacheController()
@@ -310,6 +310,10 @@ class SingleAgentTrainingEnvironment:
         migrations_executed = int(safe_get('migrations_executed', 0))
         migrations_successful = int(safe_get('migrations_successful', 0))
         migration_success_rate = (migrations_successful / migrations_executed) if migrations_executed > 0 else 0.0
+        
+        # 🔧 调试迁移统计
+        if migrations_executed > 0:
+            print(f"🔍 迁移统计: 执行{migrations_executed}次, 成功{migrations_successful}次, 成功率{migration_success_rate:.1%}")
         
         # 🤖 获取自适应控制器指标
         cache_metrics = self.adaptive_cache_controller.get_cache_metrics()
@@ -770,6 +774,57 @@ def train_single_algorithm(algorithm: str, num_episodes: Optional[int] = None, e
     print(f"🎉 {algorithm}训练完成!")
     print(f"⏱️  总训练时间: {total_training_time/3600:.2f} 小时")
     print(f"🏆 最佳平均奖励: {best_avg_reward:.3f}")
+    
+    # 🏢 显示中央RSU调度器报告
+    try:
+        central_report = training_env.simulator.get_central_scheduling_report()
+        if central_report.get('status') != 'not_available' and central_report.get('status') != 'error':
+            print(f"\n🏢 中央RSU骨干调度器总结:")
+            print(f"   📊 调度调用次数: {central_report.get('scheduling_calls', 0)}")
+            
+            scheduler_status = central_report.get('central_scheduler_status', {})
+            if 'global_metrics' in scheduler_status:
+                metrics = scheduler_status['global_metrics']
+                print(f"   ⚖️ 负载均衡指数: {metrics.get('load_balance_index', 0.0):.3f}")
+                print(f"   💚 系统健康状态: {scheduler_status.get('system_health', 'N/A')}")
+            
+            # 显示各RSU负载分布
+            rsu_details = central_report.get('rsu_details', {})
+            if rsu_details:
+                print(f"   📡 各RSU负载状态:")
+                for rsu_id, details in rsu_details.items():
+                    print(f"      {rsu_id}: CPU负载={details['cpu_usage']:.1%}, 任务队列={details['queue_length']}")
+        else:
+            print(f"📋 中央调度器状态: {central_report.get('message', '未启用')}")
+        
+        # 🔌 显示有线回传网络统计
+        rsu_migration_delay = training_env.simulator.stats.get('rsu_migration_delay', 0.0)
+        rsu_migration_energy = training_env.simulator.stats.get('rsu_migration_energy', 0.0)
+        rsu_migration_data = training_env.simulator.stats.get('rsu_migration_data', 0.0)
+        backhaul_collection_delay = training_env.simulator.stats.get('backhaul_collection_delay', 0.0)
+        backhaul_command_delay = training_env.simulator.stats.get('backhaul_command_delay', 0.0)
+        backhaul_total_energy = training_env.simulator.stats.get('backhaul_total_energy', 0.0)
+        
+        # 🚗 显示各种迁移统计
+        handover_migrations = training_env.simulator.stats.get('handover_migrations', 0)
+        uav_migration_count = training_env.simulator.stats.get('uav_migration_count', 0)
+        uav_migration_distance = training_env.simulator.stats.get('uav_migration_distance', 0.0)
+        
+        if rsu_migration_data > 0 or backhaul_total_energy > 0 or handover_migrations > 0 or uav_migration_count > 0:
+            print(f"\n🔌 有线回传网络与迁移统计:")
+            print(f"   📡 RSU迁移数据: {rsu_migration_data:.1f}MB")
+            print(f"   ⏱️ RSU迁移延迟: {rsu_migration_delay*1000:.1f}ms")
+            print(f"   ⚡ RSU迁移能耗: {rsu_migration_energy:.2f}J")
+            print(f"   📊 信息收集延迟: {backhaul_collection_delay*1000:.1f}ms")
+            print(f"   📤 指令分发延迟: {backhaul_command_delay*1000:.1f}ms")
+            print(f"   🔋 回传网络总能耗: {backhaul_total_energy:.2f}J")
+            if handover_migrations > 0:
+                print(f"   🚗 车辆跟随迁移: {handover_migrations} 次")
+            if uav_migration_count > 0:
+                avg_distance = uav_migration_distance / uav_migration_count if uav_migration_count > 0 else 0
+                print(f"   🚁 UAV迁移: {uav_migration_count} 次, 平均距离{avg_distance:.1f}m")
+    except Exception as e:
+        print(f"⚠️ 中央调度报告获取失败: {e}")
     
     # 保存训练结果
     results = save_single_training_results(algorithm, training_env, total_training_time)

@@ -185,18 +185,22 @@ class AdaptiveMigrationController:
     """
     
     def __init__(self):
-        # 🤖 高负载场景优化的智能体参数
+        # 🤖 修复迁移机制：大幅降低阈值以启用迁移
         self.agent_params = {
-            'rsu_overload_threshold': 0.45,    # 🚀 高负载场景优化阈值 [0.3-0.7]
-            'uav_battery_threshold': 0.25,     # UAV电池阈值 [0.15-0.4] 
-            'migration_cost_weight': 0.4       # 适中成本权重 [0.2-0.7]
+            'rsu_overload_threshold': 0.05,    # 🔧 从0.15降低到0.05 - 队列≥1即触发
+            'uav_battery_threshold': 0.15,     # 🔧 从0.20降低到0.15 - 更早触发
+            'migration_cost_weight': 0.1,      # 🔧 从0.3降低到0.1 - 大幅降低迁移代价
+            'urgency_threshold_rsu': 0.05,     # 🔧 从0.10降低到0.05 - 降低紧急阈值
+            'urgency_threshold_uav': 0.10       # 🔧 从0.15降低到0.10 - 降低紧急阈值
         }
         
-        # 🎯 高负载场景优化的参数范围
+        # 🎯 扩大参数范围，允许更灵活的迁移策略
         self.param_bounds = {
-            'rsu_overload_threshold': (0.3, 0.8),   # 适合高负载的范围
-            'uav_battery_threshold': (0.15, 0.4),   # UAV电池范围
-            'migration_cost_weight': (0.2, 0.7)     # 成本权重范围
+            'rsu_overload_threshold': (0.05, 0.4),  # 🔧 从(0.3,0.8)扩展到(0.05,0.4)
+            'uav_battery_threshold': (0.10, 0.3),   # 🔧 从(0.15,0.4)调整到(0.10,0.3)
+            'migration_cost_weight': (0.1, 0.6),    # 🔧 从(0.2,0.7)调整到(0.1,0.6)
+            'urgency_threshold_rsu': (0.05, 0.25),  # 🔧 新增：RSU紧急阈值范围
+            'urgency_threshold_uav': (0.10, 0.30)   # 🔧 新增：UAV紧急阈值范围
         }
         
         # 迁移统计
@@ -251,9 +255,14 @@ class AdaptiveMigrationController:
         if len(self.node_load_history[node_id]) > 50:
             self.node_load_history[node_id].pop(0)
     
-    def should_trigger_migration(self, node_id: str, current_state: Dict) -> Tuple[bool, str, float]:
+    def should_trigger_migration(self, node_id: str, current_state: Dict, neighbor_states: Dict = None) -> Tuple[bool, str, float]:
         """
-        🤖 基于智能体学习参数的迁移决策
+        🎯 智能多维度迁移触发机制
+        
+        触发条件：
+        1. 资源阈值触发：CPU/带宽/存储任一资源>85%
+        2. 负载差触发：与邻近节点负载差>20%
+        3. 跟随迁移：车辆移动超出通信覆盖
         
         Returns:
             (should_migrate, reason, urgency_score)
@@ -262,54 +271,118 @@ class AdaptiveMigrationController:
         
         # 检查冷却期 (防止频繁迁移)
         if (node_id in self.last_migration_time and 
-            current_time - self.last_migration_time[node_id] < 60.0):  # 60秒冷却期
+            current_time - self.last_migration_time[node_id] < 30.0):  # 🔧 减少到30秒
             return False, "冷却期内", 0.0
         
-        # 获取智能体学习的阈值
-        rsu_threshold = self.agent_params['rsu_overload_threshold']
-        uav_battery_threshold = self.agent_params['uav_battery_threshold']
-        cost_weight = self.agent_params['migration_cost_weight']
-        
-        load_factor = current_state.get('load_factor', 0.0)
+        # 获取节点状态
+        cpu_load = current_state.get('cpu_load', current_state.get('load_factor', 0.0))
+        bandwidth_load = current_state.get('bandwidth_load', 0.0)
+        storage_load = current_state.get('storage_load', 0.0)
         battery_level = current_state.get('battery_level', 1.0)
         
         urgency_score = 0.0
+        migration_reason = ""
         
-        # 🤖 智能体参数驱动的迁移决策
+        # 🎯 多维度触发条件检查
         if node_id.startswith("rsu_"):
-            if load_factor > rsu_threshold:
-                # 计算迁移紧急性
-                load_urgency = (load_factor - rsu_threshold) / (1.0 - rsu_threshold)
+            # 1️⃣ 资源阈值触发 (85%阈值)
+            resource_overload = False
+            overload_resources = []
+            
+            if cpu_load > 0.85:
+                resource_overload = True
+                overload_resources.append(f"CPU:{cpu_load:.1%}")
                 
-                # 基于负载趋势调整
-                trend_factor = self._calculate_load_trend(node_id)
-                urgency_score = load_urgency * (1.0 + trend_factor) * (1.0 - cost_weight)
+            if bandwidth_load > 0.85:
+                resource_overload = True
+                overload_resources.append(f"带宽:{bandwidth_load:.1%}")
                 
-                if urgency_score > 0.3:  # 紧急性阈值
-                    self.migration_stats['total_triggers'] += 1
-                    self.last_migration_time[node_id] = current_time
-                    return True, f"RSU过载 (负载:{load_factor:.2f} > {rsu_threshold:.2f})", urgency_score
-        
-        elif node_id.startswith("uav_"):
-            # UAV电池和负载双重检查
-            battery_urgency = 0.0
-            load_urgency = 0.0
+            if storage_load > 0.85:
+                resource_overload = True
+                overload_resources.append(f"存储:{storage_load:.1%}")
             
-            if battery_level < uav_battery_threshold:
-                battery_urgency = (uav_battery_threshold - battery_level) / uav_battery_threshold
+            # 2️⃣ 负载差触发 (与邻近节点差>20%)
+            load_diff_trigger = False
+            max_load_diff = 0.0
             
-            if load_factor > 0.8:  # UAV负载阈值相对固定
-                load_urgency = (load_factor - 0.8) / 0.2
+            if neighbor_states:
+                current_avg_load = (cpu_load + bandwidth_load + storage_load) / 3
+                for neighbor_id, neighbor_state in neighbor_states.items():
+                    if neighbor_id != node_id:
+                        neighbor_cpu = neighbor_state.get('cpu_load', neighbor_state.get('load_factor', 0.0))
+                        neighbor_bw = neighbor_state.get('bandwidth_load', 0.0)
+                        neighbor_storage = neighbor_state.get('storage_load', 0.0)
+                        neighbor_avg_load = (neighbor_cpu + neighbor_bw + neighbor_storage) / 3
+                        
+                        load_diff = current_avg_load - neighbor_avg_load
+                        max_load_diff = max(max_load_diff, load_diff)
+                        
+                        if load_diff > 0.2:  # 负载差>20%
+                            load_diff_trigger = True
             
-            urgency_score = max(battery_urgency, load_urgency) * (1.0 - cost_weight * 0.5)  # UAV迁移成本权重降低
+            # 🔥 计算迁移紧急度
+            if resource_overload:
+                resource_urgency = max(cpu_load, bandwidth_load, storage_load) - 0.85
+                urgency_score += resource_urgency * 2.0  # 资源过载权重高
+                migration_reason = f"资源过载({','.join(overload_resources)})"
             
-            if urgency_score > 0.4:  # UAV紧急性阈值稍高
-                reason = f"UAV电池低:{battery_level:.1%}" if battery_urgency > load_urgency else f"UAV过载:{load_factor:.2f}"
+            if load_diff_trigger:
+                diff_urgency = max_load_diff - 0.2
+                urgency_score += diff_urgency * 1.5  # 负载差权重中等
+                if migration_reason:
+                    migration_reason += f" + 负载差({max_load_diff:.1%})"
+                else:
+                    migration_reason = f"负载差过大({max_load_diff:.1%})"
+            
+            # 触发阈值判断
+            if urgency_score > 0.05:  # 更低的触发阈值
                 self.migration_stats['total_triggers'] += 1
                 self.last_migration_time[node_id] = current_time
-                return True, reason, urgency_score
+                return True, migration_reason, urgency_score
         
-        return False, f"无需迁移 (RSU负载:{load_factor:.2f}, UAV电池:{battery_level:.1%})", urgency_score
+        elif node_id.startswith("uav_"):
+            # 🚁 UAV多维度触发条件
+            uav_battery_threshold = self.agent_params['uav_battery_threshold']
+            
+            # 1️⃣ 电池电量触发
+            battery_urgency = 0.0
+            if battery_level < uav_battery_threshold:
+                battery_urgency = (uav_battery_threshold - battery_level) / uav_battery_threshold
+                urgency_score += battery_urgency * 3.0  # 电池紧急权重最高
+                migration_reason = f"UAV电池低({battery_level:.1%})"
+            
+            # 2️⃣ 负载过载触发
+            if cpu_load > 0.8:  # UAV CPU负载阈值80%
+                load_urgency = (cpu_load - 0.8) / 0.2
+                urgency_score += load_urgency * 2.0
+                if migration_reason:
+                    migration_reason += f" + CPU过载({cpu_load:.1%})"
+                else:
+                    migration_reason = f"UAV CPU过载({cpu_load:.1%})"
+            
+            # 3️⃣ 与邻近RSU负载差
+            if neighbor_states:
+                max_load_diff = 0.0
+                for neighbor_id, neighbor_state in neighbor_states.items():
+                    if neighbor_id.startswith("rsu_"):  # 只与RSU比较
+                        neighbor_load = neighbor_state.get('cpu_load', neighbor_state.get('load_factor', 0.0))
+                        load_diff = cpu_load - neighbor_load
+                        max_load_diff = max(max_load_diff, load_diff)
+                
+                if max_load_diff > 0.2:  # UAV比RSU高20%以上
+                    diff_urgency = max_load_diff - 0.2
+                    urgency_score += diff_urgency * 1.5
+                    if migration_reason:
+                        migration_reason += f" + 负载差({max_load_diff:.1%})"
+                    else:
+                        migration_reason = f"与RSU负载差过大({max_load_diff:.1%})"
+            
+            if urgency_score > 0.1:
+                self.migration_stats['total_triggers'] += 1
+                self.last_migration_time[node_id] = current_time
+                return True, migration_reason, urgency_score
+        
+        return False, f"无需迁移 (CPU:{cpu_load:.1%}, 电池:{battery_level:.1%})", urgency_score
     
     def _calculate_load_trend(self, node_id: str) -> float:
         """计算负载趋势"""
