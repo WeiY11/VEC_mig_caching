@@ -37,12 +37,12 @@ class CompleteSystemSimulator:
         # 仿真参数
         if self.sys_config is not None:
             self.simulation_time = getattr(self.sys_config, 'simulation_time', 1000)
-            self.time_slot = getattr(self.sys_config.network, 'time_slot_duration', 0.1)
-            self.task_arrival_rate = getattr(self.sys_config.task, 'arrival_rate', 0.8)
+            self.time_slot = getattr(self.sys_config.network, 'time_slot_duration', 0.2)  # 🚀 适应高负载时隙
+            self.task_arrival_rate = getattr(self.sys_config.task, 'arrival_rate', 2.5)  # 🚀 高负载到达率
         else:
             self.simulation_time = self.config.get('simulation_time', 1000)
-            self.time_slot = self.config.get('time_slot', 0.1)
-            self.task_arrival_rate = self.config.get('task_arrival_rate', 0.8)
+            self.time_slot = self.config.get('time_slot', 0.2)  # 🚀 高负载默认时隙
+            self.task_arrival_rate = self.config.get('task_arrival_rate', 2.5)  # 🚀 高负载默认到达率
         
         # 性能统计
         self.stats = {
@@ -188,19 +188,36 @@ class CompleteSystemSimulator:
             data_size_bytes = data_size_mb * 1e6
             computation_mips = np.random.exponential(80)  # 降低默认计算需求
             deadline_duration = np.random.uniform(0.5, 3.0)
+            compute_density = 400  # 设置默认密度
+        
+        # 🚀 12车辆高负载场景：任务复杂度增强
+        high_load_mode = self.config.get('high_load_mode', False)
+        if high_load_mode:
+            complexity_multiplier = self.config.get('task_complexity_multiplier', 2.0)
+            
+            # 增强计算需求
+            computation_mips *= complexity_multiplier
+            
+            # 适度增加数据大小（限制最大值避免过度）
+            data_size_mb = min(data_size_mb * 1.2, 3.0)
+            data_size_bytes = data_size_mb * 1e6
+            
+            # 增强计算密度
+            compute_density *= 1.1
         
         task = {
             'id': f'task_{self.task_counter}',
             'vehicle_id': vehicle_id,
             'arrival_time': self.current_time,
-            'data_size': data_size_mb,  # 兼容接口：MB
-            'data_size_bytes': data_size_bytes,  # 新字段：bytes
-            'computation_requirement': computation_mips,  # 兼容接口：MIPS
+            'data_size': data_size_mb,  # 🚀 高负载增强数据大小
+            'data_size_bytes': data_size_bytes,  # 🚀 高负载增强数据字节
+            'computation_requirement': computation_mips,  # 🚀 高负载增强计算需求
             'deadline': self.current_time + deadline_duration,
             'content_id': f'content_{np.random.randint(0, 100)}',
             'priority': np.random.uniform(0.1, 1.0),
             'task_type': task_type,  # 🔧 新增：任务类型标识
-            'compute_density': compute_density  # 🔧 新增：实际使用的计算密度
+            'compute_density': compute_density,  # 🚀 高负载增强计算密度
+            'complexity_multiplier': self.config.get('task_complexity_multiplier', 1.0)  # 🚀 复杂度标记
         }
         
         self.stats['total_tasks'] += 1
@@ -249,6 +266,197 @@ class CompleteSystemSimulator:
         else:
             self.stats['cache_misses'] += 1
             return False
+    
+    def check_cache_hit_adaptive(self, content_id: str, node: Dict, agents_actions: Dict = None) -> bool:
+        """🤖 智能体控制的自适应缓存检查"""
+        # 基础缓存检查
+        cache_hit = content_id in node.get('cache', {})
+        
+        # 更新统计
+        if cache_hit:
+            self.stats['cache_hits'] += 1
+        else:
+            self.stats['cache_misses'] += 1
+            
+            # 🤖 如果有智能体控制器，执行自适应缓存策略
+            if agents_actions and 'cache_controller' in agents_actions:
+                cache_controller = agents_actions['cache_controller']
+                
+                # 更新内容热度
+                cache_controller.update_content_heat(content_id)
+                cache_controller.record_cache_result(content_id, was_hit=False)
+                
+                # 检查是否应该缓存此内容
+                data_size = 1.0  # 默认大小MB
+                available_capacity = node.get('cache_capacity', 100) - len(node.get('cache', {}))
+                
+                should_cache, reason = cache_controller.should_cache_content(
+                    content_id, data_size, available_capacity
+                )
+                
+                if should_cache:
+                    # 执行缓存操作
+                    if 'cache' not in node:
+                        node['cache'] = {}
+                    node['cache'][content_id] = {
+                        'size': data_size,
+                        'timestamp': self.current_time,
+                        'reason': reason
+                    }
+        
+        # 记录缓存控制器统计
+        if agents_actions and 'cache_controller' in agents_actions and cache_hit:
+            cache_controller = agents_actions['cache_controller'] 
+            cache_controller.record_cache_result(content_id, was_hit=True)
+            cache_controller.update_content_heat(content_id)
+            
+        return cache_hit
+    
+    def _calculate_enhanced_load_factor(self, node: Dict, node_type: str) -> float:
+        """🚀 增强的负载因子计算 - 12车辆高负载场景优化"""
+        queue_length = len(node.get('computation_queue', []))
+        
+        # 根据节点类型设置容量参数
+        if node_type == 'RSU':
+            base_capacity = 6.0  # 12车辆高负载优化
+            queue_factor = queue_length / base_capacity
+        else:  # UAV
+            base_capacity = 3.5  # 12车辆高负载优化
+            queue_factor = queue_length / base_capacity
+        
+        # 多维度负载评估
+        cpu_utilization = min(0.9, queue_length * 0.2)  # CPU利用率
+        
+        # 缓存负载评估
+        cache_size = len(node.get('cache', {}))
+        cache_capacity = node.get('cache_capacity', 100)
+        memory_utilization = cache_size / max(cache_capacity, 1)
+        
+        # 任务复杂度影响
+        complexity_factor = 2.0  # 12车辆高负载场景复杂度
+        
+        # 加权综合负载
+        load_factor = (
+            0.7 * queue_factor * complexity_factor +  # 队列负载70%
+            0.25 * cpu_utilization +                  # CPU利用率25%  
+            0.05 * memory_utilization                 # 内存利用率5%
+        )
+        
+        return min(1.0, load_factor)  # 限制在[0,1]范围
+    
+    def check_adaptive_migration(self, agents_actions: Dict = None):
+        """🤖 智能体控制的自适应迁移检查"""
+        if not agents_actions or 'migration_controller' not in agents_actions:
+            return
+        
+        migration_controller = agents_actions['migration_controller']
+        
+        # 检查RSU迁移需求
+        for i, rsu in enumerate(self.rsus):
+            node_state = {
+                'load_factor': self._calculate_enhanced_load_factor(rsu, 'RSU'),
+                'battery_level': 1.0  # RSU不考虑电池
+            }
+            
+            # 更新节点负载历史
+            migration_controller.update_node_load(f'rsu_{i}', node_state['load_factor'])
+            
+            # 检查是否需要迁移
+            should_migrate, reason, urgency = migration_controller.should_trigger_migration(
+                f'rsu_{i}', node_state
+            )
+            
+            if should_migrate:
+                self.stats['migrations_executed'] = self.stats.get('migrations_executed', 0) + 1
+                
+                # 执行RSU间迁移
+                success = self.execute_rsu_migration(i, urgency)
+                if success:
+                    self.stats['migrations_successful'] = self.stats.get('migrations_successful', 0) + 1
+                    migration_controller.record_migration_result(True, cost=10.0, delay_saved=0.5)
+                else:
+                    migration_controller.record_migration_result(False)
+        
+        # 检查UAV迁移需求
+        for i, uav in enumerate(self.uavs):
+            node_state = {
+                'load_factor': self._calculate_enhanced_load_factor(uav, 'UAV'),
+                'battery_level': uav.get('battery_level', 1.0)
+            }
+            
+            # 更新节点负载历史
+            migration_controller.update_node_load(f'uav_{i}', node_state['load_factor'], node_state['battery_level'])
+            
+            # 检查是否需要迁移
+            should_migrate, reason, urgency = migration_controller.should_trigger_migration(
+                f'uav_{i}', node_state
+            )
+            
+            if should_migrate:
+                self.stats['migrations_executed'] = self.stats.get('migrations_executed', 0) + 1
+                
+                # UAV迁移到RSU
+                success = self.execute_uav_migration(i, urgency)
+                if success:
+                    self.stats['migrations_successful'] = self.stats.get('migrations_successful', 0) + 1
+                    migration_controller.record_migration_result(True, cost=20.0, delay_saved=1.0)
+                else:
+                    migration_controller.record_migration_result(False)
+    
+    def execute_rsu_migration(self, source_rsu_idx: int, urgency: float) -> bool:
+        """执行RSU间任务迁移"""
+        source_rsu = self.rsus[source_rsu_idx]
+        source_queue = source_rsu.get('computation_queue', [])
+        
+        if not source_queue:
+            return False
+        
+        # 找到负载最低的RSU
+        target_idx = min(range(len(self.rsus)), 
+                        key=lambda i: len(self.rsus[i].get('computation_queue', [])))
+        
+        if target_idx == source_rsu_idx:
+            return False
+        
+        # 迁移一定比例的任务
+        migration_ratio = min(0.5, urgency)  # 最多迁移50%的任务
+        tasks_to_migrate = int(len(source_queue) * migration_ratio)
+        
+        if tasks_to_migrate > 0:
+            target_rsu = self.rsus[target_idx]
+            if 'computation_queue' not in target_rsu:
+                target_rsu['computation_queue'] = []
+            
+            # 迁移任务
+            migrated_tasks = source_queue[:tasks_to_migrate]
+            source_rsu['computation_queue'] = source_queue[tasks_to_migrate:]
+            target_rsu['computation_queue'].extend(migrated_tasks)
+            
+            return True
+        
+        return False
+    
+    def execute_uav_migration(self, source_uav_idx: int, urgency: float) -> bool:
+        """执行UAV到RSU的任务迁移"""
+        source_uav = self.uavs[source_uav_idx]
+        source_queue = source_uav.get('computation_queue', [])
+        
+        if not source_queue:
+            return False
+        
+        # 找到负载最低的RSU
+        target_idx = min(range(len(self.rsus)), 
+                        key=lambda i: len(self.rsus[i].get('computation_queue', [])))
+        
+        # 迁移所有任务到RSU
+        target_rsu = self.rsus[target_idx]
+        if 'computation_queue' not in target_rsu:
+            target_rsu['computation_queue'] = []
+        
+        target_rsu['computation_queue'].extend(source_queue)
+        source_uav['computation_queue'] = []
+        
+        return True
     
     def calculate_transmission_delay(self, data_size: float, distance: float, tx_node_type: str = 'vehicle') -> float:
         """计算传输时延 - 基于SINR的完整3GPP模型"""
@@ -510,8 +718,8 @@ class CompleteSystemSimulator:
                 processing_node = vehicle
                 node_type = 'Vehicle'
         
-        # 检查缓存命中
-        cache_hit = self.check_cache_hit(task['content_id'], processing_node)
+        # 🤖 检查缓存命中（支持智能体控制）
+        cache_hit = self.check_cache_hit_adaptive(task['content_id'], processing_node, agents_actions)
         
         # 计算距离
         if node_type == 'Vehicle':
@@ -664,6 +872,9 @@ class CompleteSystemSimulator:
         
         # 更新移动性
         self.update_mobility()
+
+        # 🤖 检查智能体控制的自适应迁移
+        self.check_adaptive_migration(agents_actions)
 
         # 先推进在制任务（车辆跟随 + 过载到空闲），并按概率使用智能体偏好
         advanced_tasks = []
