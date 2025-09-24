@@ -16,8 +16,8 @@ class AlgorithmConfig:
             'gamma': 0.99,
             'tau': 0.005,
             'policy_delay': 2,
-            'noise_std': 0.1,
-            'noise_clip': 0.5,
+            'noise_std': 0.05,      # 降低噪声
+            'noise_clip': 0.3,      # 降低噪声裁剪
             'hidden_dim': 256,
             'batch_size': 128,
             'memory_size': 100000
@@ -29,7 +29,7 @@ class AlgorithmConfig:
             'critic_lr': 0.0003,
             'gamma': 0.99,
             'tau': 0.01,
-            'noise_std': 0.1,
+            'noise_std': 0.05,      # 降低噪声
             'hidden_dim': 256,
             'batch_size': 128,
             'memory_size': 100000

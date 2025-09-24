@@ -35,20 +35,20 @@ class RLConfig:
         self.tau = 0.005
         self.batch_size = 128
         self.memory_size = 100000
-        self.noise_std = 0.1
+        self.noise_std = 0.05          # 降低噪声标准差
         self.policy_delay = 2
-        self.noise_clip = 0.5
-        self.exploration_noise = 0.1
-        self.policy_noise = 0.2
-        self.target_noise = 0.2
+        self.noise_clip = 0.3           # 降低噪声裁剪
+        self.exploration_noise = 0.05   # 降低探索噪声
+        self.policy_noise = 0.1         # 降低策略噪声
+        self.target_noise = 0.1         # 降低目标噪声
         self.update_freq = 1
         self.buffer_size = 100000
         self.warmup_steps = 1000
         
-        # 奖励权重 - 对应论文目标函数权重
-        self.reward_weight_delay = 0.4     # ω_T: 时延权重
-        self.reward_weight_energy = 0.3    # ω_E: 能耗权重
-        self.reward_weight_loss = 0.3      # ω_D: 数据丢失权重
+        # 奖励权重 - 重新平衡以引导正确学习方向
+        self.reward_weight_delay = 0.5     # ω_T: 时延权重（提高，引导时延优化）
+        self.reward_weight_energy = 0.3    # ω_E: 能耗权重（适中）
+        self.reward_weight_loss = 0.2      # ω_D: 数据丢失权重（降低，避免过度惩罚）
         self.reward_weight_completion = 0.2
         self.reward_weight_cache = 0.1
 

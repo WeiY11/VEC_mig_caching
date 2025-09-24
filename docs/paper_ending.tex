@@ -95,16 +95,16 @@
 \end{itemize}
 
 \subsection{场景与基站部署说明}
-图~\ref{fig:system_architecture} 所示区域为一个“井”字型（九宫格）城市微场景，两条主干道路正交并延伸形成规则格局。系统中共有\textbf{6 个固定 RSU} 与 \textbf{2 架固定悬停无人机}，部署与功能如下：
+图~\ref{fig:system_architecture} 所示区域为一个"井"字型（九宫格）城市微场景，两条主干道路正交并延伸形成规则格局。系统中共有\textbf{6 个固定 RSU} 与 \textbf{2 架固定悬停无人机}，部署与功能如下：
 \begin{enumerate}
     \item \textbf{左上角 RSU}: 位于左上道路交叉口外侧路缘，覆盖该角落进入/转弯的车辆流量，提供基础卸载入口。
     \item \textbf{右上角 RSU}: 位于右上交汇处外侧，同时作为右半区域与空域链路锚点，支撑右上车辆及与附近无人机的地空通信。
     \item \textbf{左下角 RSU}: 部署在左下交叉口外侧，服务该路段的进出与等待车辆，减少其接入时延。
     \item \textbf{右下角 RSU}: 位于右下交叉口外侧，为右下区域车辆提供边缘接入与任务卸载处理。
     \item \textbf{中央 RSU}: 更靠近城市核心高楼集中区（任务/数据高产热点），具备较高计算与缓存能力，用于承载高并发卸载与结果集中缓存复用。
-    \item \textbf{中下位置 RSU}: 位于中心偏下方主干道路节点，起到纵向接入链路“补丁/平衡”作用，缓解中央 RSU 的峰值排队压力。
+    \item \textbf{中下位置 RSU}: 位于中心偏下方主干道路节点，起到纵向接入链路"补丁/平衡"作用，缓解中央 RSU 的峰值排队压力。
     \item \textbf{左上无人机 (UAV-A)}: 固定悬停在左上交叉口上空，不进行水平巡航。其作用：为左上区域车辆补充覆盖、承接高优先级或突发任务卸载、在角落 RSU 拥塞时分流部分计算。
-    \item \textbf{右下无人机 (UAV-B)}: 悬停于右下侧高楼上空（略偏下），在高楼遮挡条件下提供空中中继/“准移动基站”功能，增强链路视距条件，并为时延敏感迁移任务提供备用路径。
+    \item \textbf{右下无人机 (UAV-B)}: 悬停于右下侧高楼上空（略偏下），在高楼遮挡条件下提供空中中继/"准移动基站"功能，增强链路视距条件，并为时延敏感迁移任务提供备用路径。
 \end{enumerate}
 
 	extbf{缓存角色划分}: 中央 RSU 负责高复用结果集中缓存；外围四角及中下 RSU 仅缓存命中概率高的轻量结果；无人机只保留少量极低时延推理所需的关键中间/最终结果，避免其有限能量与存储被占满。
@@ -627,7 +627,7 @@ UAV 通信能耗包括接收任务数据和发送结果数据。
 \begin{itemize}
     \item $\mathbf{X}^t = \{x_{j,n}^t\}$, $\mathbf{Z}^t = \{z_{j,r}^t\}$, $\mathbf{B}^t = \{b_{link}^t\}$ 等代表在时隙 $t$ 的所有决策变量集合。
     \item $w_T, w_E, w_P$ 是用于平衡时延、能耗和任务成功率三个目标的非负权重系数，其和通常归一化为1 ($w_T + w_E + w_P = 1$)。这些权重可以根据不同的应用场景（例如，高续航场景 vs. 低延迟场景）进行调整。
-    \item $T_{total, j, n}^{\text{pred}}$ 是将任务 $j$ 分配给节点 $n$ 后的**预测总完成时延**，其计算方式已在第4节“处理模式评估框架”和第5节“通信与计算模型”中详细定义（例如，式 \ref{eq:T_total_u_revised}）。
+    \item $T_{total, j, n}^{\text{pred}}$ 是将任务 $j$ 分配给节点 $n$ 后的**预测总完成时延**，其计算方式已在第4节"处理模式评估框架"和第5节"通信与计算模型"中详细定义（例如，式 \ref{eq:T_total_u_revised}）。
     \item $E_{total}^t$ 是系统在时隙 $t$ 的**总能耗**，由式 \eqref{eq:E_total_t_final_revised_sec7} 给出，它是所有决策变量的函数。
     \item $(1 - \sum_{n \in \mathcal{N}} x_{j,n}^t)$ 是一个指示函数，当任务 $j$ 在时隙 $t$ 未被分配给任何节点（即被丢弃）时，其值为1，否则为0。
     \item $P_{drop,j}$ 是丢弃任务 $j$ 的惩罚成本，可以是一个较大的常数，也可以与任务的优先级或类型相关，以优先保证高优先级任务的完成。
@@ -735,7 +735,7 @@ UAV 通信能耗包括接收任务数据和发送结果数据。
 \end{equation}
 
 \subsection{低中断切换思路（工程实现）}
-在工程上将切换拆分为“异步准备 + 短暂收敛”两阶段：
+在工程上将切换拆分为"异步准备 + 短暂收敛"两阶段：
 \begin{enumerate}
   \item \textbf{目标预热与资源预留}：在目标侧预留 CPU/内存/带宽，预启动运行时并预取热点数据（通过缓存管理器实现）。
   \item \textbf{增量同步/小粒度传输}：根据链路质量自适应分块与压缩传输任务状态（在现实现中以迁移成本/时延建模近似）。
@@ -853,17 +853,17 @@ $h \leftarrow \mathrm{Heat}(c)$;\\
     \hline
     \textbf{实现文件/类} & \textbf{论文对应术语/符号} & \textbf{论文小节/式号} \\
     \hline
-    \texttt{common/enhanced\_task\_migration\_manager.py} & 任务迁移模型、迁移类型（RSU$\rightarrow$RSU/RSU$\rightarrow$UAV/UAV$\rightarrow$RSU/Vehicle-Follow/Preemptive） & §“任务迁移模型与低中断切换” \\
+    \texttt{common/enhanced\_task\_migration\_manager.py} & 任务迁移模型、迁移类型（RSU$\rightarrow$RSU/RSU$\rightarrow$UAV/UAV$\rightarrow$RSU/Vehicle-Follow/Preemptive） & §"任务迁移模型与低中断切换" \\
     MigrationType Enum & 迁移类型集合 & 同上 \\
     \_calculate\_target\_score() & 目标评分 $\mathrm{score}(s,t)$（负载+距离加权） & 式(30) \\
     \_calculate\_migration\_cost/delay/success\_prob() & $C_{\mathrm{mig}}$、$T_{\mathrm{mig}}$、$p_{\mathrm{succ}}$ 启发式 & 式(31-33) 附近 \\
-    migration\_config.py & 阈值/权重/超时/冷却/带宽等配置 & “关键超参数与默认值” \\
-    common/bandwidth\_allocator.py & 迁移流量带宽最小份额（保底） & “低中断切换思路（工程实现）” \\
-    common/enhanced\_cache\_manager.py & 边缘缓存（LRU/LFU/FIFO/HYBRID、预取、统计、奖励） & §“边缘缓存模型与策略实现” \\
+    migration\_config.py & 阈值/权重/超时/冷却/带宽等配置 & "关键超参数与默认值" \\
+    common/bandwidth\_allocator.py & 迁移流量带宽最小份额（保底） & "低中断切换思路（工程实现）" \\
+    common/enhanced\_cache\_manager.py & 边缘缓存（LRU/LFU/FIFO/HYBRID、预取、统计、奖励） & §"边缘缓存模型与策略实现" \\
     common/dynamic\_cache\_strategy.py & 历史+时间槽热度、协作、背包、四类动作 & 式(35-37) 与决策逻辑 \\
     resource\_config.py / constraints\_config.py & 总带宽、最小份额、容量/稳定性约束等 & §系统约束与资源映射 \\
-    DRL 奖励整形（相关模块） & $R_{\mathrm{cache}}$ 与全局目标中的成本项 & “缓存奖励与成本整形” \\
-    config.py（Env/Algo） & 默认参数、训练相关超参 & “关键超参数与默认值” \\
+    DRL 奖励整形（相关模块） & $R_{\mathrm{cache}}$ 与全局目标中的成本项 & "缓存奖励与成本整形" \\
+    config.py（Env/Algo） & 默认参数、训练相关超参 & "关键超参数与默认值" \\
     \hline
   \end{tabular}
   \caption{实现与论文表述对照表（核心模块到符号/小节的映射）。}
@@ -939,17 +939,20 @@ $h \leftarrow \mathrm{Heat}(c)$;\\
 
 \subsection{目标函数}
 
-我们的优化目标是最小化在时间跨度 $T$ 内（包含多个时隙）系统总成本的长期期望值。该成本函数是一个加权和，包含了任务时延、系统能耗以及因各种原因（如超时、队列溢出）导致的数据丢失。
+我们的优化目标是最小化在时间跨度 $T$ 内（包含多个时隙）系统总成本的长期期望值。该成本函数是一个加权和，包含了**平均任务时延**、**总能耗**以及**任务失败率**。
 
-设 $\mathcal{J}_{succ}^t$ 为在时隙 $t$ 成功完成的任务集合，$\mathcal{J}_{dropped}^t$ 为在时隙 $t$ 被丢弃的任务集合。优化问题 (P1) 可以表述为：
+设 $\mathcal{J}_{succ}^t$ 为在时隙 $t$ 成功完成的任务集合，$\mathcal{J}_{arrived}^t$ 为在时隙 $t$ 到达的任务集合，$\mathcal{J}_{failed}^t$ 为在时隙 $t$ 失败（丢弃或超过截止时间）的任务集合。优化问题 (P1) 重构为：
 
 \begin{equation}
 \label{eq:objective_function_data_loss}
-\min_{\mathbf{X}, \mathbf{B}, \mathbf{Z}, \mathbf{D}} \lim_{T \to \infty} \frac{1}{T} \mathbb{E} \left[ \sum_{t=0}^{T-1} \left( \omega_T \sum_{j \in \mathcal{J}_{succ}^t} T_{total,j} + \omega_E E_{total}^t + \omega_D \sum_{j \in \mathcal{J}_{dropped}^t} D_j \right) \right]
+\min_{\mathbf{X}, \mathbf{R}, \mathbf{Z}} \lim_{T \to \infty} \frac{1}{T} \mathbb{E} \Bigg[ \sum_{t=0}^{T-1} \Big( 
+\, \omega_T \, L_{\mathrm{norm}}^t 
+\; + \; \omega_E \, \frac{E_{total}^t}{E_{\mathrm{ref}}} 
+\; + \; \omega_D \, \mathrm{FailRate}^t \Big) \Bigg]
 \end{equation}
 其中：
 \begin{itemize}
-    \item $\mathbf{X} = \{x_{j,n}^t\}$, $\mathbf{B} = \{b_{link}^t\}$, $\mathbf{Z} = \{z_{j,r}^t\}$, $\mathbf{D} = \{D_{\cdot}^t\}$ 分别代表所有时隙内的任务分配、带宽分配、缓存决策和数据流控制决策变量集合。
+    \item $\mathbf{X} = \{x_{j,n}^t\}$，$\mathbf{R} = \{b_{link}^t,\, \mu_n^t,\, \nu_{n,n'}^t\}$，$\mathbf{Z} = \{z_{j,r}^t\}$ 分别代表所有时隙内的任务分配/路由、资源管理（带宽分配、节点激活、迁移链路开关）与缓存决策变量集合。\\ 数据流量由 $\mathbf{X}$ 所诱导（例如 $x_{j,n}^t=1$ 则上传 $D_j$），无需单独定义 $\mathbf{D}$ 变量。
     \item $\omega_T, \omega_E, \omega_D$ 是非负权重系数，用于平衡时延、能耗和数据丢失量三者之间的重要性。这些权重可以根据不同的应用场景进行调整（例如，在要求高可靠性的场景中增大 $\omega_D$）。
     \item $\sum_{j \in \mathcal{J}_{succ}^t} T_{total,j}$ 是在时隙 $t$ 内所有成功完成任务的总时延。$T_{total,j}$ 是任务 $j$ 的端到端完成时延。
     \item $E_{total}^t$ 是系统在时隙 $t$ 的总能耗，由式 \eqref{eq:E_total_t_final_revised_sec7} 给出。
@@ -957,14 +960,67 @@ $h \leftarrow \mathrm{Heat}(c)$;\\
 \end{itemize}
 
 该目标函数旨在寻找一个长期策略，该策略能够在动态变化的环境中智能地做出决策，从而在任务完成时延、系统能耗和数据丢失率之间实现最佳权衡。
-\subsection{决策变量}
-优化问题需要确定的决策变量集合包括：
+\paragraph{关于迁移决策变量的说明与优化维度补充}
+为避免歧义，现明确本问题的联合优化维度（动作空间）包含下列变量；其中迁移相关变量已在(P1)中纳入，通过时延与能耗项影响目标函数，无需将“迁移成功率/缓存命中率”单独作为优化目标：
 \begin{itemize}
-    \item \textbf{任务分配决策} ($x_{j,n}^t$): 决定哪个任务在哪个节点上处理。
-    \item \textbf{数据流控制决策} ($D_{\cdot}^t$): 决定在本地处理、卸载到RSU/UAV或在RSU间迁移的数据量。
-    \item \textbf{资源管理决策} ($b_{link}^t, \mu_r^t, \nu_{r,r'}^t$): 决定通信带宽的分配以及计算单元和迁移链路的激活状态。
-    \item \textbf{缓存管理决策} ($z_{j,r}^t$): 决定哪些任务结果应被缓存以备使用。
+    \item 任务路由/分配决策：$\{x_{j,n}^t\}$（车辆本地/RSU/UAV）。
+    \item 迁移链路开关：$\{\nu_{n,n'}^t\}$，控制是否激活 $n\!\to\!n'$ 的迁移路径（见式\eqref{eq:Rate_mig_revised_sec5}–\eqref{eq:D_mig_revised_sec5}）。
+    \item 迁移数据流量：$\{D_{mig,r,r',l,p}^t\}$，控制RSU间状态/任务数据的迁移量，与带宽与流守恒共同约束（见\eqref{eq:flow_conservation}）。
+    \item 带宽分配：$\{b_{link}^t\}$，覆盖V2I/V2U/U2V/回程（迁移）链路（见\eqref{eq:Rate_revised_sec5}, \eqref{eq:Rate_mig_revised_sec5}）。
+    \item 节点激活：$\{\mu_n^t\}$，用于节能（RSU/UAV按需开关）。
+    \item 缓存决策：$\{z_{j,r}^t\}$，结果级缓存的二元选择及其容量约束（见\eqref{eq:cache_capacity}）。
 \end{itemize}
+上述变量经由约束\eqref{eq:bandwidth_up}–\eqref{eq:bandwidth_down}、\eqref{eq:cache_capacity}、\eqref{eq:queue_capacity_hard}、\eqref{eq:energy_budget}、\eqref{eq:flow_conservation}、\eqref{eq:processing_capacity} 与 \eqref{eq:sinr_soft} 等共同作用于 $T_{total}$ 与 $E_{total}$，从而隐式地对“迁移是否执行、迁往何处、分配多少带宽/数据量”进行优化。迁移造成的短暂 downtime 亦已通过迁移延迟与排队耦合进入 $T_{total}$（参见第6节与式\eqref{eq:E_total_t_final_revised_sec7}）。
+
+\paragraph{训练奖励与目标的一致性}
+为与强化学习训练保持严格一致，建议将每时隙奖励定义为目标函数的相反数（与实现保持一致）：
+\begin{equation}
+\label{eq:rl_reward_alignment}
+R_t \;=\; -\Big(\, \omega_T \, L_{\mathrm{norm}}^t \; + \; \omega_E \, \tfrac{E_{total}^t}{E_{\mathrm{ref}}} \; + \; \omega_D \, \mathrm{FailRate}^t \Big).
+\end{equation}
+若引入辅助整形（如对负载均衡或参数探索的轻量奖励），应保证不改变总体优化方向，即不削弱对“时延、能耗、数据丢失”三者的主导权重；整形项宜小于主成本幅度的5–10%。
+
+\paragraph{3GPP一致性与参数建议}
+为确保与3GPP NR蜂窝链路建模一致（参考3GPP TR 38.901/38.306），本模型的速率/路径损耗/SINR已在第5.2节按香农容量与LoS/NLoS混合路径损耗给出。为便于复现与部署，给出可行的默认参数建议（实际值可按场景调参）：
+\begin{itemize}
+    \item 载波频率 $f_c\in[3.3,3.8]$ GHz（典型3.5 GHz）；编码效率 $\eta_{coding}\in[0.85,0.95]$；噪声谱密度 $N_0\approx -174$ dBm/Hz；
+    \item 最小SINR门限 $\gamma_{\min}\in[-5,0]$ dB（URLLC场景取高，eMBB取低）；
+    \item 回程/迁移链路带宽 $B_{k,k'}^t$ 取决于部署（10–100 Mbps 常见），但必须计入总带宽预算与干扰模型；
+    \item LoS/NLoS阴影衰落标准差按城区典型值3–8 dB（与式\eqref{eq:path_loss_LoS}–\eqref{eq:path_loss_NLoS}一致）。
+\end{itemize}
+上述设置保证“带宽/SINR/速率/能耗”链路符合3GPP口径，使优化在现实通信约束下成立。
+
+\paragraph{权重选择与附加工程约束建议}
+考虑到本工作的最终目标是最小化“时延、能耗、数据丢失”，而缓存率/迁移成功率仅为手段，建议权重范围：$\omega_T\in[0.5,0.7]$，$\omega_E\in[0.2,0.4]$，$\omega_D\in[0.1,0.3]$（需归一化，按业务侧重点微调）。为提升系统稳定性，可在实现层面加入下列工程性约束/策略（作为软约束或调度规则）：
+\begin{itemize}
+    \item 迁移冷却期与并发上限：同一节点相邻两次迁移间隔 $\ge T_{cool}$；系统并发迁移数 $\le M_{max}$，避免迁移风暴；
+    \item 带宽最小保底：为迁移与关键V2I链路保留 $b_{min}$，避免被抢占导致SLA违约；
+    \item 队列稳定性安全裕度：将\eqref{eq:queue_stability} 的阈值从1收紧到 $\rho_{max}<1$（如0.9），降低爆盘风险。
+\end{itemize}
+\subsection{决策变量}
+
+为了最小化目标函数 \eqref{eq:objective_function_data_loss}，系统需要在每个决策周期内确定一组最优的动作。这些动作对应于以下核心决策变量：
+
+\begin{itemize}
+    \item \textbf{任务路由与分配决策 ($\mathbf{X}^t$)}: 这是最核心的决策变量集合，决定了每个任务数据的流向和处理位置。
+    \begin{itemize}
+        \item $x_{j,n}^t \in \{0, 1\}$: 决定任务 $j$ 是否在时隙 $t$ 被分配给节点 $n$（包括车辆本地、RSU或UAV）进行处理。
+        \item $\nu_{n,n'}^t \in \{0, 1\}$: 决定是否激活从节点 $n$ 到 $n'$ 的迁移路径，用于处理已在系统中排队的任务。
+    \end{itemize}
+
+    \item \textbf{资源管理决策 ($\mathbf{R}^t$)}: 决定如何分配有限的物理资源来支持任务处理和数据传输。
+    \begin{itemize}
+        \item $b_{link}^t \ge 0$: 为每个活跃的通信链路（如V2I、V2U、RSU间）分配具体的带宽资源。
+        \item $\mu_n^t \in \{0, 1\}$: 决定是否激活某个计算节点 $n$ 的处理单元，用于节能控制。
+    \end{itemize}
+
+    \item \textbf{缓存管理决策 ($\mathbf{Z}^t$)}: 这是一个长期的策略性决策，旨在通过缓存常用计算结果来降低未来任务的时延和计算开销。
+    \begin{itemize}
+        \item $z_{j,r}^t \in \{0, 1\}$: 决定RSU $r$ 是否应该缓存任务 $j$ 的计算结果。
+    \end{itemize}
+\end{itemize}
+
+这些决策变量共同构成了一个复杂的动作空间。数据流（例如卸载的数据量）是这些决策变量作用下的直接结果，而非独立的决策变量。
 
 \textbf{约束条件}:
 \begin{align}

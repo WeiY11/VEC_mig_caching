@@ -60,7 +60,7 @@ class SingleAgentTrainingEnvironment:
     
     def __init__(self, algorithm: str):
         self.algorithm = algorithm.upper()
-        self.simulator = CompleteSystemSimulator({"num_vehicles": 12, "num_rsus": 6, "num_uavs": 2, "task_arrival_rate": 2.5, "time_slot": 0.2, "simulation_time": 1000, "computation_capacity": 800, "bandwidth": 15, "cache_capacity": 80, "transmission_power": 0.15, "computation_power": 1.2, "high_load_mode": True, "task_complexity_multiplier": 8.0, "rsu_load_divisor": 5.0, "uav_load_divisor": 2.5, "enhanced_task_generation": True})
+        self.simulator = CompleteSystemSimulator({"num_vehicles": 12, "num_rsus": 6, "num_uavs": 2, "task_arrival_rate": 1.8, "time_slot": 0.2, "simulation_time": 1000, "computation_capacity": 800, "bandwidth": 15, "cache_capacity": 80, "transmission_power": 0.15, "computation_power": 1.2, "high_load_mode": True, "task_complexity_multiplier": 6.0, "rsu_load_divisor": 4.0, "uav_load_divisor": 2.0, "enhanced_task_generation": True})
         
         # 🤖 初始化自适应控制组件
         self.adaptive_cache_controller = AdaptiveCacheController()
@@ -87,6 +87,8 @@ class SingleAgentTrainingEnvironment:
         self.episode_metrics = {
             'avg_delay': [],
             'total_energy': [],
+            'data_loss_bytes': [],
+            'data_loss_ratio_bytes': [],
             'task_completion_rate': [],
             'cache_hit_rate': [],
             'migration_success_rate': []
@@ -149,7 +151,8 @@ class SingleAgentTrainingEnvironment:
         system_metrics = {
             'avg_task_delay': 0.0,
             'total_energy_consumption': 0.0,
-            'data_loss_rate': 0.0,
+            'data_loss_bytes': 0.0,
+            'data_loss_ratio_bytes': 0.0,
             'cache_hit_rate': 0.0,
             'migration_success_rate': 0.0
         }
@@ -157,6 +160,8 @@ class SingleAgentTrainingEnvironment:
         # 🔧 修复：重置能耗追踪器，避免跨episode累积
         if hasattr(self, '_last_total_energy'):
             delattr(self, '_last_total_energy')
+        # 设置本episode能耗基线（用于计算增量能耗）
+        self._episode_energy_base = 0.0
         
         # 获取初始状态向量
         state = self.agent_env.get_state_vector(node_states, system_metrics)
@@ -263,18 +268,24 @@ class SingleAgentTrainingEnvironment:
                 return default
             return max(0.0, value)  # 确保非负
         
-        # 🔧 修复：任务完成率计算 - 使用累计统计而非单步数据
-        # generated_tasks 是本步新生成的，processed_tasks 是累计完成的
-        new_generated = max(1, int(safe_get('generated_tasks', 1)))  # 本步生成
+        # 🔧 修复：使用episode级别统计而非累积统计，避免奖励累积恶化
+        # 计算本episode的增量统计
         total_processed = int(safe_get('processed_tasks', 0))  # 累计完成
-        total_dropped = int(safe_get('dropped_tasks', 0))  # 累计丢弃
+        total_dropped = int(safe_get('dropped_tasks', 0))  # 累计丢弃（数量）
         
-        # 累计总任务数 = 已完成 + 已丢弃 + 在制中
-        active_count = int(safe_get('active_tasks_count', 0))  # 在制任务数
-        total_generated = total_processed + total_dropped + active_count
+        # 计算本episode增量
+        episode_processed = total_processed - getattr(self, '_episode_processed_base', 0)
+        episode_dropped = total_dropped - getattr(self, '_episode_dropped_base', 0)
         
-        # 完成率 = 已完成 / 总任务数
-        completion_rate = min(1.0, total_processed / max(1, total_generated)) if total_generated > 0 else 0.0
+        # 数据丢失量：使用本episode增量
+        current_generated_bytes = float(step_stats.get('generated_data_bytes', 0.0))
+        current_dropped_bytes = float(step_stats.get('dropped_data_bytes', 0.0))
+        episode_generated_bytes = current_generated_bytes - getattr(self, '_episode_generated_bytes_base', 0.0)
+        episode_dropped_bytes = current_dropped_bytes - getattr(self, '_episode_dropped_bytes_base', 0.0)
+        
+        # 计算本episode任务总数和完成率（避免累积效应）
+        episode_total = episode_processed + episode_dropped
+        completion_rate = episode_processed / max(1, episode_total) if episode_total > 0 else 1.0
         
         cache_hits = int(safe_get('cache_hits', 0))
         cache_misses = int(safe_get('cache_misses', 0))
@@ -289,22 +300,33 @@ class SingleAgentTrainingEnvironment:
         # 限制延迟在合理范围内（关键修复）
         avg_delay = np.clip(avg_delay, 0.01, 5.0)  # 扩大到0.01-5.0秒范围，适应跨时隙处理
         
-        # 🔧 修复：使用能耗增量而非累积值，确保奖励计算正确
+        # 🔧 修复能耗计算：使用真实累积能耗并转换为本episode增量
         current_total_energy = safe_get('total_energy', 0.0)
         
-        # 计算本步能耗增量
-        if not hasattr(self, '_last_total_energy'):
-            self._last_total_energy = 0.0
+        # 初始化本episode各项统计基线
+        if not hasattr(self, '_episode_energy_base_initialized'):
+            self._episode_energy_base = current_total_energy
+            self._episode_processed_base = total_processed
+            self._episode_dropped_base = total_dropped
+            self._episode_generated_bytes_base = current_generated_bytes
+            self._episode_dropped_bytes_base = current_dropped_bytes
+            self._episode_energy_base_initialized = True
         
-        step_energy = current_total_energy - self._last_total_energy
-        step_energy = max(0.0, step_energy)  # 确保非负
-        self._last_total_energy = current_total_energy
+        # 计算本episode增量能耗（防止负值与异常）
+        if current_total_energy <= 0.0:
+            # 仿真器能耗异常时的保底估算
+            completed_tasks = self.simulator.stats.get('completed_tasks', 0) if hasattr(self, 'simulator') else 0
+            estimated_energy = max(0.0, completed_tasks * 15.0)
+            total_energy = estimated_energy
+            print(f"⚠️ 仿真器能耗为0，使用估算能耗: {total_energy:.1f}J")
+        else:
+            episode_incremental_energy = max(0.0, current_total_energy - getattr(self, '_episode_energy_base', 0.0))
+            total_energy = episode_incremental_energy
         
-        # 记录累积能耗用于显示，但用增量计算奖励
-        total_energy = step_energy  # 🔧 关键修复：奖励使用增量能耗
-        
-        # 🔧 修复：数据丢失率计算 - 使用累计统计
-        data_loss_rate = min(1.0, total_dropped / max(1, total_generated)) if total_generated > 0 else 0.0
+        # 🔧 修复：使用episode级别数据丢失量，避免累积效应
+        data_loss_bytes = max(0.0, episode_dropped_bytes)
+        data_generated_bytes = max(1.0, episode_generated_bytes)
+        data_loss_ratio_bytes = min(1.0, data_loss_bytes / data_generated_bytes) if data_generated_bytes > 0 else 0.0
         
         # 迁移成功率（来自仿真器统计）
         migrations_executed = int(safe_get('migrations_executed', 0))
@@ -329,7 +351,8 @@ class SingleAgentTrainingEnvironment:
         return {
             'avg_task_delay': avg_delay,
             'total_energy_consumption': total_energy,
-            'data_loss_rate': data_loss_rate,
+            'data_loss_bytes': data_loss_bytes,
+            'data_loss_ratio_bytes': data_loss_ratio_bytes,
             'task_completion_rate': completion_rate,
             'cache_hit_rate': cache_hit_rate,
             'migration_success_rate': migration_success_rate,
@@ -349,6 +372,13 @@ class SingleAgentTrainingEnvironment:
         
         # 重置环境
         state = self.reset_environment()
+        
+        # 🔧 重置episode步数跟踪，修复能耗计算
+        self._current_episode_step = 0
+        
+        # 重置episode统计基线标记
+        if hasattr(self, '_episode_energy_base_initialized'):
+            delattr(self, '_episode_energy_base_initialized')
         
         episode_reward = 0.0
         episode_info = {}
@@ -382,6 +412,9 @@ class SingleAgentTrainingEnvironment:
                     # 处理可能的元组返回
                     actions_dict = actions_result[0] if isinstance(actions_result, tuple) else actions_result
                 action = self._encode_continuous_action(actions_dict)
+            
+            # 🔧 更新episode步数计数器
+            self._current_episode_step += 1
             
             # 执行动作（将动作字典传入以影响仿真器卸载偏好）
             next_state, reward, done, info = self.step(action, state, actions_dict)
@@ -725,6 +758,8 @@ def train_single_algorithm(algorithm: str, num_episodes: Optional[int] = None, e
         metric_mapping = {
             'avg_task_delay': 'avg_delay',
             'total_energy_consumption': 'total_energy',
+            'data_loss_bytes': 'data_loss_bytes',
+            'data_loss_ratio_bytes': 'data_loss_ratio_bytes',
             'task_completion_rate': 'task_completion_rate',
             'cache_hit_rate': 'cache_hit_rate', 
             'migration_success_rate': 'migration_success_rate'
