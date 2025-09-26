@@ -183,8 +183,17 @@ class FullExperimentRunner:
                 num_episodes=20,
                 episode_length=200,
                 num_vehicles=20,
-                num_rsus=6,
-                num_uavs=3
+                num_rsus=4,
+                num_uavs=2
+            ),
+            ExperimentConfig(
+                name="Stress-HighDensity",
+                description="高密度交通压力测试",
+                num_episodes=20,
+                episode_length=200,
+                num_vehicles=20,
+                num_rsus=4,
+                num_uavs=2
             )
         ]
     

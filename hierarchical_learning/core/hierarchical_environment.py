@@ -38,8 +38,8 @@ class HierarchicalEnvironment:
         self.config = env_config
         
         # 环境基本参数
-        self.num_rsus = env_config.get('num_rsus', 5)
-        self.num_uavs = env_config.get('num_uavs', 3)
+        self.num_rsus = env_config.get('num_rsus', 4)
+        self.num_uavs = env_config.get('num_uavs', 2)
         self.num_vehicles = env_config.get('num_vehicles', 50)
         self.area_size = env_config.get('area_size', (2000, 2000))  # 区域大小(m)
         

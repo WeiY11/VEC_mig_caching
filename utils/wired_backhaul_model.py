@@ -63,20 +63,17 @@ class WiredBackhaulModel:
         - 其他RSU通过光纤环网或星型网络连接到中央RSU
         """
         topology = {
-            # 中央RSU作为网络汇聚点
+            # 中央RSU作为网络汇聚点（保留RSU_2为中心）
             'RSU_2': {
                 'type': 'central_hub',
                 'connected_to': ['core_router'],
                 'fiber_links': {
                     'RSU_0': {'distance_km': 0.8, 'capacity_gbps': 10.0, 'hops': 1},
-                    'RSU_1': {'distance_km': 1.2, 'capacity_gbps': 10.0, 'hops': 1},
-                    'RSU_3': {'distance_km': 0.9, 'capacity_gbps': 10.0, 'hops': 1},
-                    'RSU_4': {'distance_km': 1.1, 'capacity_gbps': 10.0, 'hops': 1},
-                    'RSU_5': {'distance_km': 0.5, 'capacity_gbps': 10.0, 'hops': 1},
+                    'RSU_1': {'distance_km': 1.0, 'capacity_gbps': 10.0, 'hops': 1},
+                    'RSU_3': {'distance_km': 0.9, 'capacity_gbps': 10.0, 'hops': 1}
                 }
             },
-            
-            # 接入RSU - 星型拓扑连接到中央RSU
+            # 接入RSU - 星型拓扑连接到中央RSU（共3个接入：0、1、3）
             'RSU_0': {
                 'type': 'access_node',
                 'connected_to': ['RSU_2'],
@@ -88,7 +85,7 @@ class WiredBackhaulModel:
                 'type': 'access_node', 
                 'connected_to': ['RSU_2'],
                 'fiber_links': {
-                    'RSU_2': {'distance_km': 1.2, 'capacity_gbps': 10.0, 'hops': 1}
+                    'RSU_2': {'distance_km': 1.0, 'capacity_gbps': 10.0, 'hops': 1}
                 }
             },
             'RSU_3': {
@@ -96,20 +93,6 @@ class WiredBackhaulModel:
                 'connected_to': ['RSU_2'],
                 'fiber_links': {
                     'RSU_2': {'distance_km': 0.9, 'capacity_gbps': 10.0, 'hops': 1}
-                }
-            },
-            'RSU_4': {
-                'type': 'access_node',
-                'connected_to': ['RSU_2'],
-                'fiber_links': {
-                    'RSU_2': {'distance_km': 1.1, 'capacity_gbps': 10.0, 'hops': 1}
-                }
-            },
-            'RSU_5': {
-                'type': 'access_node',
-                'connected_to': ['RSU_2'],
-                'fiber_links': {
-                    'RSU_2': {'distance_km': 0.5, 'capacity_gbps': 10.0, 'hops': 1}
                 }
             }
         }
@@ -442,8 +425,7 @@ if __name__ == "__main__":
     # 测试不同RSU间的传输
     test_cases = [
         ("RSU_0", "RSU_1", 5.0),   # 通过中央RSU中转
-        ("RSU_2", "RSU_3", 3.0),   # 中央RSU直连
-        ("RSU_4", "RSU_5", 2.0),   # 通过中央RSU中转
+        ("RSU_2", "RSU_3", 3.0)    # 中央RSU直连
     ]
     
     for source, target, data_size in test_cases:

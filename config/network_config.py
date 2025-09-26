@@ -20,7 +20,7 @@ class NetworkConfig:
         
         # RSU配置
         self.rsu_config = {
-            'num_rsus': 6,
+            'num_rsus': 4,
             'coverage_radius': 200,      # m
             'transmission_power': 1.0,   # W
             'computation_capacity': 1000, # MIPS

@@ -161,7 +161,7 @@ class VECStateSpace:
                 vehicle_state = [0.5, 0.5, 0.0, 0.0, 0.5]
             state_components.extend(vehicle_state)
         
-        # 2. RSU状态 (6RSU × 4维 = 24维)
+        # 2. RSU状态 (按配置数量 × 4维)
         for i in range(self.num_rsus):
             rsu_id = f'rsu_{i}'
             if rsu_id in node_states:
@@ -176,7 +176,7 @@ class VECStateSpace:
                 rsu_state = [0.5, 0.5, 0.5, 0.5]
             state_components.extend(rsu_state)
         
-        # 3. UAV状态 (2UAV × 4维 = 8维)
+        # 3. UAV状态 (按配置数量 × 4维)
         for i in range(self.num_uavs):
             uav_id = f'uav_{i}'
             if uav_id in node_states:

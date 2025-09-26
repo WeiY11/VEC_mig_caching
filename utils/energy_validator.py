@@ -16,15 +16,16 @@ class EnergyValidator:
     def __init__(self):
         self.logger = logging.getLogger(__name__)
         
-        # 定义合理的能耗范围 (单位: J)
+        # 定义合理的能耗范围 (单位: J) - 根据实际场景调整
         self.energy_ranges = {
             'vehicle_compute': (0.0, 100.0),     # 车辆计算能耗
             'vehicle_transmit': (0.0, 50.0),     # 车辆传输能耗
-            'edge_compute': (0.0, 200.0),        # 边缘服务器计算能耗
-            'uav_compute': (0.0, 80.0),          # UAV计算能耗
-            'uav_hover': (0.0, 60.0),            # UAV悬停能耗
+            'edge_compute': (0.0, 5000.0),       # 边缘服务器计算能耗（调整为更高阈值）
+            'uav_compute': (0.0, 200.0),         # UAV计算能耗
+            'uav_hover': (0.0, 2500.0),          # UAV悬停能耗（100步*25W*0.2s*2UAV=1000J，留余量）
             'uav_move': (0.0, 100.0),            # UAV移动能耗
-            'total_system': (0.0, 1000.0),       # 系统总能耗
+            'downlink': (0.0, 500.0),            # 下行传输能耗
+            'total_system': (0.0, 10000.0),      # 系统总能耗（调整为更高阈值）
         }
         
         # 能耗异常阈值

@@ -31,7 +31,7 @@ from hierarchical_learning.core.operational_layer import OperationalLayer
 from hierarchical_learning.config.hierarchical_config import create_hierarchical_config
 
 # 导入现有模块用于对比
-from evaluation.test_complete_system import CompleteSystemSimulator
+from evaluation.system_simulator import CompleteSystemSimulator
 from algorithms.matd3 import MATD3Environment
 from single_agent.sac import SACEnvironment
 from single_agent.td3 import TD3Environment

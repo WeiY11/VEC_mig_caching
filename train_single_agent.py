@@ -21,7 +21,7 @@ from typing import Dict, List, Tuple, Optional
 
 # 导入核心模块
 from config import config
-from evaluation.test_complete_system import CompleteSystemSimulator
+from evaluation.system_simulator import CompleteSystemSimulator
 from utils import MovingAverage
 # 🤖 导入自适应控制组件
 from utils.adaptive_control import AdaptiveCacheController, AdaptiveMigrationController, map_agent_actions_to_params
@@ -60,7 +60,7 @@ class SingleAgentTrainingEnvironment:
     
     def __init__(self, algorithm: str):
         self.algorithm = algorithm.upper()
-        self.simulator = CompleteSystemSimulator({"num_vehicles": 12, "num_rsus": 6, "num_uavs": 2, "task_arrival_rate": 1.8, "time_slot": 0.2, "simulation_time": 1000, "computation_capacity": 800, "bandwidth": 15, "cache_capacity": 80, "transmission_power": 0.15, "computation_power": 1.2, "high_load_mode": True, "task_complexity_multiplier": 6.0, "rsu_load_divisor": 4.0, "uav_load_divisor": 2.0, "enhanced_task_generation": True})
+        self.simulator = CompleteSystemSimulator({"num_vehicles": 12, "num_rsus": 4, "num_uavs": 2, "task_arrival_rate": 1.8, "time_slot": 0.2, "simulation_time": 1000, "computation_capacity": 800, "bandwidth": 15, "cache_capacity": 80, "transmission_power": 0.15, "computation_power": 1.2, "high_load_mode": True, "task_complexity_multiplier": 1.5, "rsu_load_divisor": 4.0, "uav_load_divisor": 2.0, "enhanced_task_generation": True})
         
         # 🤖 初始化自适应控制组件
         self.adaptive_cache_controller = AdaptiveCacheController()

@@ -426,8 +426,9 @@ class DDPGEnvironment:
             
             state_components.extend(vehicle_features)
         
-        # 3. RSU状态 (6个RSU × 3维 = 18维)  
-        for i in range(6):  # 支持最多6个RSU
+        # 3. RSU状态 (按可用数量遍历，默认目标为4个RSU)
+        max_rsus = sum(1 for k in node_states.keys() if k.startswith('rsu_'))
+        for i in range(max_rsus):
             rsu_key = f'rsu_{i}'
             if rsu_key in node_states:
                 rsu_state = node_states[rsu_key]
@@ -444,8 +445,9 @@ class DDPGEnvironment:
             
             state_components.extend(rsu_features)
         
-        # 4. UAV状态 (2个UAV × 4维 = 8维)
-        for i in range(2):  # 支持最多2个UAV
+        # 4. UAV状态 (按可用数量遍历，默认目标为2个UAV)
+        max_uavs = sum(1 for k in node_states.keys() if k.startswith('uav_'))
+        for i in range(max_uavs):
             uav_key = f'uav_{i}'
             if uav_key in node_states:
                 uav_state = node_states[uav_key]

@@ -28,7 +28,7 @@ from datetime import datetime
 from typing import Dict, List, Tuple, Optional
 
 # 导入核心模块
-from evaluation.test_complete_system import CompleteSystemSimulator
+from evaluation.system_simulator import CompleteSystemSimulator
 from utils import MovingAverage
 from config import config
 

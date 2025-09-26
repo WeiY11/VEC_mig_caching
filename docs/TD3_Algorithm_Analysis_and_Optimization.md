@@ -102,7 +102,7 @@ def get_state_vector(self, node_states: Dict, system_metrics: Dict) -> np.ndarra
         ]
         state_components.extend(vehicle_state)
     
-    # 2. RSU状态 (6RSU × 4维 = 24维)
+    # 2. RSU状态 (按配置数量 × 4维)
     for rsu in self.rsus:
         rsu_state = [
             rsu.cpu_utilization,         # CPU利用率
@@ -112,7 +112,7 @@ def get_state_vector(self, node_states: Dict, system_metrics: Dict) -> np.ndarra
         ]
         state_components.extend(rsu_state)
     
-    # 3. UAV状态 (2UAV × 4维 = 8维)
+    # 3. UAV状态 (按配置数量 × 4维)
     for uav in self.uavs:
         uav_state = [
             uav.cpu_utilization,
@@ -155,11 +155,15 @@ class VECActionSpace:
         self.rsu_actions = 8        # 计算资源分配、缓存策略、迁移决策等
         self.uav_actions = 6        # 计算资源分配、移动策略等
         
+        num_vehicles = len(self.simulator.vehicles)
+        num_rsus = len(self.simulator.rsus)
+        num_uavs = len(self.simulator.uavs)
+
         self.total_dim = (
-            12 * self.vehicle_actions +  # 12辆车
-            6 * self.rsu_actions +       # 6个RSU
-            2 * self.uav_actions         # 2个UAV
-        )  # 总计：60 + 48 + 12 = 120维
+            num_vehicles * self.vehicle_actions +
+            num_rsus * self.rsu_actions +
+            num_uavs * self.uav_actions
+        )
     
     def decompose_action(self, action: np.ndarray) -> Dict:
         """将全局动作分解为具体决策"""
@@ -167,7 +171,7 @@ class VECActionSpace:
         idx = 0
         
         # 车辆动作
-        for i in range(12):
+        for i in range(num_vehicles):
             vehicle_action = action[idx:idx+self.vehicle_actions]
             actions[f'vehicle_{i}'] = {
                 'local_processing_ratio': np.clip(vehicle_action[0], 0, 1),
@@ -177,7 +181,7 @@ class VECActionSpace:
             idx += self.vehicle_actions
         
         # RSU动作
-        for i in range(6):
+        for i in range(num_rsus):
             rsu_action = action[idx:idx+self.rsu_actions]
             actions[f'rsu_{i}'] = {
                 'cpu_allocation': np.clip(rsu_action[0], 0, 1),
@@ -188,7 +192,7 @@ class VECActionSpace:
             idx += self.rsu_actions
         
         # UAV动作
-        for i in range(2):
+        for i in range(num_uavs):
             uav_action = action[idx:idx+self.uav_actions]
             actions[f'uav_{i}'] = {
                 'cpu_allocation': np.clip(uav_action[0], 0, 1),

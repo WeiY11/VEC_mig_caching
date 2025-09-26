@@ -81,48 +81,50 @@ class CompleteSystemSimulator:
     
     def initialize_components(self):
         """初始化系统组件"""
-        # 🚦 十字路口车辆初始化 - 右下角十字路口出发
+        # 🚦 主干道+双路口初始化
+        # 坐标系统 0..1000，主干道沿 x 轴中线 y=500，从左向右；两处路口位于 x=300 与 x=700
+        self.road_y = 500.0
+        self.intersections = {  # 信号灯相位: 周期 T，绿灯比例 g
+            'L': {'x': 300.0, 'cycle_T': 60.0, 'green_ratio': 0.5, 'phase_offset': 0.0},
+            'R': {'x': 700.0, 'cycle_T': 60.0, 'green_ratio': 0.5, 'phase_offset': 15.0},
+        }
+
+        # 车辆初始化：落在道路上，方向为东(0)或西(pi)，车道内微扰
         self.vehicles = []
-        intersection_center = [750, 750]  # 右下角十字路口中心位置
-        
         for i in range(self.num_vehicles):
-            # 🚗 从十字路口的四个方向随机选择一个出发方向
-            directions = [0, np.pi/2, np.pi, 3*np.pi/2]  # 东、北、西、南
-            base_direction = np.random.choice(directions)
-            
-            # 在十字路口附近的随机位置生成车辆（模拟真实交通流）
-            spawn_offset = np.random.uniform(-30, 30, 2)  # 十字路口±30m范围内
-            initial_position = np.array(intersection_center) + spawn_offset
-            
-            # 确保车辆在有效范围内
-            initial_position = np.clip(initial_position, [50, 50], [950, 950])
-            
-            # 添加随机偏移到基础方向，模拟真实驾驶行为
-            direction_noise = np.random.uniform(-np.pi/8, np.pi/8)  # ±22.5度随机偏移
-            final_direction = base_direction + direction_noise
-            
+            go_east = np.random.rand() < 0.6  # 60% 向东
+            base_dir = 0.0 if go_east else np.pi
+            x0 = np.random.uniform(100.0, 900.0)
+            y0 = self.road_y + np.random.uniform(-6.0, 6.0)  # 简单两车道路幅
+            v0 = np.random.uniform(12.0, 22.0)
             vehicle = {
                 'id': f'V_{i}',
-                'position': initial_position,
-                'velocity': np.random.uniform(15, 25),  # 15-25 m/s (城市交通速度)
-                'direction': final_direction,
+                'position': np.array([x0, y0], dtype=float),
+                'velocity': v0,
+                'direction': base_dir,
+                'lane_bias': y0 - self.road_y,
                 'tasks': [],
                 'energy_consumed': 0.0,
-                'spawn_time': 0.0,  # 记录生成时间
-                'from_intersection': True,  # 标记从十字路口出发
-                'target_direction': base_direction  # 记录目标方向用于导航
             }
             self.vehicles.append(vehicle)
-            
-        print(f"🚦 所有车辆从右下角十字路口({intersection_center})出发完成")
+        print("🚦 车辆初始化完成：主干道双路口场景")
         
         # RSU节点
         self.rsus = []
-        for i in range(self.num_rsus):
+        # 固定4个RSU的部署：左路口、中段、右路口、下游端
+        # 坐标系 0..1000：左路口(300,500)、中段(500,500)、右路口(700,500)、下游端(900,500)
+        rsu_positions = [
+            np.array([300.0, 500.0]),
+            np.array([500.0, 500.0]),
+            np.array([700.0, 500.0]),
+            np.array([900.0, 500.0]),
+        ]
+        # 截断到需要的数量（如果外部配置不是4，则按最小值）
+        for i in range(min(self.num_rsus, len(rsu_positions))):
             rsu = {
                 'id': f'RSU_{i}',
-                'position': np.random.uniform(0, 1000, 2),
-                'coverage_radius': (getattr(self.sys_config.network, 'coverage_radius', 200) if self.sys_config is not None else 200),
+                'position': rsu_positions[i],
+                'coverage_radius': (getattr(self.sys_config.network, 'coverage_radius', 300) if self.sys_config is not None else 300),
                 'cache': {},
                 'cache_capacity': self.config['cache_capacity'],
                 'cache_capacity_bytes': (getattr(self.sys_config.cache, 'rsu_cache_capacity', 10e9) if self.sys_config is not None else 10e9),
@@ -133,11 +135,17 @@ class CompleteSystemSimulator:
         
         # UAV节点
         self.uavs = []
-        for i in range(self.num_uavs):
+        # 两架UAV悬停于两个路口上方：左路口(300,500,120)、右路口(700,500,120)
+        uav_positions = [
+            np.array([300.0, 500.0, 120.0]),
+            np.array([700.0, 500.0, 120.0]),
+        ]
+        for i in range(min(self.num_uavs, len(uav_positions))):
             uav = {
                 'id': f'UAV_{i}',
-                'position': np.random.uniform(0, 1000, 3),  # x, y, z坐标
-                'velocity': np.random.uniform(20, 50),
+                'position': uav_positions[i],  # 固定悬停位置
+                'velocity': 0.0,
+                'coverage_radius': 350.0,
                 'cache': {},
                 'cache_capacity': self.config['cache_capacity'],
                 'cache_capacity_bytes': (getattr(self.sys_config.cache, 'uav_cache_capacity', 2e9) if self.sys_config is not None else 2e9),
@@ -165,6 +173,15 @@ class CompleteSystemSimulator:
                 self.migration_manager = TaskMigrationManager()
         except Exception:
             self.migration_manager = None
+        
+        # 一致性自检（不强制终止，仅提示）
+        try:
+            expected_rsus, expected_uavs = 4, 2
+            if self.num_rsus != expected_rsus or self.num_uavs != expected_uavs:
+                print(f"⚠️ 拓扑一致性提示: 当前 num_rsus={self.num_rsus}, num_uavs={self.num_uavs}, 建议为 {expected_rsus}/{expected_uavs} 以匹配论文图示")
+            print("🏢 中央RSU设定: RSU_2 (作为调度与回传汇聚节点)")
+        except Exception:
+            pass
     
     def _setup_scenario(self):
         """设置仿真场景"""
@@ -176,12 +193,37 @@ class CompleteSystemSimulator:
         """生成计算任务 - 使用分层任务类型设计"""
         self.task_counter += 1
         
-        # 🔧 新设计：先确定任务类型，再分配对应参数
+        # 🔧 修复：按论文正确分类 - 先生成应用特定deadline，再基于延迟容忍度分类
         if self.sys_config is not None:
-            # 随机选择任务类型（1-4）
-            task_type = np.random.randint(1, 5)
+            # 第一步：根据论文阈值严格设计应用场景deadline需求
+            # τ₁=0.8s, τ₂=2.0s, τ₃=5.0s
+            app_scenarios = [
+                ('emergency_brake', 0.2, 0.6),      # 紧急制动：≤τ₁ (类型1)
+                ('collision_avoid', 0.3, 0.6),      # 避障：≤τ₁ (类型1)
+                ('navigation', 0.9, 1.9),           # 实时导航：(τ₁,τ₂] (类型2)  
+                ('traffic_signal', 1.1, 2.0),       # 交通信号：(τ₁,τ₂] (类型2)
+                ('video_process', 2.2, 4.8),        # 视频处理：(τ₂,τ₃] (类型3)
+                ('image_recognition', 2.5, 4.9),    # 图像识别：(τ₂,τ₃] (类型3)
+                ('data_analysis', 5.5, 12.0),       # 数据分析：>τ₃ (类型4)
+                ('ml_training', 8.0, 18.0),         # 机器学习：>τ₃ (类型4)
+            ]
             
-            # 获取任务类型特化参数
+            # 按概率选择应用场景（现实分布：紧急少，容忍多）
+            scenario_weights = [0.08, 0.07, 0.25, 0.15, 0.20, 0.15, 0.08, 0.02]
+            selected_scenario = np.random.choice(len(app_scenarios), p=scenario_weights)
+            app_name, min_deadline, max_deadline = app_scenarios[selected_scenario]
+            
+            # 从应用特定范围生成deadline
+            deadline_duration = np.random.uniform(min_deadline, max_deadline)
+            
+            # 第二步：根据deadline计算时隙数并分类（论文正确方法）
+            time_slot = getattr(self.sys_config.network, 'time_slot_duration', 0.2)
+            max_delay_slots = int(deadline_duration / time_slot)
+            
+            # 使用论文分类方法
+            task_type = self.sys_config.task.get_task_type(max_delay_slots)
+            
+            # 第三步：根据确定的任务类型获取对应参数
             task_specs = getattr(self.sys_config.task, 'task_type_specs', {})
             if task_type in task_specs:
                 spec = task_specs[task_type]
@@ -192,30 +234,14 @@ class CompleteSystemSimulator:
                 data_range = getattr(self.sys_config.task, 'data_size_range', (0.5e6/8, 15e6/8))
                 compute_density = float(getattr(self.sys_config.task, 'task_compute_density', 400))
             
-            # 根据任务类型分配deadline
-            delay_thresholds = getattr(self.sys_config.task, 'delay_thresholds', {})
-            time_slot = getattr(self.sys_config.network, 'time_slot_duration', 0.2)
-            
-            if task_type == 1:  # 极敏感
-                max_slots = delay_thresholds.get('extremely_sensitive', 4)
-                deadline_duration = np.random.uniform(0.5, max_slots * time_slot)
-            elif task_type == 2:  # 敏感
-                max_slots = delay_thresholds.get('sensitive', 10)
-                deadline_duration = np.random.uniform(1.0, max_slots * time_slot)
-            elif task_type == 3:  # 中度容忍
-                max_slots = delay_thresholds.get('moderately_tolerant', 25)
-                deadline_duration = np.random.uniform(2.0, max_slots * time_slot)
-            else:  # 延迟容忍
-                deadline_duration = np.random.uniform(5.0, 15.0)
-            
             # 数据大小：从类型特定范围采样
             data_size_bytes = np.random.uniform(data_range[0], data_range[1])
-            data_size_mb = data_size_bytes / 1e6  # 转MB用于兼容
+            data_size_mb = data_size_bytes / 1e6
             
             # 计算需求：基于数据大小和类型特定计算密度
             total_bits = data_size_bytes * 8
             computation_cycles = total_bits * compute_density
-            computation_mips = computation_cycles / 1e6  # 转为MIPS单位以兼容旧接口
+            computation_mips = computation_cycles / 1e6
         else:
             # 回退默认值
             task_type = np.random.randint(1, 5)
@@ -225,20 +251,20 @@ class CompleteSystemSimulator:
             deadline_duration = np.random.uniform(0.5, 3.0)
             compute_density = 400  # 设置默认密度
         
-        # 🚀 12车辆高负载场景：任务复杂度增强
+        # 🚀 任务复杂度控制 - 避免过高能耗
         high_load_mode = self.config.get('high_load_mode', False)
         if high_load_mode:
-            complexity_multiplier = self.config.get('task_complexity_multiplier', 2.0)
+            complexity_multiplier = self.config.get('task_complexity_multiplier', 1.5)  # 降低倍数
             
-            # 增强计算需求
+            # 温和增强计算需求
             computation_mips *= complexity_multiplier
             
-            # 适度增加数据大小（限制最大值避免过度）
-            data_size_mb = min(data_size_mb * 1.2, 3.0)
+            # 限制数据大小在合理范围
+            data_size_mb = min(data_size_mb * 1.1, 2.0)  # 最大2MB
             data_size_bytes = data_size_mb * 1e6
             
-            # 增强计算密度
-            compute_density *= 1.1
+            # 温和增强计算密度
+            compute_density = min(compute_density * 1.05, 200)  # 最大200 cycles/bit
         
         task = {
             'id': f'task_{self.task_counter}',
@@ -251,9 +277,27 @@ class CompleteSystemSimulator:
             'content_id': f'content_{np.random.randint(0, 100)}',
             'priority': np.random.uniform(0.1, 1.0),
             'task_type': task_type,  # 🔧 新增：任务类型标识
+            'app_scenario': app_name,  # 🔧 新增：应用场景
             'compute_density': compute_density,  # 🚀 高负载增强计算密度
-            'complexity_multiplier': self.config.get('task_complexity_multiplier', 1.0)  # 🚀 复杂度标记
+            'complexity_multiplier': self.config.get('task_complexity_multiplier', 1.0),  # 🚀 复杂度标记
+            'max_delay_slots': max_delay_slots  # 🔧 新增：时隙数（用于验证分类）
         }
+        
+        # 📊 任务分类统计监控（每100个任务输出分类分布）
+        if self.task_counter % 100 == 0 and self.task_counter > 0:
+            # 统计最近100个任务的分类分布
+            if not hasattr(self, 'task_type_stats'):
+                self.task_type_stats = {1: 0, 2: 0, 3: 0, 4: 0}
+            self.task_type_stats[task_type] = self.task_type_stats.get(task_type, 0) + 1
+            
+            total_classified = sum(self.task_type_stats.values())
+            if total_classified > 0:
+                type1_pct = self.task_type_stats[1] / total_classified * 100
+                type2_pct = self.task_type_stats[2] / total_classified * 100
+                type3_pct = self.task_type_stats[3] / total_classified * 100
+                type4_pct = self.task_type_stats[4] / total_classified * 100
+                print(f"📊 任务分类统计({self.task_counter}): 类型1={type1_pct:.1f}%, 类型2={type2_pct:.1f}%, 类型3={type3_pct:.1f}%, 类型4={type4_pct:.1f}%")
+                print(f"   当前任务: {app_name}, {deadline_duration:.2f}s → 类型{task_type}, 数据{data_size_mb:.2f}MB")
         
         self.stats['total_tasks'] += 1
         # 统计累计生成的数据量（bytes）
@@ -309,7 +353,12 @@ class CompleteSystemSimulator:
         completed_tasks = []
         remaining_tasks = []
         
+        current_time = getattr(self, 'current_time', 0.0)
         for i, task in enumerate(queue):
+            # 刚入队的任务（同一步）不予处理，避免"瞬时完成"假象
+            if current_time - task.get('queued_at', -1e9) < self.time_slot:
+                remaining_tasks.append(task)
+                continue
             if i < tasks_to_process:
                 # 处理这个任务
                 remaining_work = task.get('work_remaining', 0.5)
@@ -332,13 +381,44 @@ class CompleteSystemSimulator:
                     self.stats['completed_tasks'] += 1
                     
                     # 计算实际延迟
-                    actual_delay = self.current_time - task['arrival_time']
+                    actual_delay = current_time - task['arrival_time']
                     actual_delay = max(0.001, min(actual_delay, 20.0))
                     self.stats['total_delay'] += actual_delay
                     
-                    # 计算能耗
+                    # 计算任务完成的下行传输能耗
+                    vehicle_id = task.get('vehicle_id', 'V_0')
+                    vehicle = next((v for v in self.vehicles if v['id'] == vehicle_id), None)
+                    if vehicle is not None:
+                        # 计算下行传输距离
+                        if len(node['position']) == 2:
+                            node_pos = np.append(node['position'], 0)
+                        else:
+                            node_pos = node['position']
+                        vehicle_pos = vehicle['position']
+                        if len(vehicle_pos) == 2:
+                            vehicle_pos = np.append(vehicle_pos, 0)
+                        distance = np.linalg.norm(node_pos - vehicle_pos)
+                        
+                        # 结果下载大小（假设为输入的10%）
+                        result_size = task.get('data_size_bytes', task.get('data_size', 1.0)*1e6) * 0.1
+                        
+                        # 下行传输时延和能耗
+                        if node_type == 'RSU':
+                            down_tx_power_dbm = 46.0  # RSU发射功率
+                        elif node_type == 'UAV':
+                            down_tx_power_dbm = 30.0  # UAV发射功率
+                        else:
+                            down_tx_power_dbm = 23.0  # 默认
+                        
+                        down_tx_power_w = 10**((down_tx_power_dbm - 30) / 10)
+                        down_tx_time = self.calculate_transmission_delay(result_size, distance, node_type.lower())
+                        down_tx_energy = down_tx_power_w * down_tx_time
+                        
+                        self.stats['energy_downlink'] = self.stats.get('energy_downlink', 0.0) + down_tx_energy
+                    
+                    # 计算能耗（仅处理能耗，传输能耗已单独计算）
                     if node_type == 'RSU':
-                        processing_power = 50.0
+                        processing_power = 50.0  # 简化处理功率
                     elif node_type == 'UAV':
                         processing_power = 20.0
                     else:
@@ -843,19 +923,16 @@ class CompleteSystemSimulator:
                 info_size_mb = 0.1  # 100KB的状态信息
                 try:
                     from utils.wired_backhaul_model import calculate_rsu_to_rsu_delay, calculate_rsu_to_rsu_energy
-                    
                     collection_delay = calculate_rsu_to_rsu_delay(info_size_mb, rsu_id, central_rsu_id)
+                    # 安全夹持：10Gbps 级别回传的单条控制消息应为 < 20ms
+                    collection_delay = float(max(0.0001, min(collection_delay, 0.02)))
                     collection_energy = calculate_rsu_to_rsu_energy(info_size_mb, rsu_id, central_rsu_id, collection_delay)
-                    
-                    total_collection_delay += collection_delay
-                    total_collection_energy += collection_energy
-                    
                 except Exception:
-                    # 回退到简化模型
-                    collection_delay = 0.005  # 5ms固定延迟
-                    collection_energy = 0.1   # 0.1J固定能耗
-                    total_collection_delay += collection_delay
-                    total_collection_energy += collection_energy
+                    # 回退到简化模型（5ms、0.1J）
+                    collection_delay = 0.005
+                    collection_energy = 0.1
+                total_collection_delay += collection_delay
+                total_collection_energy += collection_energy
                 
                 # 更新RSU状态信息
                 if 'cpu_usage' not in rsu:
@@ -889,12 +966,13 @@ class CompleteSystemSimulator:
                         try:
                             from utils.wired_backhaul_model import calculate_rsu_to_rsu_delay, calculate_rsu_to_rsu_energy
                             cmd_delay = calculate_rsu_to_rsu_delay(command_size_mb, central_rsu_id, rsu_id)
+                            cmd_delay = float(max(0.0001, min(cmd_delay, 0.02)))
                             cmd_energy = calculate_rsu_to_rsu_energy(command_size_mb, central_rsu_id, rsu_id, cmd_delay)
-                            total_command_delay += cmd_delay
-                            total_command_energy += cmd_energy
                         except Exception:
-                            total_command_delay += 0.002  # 2ms回退延迟
-                            total_command_energy += 0.05   # 0.05J回退能耗
+                            cmd_delay = 0.002
+                            cmd_energy = 0.05
+                        total_command_delay += cmd_delay
+                        total_command_energy += cmd_energy
             
             # 📊 显示调度状态
             if len(rsu_loads) > 0:
@@ -953,8 +1031,10 @@ class CompleteSystemSimulator:
         except Exception as e:
             return {'status': 'error', 'message': f'报告生成失败: {e}'}
     
-    def calculate_transmission_delay(self, data_size: float, distance: float, tx_node_type: str = 'vehicle') -> float:
-        """计算传输时延 - 基于SINR的完整3GPP模型"""
+    def calculate_transmission_delay(self, data_size_bytes: float, distance: float, tx_node_type: str = 'vehicle') -> float:
+        """计算传输时延 - 基于SINR的完整3GPP模型
+        参数要求: data_size_bytes 为字节数
+        """
         # 获取3GPP参数
         if self.sys_config is not None:
             # 发射功率 (dBm)
@@ -1002,7 +1082,8 @@ class CompleteSystemSimulator:
         if sinr_db > -10:  # SINR > -10dB才能通信
             sinr_linear = 10**(sinr_db/10)
             capacity_bps = bandwidth_hz * np.log2(1 + sinr_linear)
-            delay = (data_size * 8) / capacity_bps if capacity_bps > 0 else float('inf')  # 转为bits
+            bits = float(data_size_bytes) * 8.0
+            delay = bits / capacity_bps if capacity_bps > 0 else float('inf')
         else:
             delay = float('inf')  # SINR太低，无法传输
         
@@ -1054,7 +1135,7 @@ class CompleteSystemSimulator:
             total_cycles = bits * density
             # CPU频率
             if cpu_freq is None:
-                cpu_freq = float(getattr(self.sys_config.compute, 'rsu_default_freq', 50e9))
+                cpu_freq = float(getattr(self.sys_config.compute, 'rsu_default_freq', 12e9))
             exec_time = total_cycles / max(cpu_freq, 1.0)
         else:
             # 兼容旧路径：computation_req 单位 MIPS，capacity 1000 MIPS
@@ -1073,52 +1154,66 @@ class CompleteSystemSimulator:
             """dBm转换为瓦特"""
             return 10**((dbm_value - 30) / 10)
         
-        # 传输能耗 - 使用system_config功率
+        # 传输能耗 - 统一按上行(车辆→边缘)计算发射端为车辆
         if self.sys_config is not None:
-            if node_type == 'RSU':
-                tx_power_dbm = getattr(self.sys_config.communication, 'rsu_tx_power', 46.0)
-            elif node_type == 'UAV':
-                tx_power_dbm = getattr(self.sys_config.communication, 'uav_tx_power', 30.0)
-            else:
-                tx_power_dbm = getattr(self.sys_config.communication, 'vehicle_tx_power', 23.0)
-            transmission_power_w = dbm_to_watts(tx_power_dbm)
+            tx_power_dbm_vehicle = getattr(self.sys_config.communication, 'vehicle_tx_power', 23.0)
+            transmission_power_w = dbm_to_watts(tx_power_dbm_vehicle)
         else:
             transmission_power_w = self.config['transmission_power']  # 回退
-        
-        # 传输时延（用于能耗计算）
-        tx_type = 'vehicle' if node_type == 'Vehicle' else node_type.lower()
-        transmission_time = self.calculate_transmission_delay(task['data_size'], transmission_distance, tx_type)
+        transmission_time = self.calculate_transmission_delay(
+            task.get('data_size_bytes', task.get('data_size', 1.0)*1e6),
+            transmission_distance,
+            'vehicle'
+        )
         transmission_energy = transmission_power_w * transmission_time
         
         # 计算能耗 - 使用CPU频率与kappa参数
         if self.sys_config is not None:
-            # 根据节点类型选择CPU频率和功率模型
+            # 根据节点类型选择CPU频率和功率模型（使用配置文件的实际值）
             if processing_node in self.rsus:
-                cpu_freq = float(getattr(self.sys_config.compute, 'rsu_default_freq', 50e9))
-                kappa = float(getattr(self.sys_config.compute, 'rsu_kappa', 1e-27))
-                static_power = float(getattr(self.sys_config.compute, 'rsu_static_power', 2.0))
+                cpu_freq = float(getattr(self.sys_config.compute, 'rsu_default_freq', 12e9))
+                kappa = float(getattr(self.sys_config.compute, 'rsu_kappa', 2.8e-31))
+                static_power = float(getattr(self.sys_config.compute, 'rsu_static_power', 25.0))
             elif processing_node in self.uavs:
-                cpu_freq = float(getattr(self.sys_config.compute, 'uav_default_freq', 8e9))
-                kappa = float(getattr(self.sys_config.compute, 'uav_kappa3', 1e-27))
-                static_power = float(getattr(self.sys_config.compute, 'uav_static_power', 1.0))
+                cpu_freq = float(getattr(self.sys_config.compute, 'uav_default_freq', 1.0e9))
+                kappa = float(getattr(self.sys_config.compute, 'uav_kappa3', 8.89e-31))
+                static_power = float(getattr(self.sys_config.compute, 'uav_static_power', 2.5))
             else:  # vehicle
-                cpu_freq = float(getattr(self.sys_config.compute, 'vehicle_default_freq', 16e9))
-                kappa = float(getattr(self.sys_config.compute, 'vehicle_kappa1', 1e-28))
-                static_power = float(getattr(self.sys_config.compute, 'vehicle_static_power', 0.5))
+                cpu_freq = float(getattr(self.sys_config.compute, 'vehicle_default_freq', 2.5e9))
+                kappa = float(getattr(self.sys_config.compute, 'vehicle_kappa1', 5.12e-31))
+                static_power = float(getattr(self.sys_config.compute, 'vehicle_static_power', 8.0))
             
-            # 🔧 修复：计算时间 - 使用任务特定计算密度
-            task_compute_density = task.get('compute_density', 400)  # 获取任务特定密度
+            # 🔧 修复：计算时间 - 使用任务特定计算密度，强制合理化参数
+            task_compute_density = min(task.get('compute_density', 100), 150)  # 强制最大150 cycles/bit
+            data_bytes = task.get('data_size_bytes', task.get('data_size', 1.0)*1e6)
+            # 强制限制单任务数据大小，避免过大任务
+            data_bytes = min(data_bytes, 1e6)  # 强制最大1MB
+            
             computation_time = self.calculate_computation_delay(
                 task['computation_requirement'], processing_node,
-                data_size_bytes=task.get('data_size_bytes', task['data_size']*1e6),
+                data_size_bytes=data_bytes,
                 compute_density_cycles_per_bit=task_compute_density,
                 cpu_freq=cpu_freq
             )
-            computation_time = float(np.clip(computation_time, 0.0, 5.0))
+            computation_time = float(np.clip(computation_time, 0.0, 2.0))  # 限制最大2秒
             
-            # 动态功率模型：P = kappa * f^3 + P_static
-            dynamic_power = kappa * (cpu_freq ** 3) + static_power
-            computation_energy = dynamic_power * computation_time
+            # 动态功率模型：根据节点类型使用正确公式
+            if processing_node in self.uavs:
+                # UAV使用 f^2 公式（论文式28）
+                dynamic_power = kappa * (cpu_freq ** 2)
+            else:
+                # Vehicle和RSU使用 f^3 公式（论文式7,22）
+                dynamic_power = kappa * (cpu_freq ** 3)
+            
+            # 📊 调试输出异常能耗计算
+            total_power = dynamic_power + static_power
+            computation_energy = total_power * computation_time
+            
+            # 详细调试大能耗任务
+            if computation_energy > 50.0:  # 超过50J的任务
+                task_size_mb = data_bytes / 1e6
+                print(f"⚠️ 高能耗任务{task['id']}: {node_type}, {task_size_mb:.2f}MB, 密度{task_compute_density}")
+                print(f"    freq={cpu_freq/1e9:.1f}GHz, power={total_power:.1f}W, time={computation_time:.3f}s → {computation_energy:.1f}J")
         else:
             # 回退旧模型
             computation_power = self.config['computation_power']
@@ -1127,6 +1222,26 @@ class CompleteSystemSimulator:
             computation_energy = computation_power * computation_time
         
         total_energy = transmission_energy + computation_energy
+        
+        # 组件能耗累计到stats（分项）
+        # 初始化分项键
+        self.stats['energy_vehicle_transmit'] = self.stats.get('energy_vehicle_transmit', 0.0)
+        self.stats['energy_vehicle_compute'] = self.stats.get('energy_vehicle_compute', 0.0)
+        self.stats['energy_edge_compute'] = self.stats.get('energy_edge_compute', 0.0)
+        self.stats['energy_uav_compute'] = self.stats.get('energy_uav_compute', 0.0)
+        
+        # 上行发射统一归车辆
+        if transmission_energy > 0:
+            self.stats['energy_vehicle_transmit'] += transmission_energy
+        
+        # 计算能耗按处理节点归属
+        if node_type == 'Vehicle':
+            self.stats['energy_vehicle_compute'] += computation_energy
+        elif node_type == 'RSU':
+            self.stats['energy_edge_compute'] += computation_energy
+        elif node_type == 'UAV':
+            self.stats['energy_uav_compute'] += computation_energy
+            # 注意：UAV悬停能耗在simulate_time_slot中统一计算，此处不重复
         
         # 数值修正：仅处理无限值和NaN
         if not np.isfinite(total_energy):
@@ -1138,23 +1253,102 @@ class CompleteSystemSimulator:
         """处理单个任务（单时隙下可直接完成，否则转入在制任务池）"""
         vehicle = next(v for v in self.vehicles if v['id'] == task['vehicle_id'])
         
-        # 默认决策：就近卸载
+        # 📋 四级分类+智能卸载融合策略（两步：确定候选集→智能选择）
         if agents_actions is None:
-            # 寻找最近的处理节点
+            # 第一步：根据论文四级分类确定候选节点集合
             nearest_rsu = self.find_nearest_rsu(vehicle['position'])
             nearest_uav = self.find_nearest_uav(vehicle['position'])
             
-            # 选择最近的节点
-            if nearest_rsu is not None:
-                processing_node = nearest_rsu
-                node_type = 'RSU'
-            elif nearest_uav is not None:
-                processing_node = nearest_uav
-                node_type = 'UAV'
-            else:
-                # 本地处理
+            task_type = task.get('task_type', 2)
+            deadline = task.get('deadline', float('inf'))
+            current_time = getattr(self, 'current_time', 0.0)
+            remaining_time = deadline - current_time
+            priority = task.get('priority', 0.5)
+            
+            # 📝 构建候选集合（严格按论文分类）
+            candidate_set = []
+            
+            if task_type == 1:  # 极度延迟敏感型：候选集 = {本地}
+                candidate_set = [vehicle]
+                
+            elif task_type == 2:  # 延迟敏感型：候选集 = {本地, 近距离低延迟RSU}
+                candidate_set = [vehicle]  # 本地始终在候选集
+                if nearest_rsu is not None:
+                    distance = self.calculate_distance(vehicle['position'], nearest_rsu['position'])
+                    if distance <= 350:  # 近距离RSU才进入候选集
+                        candidate_set.append(nearest_rsu)
+                        
+            elif task_type == 3:  # 中度延迟容忍型：候选集 = {本地, 可达RSU, 近距离能力足够UAV}
+                candidate_set = [vehicle]
+                if nearest_rsu is not None:
+                    candidate_set.append(nearest_rsu)  # 可达RSU进入候选集
+                if nearest_uav is not None:
+                    uav_distance = self.calculate_distance(vehicle['position'], nearest_uav['position'])
+                    if uav_distance <= 400:  # 近距离UAV才进入候选集
+                        candidate_set.append(nearest_uav)
+                        
+            else:  # task_type == 4：延迟容忍型：候选集 = {所有节点}
+                candidate_set = [vehicle]
+                if nearest_rsu is not None:
+                    candidate_set.append(nearest_rsu)
+                if nearest_uav is not None:
+                    candidate_set.append(nearest_uav)
+            
+            # 第二步：在候选集内应用智能卸载策略（负载感知+时延优化）
+            best_node = None
+            best_score = float('inf')
+            
+            for node in candidate_set:
+                if node == vehicle:
+                    # 本地处理评分：工作负载 + 能力惩罚
+                    local_workload = len(getattr(vehicle, 'tasks', []))
+                    # 高优先级任务本地处理惩罚更小（保证完成）
+                    local_penalty = 6 if priority < 0.8 else 3
+                    score = local_workload + local_penalty
+                    node_type_eval = 'Vehicle'
+                    
+                elif node in self.rsus:
+                    # RSU评分：队列负载 + 距离因子（融合智能卸载逻辑）
+                    rsu_queue_len = len(node.get('computation_queue', []))
+                    distance = self.calculate_distance(vehicle['position'], node['position'])
+                    
+                    # 智能卸载核心逻辑：队列<10优先，距离越近越好
+                    if rsu_queue_len < 10:  # 低负载RSU，优先选择
+                        score = rsu_queue_len + (distance / 200.0)  # 距离权重较小
+                    else:  # 高负载RSU，增加惩罚
+                        score = rsu_queue_len * 1.5 + (distance / 100.0)
+                    
+                    node_type_eval = 'RSU'
+                    
+                elif node in self.uavs:
+                    # UAV评分：队列负载 + 距离因子 + 能力差异（融合智能卸载逻辑）
+                    uav_queue_len = len(node.get('computation_queue', []))
+                    distance = self.calculate_distance(vehicle['position'], node['position'])
+                    
+                    # 智能卸载核心逻辑：队列<5时UAV可选，否则惩罚
+                    if uav_queue_len < 5:  # 低负载UAV
+                        score = uav_queue_len + (distance / 250.0) + 1.5  # UAV能力稍弱
+                    else:  # 高负载UAV，大幅惩罚
+                        score = uav_queue_len * 2 + (distance / 150.0) + 3
+                    
+                    node_type_eval = 'UAV'
+                else:
+                    continue
+                
+                # 选择评分最低的节点
+                if score < best_score:
+                    best_score = score
+                    best_node = node
+                    node_type = node_type_eval
+            
+            processing_node = best_node if best_node is not None else vehicle
+            node_type = node_type if best_node is not None else 'Vehicle'
+            
+            # 🚨 防丢失最终检查：deadline紧急+高优先级→强制本地保证
+            if priority > 0.8 and remaining_time < 0.8:
                 processing_node = vehicle
                 node_type = 'Vehicle'
+                print(f"🚨 任务{task['id']}（类型{task_type}，优先级{priority:.2f}）deadline紧急，强制本地保证")
         else:
             # 使用智能体的卸载偏好选择节点（本地/RSU/UAV），并在同类中进一步按概率选择具体节点
             aa = (agents_actions or {})
@@ -1233,11 +1427,11 @@ class CompleteSystemSimulator:
             cpu_freq = None
             if self.sys_config is not None:
                 if processing_node in self.rsus:
-                    cpu_freq = float(getattr(self.sys_config.compute, 'rsu_default_freq', 50e9))
+                    cpu_freq = float(getattr(self.sys_config.compute, 'rsu_default_freq', 12e9))
                 elif processing_node in self.uavs:
-                    cpu_freq = float(getattr(self.sys_config.compute, 'uav_default_freq', 8e9))
+                    cpu_freq = float(getattr(self.sys_config.compute, 'uav_default_freq', 1.0e9))
                 else:
-                    cpu_freq = float(getattr(self.sys_config.compute, 'vehicle_default_freq', 16e9))
+                    cpu_freq = float(getattr(self.sys_config.compute, 'vehicle_default_freq', 2.5e9))
             # 🔧 修复：使用任务特定的计算密度
             task_compute_density = task.get('compute_density', 
                 float(getattr(self.sys_config.task, 'task_compute_density', 400)) if self.sys_config is not None else 400)
@@ -1269,7 +1463,7 @@ class CompleteSystemSimulator:
                 # 单时隙内完成
                 self.stats['completed_tasks'] += 1
                 self.stats['total_delay'] += total_delay
-                self.stats['total_energy'] += energy_consumption
+                # 注意：总能耗在calculate_final_statistics中重新计算所有组件之和
                 
                 # 更新节点能耗
                 processing_node['energy_consumed'] += energy_consumption
@@ -1374,36 +1568,58 @@ class CompleteSystemSimulator:
         
         return result
     
+    def _signal_is_green(self, x_pos: float, t: float) -> bool:
+        # 根据所在路口计算是否为绿灯（主干道通行）
+        for key, isect in self.intersections.items():
+            if abs(x_pos - isect['x']) < 5.0:
+                T = isect['cycle_T']
+                g = isect['green_ratio']
+                phase = (t + isect['phase_offset']) % T
+                return phase < g * T  # 前 g*T 秒为绿灯
+        return True  # 非路口默认通行
+
     def update_mobility(self):
-        """更新移动性"""
-        # 更新车辆位置
+        """更新移动性 - 道路+信号控制"""
+        # 车辆沿主干道行驶，仅 x 方向运动，路口处受信号灯控制
         for vehicle in self.vehicles:
-            # 简单的直线移动模型
-            dx = vehicle['velocity'] * np.cos(vehicle['direction']) * self.time_slot
-            dy = vehicle['velocity'] * np.sin(vehicle['direction']) * self.time_slot
-            
-            vehicle['position'][0] += dx
-            vehicle['position'][1] += dy
-            
-            # 边界处理
-            if vehicle['position'][0] < 0 or vehicle['position'][0] > 1000:
-                vehicle['direction'] = np.pi - vehicle['direction']
-            if vehicle['position'][1] < 0 or vehicle['position'][1] > 1000:
-                vehicle['direction'] = -vehicle['direction']
-            
-            # 保持在边界内
-            vehicle['position'] = np.clip(vehicle['position'], 0, 1000)
-        
-        # 更新UAV位置（简化的巡航模式）
+            x, y = vehicle['position']
+            v = vehicle['velocity']
+            dir_sign = 1.0 if vehicle['direction'] == 0.0 else -1.0
+
+            # 预估下一位置并检测是否需要在路口停等
+            next_x = x + dir_sign * v * self.time_slot
+            need_stop = False
+            # 路口检测窗口
+            for isect in self.intersections.values():
+                # 靠近路口 10m 内，若是红灯则停在路口前 5m
+                approaching = (dir_sign > 0 and x < isect['x'] and next_x >= isect['x'] - 5.0) or \
+                             (dir_sign < 0 and x > isect['x'] and next_x <= isect['x'] + 5.0)
+                if approaching and (not self._signal_is_green(isect['x'], getattr(self, 'current_time', 0.0))):
+                    # 红灯：将next_x夹到路口前5m处
+                    next_x = isect['x'] - 5.0 if dir_sign > 0 else isect['x'] + 5.0
+                    need_stop = True
+                    break
+
+            # 位置更新（保持在道路带宽范围内）
+            vehicle['position'][0] = float(np.clip(next_x, 0.0, 1000.0))
+            # 轻微回正到车道中心，模拟车道保持
+            lane_error = (vehicle['lane_bias'])
+            vehicle['position'][1] = float(np.clip(self.road_y + 0.8 * lane_error, 480.0, 520.0))
+
+            # 路端 U-turn：到边界调头
+            if vehicle['position'][0] >= 995.0:
+                vehicle['direction'] = np.pi
+            elif vehicle['position'][0] <= 5.0:
+                vehicle['direction'] = 0.0
+
+            # 在绿灯通过时，随机小概率换道/轻微扰动速度
+            if not need_stop and np.random.rand() < 0.1:
+                vehicle['lane_bias'] = float(np.clip(vehicle['lane_bias'] + np.random.uniform(-0.5, 0.5), -6.0, 6.0))
+                vehicle['velocity'] = float(np.clip(v + np.random.uniform(-1.0, 1.0), 10.0, 25.0))
+
+        # UAV固定悬停
         for uav in self.uavs:
-            # UAV在固定高度巡航
-            angle = self.current_time * 0.01  # 慢速旋转
-            radius = 300
-            center = [500, 500]  # 区域中心
-            
-            uav['position'][0] = center[0] + radius * np.cos(angle)
-            uav['position'][1] = center[1] + radius * np.sin(angle)
-            uav['position'][2] = 100  # 固定高度100m
+            uav['position'][2] = 120.0
     
     def simulate_time_slot(self, agents_actions: Dict = None) -> List[Dict]:
         """仿真一个时隙"""
@@ -1426,6 +1642,24 @@ class CompleteSystemSimulator:
 
         # 🔧 关键修复：处理RSU和UAV队列中的任务
         self._process_node_queues()
+        
+        # 📊 UAV悬停能耗（每时隙固定消耗）
+        if self.sys_config is not None:
+            hover_power = float(getattr(self.sys_config.compute, 'uav_hover_power', 25.0))
+        else:
+            hover_power = 25.0
+        
+        # UAV悬停能耗：每个UAV每时隙独立计算，避免重复计算  
+        # 修正：25W * 0.2s * 2UAV = 10J/步，100步 = 1000J
+        if not hasattr(self, '_uav_hover_calculated'):
+            self._uav_hover_calculated = set()
+        
+        for i, uav in enumerate(self.uavs):
+            step_key = f"step_{getattr(self, 'current_time', 0.0)}_{i}"
+            if step_key not in self._uav_hover_calculated:
+                hover_energy_single = hover_power * self.time_slot  # 每UAV每时隙5J
+                self.stats['energy_uav_hover'] = self.stats.get('energy_uav_hover', 0.0) + hover_energy_single
+                self._uav_hover_calculated.add(step_key)
 
         # 先推进在制任务（车辆跟随 + 过载到空闲），并按概率使用智能体偏好
         advanced_tasks = []
@@ -1621,6 +1855,16 @@ class CompleteSystemSimulator:
         total_cache_requests = self.stats['cache_hits'] + self.stats['cache_misses']
         cache_hit_rate = self.stats['cache_hits'] / max(total_cache_requests, 1)
         
+        # 🔧 重新计算总能耗为所有组件之和
+        total_energy_corrected = (
+            self.stats.get('energy_vehicle_transmit', 0.0) +
+            self.stats.get('energy_vehicle_compute', 0.0) +
+            self.stats.get('energy_edge_compute', 0.0) +
+            self.stats.get('energy_uav_compute', 0.0) +
+            self.stats.get('energy_uav_hover', 0.0) +
+            self.stats.get('energy_downlink', 0.0)
+        )
+        
         return {
             'total_tasks': total_tasks,
             'completed_tasks': completed_tasks,
@@ -1628,7 +1872,15 @@ class CompleteSystemSimulator:
             'completion_rate': completion_rate,
             'drop_rate': drop_rate,
             'avg_delay': avg_delay,
-            'total_energy': self.stats['total_energy'],
+            'total_energy': total_energy_corrected,
+            'energy_breakdown': {
+                'vehicle_transmit': self.stats.get('energy_vehicle_transmit', 0.0),
+                'vehicle_compute': self.stats.get('energy_vehicle_compute', 0.0),
+                'edge_compute': self.stats.get('energy_edge_compute', 0.0),
+                'uav_compute': self.stats.get('energy_uav_compute', 0.0),
+                'uav_hover': self.stats.get('energy_uav_hover', 0.0),
+                'downlink': self.stats.get('energy_downlink', 0.0)
+            },
             'cache_hit_rate': cache_hit_rate
         }
     

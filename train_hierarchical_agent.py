@@ -32,7 +32,7 @@ from typing import Dict, List, Tuple, Optional
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 # 导入核心模块
-from evaluation.test_complete_system import CompleteSystemSimulator
+from evaluation.system_simulator import CompleteSystemSimulator
 from utils import MovingAverage
 from config import config
 

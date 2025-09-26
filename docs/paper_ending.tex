@@ -95,19 +95,17 @@
 \end{itemize}
 
 \subsection{场景与基站部署说明}
-图~\ref{fig:system_architecture} 所示区域为一个"井"字型（九宫格）城市微场景，两条主干道路正交并延伸形成规则格局。系统中共有\textbf{6 个固定 RSU} 与 \textbf{2 架固定悬停无人机}，部署与功能如下：
+图~\ref{fig:system_architecture} 所示区域为单一主干道路场景，沿线设置两个十字路口。系统中共有\textbf{4 个固定 RSU} 与 \textbf{2 架固定悬停 UAV}，且两架 UAV 分别悬停在两个路口正上方。部署与功能如下：
 \begin{enumerate}
-    \item \textbf{左上角 RSU}: 位于左上道路交叉口外侧路缘，覆盖该角落进入/转弯的车辆流量，提供基础卸载入口。
-    \item \textbf{右上角 RSU}: 位于右上交汇处外侧，同时作为右半区域与空域链路锚点，支撑右上车辆及与附近无人机的地空通信。
-    \item \textbf{左下角 RSU}: 部署在左下交叉口外侧，服务该路段的进出与等待车辆，减少其接入时延。
-    \item \textbf{右下角 RSU}: 位于右下交叉口外侧，为右下区域车辆提供边缘接入与任务卸载处理。
-    \item \textbf{中央 RSU}: 更靠近城市核心高楼集中区（任务/数据高产热点），具备较高计算与缓存能力，用于承载高并发卸载与结果集中缓存复用。
-    \item \textbf{中下位置 RSU}: 位于中心偏下方主干道路节点，起到纵向接入链路"补丁/平衡"作用，缓解中央 RSU 的峰值排队压力。
-    \item \textbf{左上无人机 (UAV-A)}: 固定悬停在左上交叉口上空，不进行水平巡航。其作用：为左上区域车辆补充覆盖、承接高优先级或突发任务卸载、在角落 RSU 拥塞时分流部分计算。
-    \item \textbf{右下无人机 (UAV-B)}: 悬停于右下侧高楼上空（略偏下），在高楼遮挡条件下提供空中中继/"准移动基站"功能，增强链路视距条件，并为时延敏感迁移任务提供备用路径。
+    \item \textbf{RSU-1（左侧路口路侧）}: 位于左侧十字路口的路侧位置，覆盖路口及相邻路段，提供低时延卸载入口。
+    \item \textbf{RSU-2（中段路侧，中央RSU）}: 位于两个路口之间的路段路侧，作为系统\textit{中央RSU} 平衡中段接入流量，并作为回程/迁移链路锚点与全局调度中心（图中红色方框标注）。
+    \item \textbf{RSU-3（右侧路口路侧）}: 位于右侧十字路口的路侧位置，服务路口高并发接入与任务卸载。
+    \item \textbf{RSU-4（下游端路侧）}: 位于道路下游端的路侧位置，补充覆盖并承接下游车流的卸载需求。
+    \item \textbf{UAV-A（左侧路口上空）}: 固定悬停于左侧十字路口正上方，提供空中覆盖与低时延中继，承接时延敏感或拥塞时的任务。
+    \item \textbf{UAV-B（右侧路口上空）}: 固定悬停于右侧十字路口正上方，在遮挡场景下提供空中中继/``准移动基站''能力，并保障迁移备份路径。
 \end{enumerate}
 
-	extbf{缓存角色划分}: 中央 RSU 负责高复用结果集中缓存；外围四角及中下 RSU 仅缓存命中概率高的轻量结果；无人机只保留少量极低时延推理所需的关键中间/最终结果，避免其有限能量与存储被占满。
+\textbf{缓存角色划分}: \textit{中央RSU} 负责高复用结果的集中缓存与统一分发；其余 RSU（左右路口与下游端）仅缓存命中概率高的轻量结果；UAV 仅保留极低时延推理所需的少量关键中间/最终结果，以避免其有限能量与存储被占满。
 
 % 描述VEC系统中各类计算和通信节点的基本属性和能力
 \begin{itemize}
@@ -961,7 +959,7 @@ $h \leftarrow \mathrm{Heat}(c)$;\\
 
 该目标函数旨在寻找一个长期策略，该策略能够在动态变化的环境中智能地做出决策，从而在任务完成时延、系统能耗和数据丢失率之间实现最佳权衡。
 \paragraph{关于迁移决策变量的说明与优化维度补充}
-为避免歧义，现明确本问题的联合优化维度（动作空间）包含下列变量；其中迁移相关变量已在(P1)中纳入，通过时延与能耗项影响目标函数，无需将“迁移成功率/缓存命中率”单独作为优化目标：
+为避免歧义，现明确本问题的联合优化维度（动作空间）包含下列变量；其中迁移相关变量已在(P1)中纳入，通过时延与能耗项影响目标函数，无需将"迁移成功率/缓存命中率"单独作为优化目标：
 \begin{itemize}
     \item 任务路由/分配决策：$\{x_{j,n}^t\}$（车辆本地/RSU/UAV）。
     \item 迁移链路开关：$\{\nu_{n,n'}^t\}$，控制是否激活 $n\!\to\!n'$ 的迁移路径（见式\eqref{eq:Rate_mig_revised_sec5}–\eqref{eq:D_mig_revised_sec5}）。
@@ -970,7 +968,7 @@ $h \leftarrow \mathrm{Heat}(c)$;\\
     \item 节点激活：$\{\mu_n^t\}$，用于节能（RSU/UAV按需开关）。
     \item 缓存决策：$\{z_{j,r}^t\}$，结果级缓存的二元选择及其容量约束（见\eqref{eq:cache_capacity}）。
 \end{itemize}
-上述变量经由约束\eqref{eq:bandwidth_up}–\eqref{eq:bandwidth_down}、\eqref{eq:cache_capacity}、\eqref{eq:queue_capacity_hard}、\eqref{eq:energy_budget}、\eqref{eq:flow_conservation}、\eqref{eq:processing_capacity} 与 \eqref{eq:sinr_soft} 等共同作用于 $T_{total}$ 与 $E_{total}$，从而隐式地对“迁移是否执行、迁往何处、分配多少带宽/数据量”进行优化。迁移造成的短暂 downtime 亦已通过迁移延迟与排队耦合进入 $T_{total}$（参见第6节与式\eqref{eq:E_total_t_final_revised_sec7}）。
+上述变量经由约束\eqref{eq:bandwidth_up}–\eqref{eq:bandwidth_down}、\eqref{eq:cache_capacity}、\eqref{eq:queue_capacity_hard}、\eqref{eq:energy_budget}、\eqref{eq:flow_conservation}、\eqref{eq:processing_capacity} 与 \eqref{eq:sinr_soft} 等共同作用于 $T_{total}$ 与 $E_{total}$，从而隐式地对"迁移是否执行、迁往何处、分配多少带宽/数据量"进行优化。迁移造成的短暂 downtime 亦已通过迁移延迟与排队耦合进入 $T_{total}$（参见第6节与式\eqref{eq:E_total_t_final_revised_sec7}）。
 
 \paragraph{训练奖励与目标的一致性}
 为与强化学习训练保持严格一致，建议将每时隙奖励定义为目标函数的相反数（与实现保持一致）：
@@ -978,7 +976,7 @@ $h \leftarrow \mathrm{Heat}(c)$;\\
 \label{eq:rl_reward_alignment}
 R_t \;=\; -\Big(\, \omega_T \, L_{\mathrm{norm}}^t \; + \; \omega_E \, \tfrac{E_{total}^t}{E_{\mathrm{ref}}} \; + \; \omega_D \, \mathrm{FailRate}^t \Big).
 \end{equation}
-若引入辅助整形（如对负载均衡或参数探索的轻量奖励），应保证不改变总体优化方向，即不削弱对“时延、能耗、数据丢失”三者的主导权重；整形项宜小于主成本幅度的5–10%。
+若引入辅助整形（如对负载均衡或参数探索的轻量奖励），应保证不改变总体优化方向，即不削弱对"时延、能耗、数据丢失"三者的主导权重；整形项宜小于主成本幅度的5–10%。
 
 \paragraph{3GPP一致性与参数建议}
 为确保与3GPP NR蜂窝链路建模一致（参考3GPP TR 38.901/38.306），本模型的速率/路径损耗/SINR已在第5.2节按香农容量与LoS/NLoS混合路径损耗给出。为便于复现与部署，给出可行的默认参数建议（实际值可按场景调参）：
@@ -988,10 +986,10 @@ R_t \;=\; -\Big(\, \omega_T \, L_{\mathrm{norm}}^t \; + \; \omega_E \, \tfrac{E_
     \item 回程/迁移链路带宽 $B_{k,k'}^t$ 取决于部署（10–100 Mbps 常见），但必须计入总带宽预算与干扰模型；
     \item LoS/NLoS阴影衰落标准差按城区典型值3–8 dB（与式\eqref{eq:path_loss_LoS}–\eqref{eq:path_loss_NLoS}一致）。
 \end{itemize}
-上述设置保证“带宽/SINR/速率/能耗”链路符合3GPP口径，使优化在现实通信约束下成立。
+上述设置保证"带宽/SINR/速率/能耗"链路符合3GPP口径，使优化在现实通信约束下成立。
 
 \paragraph{权重选择与附加工程约束建议}
-考虑到本工作的最终目标是最小化“时延、能耗、数据丢失”，而缓存率/迁移成功率仅为手段，建议权重范围：$\omega_T\in[0.5,0.7]$，$\omega_E\in[0.2,0.4]$，$\omega_D\in[0.1,0.3]$（需归一化，按业务侧重点微调）。为提升系统稳定性，可在实现层面加入下列工程性约束/策略（作为软约束或调度规则）：
+考虑到本工作的最终目标是最小化"时延、能耗、数据丢失"，而缓存率/迁移成功率仅为手段，建议权重范围：$\omega_T\in[0.5,0.7]$，$\omega_E\in[0.2,0.4]$，$\omega_D\in[0.1,0.3]$（需归一化，按业务侧重点微调）。为提升系统稳定性，可在实现层面加入下列工程性约束/策略（作为软约束或调度规则）：
 \begin{itemize}
     \item 迁移冷却期与并发上限：同一节点相邻两次迁移间隔 $\ge T_{cool}$；系统并发迁移数 $\le M_{max}$，避免迁移风暴；
     \item 带宽最小保底：为迁移与关键V2I链路保留 $b_{min}$，避免被抢占导致SLA违约；
