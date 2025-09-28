@@ -10,6 +10,10 @@ import random
 from typing import Dict, List, Tuple, Any
 import json
 from datetime import datetime
+# 🔧 修复：导入统一时间管理器
+from utils.unified_time_manager import get_simulation_time, advance_simulation_time, reset_simulation_time
+# 🔧 修复：导入realistic内容生成器
+from utils.realistic_content_generator import generate_realistic_content, get_realistic_content_size
 
 class CompleteSystemSimulator:
     """完整系统仿真器"""
@@ -188,6 +192,55 @@ class CompleteSystemSimulator:
         # 重新初始化组件（如果需要）
         self.initialize_components()
         print("✓ 初始化了 6 个缓存管理器")
+    
+    def _get_realistic_content_size(self, content_id: str) -> float:
+        """
+        🔧 修复：使用realistic内容生成器获取大小
+        """
+        return get_realistic_content_size(content_id)
+    
+    def _calculate_available_cache_capacity(self, cache: Dict, cache_capacity_mb: float) -> float:
+        """
+        🔧 修复：正确计算可用缓存容量(MB)
+        """
+        if not cache or cache_capacity_mb <= 0:
+            return cache_capacity_mb
+        
+        total_used_mb = 0.0
+        for item in cache.values():
+            if isinstance(item, dict) and 'size' in item:
+                total_used_mb += float(item.get('size', 0.0))
+            else:
+                # 兼容旧格式
+                total_used_mb += 1.0
+        
+        available_mb = cache_capacity_mb - total_used_mb
+        return max(0.0, available_mb)
+    
+    def _infer_content_type(self, content_id: str) -> str:
+        """
+        🔧 修复：根据内容ID推断内容类型
+        """
+        content_id_lower = content_id.lower()
+        
+        if 'traffic' in content_id_lower:
+            return 'traffic_info'
+        elif 'nav' in content_id_lower or 'route' in content_id_lower:
+            return 'navigation'
+        elif 'safety' in content_id_lower or 'alert' in content_id_lower:
+            return 'safety_alert'
+        elif 'park' in content_id_lower:
+            return 'parking_info'
+        elif 'weather' in content_id_lower:
+            return 'weather_info'
+        elif 'map' in content_id_lower:
+            return 'map_data'
+        elif 'video' in content_id_lower or 'entertainment' in content_id_lower:
+            return 'entertainment'
+        elif 'sensor' in content_id_lower:
+            return 'sensor_data'
+        else:
+            return 'general'
     
     def generate_task(self, vehicle_id: str) -> Dict:
         """生成计算任务 - 使用分层任务类型设计"""
@@ -494,22 +547,25 @@ class CompleteSystemSimulator:
                 cache_controller.update_content_heat(content_id)
                 cache_controller.record_cache_result(content_id, was_hit=False)
                 
-                # 检查是否应该缓存此内容
-                data_size = 1.0  # 默认大小MB
-                available_capacity = node.get('cache_capacity', 100) - len(node.get('cache', {}))
+                # 🔧 修复：使用realistic内容大小和正确容量计算
+                data_size = self._get_realistic_content_size(content_id)
+                available_capacity = self._calculate_available_cache_capacity(
+                    node.get('cache', {}), node.get('cache_capacity', 1000.0)
+                )
                 
                 should_cache, reason = cache_controller.should_cache_content(
                     content_id, data_size, available_capacity
                 )
                 
                 if should_cache:
-                    # 执行缓存操作
+                    # 🔧 修复：执行正确的缓存操作
                     if 'cache' not in node:
                         node['cache'] = {}
                     node['cache'][content_id] = {
-                        'size': data_size,
+                        'size': data_size,  # 现在是realistic大小
                         'timestamp': self.current_time,
-                        'reason': reason
+                        'reason': reason,
+                        'content_type': self._infer_content_type(content_id)
                     }
         
         # 记录缓存控制器统计
@@ -521,36 +577,53 @@ class CompleteSystemSimulator:
         return cache_hit
     
     def _calculate_enhanced_load_factor(self, node: Dict, node_type: str) -> float:
-        """🚀 增强的负载因子计算 - 12车辆高负载场景优化"""
+        """
+        🔧 修复：统一和realistic的负载因子计算
+        基于实际队列负载，不使用虚假的限制
+        """
         queue_length = len(node.get('computation_queue', []))
         
-        # 根据节点类型设置容量参数
+        # 🔧 基于实际观察调整容量基准
         if node_type == 'RSU':
-            base_capacity = 6.0  # 12车辆高负载优化
+            # 基于实际测试，RSU处理能力约20个任务为满负载
+            base_capacity = 20.0  
             queue_factor = queue_length / base_capacity
         else:  # UAV
-            base_capacity = 3.5  # 12车辆高负载优化
+            # UAV处理能力约10个任务为满负载
+            base_capacity = 10.0
             queue_factor = queue_length / base_capacity
         
-        # 多维度负载评估
-        cpu_utilization = min(0.9, queue_length * 0.2)  # CPU利用率
-        
-        # 缓存负载评估
-        cache_size = len(node.get('cache', {}))
-        cache_capacity = node.get('cache_capacity', 100)
-        memory_utilization = cache_size / max(cache_capacity, 1)
-        
-        # 任务复杂度影响
-        complexity_factor = 2.0  # 12车辆高负载场景复杂度
-        
-        # 加权综合负载
-        load_factor = (
-            0.7 * queue_factor * complexity_factor +  # 队列负载70%
-            0.25 * cpu_utilization +                  # CPU利用率25%  
-            0.05 * memory_utilization                 # 内存利用率5%
+        # 🔧 修复：使用正确的缓存计算
+        cache_utilization = self._calculate_correct_cache_utilization(
+            node.get('cache', {}), 
+            node.get('cache_capacity', 1000.0 if node_type == 'RSU' else 200.0)
         )
         
-        return min(1.0, load_factor)  # 限制在[0,1]范围
+        # 🔧 简化但准确的负载计算
+        load_factor = (
+            0.8 * queue_factor +           # 队列是主要负载指标80%
+            0.2 * cache_utilization       # 缓存利用率20%
+        )
+        
+        # 🔧 不限制在1.0，允许显示真实过载程度
+        return max(0.0, load_factor)
+    
+    def _calculate_correct_cache_utilization(self, cache: Dict, cache_capacity_mb: float) -> float:
+        """
+        🔧 计算正确的缓存利用率
+        """
+        if not cache or cache_capacity_mb <= 0:
+            return 0.0
+        
+        total_used_mb = 0.0
+        for item in cache.values():
+            if isinstance(item, dict) and 'size' in item:
+                total_used_mb += float(item.get('size', 0.0))
+            else:
+                total_used_mb += 1.0  # 兼容旧格式
+        
+        utilization = total_used_mb / cache_capacity_mb
+        return min(1.0, max(0.0, utilization))
     
     def check_adaptive_migration(self, agents_actions: Dict = None):
         """🎯 多维度智能迁移检查 (阈值触发+负载差触发+跟随迁移)"""
@@ -566,7 +639,7 @@ class CompleteSystemSimulator:
         for i, rsu in enumerate(self.rsus):
             queue_len = len(rsu.get('computation_queue', []))
             all_node_states[f'rsu_{i}'] = {
-                'cpu_load': min(0.95, queue_len * 0.15),  # 基于队列长度估算CPU负载
+                'cpu_load': min(0.85, queue_len * 0.15),  # 🔧 用户要求：降低CPU负载上限到85%
                 'bandwidth_load': np.random.uniform(0.3, 0.9),  # 模拟带宽使用率
                 'storage_load': np.random.uniform(0.2, 0.8),    # 模拟存储使用率
                 'load_factor': self._calculate_enhanced_load_factor(rsu, 'RSU'),
@@ -579,7 +652,7 @@ class CompleteSystemSimulator:
         for i, uav in enumerate(self.uavs):
             queue_len = len(uav.get('computation_queue', []))
             all_node_states[f'uav_{i}'] = {
-                'cpu_load': min(0.95, queue_len * 0.2),  # UAV负载计算稍高
+                'cpu_load': min(0.85, queue_len * 0.2),  # 🔧 用户要求：UAV CPU负载上限也降到85%
                 'bandwidth_load': np.random.uniform(0.4, 0.9),  # UAV带宽压力更大
                 'storage_load': np.random.uniform(0.1, 0.5),    # UAV存储较少
                 'load_factor': self._calculate_enhanced_load_factor(uav, 'UAV'),
@@ -771,7 +844,7 @@ class CompleteSystemSimulator:
             if i != source_rsu_idx:  # 排除源RSU
                 rsu = self.rsus[i]
                 queue_len = len(rsu.get('computation_queue', []))
-                cpu_load = min(0.95, queue_len * 0.15)  # 估算CPU负载
+                cpu_load = min(0.85, queue_len * 0.15)  # 🔧 用户要求：降低到85%
                 
                 # 综合评分：队列长度 + 负载权重
                 score = queue_len + cpu_load * 10  # 负载权重更高
@@ -785,10 +858,31 @@ class CompleteSystemSimulator:
         target_idx, target_queue_len, target_cpu_load, _ = min(candidates, key=lambda x: x[3])
         source_queue_len = len(source_queue)
         
-        # 🎯 负载差检查：只要目标不比源更忙即可迁移
-        if target_queue_len > source_queue_len:
-            print(f"⚠️ RSU_{source_rsu_idx}→RSU_{target_idx} 目标更忙，放弃迁移 (源:{source_queue_len} vs 目标:{target_queue_len})")
+        # 🎯 优化：更积极的迁移策略，注重全局负载优化而非局部成功率
+        queue_diff = target_queue_len - source_queue_len
+        
+        # 🔧 基于系统整体状况动态调整迁移条件
+        all_queue_lens = [len(rsu.get('computation_queue', [])) for rsu in self.rsus]
+        system_avg_queue = np.mean(all_queue_lens)
+        system_queue_variance = np.var(all_queue_lens)
+        
+        # 如果系统不均衡程度高，允许更积极的迁移
+        if system_queue_variance > 50:  # 高方差表示不均衡
+            migration_tolerance = 8  # 允许更大的队列差异
+        elif system_queue_variance > 20:
+            migration_tolerance = 5
+        else:
+            migration_tolerance = 3
+        
+        if queue_diff > migration_tolerance:
+            print(f"⚠️ RSU_{source_rsu_idx}→RSU_{target_idx} 差异过大，暂缓迁移 (差异:{queue_diff} > 动态阈值:{migration_tolerance})")
             return False
+        
+        # 🎯 鼓励积极的负载均衡尝试
+        if queue_diff > 0:
+            print(f"🎯 RSU_{source_rsu_idx}→RSU_{target_idx} 积极负载均衡 (源:{source_queue_len} → 目标:{target_queue_len}, 系统方差:{system_queue_variance:.1f})")
+        else:
+            print(f"⚖️ RSU_{source_rsu_idx}→RSU_{target_idx} 标准迁移 (负载优化)")
         
         # 🔥 确保至少迁移1个任务
         migration_ratio = max(0.1, min(0.5, urgency))  # 最少10%，最多50%
@@ -854,7 +948,7 @@ class CompleteSystemSimulator:
         
         for i, rsu in enumerate(self.rsus):
             queue_len = len(rsu.get('computation_queue', []))
-            cpu_load = min(0.95, queue_len * 0.15)
+            cpu_load = min(0.85, queue_len * 0.15)  # 🔧 用户要求：统一85%上限
             
             # 计算UAV到RSU的距离
             distance = self.calculate_distance(uav_position, rsu['position'])
@@ -870,34 +964,113 @@ class CompleteSystemSimulator:
         target_idx, target_queue_len, target_cpu_load, distance, _ = min(candidates, key=lambda x: x[4])
         source_queue_len = len(source_queue)
         
-        # 🔥 UAV迁移条件更宽松（因为无线链路比有线更不稳定）
-        max_acceptable_queue = source_queue_len + 10  # RSU可以接受更多任务
-        if target_queue_len > max_acceptable_queue:
-            print(f"⚠️ UAV_{source_uav_idx}→RSU_{target_idx} 目标RSU太忙，放弃迁移 (目标:{target_queue_len} > 限制:{max_acceptable_queue})")
-            return False
+        # 🎯 优化：更积极的UAV迁移策略，基于全局负载优化
+        all_rsu_queues = [len(rsu.get('computation_queue', [])) for rsu in self.rsus]
+        system_avg_queue = np.mean(all_rsu_queues)
+        system_queue_variance = np.var(all_rsu_queues)
         
-        # 🚀 执行迁移
+        # 🔧 动态调整接受条件：系统越不均衡，越积极迁移
+        if system_queue_variance > 100:  # 严重不均衡
+            max_acceptable_queue = int(system_avg_queue + 10)  # 允许向更忙的RSU迁移
+            risk_tolerance = "高风险容忍"
+        elif system_queue_variance > 30:  # 中等不均衡  
+            max_acceptable_queue = int(system_avg_queue + 6)
+            risk_tolerance = "中等风险"
+        else:  # 相对均衡
+            max_acceptable_queue = int(system_avg_queue + 3)
+            risk_tolerance = "低风险"
+        
+        # 🎯 基于全局优化需要决定是否迁移
+        should_migrate_for_balance = target_queue_len < max_acceptable_queue
+        
+        if not should_migrate_for_balance:
+            # 🔧 即使目标较忙，也考虑探索性迁移（10%概率）
+            if np.random.random() < 0.1 and system_queue_variance > 50:
+                print(f"🎲 UAV_{source_uav_idx}→RSU_{target_idx} 探索性迁移尝试 (目标:{target_queue_len}, 系统方差:{system_queue_variance:.1f})")
+                return self._execute_risky_uav_migration(source_uav_idx, target_idx, source_queue)
+            else:
+                print(f"⏸️ UAV_{source_uav_idx}→RSU_{target_idx} 暂缓迁移 (目标:{target_queue_len} > {risk_tolerance}限制:{max_acceptable_queue})")
+                return False
+        
+        print(f"🎯 UAV_{source_uav_idx}→RSU_{target_idx} 积极迁移 (目标:{target_queue_len}, 系统平均:{system_avg_queue:.1f}, {risk_tolerance})")
+        
+        return self._execute_standard_uav_migration(source_uav_idx, target_idx, source_queue)
+    
+    def _execute_risky_uav_migration(self, source_uav_idx: int, target_idx: int, source_queue: List) -> bool:
+        """
+        🎯 执行有风险的探索性迁移
+        这种迁移可能失败，但有助于探索更好的负载分布
+        """
+        # 降低成功率，但仍然尝试
+        base_success_rate = 0.6  # 探索性迁移60%基础成功率
+        
+        # 基于系统状态调整成功率
+        system_load_factor = np.mean([len(rsu.get('computation_queue', [])) for rsu in self.rsus]) / 25.0
+        if system_load_factor > 1.0:  # 系统过载时探索性迁移更重要
+            adjusted_success_rate = min(0.8, base_success_rate + 0.2)
+        else:
+            adjusted_success_rate = base_success_rate
+        
+        # 尝试迁移
+        if np.random.random() < adjusted_success_rate:
+            return self._execute_standard_uav_migration(source_uav_idx, target_idx, source_queue)
+        else:
+            print(f"❌ UAV_{source_uav_idx}→RSU_{target_idx} 探索性迁移失败 (成功率:{adjusted_success_rate:.1%})")
+            return False
+    
+    def _execute_standard_uav_migration(self, source_uav_idx: int, target_idx: int, source_queue: List) -> bool:
+        """执行标准UAV迁移"""
+        source_uav = self.uavs[source_uav_idx]
         target_rsu = self.rsus[target_idx]
+        
         if 'computation_queue' not in target_rsu:
             target_rsu['computation_queue'] = []
         
-        # 计算无线传输成本
-        tasks_to_migrate = len(source_queue)
-        migration_data_size = tasks_to_migrate * 1.5  # UAV任务通常较小
+        # 🔧 计算迁移任务数 - 更积极的迁移比例
+        tasks_to_migrate = max(1, len(source_queue) // 2)  # 迁移一半任务，更积极
+        tasks_to_migrate = min(tasks_to_migrate, len(source_queue))
         
-        # 📡 记录无线到有线的混合传输
-        wireless_delay = distance * 0.001  # 简化的无线传输延迟
+        # 🎯 基于实际系统状态计算成功率，而非固定值
+        distance = self.calculate_distance(source_uav['position'], target_rsu['position'])
+        target_load_factor = len(target_rsu.get('computation_queue', [])) / 25.0
         
-        target_rsu['computation_queue'].extend(source_queue)
-        source_uav['computation_queue'] = []
+        # 🔧 更realistic的成功率计算
+        base_success_rate = 0.75  # 75%基础成功率
         
-        # 记录UAV迁移统计
-        self.stats['uav_migration_count'] = self.stats.get('uav_migration_count', 0) + 1
-        self.stats['uav_migration_distance'] = self.stats.get('uav_migration_distance', 0.0) + distance
+        # 距离影响
+        distance_penalty = min(0.3, distance / 1000.0)  # 距离每1km降低成功率
         
-        print(f"🚁 UAV迁移 UAV_{source_uav_idx}→RSU_{target_idx}: {tasks_to_migrate}个任务, 距离{distance:.1f}m, 无线延迟{wireless_delay*1000:.2f}ms")
+        # 目标负载影响
+        load_penalty = min(0.2, target_load_factor * 0.3)  # 目标负载影响
         
-        return True
+        # 🎯 系统紧急程度加成 - 系统越不均衡，越要积极尝试
+        all_queues = [len(rsu.get('computation_queue', [])) for rsu in self.rsus]
+        system_variance = np.var(all_queues)
+        urgency_bonus = min(0.2, system_variance / 100.0)  # 不均衡时提高成功意愿
+        
+        actual_success_rate = base_success_rate - distance_penalty - load_penalty + urgency_bonus
+        actual_success_rate = max(0.4, min(0.9, actual_success_rate))  # 限制在40-90%
+        
+        # 🎲 执行迁移尝试
+        migration_successful = np.random.random() < actual_success_rate
+        
+        if migration_successful:
+            # 执行迁移
+            target_rsu['computation_queue'].extend(source_queue[:tasks_to_migrate])
+            source_uav['computation_queue'] = source_queue[tasks_to_migrate:]
+            
+            # 计算传输延迟和能耗
+            wireless_delay = distance / 300000000  # 光速传播
+            
+            # 记录统计
+            self.stats['uav_migration_count'] = self.stats.get('uav_migration_count', 0) + 1
+            self.stats['uav_migration_distance'] = self.stats.get('uav_migration_distance', 0.0) + distance
+            
+            print(f"✅ UAV迁移 UAV_{source_uav_idx}→RSU_{target_idx}: {tasks_to_migrate}个任务, 距离{distance:.1f}m, 成功率{actual_success_rate:.1%}")
+            return True
+        else:
+            print(f"❌ UAV迁移 UAV_{source_uav_idx}→RSU_{target_idx}: 迁移失败, 成功率{actual_success_rate:.1%}, 原因:网络条件不佳")
+            return False
     
     def _execute_central_rsu_scheduling(self):
         """🏢 执行中央RSU全局调度 - 基于有线回传网络"""
@@ -934,10 +1107,9 @@ class CompleteSystemSimulator:
                 total_collection_delay += collection_delay
                 total_collection_energy += collection_energy
                 
-                # 更新RSU状态信息
-                if 'cpu_usage' not in rsu:
-                    queue_len = len(rsu.get('computation_queue', []))
-                    rsu['cpu_usage'] = min(0.9, queue_len * 0.15)
+                # 🔧 修复：始终更新RSU负载状态，确保与队列同步
+                queue_len = len(rsu.get('computation_queue', []))
+                rsu['cpu_usage'] = min(0.9, queue_len * 0.05)  # 降低系数，让负载更realistic
                 if 'cache_hit_rate' not in rsu:
                     rsu['cache_hit_rate'] = np.random.uniform(0.3, 0.8)
                 if 'avg_response_time' not in rsu:
@@ -1313,7 +1485,8 @@ class CompleteSystemSimulator:
                     distance = self.calculate_distance(vehicle['position'], node['position'])
                     
                     # 智能卸载核心逻辑：队列<10优先，距离越近越好
-                    if rsu_queue_len < 10:  # 低负载RSU，优先选择
+                    # 🔧 优化：统一队列标准，与配置一致
+                    if rsu_queue_len < 15:  # 低负载RSU，优先选择(与过载阈值一致)
                         score = rsu_queue_len + (distance / 200.0)  # 距离权重较小
                     else:  # 高负载RSU，增加惩罚
                         score = rsu_queue_len * 1.5 + (distance / 100.0)
@@ -1909,11 +2082,14 @@ class CompleteSystemSimulator:
             'cache_misses': 0
         }
         self.current_time = 0
+        # 🔧 修复：重置统一时间管理器
+        reset_simulation_time()
     
     def run_simulation_step(self, step: int, agents_actions: Dict = None) -> Dict:
         """运行单个仿真步骤"""
-        # 更新当前时间
+        # 🔧 修复：统一时间管理
         self.current_time = step * self.time_slot
+        advance_simulation_time()  # 推进统一仿真时间
         
         # 运行一个时隙的仿真
         results = self.simulate_time_slot(agents_actions)

@@ -8,6 +8,8 @@ import numpy as np
 from typing import Dict, List, Tuple, Optional
 import time
 from collections import defaultdict
+# 🔧 修复：导入统一时间管理器
+from .unified_time_manager import get_simulation_time
 
 class AdaptiveCacheController:
     """
@@ -18,20 +20,20 @@ class AdaptiveCacheController:
     def __init__(self, cache_capacity: float = 100.0):
         self.cache_capacity = cache_capacity
         
-        # 🤖 智能体可控制的缓存参数
+        # 🔧 优化：调整智能体可控制的缓存参数为更合理的初始值
         self.agent_params = {
-            'heat_threshold_high': 0.8,      # 高热度阈值 [0.5-0.95]
-            'heat_threshold_medium': 0.4,    # 中热度阈值 [0.2-0.7]
-            'prefetch_ratio': 0.1,           # 预取比例 [0.05-0.3]
-            'collaboration_weight': 0.5      # 协作权重 [0.0-1.0]
+            'heat_threshold_high': 0.7,      # 高热度阈值：70% [0.5-0.9]
+            'heat_threshold_medium': 0.35,   # 中热度阈值：35% [0.2-0.6]
+            'prefetch_ratio': 0.05,          # 预取比例：5% [0.02-0.15]
+            'collaboration_weight': 0.3      # 协作权重：30% [0.0-0.8]
         }
         
-        # 参数有效范围
+        # 🔧 优化：调整参数有效范围，更适合实际缓存场景
         self.param_bounds = {
-            'heat_threshold_high': (0.5, 0.95),
-            'heat_threshold_medium': (0.2, 0.7),
-            'prefetch_ratio': (0.05, 0.3),
-            'collaboration_weight': (0.0, 1.0)
+            'heat_threshold_high': (0.5, 0.9),      # 高热度阈值范围缩小
+            'heat_threshold_medium': (0.2, 0.6),    # 中热度阈值范围调整
+            'prefetch_ratio': (0.02, 0.15),         # 预取比例范围缩小，避免过度预取
+            'collaboration_weight': (0.0, 0.8)      # 协作权重上限降低
         }
         
         # 缓存统计
@@ -61,8 +63,15 @@ class AdaptiveCacheController:
             
         param_names = list(self.param_bounds.keys())
         
-        for i, param_name in enumerate(param_names):
-            action_key = f'cache_param_{i}'
+        # 🔧 修复：直接使用语义化参数名映射
+        param_mapping = {
+            'heat_threshold_high': 'heat_threshold_high',
+            'heat_threshold_medium': 'heat_threshold_medium', 
+            'prefetch_ratio': 'prefetch_ratio',
+            'collaboration_weight': 'collaboration_weight'
+        }
+        
+        for param_name, action_key in param_mapping.items():
             if action_key in agent_actions:
                 # 将智能体动作 [-1,1] 映射到参数范围
                 action_value = np.clip(agent_actions[action_key], -1.0, 1.0)
@@ -80,7 +89,8 @@ class AdaptiveCacheController:
     
     def update_content_heat(self, content_id: str, access_weight: float = 1.0):
         """更新内容热度"""
-        current_time = time.time()
+        # 🔧 修复：使用统一仿真时间
+        current_time = get_simulation_time()
         
         # 更新访问历史
         self.access_history[content_id].append(current_time)
@@ -89,15 +99,24 @@ class AdaptiveCacheController:
         if len(self.access_history[content_id]) > 50:
             self.access_history[content_id].pop(0)
         
-        # 计算热度：基于访问频率和时效性
+        # 🔧 优化：改进热度计算，更适合仿真环境
+        # 计算最近访问窗口（从1小时改为10分钟，适应仿真）
         recent_accesses = [t for t in self.access_history[content_id] 
-                          if current_time - t < 3600]  # 1小时内的访问
+                          if current_time - t < 600]  # 10分钟内的访问，适应仿真时间
         
-        frequency_heat = len(recent_accesses) / 10.0  # 频率热度
-        recency_heat = max(0, 1.0 - (current_time - self.access_history[content_id][-1]) / 3600) if self.access_history[content_id] else 0
+        # 频率热度：使用平方根避免极端值dominance
+        frequency_heat = min(1.0, np.sqrt(len(recent_accesses) / 8.0))  # 8次访问达到满热度
         
-        # 综合热度计算
-        self.content_heat[content_id] = min(1.0, 0.7 * frequency_heat + 0.3 * recency_heat)
+        # 最近性热度：指数衰减更平滑
+        if self.access_history[content_id]:
+            last_access = self.access_history[content_id][-1]
+            time_since_last = current_time - last_access
+            recency_heat = np.exp(-time_since_last / 120.0)  # 2分钟半衰期
+        else:
+            recency_heat = 0.0
+        
+        # 🔧 优化：综合热度计算，平衡频率和最近性
+        self.content_heat[content_id] = min(1.0, 0.6 * frequency_heat + 0.4 * recency_heat)
     
     def should_cache_content(self, content_id: str, data_size: float, available_capacity: float) -> Tuple[bool, str]:
         """
@@ -230,8 +249,14 @@ class AdaptiveMigrationController:
             
         param_names = list(self.param_bounds.keys())
         
-        for i, param_name in enumerate(param_names):
-            action_key = f'migration_param_{i}'
+        # 🔧 修复：语义化迁移参数映射
+        param_mapping = {
+            'rsu_overload_threshold': 'rsu_overload_threshold',
+            'uav_battery_threshold': 'uav_battery_threshold',
+            'migration_cost_weight': 'migration_cost_weight'
+        }
+        
+        for param_name, action_key in param_mapping.items():
             if action_key in agent_actions:
                 action_value = np.clip(agent_actions[action_key], -1.0, 1.0)
                 param_min, param_max = self.param_bounds[param_name]
@@ -243,7 +268,8 @@ class AdaptiveMigrationController:
     
     def update_node_load(self, node_id: str, load_factor: float, battery_level: float = 1.0):
         """更新节点负载历史"""
-        current_time = time.time()
+        # 🔧 修复：使用统一仿真时间
+        current_time = get_simulation_time()
         
         self.node_load_history[node_id].append({
             'time': current_time,
@@ -267,11 +293,12 @@ class AdaptiveMigrationController:
         Returns:
             (should_migrate, reason, urgency_score)
         """
-        current_time = time.time()
+        # 🔧 修复：使用统一仿真时间
+        current_time = get_simulation_time()
         
-        # 检查冷却期 (防止频繁迁移)
+        # 🔧 用户要求：缩短冷却期到1秒，实现每秒触发迁移决策
         if (node_id in self.last_migration_time and 
-            current_time - self.last_migration_time[node_id] < 60.0):  # 🔧 增加到60秒冷却期
+            current_time - self.last_migration_time[node_id] < 1.0):  # 1秒冷却期，每秒可触发
             return False, "冷却期内", 0.0
         
         # 获取节点状态
@@ -289,15 +316,16 @@ class AdaptiveMigrationController:
             resource_overload = False
             overload_resources = []
             
-            if cpu_load > 0.85:  # 恢复到85%阈值，避免过度触发
+            # 🔧 用户要求：降低过载阈值到85%，更早触发迁移
+            if cpu_load > 0.85:  # 85%CPU阈值
                 resource_overload = True
                 overload_resources.append(f"CPU:{cpu_load:.1%}")
                 
-            if bandwidth_load > 0.85:  # 恢复到85%阈值
+            if bandwidth_load > 0.85:  # 85%带宽阈值
                 resource_overload = True
                 overload_resources.append(f"带宽:{bandwidth_load:.1%}")
                 
-            if storage_load > 0.85:  # 恢复到85%阈值
+            if storage_load > 0.85:  # 85%存储阈值
                 resource_overload = True
                 overload_resources.append(f"存储:{storage_load:.1%}")
             
@@ -317,6 +345,7 @@ class AdaptiveMigrationController:
                         load_diff = current_avg_load - neighbor_avg_load
                         max_load_diff = max(max_load_diff, load_diff)
                         
+                        # 🔧 用户要求：降低负载差阈值到20%
                         if load_diff > 0.2:  # 负载差>20%
                             load_diff_trigger = True
             
@@ -334,8 +363,8 @@ class AdaptiveMigrationController:
                 else:
                     migration_reason = f"负载差过大({max_load_diff:.1%})"
             
-            # 触发阈值判断
-            if urgency_score > 0.1:  # 恢复合理的触发阈值，防止过度迁移
+            # 🔧 优化：更积极的迁移策略，敢于尝试有风险的迁移
+            if urgency_score > 0.05:  # 降低触发阈值，更积极地尝试迁移
                 self.migration_stats['total_triggers'] += 1
                 self.last_migration_time[node_id] = current_time
                 return True, migration_reason, urgency_score
@@ -369,7 +398,8 @@ class AdaptiveMigrationController:
                         load_diff = cpu_load - neighbor_load
                         max_load_diff = max(max_load_diff, load_diff)
                 
-                if max_load_diff > 0.2:  # UAV比RSU高20%以上
+                # 🔧 用户要求：保持20%负载差阈值
+                if max_load_diff > 0.2:  # UAV比RSU高20%以上  
                     diff_urgency = max_load_diff - 0.2
                     urgency_score += diff_urgency * 1.5
                     if migration_reason:
@@ -377,7 +407,8 @@ class AdaptiveMigrationController:
                     else:
                         migration_reason = f"与RSU负载差过大({max_load_diff:.1%})"
             
-                if urgency_score > 0.15:  # 恢复UAV触发阈值，防止过度迁移
+                # 🔧 优化：UAV也采用更积极的迁移策略
+                if urgency_score > 0.08:  # 降低UAV触发阈值，更积极地平衡负载
                     self.migration_stats['total_triggers'] += 1
                     self.last_migration_time[node_id] = current_time
                     return True, migration_reason, urgency_score
@@ -447,31 +478,30 @@ class AdaptiveMigrationController:
 
 def map_agent_actions_to_params(agent_actions: np.ndarray) -> Tuple[Dict, Dict]:
     """
-    将智能体动作数组映射为缓存和迁移参数
+    🔧 修复：将智能体动作映射为语义化的缓存和迁移参数
     
     Args:
         agent_actions: 长度为7的数组，来自18维动作的后7维
-                      [cache_0, cache_1, cache_2, cache_3, migration_0, migration_1, migration_2]
+                      [heat_high, heat_med, prefetch, collab, rsu_thresh, uav_thresh, mig_cost]
     
     Returns:
-        (cache_params, migration_params)
+        (cache_params, migration_params) - 使用语义化命名
     """
     if len(agent_actions) < 7:
-        # 如果动作不足，使用默认值
         agent_actions = np.pad(agent_actions, (0, 7 - len(agent_actions)), mode='constant', constant_values=0.0)
     
-    # 构造参数字典
+    # 🔧 修复：语义化参数映射，便于理解和调试
     cache_params = {
-        'cache_param_0': agent_actions[0],  # heat_threshold_high
-        'cache_param_1': agent_actions[1],  # heat_threshold_medium
-        'cache_param_2': agent_actions[2],  # prefetch_ratio
-        'cache_param_3': agent_actions[3],  # collaboration_weight
+        'heat_threshold_high': np.clip(agent_actions[0], -1.0, 1.0),      # 高热度阈值
+        'heat_threshold_medium': np.clip(agent_actions[1], -1.0, 1.0),    # 中热度阈值  
+        'prefetch_ratio': np.clip(agent_actions[2], -1.0, 1.0),           # 预取比例
+        'collaboration_weight': np.clip(agent_actions[3], -1.0, 1.0),     # 协作权重
     }
     
     migration_params = {
-        'migration_param_0': agent_actions[4],  # rsu_overload_threshold
-        'migration_param_1': agent_actions[5],  # uav_battery_threshold
-        'migration_param_2': agent_actions[6],  # migration_cost_weight
+        'rsu_overload_threshold': np.clip(agent_actions[4], -1.0, 1.0),   # RSU过载阈值
+        'uav_battery_threshold': np.clip(agent_actions[5], -1.0, 1.0),    # UAV电池阈值
+        'migration_cost_weight': np.clip(agent_actions[6], -1.0, 1.0),    # 迁移成本权重
     }
     
     return cache_params, migration_params

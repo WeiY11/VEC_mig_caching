@@ -461,58 +461,83 @@ class TD3Environment:
     
     def get_state_vector(self, node_states: Dict, system_metrics: Dict) -> np.ndarray:
         """
-        🔧 修复：构建真实的130维状态向量，消除随机数填充
+        🔧 修复：构建准确的130维状态向量，基于正确的缓存计算
         状态组成: 车辆60维 + RSU54维 + UAV16维 = 130维
         """
         state_components = []
         
-        # 1. 车辆状态 (12×5=60维)
+        # 1. 车辆状态 (12×5=60维)  
         for i in range(12):
             vehicle_key = f'vehicle_{i}'
             if vehicle_key in node_states:
                 vehicle_state = node_states[vehicle_key]
-                # 确保是5维状态
-                if len(vehicle_state) >= 5:
-                    state_components.extend(vehicle_state[:5])
-                else:
-                    # 补齐到5维
-                    padded_state = np.pad(vehicle_state, (0, 5-len(vehicle_state)), mode='constant', constant_values=0.5)
-                    state_components.extend(padded_state)
+                # 确保数值有效性
+                valid_state = []
+                for val in vehicle_state[:5]:
+                    if np.isfinite(val):
+                        valid_state.append(float(val))
+                    else:
+                        valid_state.append(0.5)
+                state_components.extend(valid_state)
+                
+                # 补齐到5维
+                while len(state_components) % 5 != 0:
+                    state_components.append(0.0)
             else:
                 # 默认车辆状态: [位置x, 位置y, 速度, 队列, 能耗]
                 state_components.extend([0.5, 0.5, 0.0, 0.0, 0.0])
         
-        # 2. RSU状态 (6×9=54维)
+        # 2. RSU状态 (6×9=54维) - 🔧 确保使用正确的缓存计算
         for i in range(6):
             rsu_key = f'rsu_{i}'
             if rsu_key in node_states:
                 rsu_state = node_states[rsu_key]
-                # 确保是9维状态 (原5维 + 缓存4维)
-                if len(rsu_state) >= 9:
-                    state_components.extend(rsu_state[:9])
-                else:
-                    # 补齐到9维
-                    padded_state = np.pad(rsu_state, (0, 9-len(rsu_state)), mode='constant', constant_values=0.5)
-                    state_components.extend(padded_state)
+                # 确保数值有效性和维度正确
+                valid_rsu_state = []
+                for j, val in enumerate(rsu_state[:9]):
+                    if np.isfinite(val):
+                        # 对缓存利用率(第2维)进行特殊检查
+                        if j == 2:  # 缓存利用率维度
+                            valid_rsu_state.append(min(1.0, max(0.0, float(val))))
+                        else:
+                            valid_rsu_state.append(float(val))
+                    else:
+                        valid_rsu_state.append(0.5 if j < 2 else 0.0)
+                
+                # 补齐到9维
+                while len(valid_rsu_state) < 9:
+                    valid_rsu_state.append(0.0)
+                
+                state_components.extend(valid_rsu_state)
             else:
                 # 默认RSU状态: [位置x, 位置y, 缓存利用率, 队列, 能耗, 缓存参数4维]
-                state_components.extend([0.5, 0.5, 0.0, 0.0, 0.0, 0.8, 0.4, 0.1, 0.5])
+                state_components.extend([0.5, 0.5, 0.0, 0.0, 0.0, 0.7, 0.35, 0.05, 0.3])
         
-        # 3. UAV状态 (2×8=16维)
+        # 3. UAV状态 (2×8=16维) - 🔧 优化数值稳定性
         for i in range(2):
             uav_key = f'uav_{i}'
             if uav_key in node_states:
                 uav_state = node_states[uav_key]
-                # 确保是8维状态 (原5维 + 迁移3维)
-                if len(uav_state) >= 8:
-                    state_components.extend(uav_state[:8])
-                else:
-                    # 补齐到8维
-                    padded_state = np.pad(uav_state, (0, 8-len(uav_state)), mode='constant', constant_values=0.5)
-                    state_components.extend(padded_state)
+                # 确保数值有效性
+                valid_uav_state = []
+                for j, val in enumerate(uav_state[:8]):
+                    if np.isfinite(val):
+                        # 对缓存利用率(第3维)进行特殊处理
+                        if j == 3:  # 缓存利用率维度
+                            valid_uav_state.append(min(1.0, max(0.0, float(val))))
+                        else:
+                            valid_uav_state.append(float(val))
+                    else:
+                        valid_uav_state.append(0.5 if j < 3 else 0.0)
+                
+                # 补齐到8维
+                while len(valid_uav_state) < 8:
+                    valid_uav_state.append(0.0)
+                
+                state_components.extend(valid_uav_state)
             else:
                 # 默认UAV状态: [位置x, 位置y, 位置z, 缓存利用率, 能耗, 迁移参数3维]
-                state_components.extend([0.5, 0.5, 0.5, 0.0, 0.0, 0.2, 1.0, 0.5])
+                state_components.extend([0.5, 0.5, 0.5, 0.0, 0.0, 0.75, 1.0, 0.3])
         
         # 确保状态向量正好是130维
         state_vector = np.array(state_components[:130], dtype=np.float32)
@@ -551,13 +576,19 @@ class TD3Environment:
         global_action = self.agent.select_action(state, training)
         return self.decompose_action(global_action)
     
-    def calculate_reward(self, system_metrics: Dict) -> float:
+    def calculate_reward(self, system_metrics: Dict, 
+                       cache_metrics: Optional[Dict] = None,
+                       migration_metrics: Optional[Dict] = None) -> float:
         """
-        计算奖励 - 使用标准化奖励函数
-        严格按照论文目标函数实现
+        🔧 增强：计算针对性奖励，支持缓存和迁移子系统
         """
-        from utils.standardized_reward import calculate_standardized_reward
-        return calculate_standardized_reward(system_metrics, agent_type='single_agent')
+        try:
+            from utils.enhanced_reward_calculator import calculate_enhanced_reward
+            return calculate_enhanced_reward(system_metrics, cache_metrics, migration_metrics)
+        except ImportError:
+            # 回退到简单奖励计算
+            from utils.simple_reward_calculator import calculate_simple_reward
+            return calculate_simple_reward(system_metrics)
     
     def train_step(self, state: np.ndarray, action: Union[np.ndarray, int], reward: float,
                    next_state: np.ndarray, done: bool) -> Dict:

@@ -7,8 +7,8 @@ from .logger import Logger
 from .metrics import Metrics, MovingAverage, PerformanceTracker
 from .data_processor import DataProcessor
 from .data_validator import SystemMetricsValidator
-from .reward_calculator import UnifiedRewardCalculator
 from .energy_validator import EnergyValidator, validate_energy_consumption
+from .simple_reward_calculator import calculate_simple_reward
 
 # 添加缺失的工具函数
 import numpy as np
@@ -61,5 +61,5 @@ class ExponentialMovingAverage:
         return self.value
 
 __all__ = ['Logger', 'Metrics', 'MovingAverage', 'PerformanceTracker', 'DataProcessor', 
-           'SystemMetricsValidator', 'UnifiedRewardCalculator', 'EnergyValidator', 'validate_energy_consumption',
+           'SystemMetricsValidator', 'EnergyValidator', 'validate_energy_consumption', 'calculate_simple_reward',
            'generate_poisson_arrivals', 'db_to_linear', 'sigmoid', 'calculate_3d_distance', 'ExponentialMovingAverage']

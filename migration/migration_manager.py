@@ -102,22 +102,22 @@ class TaskMigrationManager:
         candidates = []
         
         if source_type == "rsu":
-            # RSU可以迁移到其他RSU或UAV
+            # 🔧 修复：放宽迁移目标选择条件，增加迁移机会
             for node_id, state in node_states.items():
                 if node_id.startswith("rsu_") and node_id != source_node_id:
-                    if state.load_factor < self.rsu_overload_threshold * 0.8:
+                    if state.load_factor < self.rsu_overload_threshold * 0.9:  # 从0.8提高到0.9
                         candidates.append(node_id)
                 elif node_id.startswith("uav_"):
                     battery_level = getattr(state, 'battery_level', 1.0)
-                    if (battery_level > self.uav_min_battery * 1.5 and 
-                        state.load_factor < self.uav_overload_threshold * 0.8):
+                    if (battery_level > self.uav_min_battery * 1.2 and   # 从1.5降至1.2
+                        state.load_factor < self.uav_overload_threshold * 0.9):  # 从0.8提高到0.9
                         candidates.append(node_id)
         
         elif source_type == "uav":
-            # UAV主要迁移到RSU
+            # 🔧 修复：UAV迁移条件也适度放宽
             for node_id, state in node_states.items():
                 if node_id.startswith("rsu_"):
-                    if state.load_factor < self.rsu_overload_threshold * 0.8:
+                    if state.load_factor < self.rsu_overload_threshold * 0.9:  # 从0.8提高到0.9
                         candidates.append(node_id)
         
         # 选择距离最近的候选

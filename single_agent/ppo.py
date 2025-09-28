@@ -466,9 +466,11 @@ class PPOEnvironment:
         return self.decompose_action(action), log_prob, value
     
     def calculate_reward(self, system_metrics: Dict) -> float:
-        """计算奖励 - 使用标准化奖励函数"""
-        from utils.standardized_reward import calculate_standardized_reward
-        return calculate_standardized_reward(system_metrics, agent_type='single_agent')
+        """
+        计算奖励 - 使用简化的、基于成本的奖励函数
+        """
+        from utils.simple_reward_calculator import calculate_simple_reward
+        return calculate_simple_reward(system_metrics)
     
     def save_models(self, filepath: str):
         """保存模型"""

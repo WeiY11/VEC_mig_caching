@@ -447,6 +447,7 @@ class MultiAgentTrainingEnvironment:
             'migration_success_rate': dynamic_migration_rate,
             'system_load_ratio': system_load_ratio,
             'avg_bandwidth_utilization': avg_bandwidth_utilization,
+            'dropped_tasks': dropped_tasks,
             # 添加调试信息
             'debug_info': {
                 'generated_tasks': generated_tasks,
@@ -458,18 +459,18 @@ class MultiAgentTrainingEnvironment:
         }
     
     def _calculate_rewards(self, system_metrics: Dict) -> Dict[str, float]:
-        """计算智能体奖励 - 使用标准化奖励函数"""
-        from utils.standardized_reward import calculate_standardized_reward
+        """计算智能体奖励 - 使用简化的、基于成本的奖励函数"""
+        from utils.simple_reward_calculator import calculate_simple_reward
         
         rewards = {}
         agent_ids = ['vehicle_agent', 'rsu_agent', 'uav_agent']
         
-        # 为不同智能体计算标准化奖励
+        # 为所有智能体计算统一的、基于全局指标的奖励
+        reward_val = calculate_simple_reward(system_metrics)
+        
         for agent_id in agent_ids:
-            rewards[agent_id] = calculate_standardized_reward(
-                system_metrics, 
-                agent_type=agent_id
-            )
+            # 共享奖励信号以促进合作
+            rewards[agent_id] = reward_val
         
         return rewards
     

@@ -476,28 +476,19 @@ class MATD3Environment:
     
     def calculate_rewards(self, prev_metrics: Dict, current_metrics: Dict) -> Dict[str, float]:
         """
-        计算智能体奖励 - 使用标准化奖励函数
-        确保奖励计算的一致性，严格对应论文目标函数
+        计算智能体奖励 - 使用简化的、基于成本的奖励函数
         """
-        from utils.standardized_reward import calculate_standardized_reward
+        from utils.simple_reward_calculator import calculate_simple_reward
         
         rewards = {}
         
-        # 为每个智能体计算标准化的基础奖励
-        for agent_id in self.agents.keys():
-            # 使用标准化奖励计算函数
-            base_reward = calculate_standardized_reward(current_metrics, agent_id)
-            
-            # 计算性能变化奖励 (可选的额外奖励)
-            change_bonus = self._calculate_performance_change_bonus(
-                prev_metrics, current_metrics, agent_id)
-            
-            # 组合最终奖励
-            final_reward = base_reward + change_bonus
-            
-            # 确保奖励在合理范围内
-            rewards[agent_id] = np.clip(final_reward, -10.0, 5.0)
+        # 为每个智能体计算同样的、基于全局系统状态的奖励
+        # 多智能体共享同一个奖励信号，促进合作
+        reward_val = calculate_simple_reward(current_metrics)
         
+        for agent_id in self.agents.keys():
+            rewards[agent_id] = reward_val
+            
         return rewards
     
     def _calculate_performance_change_bonus(self, prev_metrics: Dict, 

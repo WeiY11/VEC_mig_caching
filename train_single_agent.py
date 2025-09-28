@@ -9,7 +9,7 @@ python train_single_agent.py --algorithm DQN --episodes 200
 python train_single_agent.py --algorithm PPO --episodes 200
 python train_single_agent.py --algorithm SAC --episodes 200
 python train_single_agent.py --compare --episodes 200  # 比较所有算法
-"""
+""" 
 import os
 import argparse
 import numpy as np
@@ -105,6 +105,30 @@ class SingleAgentTrainingEnvironment:
         print(f"✓ {self.algorithm}训练环境初始化完成")
         print(f"✓ 算法类型: 单智能体")
     
+    def _calculate_correct_cache_utilization(self, cache: Dict, cache_capacity_mb: float) -> float:
+        """
+        🔧 修复：正确计算缓存利用率
+        
+        Args:
+            cache: 缓存字典
+            cache_capacity_mb: 缓存容量(MB)
+        Returns:
+            缓存利用率 [0.0, 1.0]
+        """
+        if not cache or cache_capacity_mb <= 0:
+            return 0.0
+        
+        total_used_mb = 0.0
+        for item in cache.values():
+            if isinstance(item, dict) and 'size' in item:
+                total_used_mb += float(item.get('size', 0.0))
+            else:
+                # 兼容旧格式，使用realistic大小
+                total_used_mb += 1.0  # 默认1MB
+        
+        utilization = total_used_mb / cache_capacity_mb
+        return min(1.0, max(0.0, utilization))
+    
     def reset_environment(self) -> np.ndarray:
         """重置环境并返回初始状态"""
         # 重置仿真器状态
@@ -130,7 +154,7 @@ class SingleAgentTrainingEnvironment:
             rsu_state = np.array([
                 rsu['position'][0] / 1000,  # 归一化位置x
                 rsu['position'][1] / 1000,  # 归一化位置y
-                len(rsu.get('cache', {})) / rsu.get('cache_capacity', 100),  # 缓存利用率
+                self._calculate_correct_cache_utilization(rsu.get('cache', {}), rsu.get('cache_capacity', 1000.0)),  # 🔧 修复：正确的缓存利用率
                 len(rsu.get('computation_queue', [])) / 10,  # 归一化队列长度
                 rsu.get('energy_consumed', 0) / 1000  # 归一化能耗
             ])
@@ -142,7 +166,7 @@ class SingleAgentTrainingEnvironment:
                 uav['position'][0] / 1000,  # 归一化位置x
                 uav['position'][1] / 1000,  # 归一化位置y
                 uav['position'][2] / 200,   # 归一化高度
-                len(uav.get('cache', {})) / uav.get('cache_capacity', 100),  # 缓存利用率
+                self._calculate_correct_cache_utilization(uav.get('cache', {}), uav.get('cache_capacity', 200.0)),  # 🔧 修复：正确的UAV缓存利用率
                 uav.get('energy_consumed', 0) / 1000  # 归一化能耗
             ])
             node_states[f'uav_{i}'] = uav_state
@@ -243,8 +267,11 @@ class SingleAgentTrainingEnvironment:
         # 获取下一状态
         next_state = self.agent_env.get_state_vector(node_states, system_metrics)
         
-        # 计算奖励
-        reward = self.agent_env.calculate_reward(system_metrics)
+        # 🔧 增强：计算包含子系统指标的奖励
+        cache_metrics = self.adaptive_cache_controller.get_cache_metrics()
+        migration_metrics = self.adaptive_migration_controller.get_migration_metrics()
+        
+        reward = self.agent_env.calculate_reward(system_metrics, cache_metrics, migration_metrics)
         
         # 判断是否结束
         done = False  # 单智能体环境通常不会提前结束
@@ -285,7 +312,7 @@ class SingleAgentTrainingEnvironment:
         
         # 计算本episode任务总数和完成率（避免累积效应）
         episode_total = episode_processed + episode_dropped
-        completion_rate = episode_processed / max(1, episode_total) if episode_total > 0 else 1.0
+        completion_rate = episode_processed / max(1, episode_total) if episode_total > 0 else 0.5
         
         cache_hits = int(safe_get('cache_hits', 0))
         cache_misses = int(safe_get('cache_misses', 0))
@@ -343,10 +370,18 @@ class SingleAgentTrainingEnvironment:
         
         # 🤖 更新缓存控制器统计（如果有实际数据）
         if cache_hit_rate > 0:
-            self.adaptive_cache_controller.cache_stats['current_utilization'] = sum(
-                len(rsu.get('cache', {})) / max(1, rsu.get('cache_capacity', 100))
-                for rsu in self.simulator.rsus
-            ) / max(1, len(self.simulator.rsus))
+            # 🔧 修复：正确计算缓存统计
+            total_utilization = 0.0
+            for rsu in self.simulator.rsus:
+                utilization = self._calculate_correct_cache_utilization(
+                    rsu.get('cache', {}), 
+                    rsu.get('cache_capacity', 1000.0)
+                )
+                total_utilization += utilization
+            
+            self.adaptive_cache_controller.cache_stats['current_utilization'] = (
+                total_utilization / max(1, len(self.simulator.rsus))
+            )
         
         return {
             'avg_task_delay': avg_delay,
@@ -356,6 +391,7 @@ class SingleAgentTrainingEnvironment:
             'task_completion_rate': completion_rate,
             'cache_hit_rate': cache_hit_rate,
             'migration_success_rate': migration_success_rate,
+            'dropped_tasks': episode_dropped,
             # 🤖 新增自适应控制指标
             'adaptive_cache_effectiveness': cache_metrics.get('effectiveness', 0.0),
             'adaptive_migration_effectiveness': migration_metrics.get('effectiveness', 0.0),

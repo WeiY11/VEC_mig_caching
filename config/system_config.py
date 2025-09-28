@@ -45,10 +45,11 @@ class RLConfig:
         self.buffer_size = 100000
         self.warmup_steps = 1000
         
-        # 奖励权重 - 重新平衡以引导正确学习方向
-        self.reward_weight_delay = 0.5     # ω_T: 时延权重（提高，引导时延优化）
-        self.reward_weight_energy = 0.3    # ω_E: 能耗权重（适中）
-        self.reward_weight_loss = 0.2      # ω_D: 数据丢失权重（降低，避免过度惩罚）
+        # 奖励权重 - 最终优化：极致时延控制 + 负载均衡
+        self.reward_weight_delay = 2.0     # ω_T: 极致时延优先，目标<0.25s
+        self.reward_weight_energy = 1.2    # ω_E: 强化能耗控制，防止浪费
+        self.reward_weight_loss = 0.1      # ω_D: 最小丢失权重，避免过度保守
+        self.reward_penalty_dropped = 0.02 # 📉 极轻微丢弃惩罚
         self.reward_weight_completion = 0.2
         self.reward_weight_cache = 0.1
 
@@ -235,14 +236,15 @@ class MigrationConfig:
         self.migration_threshold = 0.8
         self.migration_cost_factor = 0.1
         
-        # 迁移触发阈值
-        self.rsu_overload_threshold = 0.8
-        self.uav_overload_threshold = 0.7
+        # 🔧 调整：合理的迁移触发阈值
+        self.rsu_overload_threshold = 0.8   # 恢复到80%，更合理的触发点
+        self.uav_overload_threshold = 0.75  # UAV 75%负载触发，略早于RSU
         self.rsu_underload_threshold = 0.3
         # 队列/切换阈值（用于车辆跟随与过载切换）
         self.follow_handover_distance = 30.0  # meters，车辆跟随触发的最小距离改善
-        self.queue_switch_diff = 3            # 个，目标RSU较当前RSU队列至少少N个才切换
-        self.rsu_queue_overload_len = 8       # 个，认为RSU队列过载的长度阈值
+        # 🔧 最终优化：统一队列管理标准
+        self.queue_switch_diff = 5            # 个，目标RSU较当前RSU队列至少少5个才切换  
+        self.rsu_queue_overload_len = 15      # 个，基于实际观察提高到15个任务过载阈值
         self.service_jitter_ratio = 0.2       # 服务速率±20%抖动
         
         # UAV迁移参数
@@ -258,8 +260,8 @@ class MigrationConfig:
         self.migration_energy_cost = 0.1  # J per bit
         self.migration_time_penalty = 0.05  # seconds
         
-        # 冷却期参数
-        self.cooldown_period = 10.0  # seconds
+        # 🔧 用户要求：每秒触发一次迁移决策
+        self.cooldown_period = 1.0  # 1秒冷却期，实现每秒最多一次迁移
 
 class CacheConfig:
     """缓存配置类"""

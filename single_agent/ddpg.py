@@ -498,9 +498,11 @@ class DDPGEnvironment:
         return self.decompose_action(global_action)
     
     def calculate_reward(self, system_metrics: Dict) -> float:
-        """计算奖励 - 使用标准化奖励函数确保一致性"""
-        from utils.standardized_reward import calculate_standardized_reward
-        return calculate_standardized_reward(system_metrics, agent_type='single_agent')
+        """
+        计算奖励 - 使用简化的、基于成本的奖励函数
+        """
+        from utils.simple_reward_calculator import calculate_simple_reward
+        return calculate_simple_reward(system_metrics)
     
     def train_step(self, state: np.ndarray, action: Union[np.ndarray, int], reward: float,
                    next_state: np.ndarray, done: bool) -> Dict:

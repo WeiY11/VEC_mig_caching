@@ -9,6 +9,8 @@ from typing import Dict, List, Tuple, Optional, Set
 from dataclasses import dataclass
 from enum import Enum
 from collections import defaultdict, OrderedDict
+# 🔧 修复：导入统一时间管理器
+from utils.unified_time_manager import get_simulation_time
 
 from models.data_structures import Task, TaskType
 from config import config
@@ -49,16 +51,17 @@ class HeatBasedCacheStrategy:
     """
     
     def __init__(self):
-        # 热度参数
-        self.decay_factor = 0.9           # ρ 衰减因子
-        self.heat_mix_factor = 0.7        # η 热度混合系数
+        # 🔧 优化：调整热度参数以适应仿真环境
+        self.decay_factor = 0.95          # 提高衰减因子，保持更长时间的热度
+        self.heat_mix_factor = 0.8        # 增加历史热度权重，减少时间槽依赖
         self.zipf_exponent = 0.8          # Zipf分布参数
         
         # 热度统计
         self.historical_heat: Dict[str, float] = defaultdict(float)
         self.slot_heat: Dict[str, Dict[int, float]] = defaultdict(lambda: defaultdict(float))
         self.current_slot = 0
-        self.total_slots = 24  # 一天24个时间槽
+        self.total_slots = 200  # 🔧 改为200个仿真时间槽，更适合短期仿真
+        self.simulation_start_time = time.time()  # 记录仿真开始时间
         
         # 访问统计
         self.access_history: Dict[str, List[float]] = defaultdict(list)
@@ -75,12 +78,13 @@ class HeatBasedCacheStrategy:
         self.historical_heat[content_id] = (self.decay_factor * self.historical_heat[content_id] + 
                                            access_weight)
         
-        # 更新时间槽热度 - 式(36)
-        current_slot = int(time.time() / 3600) % self.total_slots  # 小时级时间槽
+        # 🔧 修复：基于统一仿真时间的时间槽计算
+        simulation_time = get_simulation_time()
+        current_slot = int(simulation_time / 10) % self.total_slots  # 10秒一个时间槽，适合仿真
         self.slot_heat[content_id][current_slot] += access_weight
         
-        # 记录访问历史
-        self.access_history[content_id].append(time.time())
+        # 🔧 修复：记录仿真时间
+        self.access_history[content_id].append(get_simulation_time())
         
         # 限制历史长度
         if len(self.access_history[content_id]) > 100:
@@ -93,7 +97,9 @@ class HeatBasedCacheStrategy:
         """
         hist_heat = self.historical_heat.get(content_id, 0.0)
         
-        current_slot = int(time.time() / 3600) % self.total_slots
+        # 🔧 修复：使用统一仿真时间
+        simulation_time = get_simulation_time()
+        current_slot = int(simulation_time / 10) % self.total_slots
         slot_heat = self.slot_heat[content_id].get(current_slot, 0.0)
         
         combined_heat = (self.heat_mix_factor * hist_heat + 
@@ -133,8 +139,9 @@ class HeatBasedCacheStrategy:
         recency_bonus = 0.0
         if content_id in self.access_history and self.access_history[content_id]:
             last_access = self.access_history[content_id][-1]
-            time_since_access = time.time() - last_access
-            recency_bonus = max(0, 1.0 - time_since_access / 3600)  # 1小时内的奖励
+            # 🔧 修复：使用仿真时间计算间隔
+            time_since_access = get_simulation_time() - last_access
+            recency_bonus = max(0, 1.0 - time_since_access / 600)  # 10分钟内的奖励(适应仿真)
         
         # 综合优先级
         priority = (0.4 * heat + 0.3 * zipf_pop + 0.2 * recency_bonus - 0.1 * size_penalty)
@@ -174,9 +181,9 @@ class CollaborativeCacheManager:
         self.collaboration_sync_interval = 300  # 5分钟同步一次
         self.last_sync_time = 0.0
         
-        # 预取参数
-        self.prefetch_window_ratio = 0.1  # 预取窗口占总容量10%
-        self.prefetch_threshold = 0.6     # 预取阈值
+        # 🔧 修复：降低预取激进程度
+        self.prefetch_window_ratio = 0.03  # 预取窗口降至3%，减少资源占用
+        self.prefetch_threshold = 0.8      # 提高预取阈值，更加谨慎
         
         # 统计信息
         self.cache_stats = {
@@ -250,7 +257,8 @@ class CollaborativeCacheManager:
         if content_id in self.cached_items:
             item = self.cached_items[content_id]
             item.access_count += 1
-            item.last_access_time = time.time()
+            # 🔧 修复：使用仿真时间
+            item.last_access_time = get_simulation_time()
             
             self.cache_stats['cache_hits'] += 1
             
@@ -280,10 +288,10 @@ class CollaborativeCacheManager:
         # 获取可用容量
         available_capacity = self.cache_capacity - self.current_usage
         
-        # 定义阈值
-        high_heat_threshold = 0.8
-        medium_heat_threshold = 0.4
-        capacity_threshold = self.cache_capacity * 0.1  # 10%容量阈值
+        # 🔧 优化：基于实际热度范围[0,1]设置合理阈值
+        high_heat_threshold = 0.7   # 70%热度触发高优先级缓存
+        medium_heat_threshold = 0.4  # 40%热度触发中等优先级缓存
+        capacity_threshold = self.cache_capacity * 0.05  # 5%容量保留阈值
         
         # 决策逻辑
         if heat > high_heat_threshold and available_capacity > capacity_threshold:
@@ -309,8 +317,9 @@ class CollaborativeCacheManager:
         item = CachedItem(
             content_id=content_id,
             data_size=data_size,
-            cache_time=time.time(),
-            last_access_time=time.time()
+            # 🔧 修复：使用仿真时间
+            cache_time=get_simulation_time(),
+            last_access_time=get_simulation_time()
         )
         
         # 计算热度和优先级
@@ -437,8 +446,8 @@ class CollaborativeCacheManager:
         scored_items = []
         
         for content_id, item in self.cached_items.items():
-            # 计算综合分数 (分数越低越容易被替换)
-            recency_score = (time.time() - item.last_access_time) / 3600  # 小时
+            # 🔧 修复：计算综合分数 (分数越低越容易被替换)
+            recency_score = (get_simulation_time() - item.last_access_time) / 600  # 改为10分钟适应仿真
             frequency_score = 1.0 / max(1, item.access_count)
             value_score = 1.0 / max(0.1, item.cache_value)
             
@@ -467,7 +476,8 @@ class CollaborativeCacheManager:
     
     def sync_with_neighbors(self, neighbor_cache_states: Dict[str, Set[str]]):
         """与邻居同步缓存状态"""
-        current_time = time.time()
+        # 🔧 修复：使用统一仿真时间  
+        current_time = get_simulation_time()
         
         if current_time - self.last_sync_time < self.collaboration_sync_interval:
             return

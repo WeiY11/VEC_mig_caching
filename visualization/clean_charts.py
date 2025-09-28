@@ -165,9 +165,11 @@ class ModernVisualizer:
             ax4.plot(range(window_size, len(avg_step_rewards)), rolling_var,
                     color=COLORS['warning'], linewidth=2)
             
-            # 添加收敛阈值线（调整为适合平均每步奖励的范围）
+            # 🔧 修复：使用更智能的收敛阈值计算
             if rolling_var:
-                convergence_threshold = np.mean(rolling_var)
+                # 使用初期方差的一定比例作为收敛阈值，更有实际意义
+                initial_var = np.mean(rolling_var[:min(10, len(rolling_var)//4)])  # 初期方差
+                convergence_threshold = max(initial_var * 0.1, np.percentile(rolling_var, 25))  # 初期的10%或25分位数
                 ax4.axhline(y=convergence_threshold, color=COLORS['neutral'], 
                            linestyle='--', alpha=0.7, label=f'Convergence Threshold: {convergence_threshold:.4f}')
         
@@ -191,12 +193,17 @@ class ModernVisualizer:
             if training_env.episode_metrics.get('total_energy'):
                 energy_data = training_env.episode_metrics['total_energy']
                 ax5_twin = ax5.twinx()
-                # 归一化能耗到合理显示范围
-                max_energy = max(energy_data) if energy_data else 1000
-                normalized_energy = [e / max_energy * 10 for e in energy_data]  # 缩放到0-10范围
+                # 🔧 修复：使用更合理的归一化方式，避免异常值压缩正常数据
+                if len(set(energy_data)) > 1:
+                    # 使用四分位数进行更稳健的归一化
+                    q25, q75 = np.percentile(energy_data, [25, 75])
+                    iqr_range = max(q75 - q25, 1.0)  # 避免除零
+                    normalized_energy = [(e - q25) / iqr_range * 5 + 2.5 for e in energy_data]  # 映射到2.5-7.5范围
+                else:
+                    normalized_energy = [5.0] * len(energy_data)  # 常数情况
                 ax5_twin.plot(episodes[:len(normalized_energy)], normalized_energy,
-                             color=COLORS['secondary'], linewidth=2.5, label='Energy (norm)')
-                ax5_twin.set_ylabel('Normalized Energy', color=COLORS['secondary'])
+                             color=COLORS['secondary'], linewidth=2.5, label='Energy (robust norm)')
+                ax5_twin.set_ylabel('Robust Normalized Energy', color=COLORS['secondary'])
                 ax5_twin.tick_params(axis='y', labelcolor=COLORS['secondary'])
             
             self._apply_modern_style(ax5, 'Delay & Energy Trends')
@@ -445,13 +452,15 @@ def plot_objective_function_breakdown(training_env, algorithm: str, save_path: s
         idx = i - 1
         if idx < len(training_env.episode_metrics.get('avg_delay', [])):
             delay = training_env.episode_metrics['avg_delay'][idx]
-            delay_norm = delay / 1.0  # 归一化
+            # 🔧 修复：使用合理的延迟归一化基准（基于实际数据范围）
+            delay_norm = min(delay / 0.5, 2.0)  # 0.5秒为目标延迟，最高限制为2.0
             delay_component = w_delay * delay_norm
             delay_components.append(delay_component)
         
         if idx < len(training_env.episode_metrics.get('total_energy', [])):
             energy = training_env.episode_metrics['total_energy'][idx]
-            energy_norm = energy / 1000.0  # 归一化
+            # 🔧 修复：使用更合理的能耗归一化基准
+            energy_norm = min(energy / 800.0, 2.0)  # 800焦耳为目标能耗，最高限制为2.0
             energy_component = w_energy * energy_norm
             energy_components.append(energy_component)
         
