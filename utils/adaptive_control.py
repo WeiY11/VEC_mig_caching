@@ -204,22 +204,26 @@ class AdaptiveMigrationController:
     """
     
     def __init__(self):
-        # 🤖 平衡迁移机制：适中的阈值设置
+        # 🤖 DRL可学习的迁移参数（初始值为合理默认值）
         self.agent_params = {
-            'rsu_overload_threshold': 0.2,     # 恢复到适中水平，避免过度迁移
-            'uav_battery_threshold': 0.25,     # 恢复到适中水平
-            'migration_cost_weight': 0.3,      # 恢复迁移成本权重
-            'urgency_threshold_rsu': 0.1,      # 恢复RSU紧急阈值
-            'urgency_threshold_uav': 0.15      # 恢复UAV紧急阈值
+            'cpu_overload_threshold': 0.85,    # CPU过载阈值（DRL可调整70-95%）
+            'bandwidth_overload_threshold': 0.85,  # 带宽过载阈值
+            'load_diff_threshold': 0.20,       # 负载差触发阈值（DRL可调整10-40%）
+            'uav_battery_threshold': 0.25,     # UAV电池阈值
+            'migration_cost_weight': 0.3,      # 迁移成本权重
+            'urgency_threshold_rsu': 0.1,      # RSU紧急阈值
+            'urgency_threshold_uav': 0.15      # UAV紧急阈值
         }
         
-        # 🎯 扩大参数范围，允许更灵活的迁移策略
+        # 🎯 DRL可调整的参数范围
         self.param_bounds = {
-            'rsu_overload_threshold': (0.05, 0.4),  # 🔧 从(0.3,0.8)扩展到(0.05,0.4)
-            'uav_battery_threshold': (0.10, 0.3),   # 🔧 从(0.15,0.4)调整到(0.10,0.3)
-            'migration_cost_weight': (0.1, 0.6),    # 🔧 从(0.2,0.7)调整到(0.1,0.6)
-            'urgency_threshold_rsu': (0.05, 0.25),  # 🔧 新增：RSU紧急阈值范围
-            'urgency_threshold_uav': (0.10, 0.30)   # 🔧 新增：UAV紧急阈值范围
+            'cpu_overload_threshold': (0.70, 0.95),      # CPU阈值70-95%
+            'bandwidth_overload_threshold': (0.70, 0.95), # 带宽阈值70-95%
+            'load_diff_threshold': (0.10, 0.40),         # 负载差阈值10-40%
+            'uav_battery_threshold': (0.15, 0.40),       # UAV电池15-40%
+            'migration_cost_weight': (0.1, 0.6),         # 成本权重0.1-0.6
+            'urgency_threshold_rsu': (0.05, 0.25),       # RSU紧急度5-25%
+            'urgency_threshold_uav': (0.10, 0.30)        # UAV紧急度10-30%
         }
         
         # 迁移统计
@@ -239,32 +243,42 @@ class AdaptiveMigrationController:
     
     def update_agent_params(self, agent_actions: Dict[str, float]):
         """
-        根据智能体动作更新迁移参数
+        🔧 根据智能体动作更新迁移参数（激活DRL控制）
         
         Args:
-            agent_actions: 格式 {'migration_param_0': 0.3, 'migration_param_1': -0.6, ...}
+            agent_actions: DRL输出的迁移参数字典
+                {
+                    'cpu_overload_threshold': -1~1,
+                    'bandwidth_overload_threshold': -1~1,
+                    'load_diff_threshold': -1~1,
+                    'uav_battery_threshold': -1~1
+                }
         """
         if not isinstance(agent_actions, dict):
             return
-            
-        param_names = list(self.param_bounds.keys())
         
-        # 🔧 修复：语义化迁移参数映射
-        param_mapping = {
-            'rsu_overload_threshold': 'rsu_overload_threshold',
-            'uav_battery_threshold': 'uav_battery_threshold',
-            'migration_cost_weight': 'migration_cost_weight'
-        }
-        
-        for param_name, action_key in param_mapping.items():
-            if action_key in agent_actions:
-                action_value = np.clip(agent_actions[action_key], -1.0, 1.0)
+        # 🔧 激活：将DRL动作映射到实际参数范围
+        for param_name, action_value in agent_actions.items():
+            if param_name in self.param_bounds:
+                # 动作值从[-1, 1]映射到参数范围
+                action_value = np.clip(action_value, -1.0, 1.0)
                 param_min, param_max = self.param_bounds[param_name]
                 
+                # 归一化到[0, 1]再映射到实际范围
                 normalized_value = (action_value + 1.0) / 2.0
                 param_value = param_min + normalized_value * (param_max - param_min)
                 
+                # 更新参数
                 self.agent_params[param_name] = param_value
+    
+    def get_current_params(self) -> Dict[str, float]:
+        """🔧 获取当前DRL控制的迁移参数（用于监控和调试）"""
+        return {
+            'cpu_threshold': self.agent_params.get('cpu_overload_threshold', 0.85),
+            'bandwidth_threshold': self.agent_params.get('bandwidth_overload_threshold', 0.85),
+            'load_diff_threshold': self.agent_params.get('load_diff_threshold', 0.20),
+            'uav_battery_threshold': self.agent_params.get('uav_battery_threshold', 0.25),
+        }
     
     def update_node_load(self, node_id: str, load_factor: float, battery_level: float = 1.0):
         """更新节点负载历史"""
@@ -312,26 +326,34 @@ class AdaptiveMigrationController:
         
         # 🎯 多维度触发条件检查
         if node_id.startswith("rsu_"):
-            # 1️⃣ 资源阈值触发 (降低到60%阈值，更容易触发)
+            # 1️⃣ 资源阈值触发（🔧 使用DRL可调整的阈值）
             resource_overload = False
             overload_resources = []
             
-            # 🔧 用户要求：降低过载阈值到85%，更早触发迁移
-            if cpu_load > 0.85:  # 85%CPU阈值
+            # 🔧 激活DRL控制：使用agent_params中的动态阈值
+            cpu_threshold = self.agent_params.get('cpu_overload_threshold', 0.85)
+            bw_threshold = self.agent_params.get('bandwidth_overload_threshold', 0.85)
+            
+            if cpu_load > cpu_threshold:  # DRL可调整的CPU阈值（70-95%）
                 resource_overload = True
                 overload_resources.append(f"CPU:{cpu_load:.1%}")
+                urgency_score += (cpu_load - cpu_threshold) / (1.0 - cpu_threshold)
                 
-            if bandwidth_load > 0.85:  # 85%带宽阈值
+            if bandwidth_load > bw_threshold:  # DRL可调整的带宽阈值（70-95%）
                 resource_overload = True
                 overload_resources.append(f"带宽:{bandwidth_load:.1%}")
+                urgency_score += (bandwidth_load - bw_threshold) / (1.0 - bw_threshold)
                 
-            if storage_load > 0.85:  # 85%存储阈值
+            if storage_load > 0.85:  # 存储阈值保持固定（较少成为瓶颈）
                 resource_overload = True
                 overload_resources.append(f"存储:{storage_load:.1%}")
             
-            # 2️⃣ 负载差触发 (与邻近节点差>20%)
+            # 2️⃣ 负载差触发（🔧 使用DRL可调整的负载差阈值）
             load_diff_trigger = False
             max_load_diff = 0.0
+            
+            # 🔧 激活DRL控制：使用动态负载差阈值
+            load_diff_threshold = self.agent_params.get('load_diff_threshold', 0.20)
             
             if neighbor_states:
                 current_avg_load = (cpu_load + bandwidth_load + storage_load) / 3
@@ -345,18 +367,19 @@ class AdaptiveMigrationController:
                         load_diff = current_avg_load - neighbor_avg_load
                         max_load_diff = max(max_load_diff, load_diff)
                         
-                        # 🔧 用户要求：降低负载差阈值到20%
-                        if load_diff > 0.2:  # 负载差>20%
+                        # 🔧 激活DRL控制：负载差阈值由DRL动态调整（10-40%）
+                        if load_diff > load_diff_threshold:
                             load_diff_trigger = True
             
-            # 🔥 计算迁移紧急度
+            # 🔥 计算迁移紧急度（🔧 使用DRL参数计算）
             if resource_overload:
-                resource_urgency = max(cpu_load, bandwidth_load, storage_load) - 0.85
+                # 使用实际触发阈值计算紧急度
+                resource_urgency = max(cpu_load - cpu_threshold, bandwidth_load - bw_threshold, 0.0)
                 urgency_score += resource_urgency * 2.0  # 资源过载权重高
                 migration_reason = f"资源过载({','.join(overload_resources)})"
             
             if load_diff_trigger:
-                diff_urgency = max_load_diff - 0.2
+                diff_urgency = max_load_diff - load_diff_threshold
                 urgency_score += diff_urgency * 1.5  # 负载差权重中等
                 if migration_reason:
                     migration_reason += f" + 负载差({max_load_diff:.1%})"
@@ -370,26 +393,32 @@ class AdaptiveMigrationController:
                 return True, migration_reason, urgency_score
         
         elif node_id.startswith("uav_"):
-            # 🚁 UAV多维度触发条件
-            uav_battery_threshold = self.agent_params['uav_battery_threshold']
+            # 🚁 UAV多维度触发条件（🔧 激活DRL控制）
             
-            # 1️⃣ 电池电量触发
+            # 🔧 获取DRL可调整的阈值
+            uav_battery_threshold = self.agent_params.get('uav_battery_threshold', 0.25)
+            cpu_threshold = self.agent_params.get('cpu_overload_threshold', 0.85)
+            load_diff_threshold = self.agent_params.get('load_diff_threshold', 0.20)
+            
+            # 1️⃣ 电池电量触发（DRL可调整阈值15-40%）
             battery_urgency = 0.0
             if battery_level < uav_battery_threshold:
-                battery_urgency = (uav_battery_threshold - battery_level) / uav_battery_threshold
+                battery_urgency = (uav_battery_threshold - battery_level) / max(0.01, uav_battery_threshold)
                 urgency_score += battery_urgency * 3.0  # 电池紧急权重最高
                 migration_reason = f"UAV电池低({battery_level:.1%})"
             
-            # 2️⃣ 负载过载触发
-            if cpu_load > 0.8:  # UAV CPU负载阈值80%
-                load_urgency = (cpu_load - 0.8) / 0.2
+            # 2️⃣ 负载过载触发（🔧 使用DRL可调整的CPU阈值）
+            # UAV使用稍低的阈值（-5%），因为UAV资源更有限
+            uav_cpu_threshold = max(0.70, cpu_threshold - 0.05)
+            if cpu_load > uav_cpu_threshold:
+                load_urgency = (cpu_load - uav_cpu_threshold) / (1.0 - uav_cpu_threshold)
                 urgency_score += load_urgency * 2.0
                 if migration_reason:
                     migration_reason += f" + CPU过载({cpu_load:.1%})"
                 else:
                     migration_reason = f"UAV CPU过载({cpu_load:.1%})"
             
-            # 3️⃣ 与邻近RSU负载差
+            # 3️⃣ 与邻近RSU负载差（🔧 使用DRL可调整的负载差阈值）
             if neighbor_states:
                 max_load_diff = 0.0
                 for neighbor_id, neighbor_state in neighbor_states.items():
@@ -398,9 +427,9 @@ class AdaptiveMigrationController:
                         load_diff = cpu_load - neighbor_load
                         max_load_diff = max(max_load_diff, load_diff)
                 
-                # 🔧 用户要求：保持20%负载差阈值
-                if max_load_diff > 0.2:  # UAV比RSU高20%以上  
-                    diff_urgency = max_load_diff - 0.2
+                # 🔧 激活DRL控制：负载差阈值动态调整（10-40%）
+                if max_load_diff > load_diff_threshold:
+                    diff_urgency = max_load_diff - load_diff_threshold
                     urgency_score += diff_urgency * 1.5
                     if migration_reason:
                         migration_reason += f" + 负载差({max_load_diff:.1%})"
@@ -498,10 +527,17 @@ def map_agent_actions_to_params(agent_actions: np.ndarray) -> Tuple[Dict, Dict]:
         'collaboration_weight': np.clip(agent_actions[3], -1.0, 1.0),     # 协作权重
     }
     
+    # 🔧 扩展迁移参数映射：3维动作控制5个关键阈值
     migration_params = {
-        'rsu_overload_threshold': np.clip(agent_actions[4], -1.0, 1.0),   # RSU过载阈值
-        'uav_battery_threshold': np.clip(agent_actions[5], -1.0, 1.0),    # UAV电池阈值
-        'migration_cost_weight': np.clip(agent_actions[6], -1.0, 1.0),    # 迁移成本权重
+        # action[4]: 主CPU/带宽过载阈值（70-95%）
+        'cpu_overload_threshold': np.clip(agent_actions[4], -1.0, 1.0),
+        'bandwidth_overload_threshold': np.clip(agent_actions[4], -1.0, 1.0),  # 与CPU同步
+        
+        # action[5]: UAV电池阈值（15-40%）
+        'uav_battery_threshold': np.clip(agent_actions[5], -1.0, 1.0),
+        
+        # action[6]: 负载差阈值（10-40%）
+        'load_diff_threshold': np.clip(agent_actions[6], -1.0, 1.0),
     }
     
     return cache_params, migration_params

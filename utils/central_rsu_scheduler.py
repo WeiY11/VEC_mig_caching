@@ -106,6 +106,7 @@ class CentralRSUScheduler:
         # 🧠 智能调度算法
         self.load_predictor = LoadPredictor()
         self.allocation_optimizer = AllocationOptimizer()
+        self.allocation_optimizer.central_rsu_id = self.central_rsu_id  # 🔧 修复：传递central_rsu_id
         
         logging.info(f"🏢 中央RSU调度器初始化完成，调度中心: {central_rsu_id}")
     
@@ -172,17 +173,15 @@ class CentralRSUScheduler:
         for rsu_data in rsu_list:
             rsu_id = rsu_data.get('id', 'unknown')
             
-            # 跳过中央RSU自己（调度中心）
-            if rsu_id == self.central_rsu_id:
-                continue
-                
+            # 🔧 修复：中央RSU也应参与负载均衡，而非完全闲置
+            # 中央RSU承担双重角色：调度中心 + 计算节点
             load_info = self.collect_rsu_load_info(rsu_data)
             collected_loads[rsu_id] = load_info
             
         # 计算全局指标
         self._update_global_metrics()
         
-        logging.debug(f"📊 收集了 {len(collected_loads)} 个RSU的负载信息")
+        logging.debug(f"📊 收集了 {len(collected_loads)} 个RSU的负载信息（含中央RSU）")
         return collected_loads
     
     def global_load_balance_scheduling(self, incoming_task_count: int = 1) -> Dict[str, GlobalSchedulingDecision]:
@@ -382,7 +381,7 @@ class CentralRSUScheduler:
     # ==================== 私有方法 ====================
     
     def _calculate_load_balance_index(self) -> float:
-        """计算负载均衡指数"""
+        """🔧 修复：计算真实的负载均衡指数"""
         if not self.rsu_loads:
             return 0.0
         
@@ -393,9 +392,24 @@ class CentralRSUScheduler:
         mean_load = np.mean(loads)
         std_load = np.std(loads)
         
-        # 负载均衡指数 = 1 - (标准差 / 均值)，值越大越均衡
-        balance_index = max(0.0, 1.0 - (std_load / (mean_load + 1e-6)))
-        return balance_index
+        # 🔧 修复：使用变异系数（CV）计算均衡度
+        # CV = std / mean，越小越均衡
+        # 负载均衡指数 = 1 / (1 + CV)，范围[0,1]，越大越均衡
+        if mean_load > 0.01:  # 避免除零
+            cv = std_load / mean_load
+            balance_index = 1.0 / (1.0 + cv)
+        else:
+            # 所有节点都空闲，认为是完全均衡
+            balance_index = 1.0 if std_load < 0.05 else 0.5
+        
+        # 🔧 额外惩罚极端不均：如果有节点>80%而有节点<20%，降低指数
+        max_load = max(loads)
+        min_load = min(loads)
+        if max_load > 0.8 and min_load < 0.2:
+            imbalance_penalty = (max_load - min_load) * 0.5
+            balance_index = max(0.0, balance_index - imbalance_penalty)
+        
+        return float(np.clip(balance_index, 0.0, 1.0))
     
     def _calculate_normalized_load(self, load_info: RSULoadInfo) -> float:
         """计算标准化负载因子"""
@@ -600,8 +614,11 @@ class AllocationOptimizer:
         allocation = {}
         
         if self.optimization_method == 'weighted_fair_allocation':
+            # 🔧 修复：从实例属性获取central_rsu_id
+            central_id = getattr(self, 'central_rsu_id', None)
             allocation = self._weighted_fair_allocation(
-                current_loads, predicted_loads, incoming_tasks, fairness_weight, efficiency_weight
+                current_loads, predicted_loads, incoming_tasks, fairness_weight, efficiency_weight,
+                central_rsu_id=central_id
             )
         
         # 确保分配比例总和为1.0
@@ -616,31 +633,37 @@ class AllocationOptimizer:
                                 predicted_loads: Dict[str, float],
                                 incoming_tasks: int,
                                 fairness_weight: float,
-                                efficiency_weight: float) -> Dict[str, float]:
-        """加权公平分配算法"""
+                                efficiency_weight: float,
+                                central_rsu_id: Optional[str] = None) -> Dict[str, float]:
+        """🔧 优化的加权公平分配算法 - 真正实现负载均衡"""
         allocation = {}
         
         # 计算每个RSU的分配权重
         for rsu_id, load_info in current_loads.items():
-            # 当前负载因子（负载越高，权重越低）
+            # 🔧 当前负载因子（负载越高，权重越低）
             current_load_factor = load_info.cpu_usage
-            load_weight = max(0.1, 1.0 - current_load_factor)
+            # 🔧 使用平方函数，让低负载节点获得更多权重
+            load_weight = max(0.05, (1.0 - current_load_factor) ** 1.5)
             
             # 预测负载因子
             predicted_load_factor = predicted_loads.get(rsu_id, current_load_factor)
-            prediction_weight = max(0.1, 1.0 - predicted_load_factor)
+            prediction_weight = max(0.05, (1.0 - predicted_load_factor) ** 1.2)
             
             # 计算能力因子（基于CPU频率和缓存命中率）
             capacity_factor = load_info.cpu_frequency / 1e10  # 标准化到0-1
             cache_factor = load_info.cache_hit_rate
             efficiency_factor = (capacity_factor * 0.7 + cache_factor * 0.3)
             
-            # 综合权重
+            # 🔧 中央RSU特殊处理：保留一定调度开销
+            is_central = (central_rsu_id and rsu_id == central_rsu_id)
+            coordination_overhead = 0.85 if is_central else 1.0  # 中央RSU保留15%资源用于调度
+            
+            # 综合权重 - 更强调负载均衡
             total_weight = (
-                load_weight * fairness_weight +
-                prediction_weight * 0.3 +
+                load_weight * fairness_weight * 1.5 +  # 🔧 增强公平性权重
+                prediction_weight * 0.2 +              # 🔧 降低预测权重
                 efficiency_factor * efficiency_weight
-            )
+            ) * coordination_overhead
             
             allocation[rsu_id] = max(0.05, total_weight)  # 最小分配保证
         

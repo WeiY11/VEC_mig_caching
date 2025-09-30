@@ -35,16 +35,27 @@ class AlgorithmConfig:
             'memory_size': 100000
         }
         
-        # 单智能体DDPG配置
+        # 单智能体DDPG配置 - 🔧 深度优化版本（2025-09-30更新）
         self.ddpg_config = {
-            'actor_lr': 0.0003,
-            'critic_lr': 0.0003,
+            'actor_lr': 3e-5,      # 🔧 优化：降低70%提高稳定性（原1e-4）
+            'critic_lr': 1e-4,     # 🔧 优化：降低67%防止过拟合（原3e-4）
             'gamma': 0.99,
-            'tau': 0.005,  # 统一为0.005，与实现一致
-            'noise_std': 0.2,
+            'tau': 0.003,          # 🔧 优化：更稳定的软更新（原0.005）
+            'noise_std': 0.15,     # 🔧 优化：降低初始噪声（原0.2）
+            'noise_decay': 0.99995, # 🔧 新增：更慢的噪声衰减
+            'min_noise': 0.05,     # 🔧 新增：最小噪声水平
             'hidden_dim': 256,
-            'batch_size': 64,
-            'memory_size': 50000
+            'batch_size': 256,     # 🔧 优化：加倍批次大小（原64）
+            'buffer_size': 200000, # 🔧 优化：加倍缓冲区（原50000）
+            'memory_size': 200000, # 保持兼容性
+            'warmup_steps': 2000,  # 🔧 新增：预热步数
+            'update_freq': 2,      # 🔧 新增：更新频率
+            # PER参数
+            'use_per': True,       # 🔧 新增：启用优先经验回放
+            'per_alpha': 0.6,
+            'per_beta_start': 0.4,
+            'gradient_clip': 0.5,  # 🔧 新增：梯度裁剪
+            'reward_normalize': True  # 🔧 新增：奖励归一化
         }
         
         # PPO配置

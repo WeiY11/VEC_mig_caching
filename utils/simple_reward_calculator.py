@@ -35,7 +35,7 @@ class SimpleRewardCalculator:
         # 奖励范围限制，确保为负值
         self.reward_clip_range = (-25.0, -0.01)  # 适中惩罚范围
         
-        print("✅ 简化奖励函数初始化 (SimpleRewardCalculator)")
+        print("[OK] 简化奖励函数初始化 (SimpleRewardCalculator)")
         print(f"   权重: Delay={self.weight_delay}, Energy={self.weight_energy}, Loss={self.weight_loss}")
         print(f"   惩罚: DroppedTaskPenalty={self.penalty_weight_dropped}")
 

@@ -12,7 +12,7 @@ class NetworkConfig:
         # 车辆配置
         self.vehicle_config = {
             'num_vehicles': 12,
-            'velocity_range': (10, 30),  # m/s
+            'velocity_range': (30, 60),  # m/s (108-216 km/h 高速公路场景)
             'transmission_power': 0.1,   # W
             'computation_capacity': 100, # MIPS
             'battery_capacity': 1000     # J

@@ -543,12 +543,20 @@ class SACEnvironment:
         global_action = self.agent.select_action(state, training)
         return self.decompose_action(global_action)
     
-    def calculate_reward(self, system_metrics: Dict) -> float:
+    def calculate_reward(self, system_metrics: Dict, 
+                       cache_metrics: Optional[Dict] = None,
+                       migration_metrics: Optional[Dict] = None) -> float:
         """
-        计算奖励 - 使用简化的、基于成本的奖励函数
+        🔧 修复：使用增强奖励计算器，与TD3和DDPG保持一致
+        支持缓存和迁移子系统的综合奖励计算
         """
-        from utils.simple_reward_calculator import calculate_simple_reward
-        return calculate_simple_reward(system_metrics)
+        try:
+            from utils.enhanced_reward_calculator import calculate_enhanced_reward
+            return calculate_enhanced_reward(system_metrics, cache_metrics, migration_metrics)
+        except ImportError:
+            # 回退到简单奖励
+            from utils.simple_reward_calculator import calculate_simple_reward
+            return calculate_simple_reward(system_metrics)
     
     def train_step(self, state: np.ndarray, action: Union[np.ndarray, int], reward: float,
                    next_state: np.ndarray, done: bool) -> Dict:

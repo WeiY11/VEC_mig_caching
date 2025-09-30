@@ -738,46 +738,79 @@ class CompleteSystemSimulator:
                 if current_node is None:
                     continue
                 
-                # 🔍 检查通信覆盖
+                # 🔍 检查通信覆盖和跟随迁移触发
                 distance_to_current = self.calculate_distance(current_pos, current_node['position'])
                 coverage_radius = current_node.get('coverage_radius', 500.0)  # 默认500m覆盖
                 
-                # 超出覆盖范围，触发跟随迁移
-                if distance_to_current > coverage_radius * 1.2:  # 120%覆盖半径外触发
+                # 🔧 智能跟随迁移触发机制：
+                # 1. 基础阈值：85%覆盖半径（信号质量开始明显下降）
+                # 2. 考虑车辆速度：高速车辆提前触发
+                # 3. 考虑预测：车辆是否在快速远离当前节点
+                
+                vehicle_speed = np.linalg.norm(vehicle.get('velocity', [0, 0]))
+                
+                # 🔧 优化的速度调整因子：速度越快，越早触发
+                # 30 m/s → 0.85 (425m触发)
+                # 45 m/s → 0.775 (387m触发)  
+                # 60 m/s → 0.70 (350m触发)
+                speed_factor = max(0.70, 1.0 - (vehicle_speed / 200.0))
+                
+                # 动态触发阈值
+                trigger_threshold = coverage_radius * speed_factor
+                
+                # 超出动态阈值，触发跟随迁移
+                if distance_to_current > trigger_threshold:
                     # 🔍 寻找最佳新服务节点
                     best_new_node = None
                     best_distance = float('inf')
                     best_node_idx = None
                     best_node_type = None
                     
-                    # 检查所有RSU
+                    # 检查所有RSU - 优先选择RSU（稳定性更好）
                     for i, rsu in enumerate(self.rsus):
                         dist = self.calculate_distance(current_pos, rsu['position'])
-                        if dist <= rsu.get('coverage_radius', 500.0) and dist < best_distance:
+                        if dist <= rsu.get('coverage_radius', 500.0):
                             queue_len = len(rsu.get('computation_queue', []))
-                            # 考虑距离和负载的综合评分
-                            score = dist + queue_len * 50  # 队列长度权重
+                            cpu_load = rsu.get('cpu_usage', 0.5)
+                            
+                            # 🔧 综合评分：距离 + 队列 + 负载
+                            score = dist * 1.0 + queue_len * 30 + cpu_load * 200
+                            
                             if score < best_distance:
                                 best_new_node = rsu
                                 best_distance = score
                                 best_node_idx = i
                                 best_node_type = 'RSU'
                     
-                    # 检查所有UAV (如果没有合适的RSU)
-                    if best_new_node is None:
+                    # 检查所有UAV（作为备选）
+                    if best_new_node is None or best_distance > 500:  # RSU不理想时考虑UAV
                         for i, uav in enumerate(self.uavs):
                             dist = self.calculate_distance(current_pos, uav['position'])
-                            if dist <= uav.get('coverage_radius', 300.0) and dist < best_distance:
+                            if dist <= uav.get('coverage_radius', 300.0):
                                 queue_len = len(uav.get('computation_queue', []))
-                                score = dist + queue_len * 30
+                                cpu_load = uav.get('cpu_usage', 0.5)
+                                
+                                # UAV评分略有不同（考虑移动性）
+                                score = dist * 1.2 + queue_len * 20 + cpu_load * 150
+                                
                                 if score < best_distance:
                                     best_new_node = uav
                                     best_distance = score
                                     best_node_idx = i
                                     best_node_type = 'UAV'
                     
-                    # 🚀 执行跟随迁移
-                    if best_new_node is not None and (best_node_idx != task.get('node_idx') or best_node_type != task['node_type']):
+                    # 🚀 执行跟随迁移（只在找到明显更好的节点时）
+                    # 必须满足：1) 找到新节点, 2) 新节点不同, 3) 新节点明显更优
+                    current_queue = len(current_node.get('computation_queue', []))
+                    current_score = distance_to_current * 1.0 + current_queue * 30
+                    
+                    should_migrate = (
+                        best_new_node is not None and 
+                        (best_node_idx != task.get('node_idx') or best_node_type != task['node_type']) and
+                        best_distance < current_score * 0.7  # 新节点至少好30%才迁移
+                    )
+                    
+                    if should_migrate:
                         # 从原节点移除任务
                         if task['node_type'] == 'RSU':
                             old_queue = self.rsus[task['node_idx']].get('computation_queue', [])
@@ -817,7 +850,10 @@ class CompleteSystemSimulator:
                         
                         handover_count += 1
                         
-                        print(f"🚗 车辆跟随迁移: {task['vehicle_id']} 从 {task.get('migrated_from', 'unknown')} → {best_node_type}_{best_node_idx} (距离:{distance_to_current:.1f}m > {coverage_radius:.1f}m)")
+                        # 🔧 增强日志：显示触发原因和迁移收益
+                        print(f"🚗 车辆跟随迁移: {task['vehicle_id']} 从 {task['node_type']}_{task.get('node_idx')} → {best_node_type}_{best_node_idx}")
+                        print(f"   触发原因: 距离{distance_to_current:.1f}m > 阈值{trigger_threshold:.1f}m (车速{vehicle_speed:.1f}m/s)")
+                        print(f"   迁移收益: 当前评分{current_score:.1f} → 新评分{best_distance:.1f} (改善{(1-best_distance/current_score)*100:.1f}%)")
                         
                         # 记录跟随迁移统计
                         self.stats['handover_migrations'] = self.stats.get('handover_migrations', 0) + 1
@@ -1088,28 +1124,45 @@ class CompleteSystemSimulator:
             for i, rsu in enumerate(self.rsus):
                 rsu_id = rsu['id']
                 
-                # 跳过中央RSU自己
-                if rsu_id == central_rsu_id:
-                    continue
+                # 🔧 修复：中央RSU也参与负载收集和任务处理
+                # 计算信息收集的有线传输成本（只有非中央RSU才需要传输）
+                if rsu_id != central_rsu_id:
+                    info_size_mb = 0.1  # 100KB的状态信息
+                    try:
+                        from utils.wired_backhaul_model import calculate_rsu_to_rsu_delay, calculate_rsu_to_rsu_energy
+                        collection_delay = calculate_rsu_to_rsu_delay(info_size_mb, rsu_id, central_rsu_id)
+                        # 安全夹持：10Gbps 级别回传的单条控制消息应为 < 20ms
+                        collection_delay = float(max(0.0001, min(collection_delay, 0.02)))
+                        collection_energy = calculate_rsu_to_rsu_energy(info_size_mb, rsu_id, central_rsu_id, collection_delay)
+                    except Exception:
+                        # 回退到简化模型（5ms、0.1J）
+                        collection_delay = 0.005
+                        collection_energy = 0.1
+                    total_collection_delay += collection_delay
+                    total_collection_energy += collection_energy
                 
-                # 计算信息收集的有线传输成本
-                info_size_mb = 0.1  # 100KB的状态信息
-                try:
-                    from utils.wired_backhaul_model import calculate_rsu_to_rsu_delay, calculate_rsu_to_rsu_energy
-                    collection_delay = calculate_rsu_to_rsu_delay(info_size_mb, rsu_id, central_rsu_id)
-                    # 安全夹持：10Gbps 级别回传的单条控制消息应为 < 20ms
-                    collection_delay = float(max(0.0001, min(collection_delay, 0.02)))
-                    collection_energy = calculate_rsu_to_rsu_energy(info_size_mb, rsu_id, central_rsu_id, collection_delay)
-                except Exception:
-                    # 回退到简化模型（5ms、0.1J）
-                    collection_delay = 0.005
-                    collection_energy = 0.1
-                total_collection_delay += collection_delay
-                total_collection_energy += collection_energy
-                
-                # 🔧 修复：始终更新RSU负载状态，确保与队列同步
+                # 🔧 修复：基于真实计算能力的动态负载计算
                 queue_len = len(rsu.get('computation_queue', []))
-                rsu['cpu_usage'] = min(0.9, queue_len * 0.05)  # 降低系数，让负载更realistic
+                cpu_freq = rsu.get('cpu_frequency', 8e9)  # Hz
+                
+                # 使用对数缓和函数，避免队列过长时负载饱和
+                # 负载模型：CPU越快，相同队列的负载越低
+                if queue_len == 0:
+                    queue_load = 0.0
+                else:
+                    # 基准：8GHz CPU，队列50个任务 → 50%负载
+                    # 使用对数函数：load = k * log(1 + queue/base) 
+                    cpu_factor = 8e9 / cpu_freq  # CPU越快，factor越小
+                    base_queue = 50.0
+                    k = 0.5 / np.log(1 + 1.0)  # 归一化系数
+                    queue_load = k * np.log(1 + (queue_len * cpu_factor) / base_queue)
+                
+                # 基础系统负载 + 队列负载
+                base_load = 0.05  # 5%基础开销
+                cpu_usage = base_load + queue_load
+                
+                # 合理上限（避免100%）
+                rsu['cpu_usage'] = float(np.clip(cpu_usage, 0.0, 0.98))
                 if 'cache_hit_rate' not in rsu:
                     rsu['cache_hit_rate'] = np.random.uniform(0.3, 0.8)
                 if 'avg_response_time' not in rsu:

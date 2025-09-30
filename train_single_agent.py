@@ -33,6 +33,9 @@ from single_agent.dqn import DQNEnvironment
 from single_agent.ppo import PPOEnvironment
 from single_agent.sac import SACEnvironment
 
+# 导入HTML报告生成器
+from utils.html_report_generator import HTMLReportGenerator
+
 
 def generate_timestamp() -> str:
     """生成时间戳"""
@@ -846,6 +849,9 @@ def train_single_algorithm(algorithm: str, num_episodes: Optional[int] = None, e
     print(f"⏱️  总训练时间: {total_training_time/3600:.2f} 小时")
     print(f"🏆 最佳平均奖励: {best_avg_reward:.3f}")
     
+    # 收集系统统计信息用于报告
+    simulator_stats = {}
+    
     # 🏢 显示中央RSU调度器报告
     try:
         central_report = training_env.simulator.get_central_scheduling_report()
@@ -858,6 +864,11 @@ def train_single_algorithm(algorithm: str, num_episodes: Optional[int] = None, e
                 metrics = scheduler_status['global_metrics']
                 print(f"   ⚖️ 负载均衡指数: {metrics.get('load_balance_index', 0.0):.3f}")
                 print(f"   💚 系统健康状态: {scheduler_status.get('system_health', 'N/A')}")
+                
+                # 收集调度器统计信息
+                simulator_stats['scheduling_calls'] = central_report.get('scheduling_calls', 0)
+                simulator_stats['load_balance_index'] = metrics.get('load_balance_index', 0.0)
+                simulator_stats['system_health'] = scheduler_status.get('system_health', 'N/A')
             
             # 显示各RSU负载分布
             rsu_details = central_report.get('rsu_details', {})
@@ -881,6 +892,14 @@ def train_single_algorithm(algorithm: str, num_episodes: Optional[int] = None, e
         uav_migration_count = training_env.simulator.stats.get('uav_migration_count', 0)
         uav_migration_distance = training_env.simulator.stats.get('uav_migration_distance', 0.0)
         
+        # 收集迁移统计信息
+        simulator_stats['rsu_migration_delay'] = rsu_migration_delay
+        simulator_stats['rsu_migration_energy'] = rsu_migration_energy
+        simulator_stats['rsu_migration_data'] = rsu_migration_data
+        simulator_stats['backhaul_total_energy'] = backhaul_total_energy
+        simulator_stats['handover_migrations'] = handover_migrations
+        simulator_stats['uav_migration_count'] = uav_migration_count
+        
         if rsu_migration_data > 0 or backhaul_total_energy > 0 or handover_migrations > 0 or uav_migration_count > 0:
             print(f"\n🔌 有线回传网络与迁移统计:")
             print(f"   📡 RSU迁移数据: {rsu_migration_data:.1f}MB")
@@ -902,6 +921,60 @@ def train_single_algorithm(algorithm: str, num_episodes: Optional[int] = None, e
     
     # 绘制训练曲线
     plot_single_training_curves(algorithm, training_env)
+    
+    # 生成HTML训练报告
+    print("\n" + "=" * 60)
+    print("📝 生成训练报告...")
+    
+    try:
+        report_generator = HTMLReportGenerator()
+        html_content = report_generator.generate_full_report(
+            algorithm=algorithm,
+            training_env=training_env,
+            training_time=total_training_time,
+            results=results,
+            simulator_stats=simulator_stats
+        )
+        
+        # 生成报告文件名
+        timestamp = generate_timestamp()
+        report_filename = f"training_report_{timestamp}.html" if timestamp else "training_report.html"
+        report_path = f"results/single_agent/{algorithm.lower()}/{report_filename}"
+        
+        print(f"✅ 训练报告已生成")
+        print(f"📄 报告包含:")
+        print(f"   - 执行摘要与关键指标")
+        print(f"   - 训练配置详情")
+        print(f"   - 性能指标可视化图表")
+        print(f"   - 详细的系统统计信息")
+        print(f"   - 自适应控制器分析")
+        print(f"   - 优化建议与结论")
+        
+        # 询问用户是否保存报告
+        print("\n" + "-" * 60)
+        save_choice = input("💾 是否保存HTML训练报告? (y/n, 默认y): ").strip().lower()
+        
+        if save_choice in ['', 'y', 'yes', '是']:
+            if report_generator.save_report(html_content, report_path):
+                print(f"✅ 报告已保存到: {report_path}")
+                print(f"💡 提示: 使用浏览器打开该文件即可查看完整报告")
+                
+                # 尝试自动打开报告（可选）
+                auto_open = input("🌐 是否在浏览器中打开报告? (y/n, 默认n): ").strip().lower()
+                if auto_open in ['y', 'yes', '是']:
+                    import webbrowser
+                    abs_path = os.path.abspath(report_path)
+                    webbrowser.open(f'file://{abs_path}')
+                    print("✅ 报告已在浏览器中打开")
+            else:
+                print("❌ 报告保存失败")
+        else:
+            print("ℹ️ 报告未保存")
+            print(f"💡 如需查看，请手动运行报告生成功能")
+    
+    except Exception as e:
+        print(f"⚠️ 生成训练报告时出错: {e}")
+        print("训练数据已正常保存，可稍后手动生成报告")
     
     return results
 

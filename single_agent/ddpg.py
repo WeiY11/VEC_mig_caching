@@ -31,26 +31,37 @@ from config import config
 
 @dataclass
 class DDPGConfig:
-    """DDPG算法配置 - 优化收敛性（根据诊断结果调整）"""
+    """🔧 DDPG算法配置 - 深度优化收敛性和稳定性"""
     # 网络结构 - 增加容量提高表现力
     hidden_dim: int = 256      # 增加网络容量（从128到256）
-    actor_lr: float = 1e-4     # 降低actor学习率提高稳定性
-    critic_lr: float = 3e-4    # 提高critic学习率加快学习
+    actor_lr: float = 3e-5     # 🔧 大幅降低actor学习率（从1e-4到3e-5）提高稳定性
+    critic_lr: float = 1e-4    # 🔧 降低critic学习率（从3e-4到1e-4）防止过拟合
     
     # 训练参数 - 优化收敛性
-    batch_size: int = 128      # 增加批次大小（从64到128）
-    buffer_size: int = 100000  # 增加缓冲区大小
-    tau: float = 0.005         # 减小软更新系数（从0.01到0.005）
-    gamma: float = 0.99        # 提高折扣因子（从0.95到0.99）
+    batch_size: int = 256      # 🔧 增加批次大小（从128到256）减少方差
+    buffer_size: int = 200000  # 🔧 加倍缓冲区（从100k到200k）提高样本多样性
+    tau: float = 0.003         # 🔧 进一步减小软更新（从0.005到0.003）
+    gamma: float = 0.99        # 保持折扣因子
     
-    # 探索参数 - 加强探索
-    noise_scale: float = 0.3   # 增加初始探索（从0.2到0.3）
-    noise_decay: float = 0.9999 # 更慢的噪声衰减（从0.995到0.9999）
-    min_noise: float = 0.1     # 提高最小探索（从0.05到0.1）
+    # 探索参数 - 🔧 优化探索策略
+    noise_scale: float = 0.15  # 🔧 降低初始噪声（从0.3到0.15）减少干扰
+    noise_decay: float = 0.99995 # 🔧 更慢衰减（从0.9999到0.99995）保持探索
+    min_noise: float = 0.05    # 🔧 降低最小噪声（从0.1到0.05）
     
-    # 训练频率
-    update_freq: int = 1
-    warmup_steps: int = 1000   # 增加预热步数（从500到1000）
+    # 训练频率 - 🔧 优化更新策略
+    update_freq: int = 2       # 🔧 降低更新频率（从1到2）提高稳定性
+    warmup_steps: int = 500    # 🔧 调整预热步数（约2.5 episodes），避免延迟学习
+    
+    # 🔧 新增：PER参数
+    use_per: bool = True       # 启用优先经验回放
+    per_alpha: float = 0.6     # PER优先级指数
+    per_beta_start: float = 0.4 # IS权重初始值
+    per_beta_frames: int = 500000 # beta增长帧数
+    
+    # 🔧 新增：梯度和奖励处理
+    gradient_clip: float = 0.5  # 梯度裁剪阈值（更严格）
+    reward_scale: float = 1.0   # 奖励缩放因子
+    reward_normalize: bool = False # 🔧 暂时禁用奖励归一化，便于对比分析
 
 
 class DDPGActor(nn.Module):
@@ -131,12 +142,14 @@ class DDPGCritic(nn.Module):
 
 
 class DDPGReplayBuffer:
-    """DDPG经验回放缓冲区"""
+    """🔧 DDPG优先经验回放缓冲区 (支持PER)"""
     
-    def __init__(self, capacity: int, state_dim: int, action_dim: int):
+    def __init__(self, capacity: int, state_dim: int, action_dim: int, alpha: float = 0.6, use_per: bool = True):
         self.capacity = capacity
         self.ptr = 0
         self.size = 0
+        self.use_per = use_per
+        self.alpha = alpha  # PER优先级指数
         
         # 预分配内存
         self.states = np.zeros((capacity, state_dim), dtype=np.float32)
@@ -144,10 +157,19 @@ class DDPGReplayBuffer:
         self.rewards = np.zeros(capacity, dtype=np.float32)
         self.next_states = np.zeros((capacity, state_dim), dtype=np.float32)
         self.dones = np.zeros(capacity, dtype=np.float32)
+        
+        # 🔧 PER优先级数组
+        if self.use_per:
+            self.priorities = np.zeros(capacity, dtype=np.float32)
     
     def push(self, state: np.ndarray, action: np.ndarray, reward: float, 
              next_state: np.ndarray, done: bool):
         """添加经验到缓冲区"""
+        # 🔧 新样本使用最大优先级
+        if self.use_per:
+            max_prio = self.priorities[:self.size].max() if self.size > 0 else 1.0
+            self.priorities[self.ptr] = max_prio
+        
         self.states[self.ptr] = state
         self.actions[self.ptr] = action
         self.rewards[self.ptr] = reward
@@ -157,9 +179,24 @@ class DDPGReplayBuffer:
         self.ptr = (self.ptr + 1) % self.capacity
         self.size = min(self.size + 1, self.capacity)
     
-    def sample(self, batch_size: int) -> Tuple[torch.Tensor, ...]:
-        """采样经验批次"""
-        indices = np.random.choice(self.size, batch_size, replace=False)
+    def sample(self, batch_size: int, beta: float = 0.4) -> Tuple[torch.Tensor, ...]:
+        """🔧 采样经验批次（支持PER）"""
+        if self.use_per:
+            # PER采样
+            prios = self.priorities[:self.size]
+            probs = prios ** self.alpha
+            probs /= probs.sum()
+            
+            indices = np.random.choice(self.size, batch_size, p=probs, replace=False)
+            
+            # 计算重要性权重
+            weights = (self.size * probs[indices]) ** (-beta)
+            weights /= weights.max()
+            weights = torch.FloatTensor(weights).unsqueeze(1)
+        else:
+            # 均匀采样
+            indices = np.random.choice(self.size, batch_size, replace=False)
+            weights = torch.ones(batch_size, 1)
         
         batch_states = torch.FloatTensor(self.states[indices])
         batch_actions = torch.FloatTensor(self.actions[indices])
@@ -167,7 +204,12 @@ class DDPGReplayBuffer:
         batch_next_states = torch.FloatTensor(self.next_states[indices])
         batch_dones = torch.FloatTensor(self.dones[indices]).unsqueeze(1)
         
-        return batch_states, batch_actions, batch_rewards, batch_next_states, batch_dones
+        return batch_states, batch_actions, batch_rewards, batch_next_states, batch_dones, indices, weights
+    
+    def update_priorities(self, indices: np.ndarray, priorities: np.ndarray):
+        """🔧 更新样本优先级"""
+        if self.use_per:
+            self.priorities[indices] = priorities
     
     def __len__(self):
         return self.size
@@ -203,12 +245,25 @@ class DDPGAgent:
         self.actor_optimizer = optim.Adam(self.actor.parameters(), lr=config.actor_lr)
         self.critic_optimizer = optim.Adam(self.critic.parameters(), lr=config.critic_lr)
         
-        # 经验回放缓冲区
-        self.replay_buffer = DDPGReplayBuffer(config.buffer_size, state_dim, action_dim)
+        # 🔧 优化的经验回放缓冲区（支持PER）
+        self.replay_buffer = DDPGReplayBuffer(
+            config.buffer_size, state_dim, action_dim, 
+            alpha=config.per_alpha if hasattr(config, 'per_alpha') else 0.6,
+            use_per=config.use_per if hasattr(config, 'use_per') else False
+        )
+        
+        # 🔧 PER beta参数
+        self.beta = config.per_beta_start if hasattr(config, 'per_beta_start') else 0.4
+        self.beta_increment = (1.0 - self.beta) / (config.per_beta_frames if hasattr(config, 'per_beta_frames') else 500000)
         
         # 探索噪声
         self.noise_scale = config.noise_scale
         self.step_count = 0
+        self.update_count = 0  # 🔧 添加更新计数
+        
+        # 🔧 奖励统计（用于归一化）
+        self.reward_stats = {'mean': 0.0, 'std': 1.0}
+        self.reward_history = deque(maxlen=10000)
         
         # 训练统计
         self.actor_losses = []
@@ -234,7 +289,7 @@ class DDPGAgent:
         self.replay_buffer.push(state, action, reward, next_state, done)
     
     def update(self) -> Dict[str, float]:
-        """更新网络参数 - 改进版，增加稳定性"""
+        """🔧 优化的更新网络参数 - 最大化稳定性"""
         if len(self.replay_buffer) < self.config.batch_size:
             return {}
         
@@ -244,83 +299,112 @@ class DDPGAgent:
         if self.step_count < self.config.warmup_steps:
             return {}
         
-        # 🔧 添加更新频率控制，提高训练稳定性
+        # 🔧 更新频率控制
         if self.step_count % self.config.update_freq != 0:
             return {}
         
-        # 采样经验批次
-        batch_states, batch_actions, batch_rewards, batch_next_states, batch_dones = \
-            self.replay_buffer.sample(self.config.batch_size)
+        self.update_count += 1
+        
+        # 🔧 采样经验批次（支持PER）
+        sample_result = self.replay_buffer.sample(self.config.batch_size, self.beta)
+        if len(sample_result) == 7:  # PER模式
+            batch_states, batch_actions, batch_rewards, batch_next_states, batch_dones, indices, weights = sample_result
+        else:  # 普通模式（兼容）
+            batch_states, batch_actions, batch_rewards, batch_next_states, batch_dones = sample_result[:5]
+            indices = np.arange(len(batch_states))
+            weights = torch.ones(len(batch_states), 1)
+        
+        # 🔧 更新beta
+        self.beta = min(1.0, self.beta + self.beta_increment)
         
         batch_states = batch_states.to(self.device)
         batch_actions = batch_actions.to(self.device)
         batch_rewards = batch_rewards.to(self.device)
         batch_next_states = batch_next_states.to(self.device)
         batch_dones = batch_dones.to(self.device)
+        weights = weights.to(self.device)
         
-        # 🔧 添加奖励标准化，减少训练方差
-        reward_mean = torch.mean(batch_rewards)
-        reward_std = torch.std(batch_rewards) + 1e-8
-        batch_rewards = (batch_rewards - reward_mean) / reward_std
+        # 🔧 奖励归一化（可选）
+        if self.config.reward_normalize if hasattr(self.config, 'reward_normalize') else False:
+            self.reward_history.extend(batch_rewards.cpu().numpy().flatten())
+            if len(self.reward_history) > 100:
+                self.reward_stats['mean'] = np.mean(self.reward_history)
+                self.reward_stats['std'] = np.std(self.reward_history) + 1e-8
+                batch_rewards = (batch_rewards - self.reward_stats['mean']) / self.reward_stats['std']
         
-        # 更新Critic - 重复更新提高稳定性
-        critic_losses = []
-        for _ in range(2):  # Critic更新2次
-            critic_loss = self._update_critic(batch_states, batch_actions, batch_rewards, 
-                                            batch_next_states, batch_dones)
-            critic_losses.append(critic_loss)
+        # 🔧 更新Critic并获取TD误差
+        critic_loss, td_errors = self._update_critic(
+            batch_states, batch_actions, batch_rewards, 
+            batch_next_states, batch_dones, weights
+        )
         
-        # 更新Actor - 频率降低，提高稳定性  
+        # 🔧 更新PER优先级
+        if self.config.use_per if hasattr(self.config, 'use_per') else False:
+            priorities = td_errors.detach().cpu().numpy() + 1e-6
+            self.replay_buffer.update_priorities(indices, priorities)
+        
+        # 🔧 更新Actor - 降低频率
         actor_loss = 0.0
-        if self.step_count % (self.config.update_freq * 2) == 0:  # Actor更新频率降低
+        if self.update_count % 2 == 0:  # 每2次更新一次Actor
             actor_loss = self._update_actor(batch_states)
         
         # 软更新目标网络
         self.soft_update(self.target_actor, self.actor, self.config.tau)
         self.soft_update(self.target_critic, self.critic, self.config.tau)
         
-        # 自适应噪声衰减
-        buffer_fullness = len(self.replay_buffer) / self.config.buffer_size
-        adaptive_decay = self.config.noise_decay + (1.0 - self.config.noise_decay) * (1.0 - buffer_fullness)
-        self.noise_scale = max(self.config.min_noise, self.noise_scale * adaptive_decay)
+        # 🔧 优化的噪声衰减
+        self.noise_scale = max(self.config.min_noise, self.noise_scale * self.config.noise_decay)
         
         return {
             'actor_loss': actor_loss,
-            'critic_loss': np.mean(critic_losses),
+            'critic_loss': critic_loss,
             'noise_scale': self.noise_scale,
             'buffer_size': len(self.replay_buffer),
-            'reward_mean': float(reward_mean),
-            'reward_std': float(reward_std)
+            'beta': self.beta,
+            'update_count': self.update_count
         }
     
     def _update_critic(self, states: torch.Tensor, actions: torch.Tensor, 
                       rewards: torch.Tensor, next_states: torch.Tensor, 
-                      dones: torch.Tensor) -> float:
-        """更新Critic网络"""
+                      dones: torch.Tensor, weights: torch.Tensor) -> Tuple[float, torch.Tensor]:
+        """🔧 优化的Critic更新（支持加权损失和TD误差输出）"""
         with torch.no_grad():
             next_actions = self.target_actor(next_states)
             target_q = self.target_critic(next_states, next_actions)
             target_q = rewards + (1 - dones) * self.config.gamma * target_q
         
         current_q = self.critic(states, actions)
-        critic_loss = F.mse_loss(current_q, target_q)
+        
+        # 🔧 计算TD误差（用于PER）
+        td_errors = torch.abs(current_q - target_q)
+        
+        # 🔧 加权MSE损失
+        critic_loss = (weights * F.mse_loss(current_q, target_q, reduction='none')).mean()
         
         self.critic_optimizer.zero_grad()
         critic_loss.backward()
-        torch.nn.utils.clip_grad_norm_(self.critic.parameters(), 1.0)
+        
+        # 🔧 使用配置的梯度裁剪
+        grad_clip = self.config.gradient_clip if hasattr(self.config, 'gradient_clip') else 1.0
+        torch.nn.utils.clip_grad_norm_(self.critic.parameters(), grad_clip)
+        
         self.critic_optimizer.step()
         
         self.critic_losses.append(critic_loss.item())
-        return critic_loss.item()
+        return critic_loss.item(), td_errors.squeeze()
     
     def _update_actor(self, states: torch.Tensor) -> float:
-        """更新Actor网络"""
+        """🔧 优化的Actor更新"""
         actions = self.actor(states)
         actor_loss = -self.critic(states, actions).mean()
         
         self.actor_optimizer.zero_grad()
         actor_loss.backward()
-        torch.nn.utils.clip_grad_norm_(self.actor.parameters(), 1.0)
+        
+        # 🔧 使用配置的梯度裁剪
+        grad_clip = self.config.gradient_clip if hasattr(self.config, 'gradient_clip') else 1.0
+        torch.nn.utils.clip_grad_norm_(self.actor.parameters(), grad_clip)
+        
         self.actor_optimizer.step()
         
         self.actor_losses.append(actor_loss.item())
@@ -371,7 +455,7 @@ class DDPGEnvironment:
         
         # 🔧 修复：正确计算状态维度，与TD3保持一致
         self.state_dim = 130  # 车辆60 + RSU54 + UAV16 = 130维
-        self.action_dim = 30  # 整合所有节点动作
+        self.action_dim = 18  # 支持自适应缓存迁移控制，与TD3保持一致
         
         # 创建智能体
         self.agent = DDPGAgent(self.state_dim, self.action_dim, self.config)
@@ -385,87 +469,86 @@ class DDPGEnvironment:
         print(f"✓ 动作维度: {self.action_dim}")
     
     def get_state_vector(self, node_states: Dict, system_metrics: Dict) -> np.ndarray:
-        """构建全局状态向量 - 修复状态表示问题"""
+        """
+        🔧 修复：构建准确的130维状态向量，与TD3完全一致
+        状态组成: 车辆60维 + RSU54维 + UAV16维 = 130维
+        """
         state_components = []
         
-        # 1. 基础系统状态 (8维) - 增加更多动态特征
-        base_state = [
-            system_metrics.get('avg_task_delay', 0.0) / 1.0,
-            system_metrics.get('total_energy_consumption', 0.0) / 1000.0,
-            system_metrics.get('data_loss_rate', 0.0),
-            system_metrics.get('cache_hit_rate', 0.0),
-            system_metrics.get('migration_success_rate', 0.0),
-            # 🔧 修复：添加变化性更强的系统特征
-            system_metrics.get('task_completion_rate', 0.0),  # 任务完成率
-            min(1.0, system_metrics.get('avg_task_delay', 0.15) / 0.5),  # 延迟负载指标
-            min(1.0, system_metrics.get('total_energy_consumption', 600.0) / 1500.0),  # 能耗负载指标
-        ]
-        state_components.extend(base_state)
-        
-        # 2. 车辆状态 (12车辆 × 4维 = 48维) - 使用真实状态而非随机数
-        vehicle_count = 0
-        for i in range(12):  # 支持最多12个车辆
+        # 1. 车辆状态 (12×5=60维) - 与TD3一致
+        for i in range(12):
             vehicle_key = f'vehicle_{i}'
             if vehicle_key in node_states:
                 vehicle_state = node_states[vehicle_key]
-                # 提取车辆的关键状态特征
-                if len(vehicle_state) >= 5:
-                    vehicle_features = [
-                        float(vehicle_state[0]),  # 位置x (已归一化)
-                        float(vehicle_state[1]),  # 位置y (已归一化)  
-                        float(vehicle_state[2]),  # 速度 (已归一化)
-                        float(vehicle_state[3]),  # 任务数 (已归一化)
-                    ]
-                else:
-                    # 如果状态维度不足，使用默认值
-                    vehicle_features = [0.5, 0.5, 0.5, 0.0]
-                vehicle_count += 1
+                # 确保数值有效性
+                valid_state = []
+                for val in vehicle_state[:5]:
+                    if np.isfinite(val):
+                        valid_state.append(float(val))
+                    else:
+                        valid_state.append(0.5)
+                state_components.extend(valid_state)
+                
+                # 补齐到5维
+                while len(state_components) % 5 != 0:
+                    state_components.append(0.0)
             else:
-                # 车辆不存在，使用默认状态
-                vehicle_features = [0.0, 0.0, 0.0, 0.0]
-            
-            state_components.extend(vehicle_features)
+                # 默认车辆状态: [位置x, 位置y, 速度, 队列, 能耗]
+                state_components.extend([0.5, 0.5, 0.0, 0.0, 0.0])
         
-        # 3. RSU状态 (按可用数量遍历，默认目标为4个RSU)
-        max_rsus = sum(1 for k in node_states.keys() if k.startswith('rsu_'))
-        for i in range(max_rsus):
+        # 2. RSU状态 (6×9=54维) - 与TD3一致
+        for i in range(6):
             rsu_key = f'rsu_{i}'
             if rsu_key in node_states:
                 rsu_state = node_states[rsu_key]
-                if len(rsu_state) >= 5:
-                    rsu_features = [
-                        float(rsu_state[2]),  # 缓存利用率
-                        float(rsu_state[3]),  # 队列长度 (已归一化)
-                        float(rsu_state[4]),  # 能耗 (已归一化)
-                    ]
-                else:
-                    rsu_features = [0.5, 0.5, 0.5]
+                # 确保数值有效性和维度正确
+                valid_rsu_state = []
+                for j, val in enumerate(rsu_state[:9]):
+                    if np.isfinite(val):
+                        # 对缓存利用率(第2维)进行特殊检查
+                        if j == 2:  # 缓存利用率维度
+                            valid_rsu_state.append(min(1.0, max(0.0, float(val))))
+                        else:
+                            valid_rsu_state.append(float(val))
+                    else:
+                        valid_rsu_state.append(0.5 if j < 2 else 0.0)
+                
+                # 补齐到9维
+                while len(valid_rsu_state) < 9:
+                    valid_rsu_state.append(0.0)
+                
+                state_components.extend(valid_rsu_state)
             else:
-                rsu_features = [0.0, 0.0, 0.0]
-            
-            state_components.extend(rsu_features)
+                # 默认RSU状态: [位置x, 位置y, 缓存利用率, 队列, 能耗, 缓存参数4维]
+                state_components.extend([0.5, 0.5, 0.0, 0.0, 0.0, 0.7, 0.35, 0.05, 0.3])
         
-        # 4. UAV状态 (按可用数量遍历，默认目标为2个UAV)
-        max_uavs = sum(1 for k in node_states.keys() if k.startswith('uav_'))
-        for i in range(max_uavs):
+        # 3. UAV状态 (2×8=16维) - 与TD3一致
+        for i in range(2):
             uav_key = f'uav_{i}'
             if uav_key in node_states:
                 uav_state = node_states[uav_key]
-                if len(uav_state) >= 5:
-                    uav_features = [
-                        float(uav_state[2]),  # 高度 (已归一化)
-                        float(uav_state[3]),  # 缓存利用率
-                        float(uav_state[4]),  # 能耗 (已归一化)
-                        1.0,  # 电池电量 (简化为固定值)
-                    ]
-                else:
-                    uav_features = [0.8, 0.5, 0.5, 1.0]
+                # 确保数值有效性
+                valid_uav_state = []
+                for j, val in enumerate(uav_state[:8]):
+                    if np.isfinite(val):
+                        # 对缓存利用率(第3维)进行特殊处理
+                        if j == 3:  # 缓存利用率维度
+                            valid_uav_state.append(min(1.0, max(0.0, float(val))))
+                        else:
+                            valid_uav_state.append(float(val))
+                    else:
+                        valid_uav_state.append(0.5 if j < 3 else 0.0)
+                
+                # 补齐到8维
+                while len(valid_uav_state) < 8:
+                    valid_uav_state.append(0.0)
+                
+                state_components.extend(valid_uav_state)
             else:
-                uav_features = [0.0, 0.0, 0.0, 0.5]
-            
-            state_components.extend(uav_features)
+                # 默认UAV状态: [位置x, 位置y, 位置z, 缓存利用率, 能耗, 迁移参数3维]
+                state_components.extend([0.5, 0.5, 0.5, 0.0, 0.0, 0.75, 1.0, 0.3])
         
-        # 🔧 修复：确保状态向量正好是130维
+        # 确保状态向量正好是130维
         state_vector = np.array(state_components[:130], dtype=np.float32)
         
         # 如果维度不足130，补齐
@@ -475,20 +558,25 @@ class DDPGEnvironment:
         
         # 数值安全检查
         state_vector = np.nan_to_num(state_vector, nan=0.5, posinf=1.0, neginf=0.0)
-        state_vector = np.clip(state_vector, -5.0, 5.0)
         
         return state_vector
     
     def decompose_action(self, action: np.ndarray) -> Dict[str, np.ndarray]:
-        """将全局动作分解为各节点动作"""
+        """
+        将全局动作分解为各节点动作
+        🤖 更新支持18维动作空间，与TD3保持一致：
+        - vehicle_agent: 18维 (11维原有 + 7维缓存迁移控制)
+        """
         actions = {}
-        start_idx = 0
         
-        # 为每个智能体类型分配动作
-        for agent_type in ['vehicle_agent', 'rsu_agent', 'uav_agent']:
-            end_idx = start_idx + 10  # 每个智能体10个动作维度
-            actions[agent_type] = action[start_idx:end_idx]
-            start_idx = end_idx
+        # 🤖 vehicle_agent 获得所有18维动作
+        # 前11维：任务分配(3) + RSU选择(6) + UAV选择(2)
+        # 后7维：缓存控制(4) + 迁移控制(3)
+        actions['vehicle_agent'] = action[:18] if len(action) >= 18 else np.pad(action, (0, 18-len(action)), mode='constant')
+        
+        # RSU和UAV智能体不再需要独立动作，由vehicle_agent统一控制
+        actions['rsu_agent'] = np.zeros(6)  # 兼容性保留
+        actions['uav_agent'] = np.zeros(2)  # 兼容性保留
         
         return actions
     
@@ -497,12 +585,20 @@ class DDPGEnvironment:
         global_action = self.agent.select_action(state, training)
         return self.decompose_action(global_action)
     
-    def calculate_reward(self, system_metrics: Dict) -> float:
+    def calculate_reward(self, system_metrics: Dict, 
+                       cache_metrics: Optional[Dict] = None,
+                       migration_metrics: Optional[Dict] = None) -> float:
         """
-        计算奖励 - 使用简化的、基于成本的奖励函数
+        🔧 修复：使用增强奖励计算器，与TD3保持一致
+        支持缓存和迁移子系统的综合奖励计算
         """
-        from utils.simple_reward_calculator import calculate_simple_reward
-        return calculate_simple_reward(system_metrics)
+        try:
+            from utils.enhanced_reward_calculator import calculate_enhanced_reward
+            return calculate_enhanced_reward(system_metrics, cache_metrics, migration_metrics)
+        except ImportError:
+            # 回退到简单奖励
+            from utils.simple_reward_calculator import calculate_simple_reward
+            return calculate_simple_reward(system_metrics)
     
     def train_step(self, state: np.ndarray, action: Union[np.ndarray, int], reward: float,
                    next_state: np.ndarray, done: bool) -> Dict:

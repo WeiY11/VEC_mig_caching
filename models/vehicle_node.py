@@ -29,7 +29,7 @@ class VehicleNode(BaseNode):
         
         # 车辆特有属性
         self.velocity = np.array([0.0, 0.0])  # 速度向量 (m/s)
-        self.max_speed = 30.0  # 最大速度 (m/s)
+        self.max_speed = 60.0  # 最大速度 (m/s) - 高速公路场景 (216 km/h)
         self.trajectory: List[Position] = [initial_position]
         
         # 计算资源配置 - 对应论文第5.1节
@@ -188,8 +188,8 @@ class VehicleNode(BaseNode):
         """设置随机速度"""
         # 随机方向
         angle = np.random.uniform(0, 2 * math.pi)
-        # 随机速度大小
-        speed = np.random.uniform(5.0, self.max_speed)
+        # 随机速度大小 (30-60 m/s，高速公路场景)
+        speed = np.random.uniform(30.0, self.max_speed)
         
         self.velocity[0] = speed * math.cos(angle)
         self.velocity[1] = speed * math.sin(angle)

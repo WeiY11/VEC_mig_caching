@@ -17,7 +17,7 @@ class EnhancedRewardCalculator:
     def __init__(self):
         # 从配置加载基础权重
         self.weight_delay = config.rl.reward_weight_delay
-        self.weight_energy = config.rl.reward_weight_energy
+        self.weight_energy = config.rl.reward_weight_energy * 1.5  # 🔧 增加能耗权重50%，防止过拟合到高能耗策略
         self.weight_loss = config.rl.reward_weight_loss
         
         # 🔧 新增：子系统奖励权重
@@ -30,8 +30,8 @@ class EnhancedRewardCalculator:
         self.energy_normalizer = 1000.0  # 修正为合理值
         self.cache_normalizer = 1.0
         
-        # 奖励范围
-        self.reward_clip_range = (-10.0, 2.0)  # 允许少量正奖励
+        # 🔧 修复：奖励必须始终为负值，符合VEC成本最小化原则
+        self.reward_clip_range = (-15.0, -0.01)  # 确保奖励始终为负值
         
         print("✅ 增强奖励计算器初始化完成")
         print(f"   基础权重: Delay={self.weight_delay}, Energy={self.weight_energy}, Loss={self.weight_loss}")
@@ -91,120 +91,133 @@ class EnhancedRewardCalculator:
         }
     
     def _calculate_delay_reward(self, system_metrics: Dict) -> float:
-        """计算时延奖励"""
+        """
+        🔧 修复：计算时延成本（纯负值）
+        """
         avg_delay = max(0.0, float(system_metrics.get('avg_task_delay', 0.0)))
         
-        # 非线性惩罚：时延越高惩罚越重
-        delay_penalty = -(avg_delay / self.delay_normalizer) ** 1.5
+        # 时延成本：时延越高成本越高
+        # 使用平方惩罚，鼓励更低时延
+        delay_cost = -(avg_delay / self.delay_normalizer) ** 1.2
         
-        # 时延目标奖励：低于0.2秒给予奖励
+        # 🔧 移除正向奖励，改为成本减免
         if avg_delay < 0.2:
-            delay_bonus = 0.1 * (0.2 - avg_delay) / 0.2
+            # 低时延时成本减免，但仍为负值
+            cost_reduction = delay_cost * 0.5  # 减免50%成本，但总体仍为负
         else:
-            delay_bonus = 0.0
+            cost_reduction = 0.0
         
-        return delay_penalty + delay_bonus
+        return delay_cost + cost_reduction  # 仍然为负值
     
     def _calculate_energy_reward(self, system_metrics: Dict) -> float:
-        """计算能耗奖励"""
+        """
+        🔧 修复：计算能耗成本（纯负值）
+        """
         total_energy = max(0.0, float(system_metrics.get('total_energy_consumption', 0.0)))
         
-        # 能耗惩罚
-        energy_penalty = -(total_energy / self.energy_normalizer)
+        # 能耗成本：能耗越高成本越高
+        energy_cost = -(total_energy / self.energy_normalizer)
         
-        # 能效奖励：能耗低于800焦耳给予奖励
+        # 🔧 移除正向奖励，改为成本减免
         if total_energy < 800.0:
-            energy_bonus = 0.05 * (800.0 - total_energy) / 800.0
+            # 低能耗时成本减免，但仍为负值
+            cost_reduction = energy_cost * 0.3  # 减免30%成本，但总体仍为负
         else:
-            energy_bonus = 0.0
+            cost_reduction = 0.0
         
-        return energy_penalty + energy_bonus
+        return energy_cost + cost_reduction  # 仍然为负值
     
     def _calculate_loss_reward(self, system_metrics: Dict) -> float:
-        """计算数据丢失奖励"""
+        """
+        🔧 修复：计算数据丢失成本（纯负值）
+        """
         completion_rate = max(0.0, min(1.0, float(system_metrics.get('task_completion_rate', 0.0))))
         
-        # 完成率奖励
-        completion_bonus = completion_rate * 0.2  # 最高0.2奖励
-        
-        # 数据丢失惩罚
+        # 数据丢失成本：丢失率越高成本越高
         loss_rate = 1.0 - completion_rate
-        loss_penalty = -(loss_rate ** 2) * 2.0  # 非线性惩罚
+        loss_cost = -(loss_rate ** 2) * 3.0  # 非线性成本
         
-        return completion_bonus + loss_penalty
+        # 🔧 移除正向奖励，改为基于完成率的成本减免
+        if completion_rate > 0.9:
+            # 高完成率时成本减免，但仍为负值
+            cost_reduction = loss_cost * 0.4  # 减免40%成本
+        else:
+            cost_reduction = 0.0
+        
+        return loss_cost + cost_reduction  # 仍然为负值
     
     def _calculate_cache_reward(self, system_metrics: Dict, cache_metrics: Optional[Dict]) -> float:
         """
-        🔧 新增：计算缓存专门奖励
+        🔧 修复：计算缓存成本（纯负值）
         """
         if not cache_metrics:
-            return 0.0
+            return -0.1  # 无缓存数据时的默认成本
         
         cache_hit_rate = cache_metrics.get('hit_rate', 0.0)
         cache_utilization = cache_metrics.get('utilization', 0.0)
         
-        # 缓存命中率奖励
-        hit_rate_reward = cache_hit_rate * 0.3  # 最高0.3奖励
+        # 缓存miss成本：命中率越低成本越高
+        cache_miss_rate = 1.0 - cache_hit_rate
+        cache_miss_cost = -(cache_miss_rate ** 1.5) * 0.5
         
-        # 缓存利用率奖励（鼓励合理利用）
-        if 0.6 <= cache_utilization <= 0.9:
-            utilization_reward = 0.1
-        elif cache_utilization > 0.9:
-            utilization_reward = -0.1  # 过度利用惩罚
+        # 缓存管理成本
+        if cache_utilization > 0.9:
+            management_cost = -0.2  # 过度利用额外成本
+        elif cache_utilization < 0.3:
+            management_cost = -0.1  # 利用不足的机会成本
         else:
-            utilization_reward = 0.0
+            management_cost = -0.05  # 正常管理成本
         
-        # 缓存效率奖励
-        effectiveness = cache_metrics.get('effectiveness', 0.0)
-        efficiency_reward = effectiveness * 0.2
-        
-        return hit_rate_reward + utilization_reward + efficiency_reward
+        return cache_miss_cost + management_cost  # 总是负值
     
     def _calculate_migration_reward(self, system_metrics: Dict, migration_metrics: Optional[Dict]) -> float:
         """
-        🔧 新增：计算迁移专门奖励
+        🔧 修复：计算迁移成本（纯负值）
         """
         if not migration_metrics:
-            return 0.0
+            return -0.05  # 无迁移数据时的默认成本
         
         migration_success_rate = migration_metrics.get('success_rate', 0.0)
-        avg_delay_saved = migration_metrics.get('avg_delay_saved', 0.0)
         migration_frequency = migration_metrics.get('frequency', 0.0)
         
-        # 迁移成功率奖励
-        success_reward = migration_success_rate * 0.15
+        # 迁移失败成本：失败率越高成本越高
+        migration_failure_rate = 1.0 - migration_success_rate
+        migration_failure_cost = -(migration_failure_rate ** 2) * 0.3
         
-        # 时延节省奖励
-        delay_saved_reward = min(0.1, avg_delay_saved * 0.1)
+        # 迁移操作成本：频率过高有额外成本
+        if migration_frequency > 0.15:  # 频繁迁移
+            operation_cost = -migration_frequency * 0.2
+        else:
+            operation_cost = -0.02  # 基础迁移管理成本
         
-        # 迁移频率平衡（过多或过少都不好）
-        optimal_frequency = 0.1  # 每10步1次迁移为理想
-        frequency_penalty = -abs(migration_frequency - optimal_frequency) * 0.5
-        
-        return success_reward + delay_saved_reward + frequency_penalty
+        return migration_failure_cost + operation_cost  # 总是负值
     
     def _calculate_coordination_reward(self, system_metrics: Dict, 
                                      cache_metrics: Optional[Dict],
                                      migration_metrics: Optional[Dict]) -> float:
         """
-        🔧 新增：计算协调奖励，鼓励子系统间协作
+        🔧 修复：计算系统协调成本（纯负值）
         """
-        coordination_reward = 0.0
+        if not cache_metrics or not migration_metrics:
+            return -0.03  # 缺乏协调数据的成本
         
-        if cache_metrics and migration_metrics:
-            cache_hit_rate = cache_metrics.get('hit_rate', 0.0)
-            migration_success_rate = migration_metrics.get('success_rate', 0.0)
-            
-            # 双高协调奖励：缓存和迁移都表现好
-            if cache_hit_rate > 0.7 and migration_success_rate > 0.8:
-                coordination_reward += 0.1
-            
-            # 负载均衡协调：如果迁移有效降低了延迟且缓存命中率稳定
-            avg_delay = system_metrics.get('avg_task_delay', 1.0)
-            if avg_delay < 0.3 and cache_hit_rate > 0.6:
-                coordination_reward += 0.05
+        cache_hit_rate = cache_metrics.get('hit_rate', 0.0)
+        migration_success_rate = migration_metrics.get('success_rate', 0.0)
+        avg_delay = system_metrics.get('avg_task_delay', 1.0)
         
-        return coordination_reward
+        # 系统协调不良成本
+        coordination_cost = -0.1  # 基础协调管理成本
+        
+        # 🔧 基于系统协调效果的成本减免（但仍为负值）
+        if cache_hit_rate > 0.7 and migration_success_rate > 0.7:
+            # 双系统协调良好时，减免部分成本
+            coordination_cost *= 0.5  # 减免50%协调成本
+        
+        if avg_delay < 0.3:
+            # 低延迟时，证明协调有效，进一步减免成本
+            coordination_cost *= 0.7  # 再减免30%
+        
+        return coordination_cost  # 始终为负值
     
     def get_reward_breakdown(self, system_metrics: Dict,
                            cache_metrics: Optional[Dict] = None,
