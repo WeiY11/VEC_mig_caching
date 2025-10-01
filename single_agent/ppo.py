@@ -31,21 +31,21 @@ from config import config
 
 @dataclass
 class PPOConfig:
-    """PPO算法配置"""
-    # 网络结构
-    hidden_dim: int = 256
-    actor_lr: float = 3e-4
-    critic_lr: float = 1e-3
+    """🔧 PPO算法配置 - 优化版（提升稳定性和性能）"""
+    # 网络结构 - 对标TD3容量
+    hidden_dim: int = 400      # 🔧 从256提升到400
+    actor_lr: float = 1e-4     # 🔧 从3e-4降至1e-4
+    critic_lr: float = 3e-4    # 🔧 从1e-3降至3e-4
     
     # PPO参数
     clip_ratio: float = 0.2
     entropy_coef: float = 0.01
     value_coef: float = 0.5
-    max_grad_norm: float = 0.5
+    max_grad_norm: float = 1.0  # 🔧 从0.5放宽到1.0，与TD3一致
     
-    # 训练参数
-    batch_size: int = 64
-    buffer_size: int = 2048
+    # 训练参数 - 优化批次和缓冲区
+    batch_size: int = 128      # 🔧 从64增至128，提高梯度估计稳定性
+    buffer_size: int = 4096    # 🔧 从2048增至4096，增加样本多样性
     ppo_epochs: int = 10
     gamma: float = 0.99
     gae_lambda: float = 0.95
@@ -416,7 +416,7 @@ class PPOEnvironment:
         
         # 🔧 修复：正确计算状态维度，与TD3保持一致
         self.state_dim = 130  # 车辆60 + RSU54 + UAV16 = 130维
-        self.action_dim = 30  # 整合所有节点动作
+        self.action_dim = 18  # 🔧 修复：支持自适应缓存迁移控制，与TD3/DDPG保持一致
         
         # 创建智能体
         self.agent = PPOAgent(self.state_dim, self.action_dim, self.config)
@@ -425,10 +425,16 @@ class PPOEnvironment:
         self.episode_count = 0
         self.step_count = 0
         
-        print(f"✓ PPO环境初始化完成")
+        print(f"✓ PPO环境初始化完成 (已优化 + 缓存迁移DRL控制)")
         print(f"✓ 状态维度: {self.state_dim}")
-        print(f"✓ 动作维度: {self.action_dim}")
-        print(f"✓ 缓冲区大小: {self.config.buffer_size}")
+        print(f"✓ 动作维度: {self.action_dim} (18维支持缓存迁移控制)")
+        print(f"✓ 网络容量: hidden_dim={self.config.hidden_dim} (优化至400)")
+        print(f"✓ Actor学习率: {self.config.actor_lr} (优化至1e-4)")
+        print(f"✓ Critic学习率: {self.config.critic_lr} (优化至3e-4)")
+        print(f"✓ 批次大小: {self.config.batch_size} (优化至128)")
+        print(f"✓ 缓冲区大小: {self.config.buffer_size} (优化至4096)")
+        print(f"✓ 梯度裁剪: max_grad_norm={self.config.max_grad_norm}")
+        print(f"✓ 缓存迁移控制: 启用DRL参数调整 (action[11-17])")
         print(f"✓ PPO轮次: {self.config.ppo_epochs}")
     
     def get_state_vector(self, node_states: Dict, system_metrics: Dict) -> np.ndarray:
@@ -448,15 +454,26 @@ class PPOEnvironment:
         return np.concatenate([base_state, node_states_flat])
     
     def decompose_action(self, action: np.ndarray) -> Dict[str, np.ndarray]:
-        """将全局动作分解为各节点动作"""
+        """
+        将全局动作分解为各节点动作
+        🔧 修复：更新支持18维动作空间，与TD3/DDPG保持一致：
+        - vehicle_agent: 18维 (11维原有 + 7维缓存迁移控制)
+        """
         actions = {}
-        start_idx = 0
         
-        # 为每个智能体类型分配动作
-        for agent_type in ['vehicle_agent', 'rsu_agent', 'uav_agent']:
-            end_idx = start_idx + 10  # 每个智能体10个动作维度
-            actions[agent_type] = action[start_idx:end_idx]
-            start_idx = end_idx
+        # 确保action长度足够
+        if len(action) < 18:
+            action = np.pad(action, (0, 18-len(action)), mode='constant')
+        
+        # 🔧 vehicle_agent 获得所有18维动作
+        # 前11维：任务分配(3) + RSU选择(6) + UAV选择(2)
+        # 后7维：缓存控制(4) + 迁移控制(3)
+        actions['vehicle_agent'] = action[:18]
+        
+        # 🔧 关键修复：从vehicle_agent中提取RSU和UAV选择
+        # 训练框架需要从rsu_agent和uav_agent获取选择概率
+        actions['rsu_agent'] = action[3:9]   # RSU选择（6维）
+        actions['uav_agent'] = action[9:11]  # UAV选择（2维）
         
         return actions
     

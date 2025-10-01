@@ -13,34 +13,8 @@ import matplotlib.pyplot as plt
 import matplotlib
 matplotlib.use('Agg')  # 非交互式后端
 
-# 配置中文字体
-import platform
-import matplotlib.font_manager as fm
-
-def configure_chinese_font():
-    """配置matplotlib支持中文显示"""
-    system = platform.system()
-    
-    # 尝试设置中文字体
-    try:
-        if system == 'Windows':
-            # Windows系统使用微软雅黑或SimHei
-            plt.rcParams['font.sans-serif'] = ['Microsoft YaHei', 'SimHei', 'SimSun', 'KaiTi', 'FangSong']
-        elif system == 'Darwin':  # macOS
-            plt.rcParams['font.sans-serif'] = ['PingFang SC', 'Songti SC', 'STHeiti', 'Arial Unicode MS']
-        else:  # Linux
-            plt.rcParams['font.sans-serif'] = ['WenQuanYi Micro Hei', 'WenQuanYi Zen Hei', 'Noto Sans CJK SC', 'DejaVu Sans']
-        
-        # 解决负号显示问题
-        plt.rcParams['axes.unicode_minus'] = False
-        
-    except Exception as e:
-        # 如果设置失败，使用英文标签
-        print(f"⚠️ 中文字体配置失败: {e}，将使用英文标签")
-        pass
-
-# 初始化字体配置
-configure_chinese_font()
+# 解决负号显示问题
+plt.rcParams['axes.unicode_minus'] = False
 
 
 class HTMLReportGenerator:
@@ -1320,7 +1294,7 @@ class HTMLReportGenerator:
         
         data = [early, mid, late]
         positions = [1, 2, 3]
-        labels = ['探索期\n(前25%)', '学习期\n(中50%)', '收敛期\n(后25%)']
+        labels = ['Exploration\n(First 25%)', 'Learning\n(Middle 50%)', 'Convergence\n(Last 25%)']
         
         bp = ax.boxplot(data, positions=positions, labels=labels, patch_artist=True,
                         widths=0.6, showmeans=True)
@@ -1960,18 +1934,18 @@ class HTMLReportGenerator:
     def _create_all_metrics_charts(self, metrics):
         """为所有指标创建详细图表"""
         metric_configs = [
-            {'name': 'avg_delay', 'title': '平均任务时延演化', 'unit': '秒', 
-             'description': '反映系统处理任务的平均延迟，包含传输、排队和计算延迟'},
-            {'name': 'total_energy', 'title': '总能耗演化', 'unit': '焦耳',
-             'description': '系统总能量消耗，包括计算能耗、传输能耗和迁移能耗'},
-            {'name': 'task_completion_rate', 'title': '任务完成率演化', 'unit': '%',
-             'description': '成功完成的任务占总任务的比例，衡量系统可靠性'},
-            {'name': 'cache_hit_rate', 'title': '缓存命中率演化', 'unit': '%',
-             'description': '从缓存直接命中的请求比例，反映缓存策略有效性'},
-            {'name': 'data_loss_ratio_bytes', 'title': '数据丢失率演化', 'unit': '%',
-             'description': '因超时或资源不足而丢失的数据量占比'},
-            {'name': 'migration_success_rate', 'title': '迁移成功率演化', 'unit': '%',
-             'description': '成功执行的迁移操作占总迁移操作的比例'}
+            {'name': 'avg_delay', 'title': 'Average Task Delay Evolution', 'unit': 'seconds', 
+             'description': 'Reflects the average delay in processing tasks, including transmission, queuing, and computation delays'},
+            {'name': 'total_energy', 'title': 'Total Energy Consumption Evolution', 'unit': 'Joules',
+             'description': 'Total system energy consumption, including computation, transmission, and migration energy'},
+            {'name': 'task_completion_rate', 'title': 'Task Completion Rate Evolution', 'unit': '%',
+             'description': 'Ratio of successfully completed tasks to total tasks, measuring system reliability'},
+            {'name': 'cache_hit_rate', 'title': 'Cache Hit Rate Evolution', 'unit': '%',
+             'description': 'Ratio of requests directly served from cache, reflecting cache policy effectiveness'},
+            {'name': 'data_loss_ratio_bytes', 'title': 'Data Loss Ratio Evolution', 'unit': '%',
+             'description': 'Ratio of data lost due to timeout or insufficient resources'},
+            {'name': 'migration_success_rate', 'title': 'Migration Success Rate Evolution', 'unit': '%',
+             'description': 'Ratio of successfully executed migrations to total migration operations'}
         ]
         
         charts = []
@@ -2015,7 +1989,8 @@ class HTMLReportGenerator:
                    '--', color='#dc3545', linewidth=2, label='Trend (Polynomial)')
         
         ax.set_xlabel('Episode', fontsize=12)
-        ax.set_ylabel(f'{title.split("演化")[0]} ({unit})', fontsize=12)
+        # 移除中文标题中的"演化"部分，直接使用英文标题
+        ax.set_ylabel(f'Value ({unit})', fontsize=12)
         ax.set_title(title, fontsize=14, fontweight='bold')
         ax.legend()
         ax.grid(True, alpha=0.3)
@@ -2032,7 +2007,7 @@ class HTMLReportGenerator:
         quarter = n // 4
         
         # 提取三个阶段的数据
-        categories = ['任务完成率', '缓存命中率', '时延性能', '能耗效率', '数据可靠性', '迁移成功率']
+        categories = ['Task\nCompletion', 'Cache Hit\nRate', 'Delay\nPerformance', 'Energy\nEfficiency', 'Data\nReliability', 'Migration\nSuccess']
         
         def get_stage_score(metric_name, stage_slice, inverse=False):
             if metric_name not in metrics or not metrics[metric_name]:
@@ -2086,13 +2061,13 @@ class HTMLReportGenerator:
         
         fig, ax = plt.subplots(figsize=(10, 10), subplot_kw=dict(projection='polar'))
         
-        ax.plot(angles, early_scores, 'o-', linewidth=2, label='探索期', color='#90caf9')
+        ax.plot(angles, early_scores, 'o-', linewidth=2, label='Exploration Phase', color='#90caf9')
         ax.fill(angles, early_scores, alpha=0.15, color='#90caf9')
         
-        ax.plot(angles, mid_scores, 'o-', linewidth=2, label='学习期', color='#ffb74d')
+        ax.plot(angles, mid_scores, 'o-', linewidth=2, label='Learning Phase', color='#ffb74d')
         ax.fill(angles, mid_scores, alpha=0.15, color='#ffb74d')
         
-        ax.plot(angles, late_scores, 'o-', linewidth=2, label='收敛期', color='#81c784')
+        ax.plot(angles, late_scores, 'o-', linewidth=2, label='Convergence Phase', color='#81c784')
         ax.fill(angles, late_scores, alpha=0.15, color='#81c784')
         
         ax.set_xticks(angles[:-1])

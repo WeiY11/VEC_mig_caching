@@ -31,37 +31,42 @@ from config import config
 
 @dataclass
 class DDPGConfig:
-    """🔧 DDPG算法配置 - 深度优化收敛性和稳定性"""
-    # 网络结构 - 增加容量提高表现力
-    hidden_dim: int = 256      # 增加网络容量（从128到256）
-    actor_lr: float = 3e-5     # 🔧 大幅降低actor学习率（从1e-4到3e-5）提高稳定性
-    critic_lr: float = 1e-4    # 🔧 降低critic学习率（从3e-4到1e-4）防止过拟合
+    """🔧 DDPG算法配置 - 修复关键问题，对标TD3稳定性"""
+    # 网络结构 - 对标TD3容量
+    hidden_dim: int = 400      # 🔧 提升到400，与TD3一致
+    actor_lr: float = 5e-5     # 🔧 与TD3一致的学习率
+    critic_lr: float = 1e-4    # 保持critic学习率
     
-    # 训练参数 - 优化收敛性
-    batch_size: int = 256      # 🔧 增加批次大小（从128到256）减少方差
-    buffer_size: int = 200000  # 🔧 加倍缓冲区（从100k到200k）提高样本多样性
-    tau: float = 0.003         # 🔧 进一步减小软更新（从0.005到0.003）
-    gamma: float = 0.99        # 保持折扣因子
+    # 训练参数
+    batch_size: int = 256
+    buffer_size: int = 100000  # 🔧 与TD3一致
+    tau: float = 0.003         # 软更新系数
+    gamma: float = 0.99
     
-    # 探索参数 - 🔧 优化探索策略
-    noise_scale: float = 0.15  # 🔧 降低初始噪声（从0.3到0.15）减少干扰
-    noise_decay: float = 0.99995 # 🔧 更慢衰减（从0.9999到0.99995）保持探索
-    min_noise: float = 0.05    # 🔧 降低最小噪声（从0.1到0.05）
+    # 探索参数
+    noise_scale: float = 0.2   # 🔧 与TD3的exploration_noise一致
+    noise_decay: float = 0.9998 # 🔧 与TD3一致的衰减率
+    min_noise: float = 0.05
     
-    # 训练频率 - 🔧 优化更新策略
-    update_freq: int = 2       # 🔧 降低更新频率（从1到2）提高稳定性
-    warmup_steps: int = 500    # 🔧 调整预热步数（约2.5 episodes），避免延迟学习
+    # 🔧 关键修复：引入策略延迟更新（借鉴TD3）
+    policy_delay: int = 4      # 🔧 每4次更新一次Actor，与TD3一致
+    update_freq: int = 1       # 改回每步都采样
+    warmup_steps: int = 1000   # 🔧 与TD3一致
     
-    # 🔧 新增：PER参数
-    use_per: bool = True       # 启用优先经验回放
-    per_alpha: float = 0.6     # PER优先级指数
-    per_beta_start: float = 0.4 # IS权重初始值
-    per_beta_frames: int = 500000 # beta增长帧数
+    # 🔧 新增：目标策略平滑化（借鉴TD3）
+    target_noise: float = 0.05  # 目标动作噪声
+    noise_clip: float = 0.2     # 噪声裁剪范围
     
-    # 🔧 新增：梯度和奖励处理
-    gradient_clip: float = 0.5  # 梯度裁剪阈值（更严格）
-    reward_scale: float = 1.0   # 奖励缩放因子
-    reward_normalize: bool = False # 🔧 暂时禁用奖励归一化，便于对比分析
+    # PER参数
+    use_per: bool = True
+    per_alpha: float = 0.6
+    per_beta_start: float = 0.4
+    per_beta_frames: int = 500000
+    
+    # 梯度处理
+    gradient_clip: float = 1.0  # 🔧 放宽到1.0，与TD3一致
+    reward_scale: float = 1.0
+    reward_normalize: bool = False
 
 
 class DDPGActor(nn.Module):
@@ -289,7 +294,7 @@ class DDPGAgent:
         self.replay_buffer.push(state, action, reward, next_state, done)
     
     def update(self) -> Dict[str, float]:
-        """🔧 优化的更新网络参数 - 最大化稳定性"""
+        """🔧 优化的更新网络参数 - 引入策略延迟更新（借鉴TD3）"""
         if len(self.replay_buffer) < self.config.batch_size:
             return {}
         
@@ -343,33 +348,38 @@ class DDPGAgent:
             priorities = td_errors.detach().cpu().numpy() + 1e-6
             self.replay_buffer.update_priorities(indices, priorities)
         
-        # 🔧 更新Actor - 降低频率
-        actor_loss = 0.0
-        if self.update_count % 2 == 0:  # 每2次更新一次Actor
-            actor_loss = self._update_actor(batch_states)
+        training_info = {'critic_loss': critic_loss}
         
-        # 软更新目标网络
-        self.soft_update(self.target_actor, self.actor, self.config.tau)
-        self.soft_update(self.target_critic, self.critic, self.config.tau)
+        # 🔧 策略延迟更新（借鉴TD3）- 每policy_delay次更新一次Actor
+        if self.update_count % self.config.policy_delay == 0:
+            actor_loss = self._update_actor(batch_states)
+            training_info['actor_loss'] = actor_loss
+            
+            # 软更新目标网络（只在更新Actor时更新）
+            self.soft_update(self.target_actor, self.actor, self.config.tau)
+            self.soft_update(self.target_critic, self.critic, self.config.tau)
         
         # 🔧 优化的噪声衰减
         self.noise_scale = max(self.config.min_noise, self.noise_scale * self.config.noise_decay)
+        training_info['noise_scale'] = self.noise_scale
+        training_info['buffer_size'] = len(self.replay_buffer)
+        training_info['beta'] = self.beta
+        training_info['update_count'] = self.update_count
         
-        return {
-            'actor_loss': actor_loss,
-            'critic_loss': critic_loss,
-            'noise_scale': self.noise_scale,
-            'buffer_size': len(self.replay_buffer),
-            'beta': self.beta,
-            'update_count': self.update_count
-        }
+        return training_info
     
     def _update_critic(self, states: torch.Tensor, actions: torch.Tensor, 
                       rewards: torch.Tensor, next_states: torch.Tensor, 
                       dones: torch.Tensor, weights: torch.Tensor) -> Tuple[float, torch.Tensor]:
-        """🔧 优化的Critic更新（支持加权损失和TD误差输出）"""
+        """🔧 优化的Critic更新 - 添加目标策略平滑化（借鉴TD3）"""
         with torch.no_grad():
             next_actions = self.target_actor(next_states)
+            
+            # 🔧 目标策略平滑化：添加裁剪噪声（借鉴TD3）
+            noise = torch.randn_like(next_actions) * self.config.target_noise
+            noise = torch.clamp(noise, -self.config.noise_clip, self.config.noise_clip)
+            next_actions = torch.clamp(next_actions + noise, -1.0, 1.0)
+            
             target_q = self.target_critic(next_states, next_actions)
             target_q = rewards + (1 - dones) * self.config.gamma * target_q
         
@@ -464,9 +474,12 @@ class DDPGEnvironment:
         self.episode_count = 0
         self.step_count = 0
         
-        print(f"✓ DDPG环境初始化完成")
+        print(f"✓ DDPG环境初始化完成 (已优化)")
         print(f"✓ 状态维度: {self.state_dim}")
         print(f"✓ 动作维度: {self.action_dim}")
+        print(f"✓ 策略延迟更新: {self.config.policy_delay} (借鉴TD3)")
+        print(f"✓ 目标策略平滑化: 已启用 (target_noise={self.config.target_noise})")
+        print(f"✓ 网络容量: hidden_dim={self.config.hidden_dim}")
     
     def get_state_vector(self, node_states: Dict, system_metrics: Dict) -> np.ndarray:
         """
@@ -569,14 +582,19 @@ class DDPGEnvironment:
         """
         actions = {}
         
+        # 确保action长度足够
+        if len(action) < 18:
+            action = np.pad(action, (0, 18-len(action)), mode='constant')
+        
         # 🤖 vehicle_agent 获得所有18维动作
         # 前11维：任务分配(3) + RSU选择(6) + UAV选择(2)
         # 后7维：缓存控制(4) + 迁移控制(3)
-        actions['vehicle_agent'] = action[:18] if len(action) >= 18 else np.pad(action, (0, 18-len(action)), mode='constant')
+        actions['vehicle_agent'] = action[:18]
         
-        # RSU和UAV智能体不再需要独立动作，由vehicle_agent统一控制
-        actions['rsu_agent'] = np.zeros(6)  # 兼容性保留
-        actions['uav_agent'] = np.zeros(2)  # 兼容性保留
+        # 🔧 关键修复：从vehicle_agent中提取RSU和UAV选择
+        # 训练框架需要从rsu_agent和uav_agent获取选择概率
+        actions['rsu_agent'] = action[3:9]   # RSU选择（6维）
+        actions['uav_agent'] = action[9:11]  # UAV选择（2维）
         
         return actions
     

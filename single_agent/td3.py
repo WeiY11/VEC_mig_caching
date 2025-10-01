@@ -560,14 +560,19 @@ class TD3Environment:
         """
         actions = {}
         
+        # 确保action长度足够
+        if len(action) < 18:
+            action = np.pad(action, (0, 18-len(action)), mode='constant')
+        
         # 🤖 vehicle_agent 获得所有18维动作
         # 前11维：任务分配(3) + RSU选择(6) + UAV选择(2)
         # 后7维：缓存控制(4) + 迁移控制(3)
-        actions['vehicle_agent'] = action[:18] if len(action) >= 18 else np.pad(action, (0, 18-len(action)), mode='constant')
+        actions['vehicle_agent'] = action[:18]
         
-        # RSU和UAV智能体不再需要独立动作，由vehicle_agent统一控制
-        actions['rsu_agent'] = np.zeros(6)  # 兼容性保留
-        actions['uav_agent'] = np.zeros(2)  # 兼容性保留
+        # 🔧 关键修复：从vehicle_agent中提取RSU和UAV选择
+        # 训练框架需要从rsu_agent和uav_agent获取选择概率
+        actions['rsu_agent'] = action[3:9]   # RSU选择（6维）
+        actions['uav_agent'] = action[9:11]  # UAV选择（2维）
         
         return actions
     
