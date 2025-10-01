@@ -107,7 +107,25 @@ class HTMLReportGenerator:
         # 11. 收敛性分析
         html_parts.append(self._generate_convergence_analysis(training_env))
         
-        # 12. 建议和结论
+        # 12. 指标相关性分析（新增）
+        html_parts.append(self._generate_correlation_analysis(training_env))
+        
+        # 13. 逐指标趋势分析（新增）
+        html_parts.append(self._generate_per_metric_analysis(training_env))
+        
+        # 14. 性能雷达图和对比（新增）
+        html_parts.append(self._generate_radar_chart_analysis(training_env, results))
+        
+        # 15. 完整数据导出表格（新增）
+        html_parts.append(self._generate_complete_data_table(training_env))
+        
+        # 16. 峰值和异常分析（新增）
+        html_parts.append(self._generate_peak_anomaly_analysis(training_env))
+        
+        # 17. 学习曲线平滑度分析（新增）
+        html_parts.append(self._generate_smoothness_analysis(training_env))
+        
+        # 18. 建议和结论
         html_parts.append(self._generate_recommendations(training_env, results))
         
         # 添加HTML尾部
@@ -1404,6 +1422,751 @@ class HTMLReportGenerator:
             </div>
         </div>
 """
+    
+    def _generate_correlation_analysis(self, training_env: Any) -> str:
+        """生成指标相关性分析"""
+        metrics = training_env.episode_metrics
+        
+        # 提取关键指标
+        metric_names = ['avg_delay', 'total_energy', 'task_completion_rate', 
+                       'cache_hit_rate', 'data_loss_ratio_bytes', 'migration_success_rate']
+        
+        available_metrics = {}
+        for name in metric_names:
+            if name in metrics and metrics[name]:
+                available_metrics[name] = metrics[name]
+        
+        if len(available_metrics) < 2:
+            return ""
+        
+        # 计算相关性矩阵
+        correlation_chart = self._create_correlation_heatmap(available_metrics)
+        
+        # 计算强相关对
+        strong_correlations = self._find_strong_correlations(available_metrics)
+        
+        corr_text = ""
+        for corr in strong_correlations[:5]:  # 显示前5个
+            corr_text += f"""
+            <div class="recommendation" style="border-left-color: {'#28a745' if corr['value'] > 0 else '#dc3545'}">
+                <div class="recommendation-title">
+                    {corr['metric1']} ↔️ {corr['metric2']}: 
+                    <strong>{'正相关' if corr['value'] > 0 else '负相关'}</strong> 
+                    (r={corr['value']:.3f})
+                </div>
+                <div>{corr['interpretation']}</div>
+            </div>
+"""
+        
+        return f"""
+        <div class="section">
+            <h2 class="section-title">🔗 指标相关性分析</h2>
+            
+            <p style="margin-bottom: 20px; line-height: 1.8;">
+                通过分析不同性能指标之间的相关关系，可以发现系统行为的内在联系和优化方向。
+            </p>
+            
+            <div class="chart-container">
+                <div class="chart-title">指标相关性热力图</div>
+                <img src="data:image/png;base64,{correlation_chart}" alt="相关性热力图">
+            </div>
+            
+            <h3 class="section-subtitle">强相关关系解读</h3>
+            {corr_text if corr_text else '<p>未发现显著的强相关关系</p>'}
+            
+            <h3 class="section-subtitle">相关性解释</h3>
+            <div style="padding: 15px; background: white; border-radius: 8px; line-height: 1.8;">
+                • <strong>正相关 (r > 0.5)</strong>: 两个指标趋向于同时增大或减小<br>
+                • <strong>负相关 (r < -0.5)</strong>: 一个指标增大时另一个趋向于减小<br>
+                • <strong>弱相关 (|r| < 0.5)</strong>: 两个指标之间关系不明显<br>
+                • <strong>相关系数范围</strong>: -1 (完全负相关) 到 +1 (完全正相关)
+            </div>
+        </div>
+"""
+    
+    def _generate_per_metric_analysis(self, training_env: Any) -> str:
+        """生成逐指标详细趋势分析"""
+        metrics = training_env.episode_metrics
+        
+        # 为每个关键指标生成独立的详细图表
+        metrics_charts = self._create_all_metrics_charts(metrics)
+        
+        charts_html = ""
+        for metric_info in metrics_charts:
+            charts_html += f"""
+            <div class="chart-container">
+                <div class="chart-title">{metric_info['title']}</div>
+                <img src="data:image/png;base64,{metric_info['chart']}" alt="{metric_info['name']}">
+                <p style="margin-top: 10px; color: #666; font-size: 0.95em;">
+                    {metric_info['description']}
+                </p>
+            </div>
+"""
+        
+        return f"""
+        <div class="section">
+            <h2 class="section-title">📊 逐指标详细趋势分析</h2>
+            
+            <p style="margin-bottom: 20px; line-height: 1.8;">
+                每个性能指标的完整演化过程，包含原始数据、移动平均、趋势线和置信区间。
+            </p>
+            
+            {charts_html}
+        </div>
+"""
+    
+    def _generate_radar_chart_analysis(self, training_env: Any, results: Dict) -> str:
+        """生成性能雷达图分析"""
+        metrics = training_env.episode_metrics
+        
+        # 计算不同阶段的归一化性能
+        radar_chart = self._create_radar_chart(training_env, metrics)
+        
+        # 计算综合评分
+        n = len(training_env.episode_rewards)
+        if n < 4:
+            return ""
+        
+        quarter = n // 4
+        
+        # 归一化各项指标并计算综合分数
+        def normalize_metric(values, inverse=False):
+            """归一化到0-100分"""
+            if not values:
+                return 0
+            arr = np.array(values)
+            min_val, max_val = np.min(arr), np.max(arr)
+            if max_val == min_val:
+                return 50
+            normalized = (arr - min_val) / (max_val - min_val)
+            if inverse:  # 对于越小越好的指标
+                normalized = 1 - normalized
+            return float(np.mean(normalized[-quarter:]) * 100)
+        
+        scores = {
+            '任务完成率': normalize_metric(metrics.get('task_completion_rate', []), inverse=False),
+            '缓存命中率': normalize_metric(metrics.get('cache_hit_rate', []), inverse=False),
+            '时延性能': normalize_metric(metrics.get('avg_delay', []), inverse=True),
+            '能耗效率': normalize_metric(metrics.get('total_energy', []), inverse=True),
+            '数据可靠性': normalize_metric(metrics.get('data_loss_ratio_bytes', []), inverse=True),
+            '迁移成功率': normalize_metric(metrics.get('migration_success_rate', []), inverse=False)
+        }
+        
+        overall_score = np.mean(list(scores.values()))
+        
+        scores_html = ""
+        for metric_name, score in scores.items():
+            color = '#28a745' if score >= 70 else '#ffc107' if score >= 50 else '#dc3545'
+            scores_html += f"""
+            <div class="metric-card">
+                <div class="metric-label">{metric_name}</div>
+                <div class="metric-value" style="color: {color}">{score:.1f}</div>
+                <div class="progress-bar" style="height: 10px; margin-top: 10px;">
+                    <div class="progress-fill" style="width: {score}%; font-size: 0;"></div>
+                </div>
+            </div>
+"""
+        
+        grade = 'A+' if overall_score >= 90 else 'A' if overall_score >= 80 else 'B' if overall_score >= 70 else 'C' if overall_score >= 60 else 'D'
+        grade_color = '#28a745' if overall_score >= 70 else '#ffc107' if overall_score >= 60 else '#dc3545'
+        
+        return f"""
+        <div class="section">
+            <h2 class="section-title">🎯 综合性能雷达图</h2>
+            
+            <div class="chart-container">
+                <div class="chart-title">多维性能雷达图（三阶段对比）</div>
+                <img src="data:image/png;base64,{radar_chart}" alt="性能雷达图">
+            </div>
+            
+            <h3 class="section-subtitle">各维度性能评分（后25%轮次）</h3>
+            <div class="metrics-grid">
+                {scores_html}
+            </div>
+            
+            <h3 class="section-subtitle">综合性能评级</h3>
+            <div style="text-align: center; padding: 30px; background: white; border-radius: 10px;">
+                <div style="font-size: 4em; font-weight: bold; color: {grade_color}; margin-bottom: 10px;">
+                    {grade}
+                </div>
+                <div style="font-size: 1.5em; color: #666;">
+                    综合得分: {overall_score:.1f}/100
+                </div>
+                <div style="margin-top: 15px; color: #999;">
+                    {'优秀' if overall_score >= 80 else '良好' if overall_score >= 70 else '及格' if overall_score >= 60 else '需改进'}
+                </div>
+            </div>
+        </div>
+"""
+    
+    def _generate_complete_data_table(self, training_env: Any) -> str:
+        """生成完整的可导出数据表格"""
+        rewards = training_env.episode_rewards
+        metrics = training_env.episode_metrics
+        
+        # 生成CSV格式的数据
+        csv_data = "Episode,Reward,Avg_Delay,Total_Energy,Completion_Rate,Cache_Hit_Rate,Data_Loss_Ratio,Migration_Success_Rate\n"
+        
+        for i in range(len(rewards)):
+            csv_data += f"{i+1},{rewards[i]:.6f}"
+            for metric_name in ['avg_delay', 'total_energy', 'task_completion_rate', 
+                               'cache_hit_rate', 'data_loss_ratio_bytes', 'migration_success_rate']:
+                if metric_name in metrics and i < len(metrics[metric_name]):
+                    csv_data += f",{metrics[metric_name][i]:.6f}"
+                else:
+                    csv_data += ",0"
+            csv_data += "\n"
+        
+        # Base64编码CSV数据供下载
+        csv_b64 = base64.b64encode(csv_data.encode()).decode()
+        
+        # 生成统计摘要
+        summary_rows = ""
+        for metric_name, display_name in [
+            ('avg_delay', '平均时延'),
+            ('total_energy', '总能耗'),
+            ('task_completion_rate', '任务完成率'),
+            ('cache_hit_rate', '缓存命中率'),
+            ('data_loss_ratio_bytes', '数据丢失率'),
+            ('migration_success_rate', '迁移成功率')
+        ]:
+            if metric_name in metrics and metrics[metric_name]:
+                data = np.array(metrics[metric_name])
+                summary_rows += f"""
+                <tr>
+                    <td><strong>{display_name}</strong></td>
+                    <td>{np.mean(data):.6f}</td>
+                    <td>{np.std(data):.6f}</td>
+                    <td>{np.min(data):.6f}</td>
+                    <td>{np.percentile(data, 25):.6f}</td>
+                    <td>{np.median(data):.6f}</td>
+                    <td>{np.percentile(data, 75):.6f}</td>
+                    <td>{np.max(data):.6f}</td>
+                </tr>
+"""
+        
+        return f"""
+        <div class="section">
+            <h2 class="section-title">💾 完整数据导出</h2>
+            
+            <p style="margin-bottom: 20px;">
+                以下是所有训练轮次的完整数据统计，可以下载CSV文件进行进一步分析。
+            </p>
+            
+            <div style="text-align: center; margin: 30px 0;">
+                <a href="data:text/csv;base64,{csv_b64}" 
+                   download="training_data.csv" 
+                   style="display: inline-block; padding: 15px 40px; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); 
+                          color: white; text-decoration: none; border-radius: 8px; font-size: 1.1em; 
+                          box-shadow: 0 4px 12px rgba(0,0,0,0.2); transition: transform 0.2s;"
+                   onmouseover="this.style.transform='translateY(-3px)'"
+                   onmouseout="this.style.transform='translateY(0)'">
+                    📥 下载完整CSV数据
+                </a>
+                <div style="margin-top: 10px; color: #666; font-size: 0.9em;">
+                    包含 {len(rewards)} 轮训练数据，8列指标
+                </div>
+            </div>
+            
+            <h3 class="section-subtitle">数据统计摘要（所有指标）</h3>
+            <div class="data-table" style="overflow-x: auto;">
+                <table>
+                    <thead>
+                        <tr>
+                            <th>指标</th>
+                            <th>均值</th>
+                            <th>标准差</th>
+                            <th>最小值</th>
+                            <th>Q1 (25%)</th>
+                            <th>中位数</th>
+                            <th>Q3 (75%)</th>
+                            <th>最大值</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr>
+                            <td><strong>奖励</strong></td>
+                            <td>{np.mean(rewards):.6f}</td>
+                            <td>{np.std(rewards):.6f}</td>
+                            <td>{np.min(rewards):.6f}</td>
+                            <td>{np.percentile(rewards, 25):.6f}</td>
+                            <td>{np.median(rewards):.6f}</td>
+                            <td>{np.percentile(rewards, 75):.6f}</td>
+                            <td>{np.max(rewards):.6f}</td>
+                        </tr>
+                        {summary_rows}
+                    </tbody>
+                </table>
+            </div>
+        </div>
+"""
+    
+    def _generate_peak_anomaly_analysis(self, training_env: Any) -> str:
+        """生成峰值和异常分析"""
+        rewards = training_env.episode_rewards
+        
+        # 找出最佳和最差的episodes
+        rewards_arr = np.array(rewards)
+        top_5_idx = np.argsort(rewards_arr)[-5:][::-1]
+        bottom_5_idx = np.argsort(rewards_arr)[:5]
+        
+        # 找出异常波动
+        if len(rewards) > 1:
+            reward_changes = np.diff(rewards)
+            large_jumps_idx = np.where(np.abs(reward_changes) > np.std(reward_changes) * 2)[0]
+        else:
+            large_jumps_idx = []
+        
+        top_html = ""
+        for rank, idx in enumerate(top_5_idx, 1):
+            top_html += f"""
+            <tr style="background: #e8f5e9;">
+                <td>{rank}</td>
+                <td><strong>Episode {idx + 1}</strong></td>
+                <td style="color: #28a745; font-weight: bold;">{rewards[idx]:.3f}</td>
+                <td>{self._get_episode_description(training_env, idx)}</td>
+            </tr>
+"""
+        
+        bottom_html = ""
+        for rank, idx in enumerate(bottom_5_idx, 1):
+            bottom_html += f"""
+            <tr style="background: #ffebee;">
+                <td>{rank}</td>
+                <td><strong>Episode {idx + 1}</strong></td>
+                <td style="color: #dc3545; font-weight: bold;">{rewards[idx]:.3f}</td>
+                <td>{self._get_episode_description(training_env, idx)}</td>
+            </tr>
+"""
+        
+        jumps_html = ""
+        for idx in large_jumps_idx[:10]:  # 只显示前10个
+            change = reward_changes[idx]
+            jumps_html += f"""
+            <tr>
+                <td>Episode {idx + 1} → {idx + 2}</td>
+                <td style="color: {'#28a745' if change > 0 else '#dc3545'}; font-weight: bold;">
+                    {change:+.3f}
+                </td>
+                <td style="color: {'#28a745' if change > 0 else '#dc3545'}">
+                    {abs(change / rewards[idx]) * 100:.1f}%
+                </td>
+                <td>{'显著提升 ↗' if change > 0 else '显著下降 ↘'}</td>
+            </tr>
+"""
+        
+        return f"""
+        <div class="section">
+            <h2 class="section-title">⚡ 峰值与异常分析</h2>
+            
+            <h3 class="section-subtitle">🏆 最佳表现 Top 5</h3>
+            <table>
+                <thead>
+                    <tr>
+                        <th>排名</th>
+                        <th>轮次</th>
+                        <th>奖励</th>
+                        <th>特征</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {top_html}
+                </tbody>
+            </table>
+            
+            <h3 class="section-subtitle">📉 最差表现 Bottom 5</h3>
+            <table>
+                <thead>
+                    <tr>
+                        <th>排名</th>
+                        <th>轮次</th>
+                        <th>奖励</th>
+                        <th>特征</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {bottom_html}
+                </tbody>
+            </table>
+            
+            <h3 class="section-subtitle">🔄 显著波动事件</h3>
+            {'<table><thead><tr><th>轮次变化</th><th>奖励变化</th><th>变化率</th><th>趋势</th></tr></thead><tbody>' + jumps_html + '</tbody></table>' if jumps_html else '<p style="color: #666;">未检测到显著的奖励波动，训练过程相对平稳。</p>'}
+            
+            <div style="margin-top: 20px; padding: 15px; background: #fff3cd; border-left: 4px solid #ffc107; border-radius: 5px;">
+                <strong>💡 提示：</strong> 显著波动通常由探索策略、学习率或环境随机性引起。
+                如果波动过大，考虑调整探索噪声或学习率。
+            </div>
+        </div>
+"""
+    
+    def _generate_smoothness_analysis(self, training_env: Any) -> str:
+        """生成学习曲线平滑度分析"""
+        rewards = training_env.episode_rewards
+        
+        if len(rewards) < 10:
+            return ""
+        
+        # 计算平滑度指标
+        # 1. 一阶差分的标准差（波动性）
+        first_diff = np.diff(rewards)
+        volatility = np.std(first_diff)
+        
+        # 2. 自相关性
+        autocorr = np.corrcoef(rewards[:-1], rewards[1:])[0, 1] if len(rewards) > 1 else 0
+        
+        # 3. 趋势强度
+        x = np.arange(len(rewards))
+        trend_coef = np.polyfit(x, rewards, 1)[0]
+        
+        # 4. 平滑指数（基于移动平均的偏离）
+        window = min(20, len(rewards) // 5)
+        moving_avg = np.convolve(rewards, np.ones(window)/window, mode='valid')
+        deviations = []
+        for i in range(len(moving_avg)):
+            deviations.append(abs(rewards[i + window//2] - moving_avg[i]))
+        smoothness_score = 100 - min(100, np.mean(deviations) * 10)
+        
+        # 创建平滑度分析图表
+        smoothness_chart = self._create_smoothness_chart(rewards, first_diff)
+        
+        # 评价
+        smoothness_grade = '优秀' if smoothness_score >= 70 else '良好' if smoothness_score >= 50 else '一般' if smoothness_score >= 30 else '较差'
+        volatility_grade = '低' if volatility < np.std(rewards) * 0.3 else '中' if volatility < np.std(rewards) * 0.6 else '高'
+        
+        return f"""
+        <div class="section">
+            <h2 class="section-title">📈 学习曲线平滑度分析</h2>
+            
+            <div class="metrics-grid">
+                <div class="metric-card">
+                    <div class="metric-label">平滑度评分</div>
+                    <div class="metric-value" style="color: {'#28a745' if smoothness_score >= 70 else '#ffc107' if smoothness_score >= 50 else '#dc3545'}">
+                        {smoothness_score:.1f}
+                    </div>
+                    <div style="font-size: 0.85em; color: #666; margin-top: 5px;">
+                        {smoothness_grade}
+                    </div>
+                </div>
+                <div class="metric-card">
+                    <div class="metric-label">波动性</div>
+                    <div class="metric-value">{volatility:.3f}</div>
+                    <div style="font-size: 0.85em; color: #666; margin-top: 5px;">
+                        {volatility_grade}波动
+                    </div>
+                </div>
+                <div class="metric-card">
+                    <div class="metric-label">自相关系数</div>
+                    <div class="metric-value">{autocorr:.3f}</div>
+                    <div style="font-size: 0.85em; color: #666; margin-top: 5px;">
+                        {'强' if abs(autocorr) > 0.7 else '中' if abs(autocorr) > 0.4 else '弱'}相关
+                    </div>
+                </div>
+                <div class="metric-card">
+                    <div class="metric-label">总体趋势</div>
+                    <div class="metric-value" style="color: {'#28a745' if trend_coef > 0 else '#dc3545'}">
+                        {trend_coef:+.3f}
+                    </div>
+                    <div style="font-size: 0.85em; color: #666; margin-top: 5px;">
+                        {'上升' if trend_coef > 0 else '下降'}趋势
+                    </div>
+                </div>
+            </div>
+            
+            <div class="chart-container">
+                <div class="chart-title">奖励变化率分析</div>
+                <img src="data:image/png;base64,{smoothness_chart}" alt="平滑度分析">
+            </div>
+            
+            <h3 class="section-subtitle">平滑度解读</h3>
+            <div style="padding: 15px; background: white; border-radius: 8px; line-height: 2;">
+                • <strong>平滑度评分</strong>: {smoothness_score:.1f}/100 - 表示学习曲线的稳定程度<br>
+                • <strong>波动性</strong>: {volatility:.3f} - 相邻轮次奖励变化的标准差<br>
+                • <strong>自相关</strong>: {autocorr:.3f} - 反映连续轮次之间的相似性<br>
+                • <strong>趋势系数</strong>: {trend_coef:+.3f} - {'正值表示整体进步，数值越大进步越快' if trend_coef > 0 else '负值表示性能下降，需要关注'}<br>
+                <br>
+                <strong>💡 建议</strong>: 
+                {'学习曲线平滑，训练稳定，可以考虑加快学习速度。' if smoothness_score >= 70 else 
+                 '学习曲线波动适中，训练正常进行。' if smoothness_score >= 50 else
+                 '学习曲线波动较大，建议降低学习率或增加批量大小以提高稳定性。'}
+            </div>
+        </div>
+"""
+    
+    # 辅助方法
+    def _create_correlation_heatmap(self, metrics_dict):
+        """创建相关性热力图"""
+        import seaborn as sns
+        
+        # 准备数据
+        data = []
+        labels = []
+        for name, values in metrics_dict.items():
+            data.append(values)
+            labels.append(name.replace('_', ' ').title())
+        
+        # 计算相关性矩阵
+        corr_matrix = np.corrcoef(data)
+        
+        # 绘图
+        fig, ax = plt.subplots(figsize=(10, 8))
+        im = ax.imshow(corr_matrix, cmap='RdYlGn', vmin=-1, vmax=1, aspect='auto')
+        
+        # 设置标签
+        ax.set_xticks(np.arange(len(labels)))
+        ax.set_yticks(np.arange(len(labels)))
+        ax.set_xticklabels(labels, rotation=45, ha='right')
+        ax.set_yticklabels(labels)
+        
+        # 添加数值
+        for i in range(len(labels)):
+            for j in range(len(labels)):
+                text = ax.text(j, i, f'{corr_matrix[i, j]:.2f}',
+                             ha="center", va="center", color="black", fontsize=9)
+        
+        ax.set_title('Metrics Correlation Heatmap', fontsize=14, fontweight='bold', pad=20)
+        fig.colorbar(im, ax=ax, label='Correlation Coefficient')
+        
+        plt.tight_layout()
+        return self._fig_to_base64(fig)
+    
+    def _find_strong_correlations(self, metrics_dict):
+        """找出强相关关系"""
+        names = list(metrics_dict.keys())
+        correlations = []
+        
+        for i in range(len(names)):
+            for j in range(i+1, len(names)):
+                corr = np.corrcoef(metrics_dict[names[i]], metrics_dict[names[j]])[0, 1]
+                if abs(corr) > 0.5:  # 强相关阈值
+                    interpretation = ""
+                    if abs(corr) > 0.8:
+                        interpretation = "非常强的相关性，这两个指标几乎同步变化"
+                    elif abs(corr) > 0.6:
+                        interpretation = "强相关性，这两个指标有明显的关联"
+                    else:
+                        interpretation = "中等相关性，这两个指标有一定关联"
+                    
+                    correlations.append({
+                        'metric1': names[i].replace('_', ' ').title(),
+                        'metric2': names[j].replace('_', ' ').title(),
+                        'value': corr,
+                        'interpretation': interpretation
+                    })
+        
+        # 按绝对值排序
+        correlations.sort(key=lambda x: abs(x['value']), reverse=True)
+        return correlations
+    
+    def _create_all_metrics_charts(self, metrics):
+        """为所有指标创建详细图表"""
+        metric_configs = [
+            {'name': 'avg_delay', 'title': '平均任务时延演化', 'unit': '秒', 
+             'description': '反映系统处理任务的平均延迟，包含传输、排队和计算延迟'},
+            {'name': 'total_energy', 'title': '总能耗演化', 'unit': '焦耳',
+             'description': '系统总能量消耗，包括计算能耗、传输能耗和迁移能耗'},
+            {'name': 'task_completion_rate', 'title': '任务完成率演化', 'unit': '%',
+             'description': '成功完成的任务占总任务的比例，衡量系统可靠性'},
+            {'name': 'cache_hit_rate', 'title': '缓存命中率演化', 'unit': '%',
+             'description': '从缓存直接命中的请求比例，反映缓存策略有效性'},
+            {'name': 'data_loss_ratio_bytes', 'title': '数据丢失率演化', 'unit': '%',
+             'description': '因超时或资源不足而丢失的数据量占比'},
+            {'name': 'migration_success_rate', 'title': '迁移成功率演化', 'unit': '%',
+             'description': '成功执行的迁移操作占总迁移操作的比例'}
+        ]
+        
+        charts = []
+        for config in metric_configs:
+            if config['name'] in metrics and metrics[config['name']]:
+                chart = self._create_detailed_metric_chart(
+                    metrics[config['name']], 
+                    config['title'],
+                    config['unit']
+                )
+                charts.append({
+                    'name': config['name'],
+                    'title': config['title'],
+                    'chart': chart,
+                    'description': config['description']
+                })
+        
+        return charts
+    
+    def _create_detailed_metric_chart(self, data, title, unit):
+        """创建单个指标的详细图表"""
+        fig, ax = plt.subplots(figsize=(12, 6))
+        
+        episodes = np.arange(1, len(data) + 1)
+        
+        # 原始数据
+        ax.plot(episodes, data, alpha=0.3, color='gray', label='Raw Data', linewidth=1)
+        
+        # 移动平均
+        window = min(20, len(data) // 5)
+        if window > 1:
+            moving_avg = np.convolve(data, np.ones(window)/window, mode='valid')
+            ax.plot(range(window, len(data) + 1), moving_avg, 
+                   color='#667eea', linewidth=2.5, label=f'Moving Average ({window})')
+            
+            # 趋势线
+            x = np.arange(len(moving_avg))
+            z = np.polyfit(x, moving_avg, 2)
+            p = np.poly1d(z)
+            ax.plot(range(window, len(data) + 1), p(x), 
+                   '--', color='#dc3545', linewidth=2, label='Trend (Polynomial)')
+        
+        ax.set_xlabel('Episode', fontsize=12)
+        ax.set_ylabel(f'{title.split("演化")[0]} ({unit})', fontsize=12)
+        ax.set_title(title, fontsize=14, fontweight='bold')
+        ax.legend()
+        ax.grid(True, alpha=0.3)
+        
+        plt.tight_layout()
+        return self._fig_to_base64(fig)
+    
+    def _create_radar_chart(self, training_env, metrics):
+        """创建性能雷达图"""
+        n = len(training_env.episode_rewards)
+        if n < 4:
+            return self._fig_to_base64(plt.figure())
+        
+        quarter = n // 4
+        
+        # 提取三个阶段的数据
+        categories = ['任务完成率', '缓存命中率', '时延性能', '能耗效率', '数据可靠性', '迁移成功率']
+        
+        def get_stage_score(metric_name, stage_slice, inverse=False):
+            if metric_name not in metrics or not metrics[metric_name]:
+                return 0
+            values = metrics[metric_name][stage_slice]
+            if not values:
+                return 0
+            score = np.mean(values)
+            # 归一化到0-1
+            all_values = metrics[metric_name]
+            min_val, max_val = np.min(all_values), np.max(all_values)
+            if max_val == min_val:
+                return 0.5
+            normalized = (score - min_val) / (max_val - min_val)
+            return 1 - normalized if inverse else normalized
+        
+        early_scores = [
+            get_stage_score('task_completion_rate', slice(0, quarter)),
+            get_stage_score('cache_hit_rate', slice(0, quarter)),
+            get_stage_score('avg_delay', slice(0, quarter), inverse=True),
+            get_stage_score('total_energy', slice(0, quarter), inverse=True),
+            get_stage_score('data_loss_ratio_bytes', slice(0, quarter), inverse=True),
+            get_stage_score('migration_success_rate', slice(0, quarter))
+        ]
+        
+        mid_scores = [
+            get_stage_score('task_completion_rate', slice(quarter, 3*quarter)),
+            get_stage_score('cache_hit_rate', slice(quarter, 3*quarter)),
+            get_stage_score('avg_delay', slice(quarter, 3*quarter), inverse=True),
+            get_stage_score('total_energy', slice(quarter, 3*quarter), inverse=True),
+            get_stage_score('data_loss_ratio_bytes', slice(quarter, 3*quarter), inverse=True),
+            get_stage_score('migration_success_rate', slice(quarter, 3*quarter))
+        ]
+        
+        late_scores = [
+            get_stage_score('task_completion_rate', slice(3*quarter, n)),
+            get_stage_score('cache_hit_rate', slice(3*quarter, n)),
+            get_stage_score('avg_delay', slice(3*quarter, n), inverse=True),
+            get_stage_score('total_energy', slice(3*quarter, n), inverse=True),
+            get_stage_score('data_loss_ratio_bytes', slice(3*quarter, n), inverse=True),
+            get_stage_score('migration_success_rate', slice(3*quarter, n))
+        ]
+        
+        # 闭合雷达图
+        early_scores += early_scores[:1]
+        mid_scores += mid_scores[:1]
+        late_scores += late_scores[:1]
+        
+        angles = np.linspace(0, 2 * np.pi, len(categories), endpoint=False).tolist()
+        angles += angles[:1]
+        
+        fig, ax = plt.subplots(figsize=(10, 10), subplot_kw=dict(projection='polar'))
+        
+        ax.plot(angles, early_scores, 'o-', linewidth=2, label='探索期', color='#90caf9')
+        ax.fill(angles, early_scores, alpha=0.15, color='#90caf9')
+        
+        ax.plot(angles, mid_scores, 'o-', linewidth=2, label='学习期', color='#ffb74d')
+        ax.fill(angles, mid_scores, alpha=0.15, color='#ffb74d')
+        
+        ax.plot(angles, late_scores, 'o-', linewidth=2, label='收敛期', color='#81c784')
+        ax.fill(angles, late_scores, alpha=0.15, color='#81c784')
+        
+        ax.set_xticks(angles[:-1])
+        ax.set_xticklabels(categories, size=11)
+        ax.set_ylim(0, 1)
+        ax.set_yticks([0.2, 0.4, 0.6, 0.8, 1.0])
+        ax.set_yticklabels(['20%', '40%', '60%', '80%', '100%'])
+        ax.legend(loc='upper right', bbox_to_anchor=(1.3, 1.1))
+        ax.set_title('Performance Radar Chart by Training Phase', size=14, fontweight='bold', pad=20)
+        ax.grid(True)
+        
+        plt.tight_layout()
+        return self._fig_to_base64(fig)
+    
+    def _get_episode_description(self, training_env, idx):
+        """获取episode的简要描述"""
+        metrics = training_env.episode_metrics
+        
+        # 提取该episode的关键特征
+        features = []
+        
+        if 'task_completion_rate' in metrics and idx < len(metrics['task_completion_rate']):
+            rate = metrics['task_completion_rate'][idx]
+            if rate >= 0.95:
+                features.append("极高完成率")
+            elif rate <= 0.85:
+                features.append("较低完成率")
+        
+        if 'cache_hit_rate' in metrics and idx < len(metrics['cache_hit_rate']):
+            rate = metrics['cache_hit_rate'][idx]
+            if rate >= 0.8:
+                features.append("高缓存命中")
+            elif rate <= 0.4:
+                features.append("低缓存命中")
+        
+        if 'avg_delay' in metrics and idx < len(metrics['avg_delay']):
+            delay = metrics['avg_delay'][idx]
+            avg_delay = np.mean(metrics['avg_delay'])
+            if delay < avg_delay * 0.8:
+                features.append("低延迟")
+            elif delay > avg_delay * 1.2:
+                features.append("高延迟")
+        
+        return ", ".join(features) if features else "正常表现"
+    
+    def _create_smoothness_chart(self, rewards, first_diff):
+        """创建平滑度分析图表"""
+        fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(12, 8))
+        
+        # 奖励及其移动平均
+        window = min(20, len(rewards) // 5)
+        moving_avg = np.convolve(rewards, np.ones(window)/window, mode='valid')
+        
+        ax1.plot(rewards, alpha=0.5, label='Raw Reward', color='gray')
+        ax1.plot(range(window//2, window//2 + len(moving_avg)), moving_avg, 
+                linewidth=2.5, label=f'MA({window})', color='#667eea')
+        ax1.set_ylabel('Reward', fontsize=12)
+        ax1.set_title('Reward Smoothness', fontsize=13, fontweight='bold')
+        ax1.legend()
+        ax1.grid(True, alpha=0.3)
+        
+        # 变化率（一阶差分）
+        ax2.bar(range(len(first_diff)), first_diff, color=['#28a745' if x > 0 else '#dc3545' for x in first_diff], alpha=0.7)
+        ax2.axhline(y=0, color='black', linestyle='-', linewidth=0.5)
+        ax2.axhline(y=np.std(first_diff), color='red', linestyle='--', linewidth=1, label=f'±1 Std ({np.std(first_diff):.2f})')
+        ax2.axhline(y=-np.std(first_diff), color='red', linestyle='--', linewidth=1)
+        ax2.set_xlabel('Episode Transition', fontsize=12)
+        ax2.set_ylabel('Reward Change', fontsize=12)
+        ax2.set_title('Episode-to-Episode Change Rate', fontsize=13, fontweight='bold')
+        ax2.legend()
+        ax2.grid(True, alpha=0.3, axis='y')
+        
+        plt.tight_layout()
+        return self._fig_to_base64(fig)
     
     def _generate_recommendations(self, training_env: Any, results: Dict) -> str:
         """生成建议和结论"""
