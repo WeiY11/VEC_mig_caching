@@ -19,7 +19,16 @@
 - ✅ 统一的接口设计
 - ✅ 支持扩展新算法
 - ✅ 性能指标完整记录
-
+train_single_agent.py (第289行)
+  ↓
+agent_env.calculate_reward(system_metrics, ...)
+  ↓
+[TD3/DDPG/PPO/DQN] → calculate_unified_reward(algorithm="general")
+[SAC]            → calculate_unified_reward(algorithm="sac")
+  ↓
+UnifiedRewardCalculator.calculate_reward()
+  ↓
+返回: -(2.0·时延 + 1.2·能耗) - 0.02·dropped_tasks
 ---
 
 ### 2. **消融实验框架** ✅
