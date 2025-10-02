@@ -95,20 +95,37 @@ class ModernVisualizer:
         ax1.plot(episodes, avg_step_rewards, 
                 color=COLORS['neutral'], alpha=0.4, linewidth=1, label='Raw Avg Step Reward')
         
-        # 移动平均（突出显示）
+        # 移动平均（突出显示）+ 置信区间
         if len(avg_step_rewards) > 10:
             window = max(5, len(avg_step_rewards) // 20)
             moving_avg = np.convolve(avg_step_rewards, 
                                    np.ones(window)/window, mode='valid')
-            ax1.plot(range(window, len(episodes) + 1), moving_avg,
+            
+            # 🎯 计算置信区间（使用滚动标准差）
+            moving_std = []
+            for i in range(len(moving_avg)):
+                window_data = avg_step_rewards[i:i+window]
+                moving_std.append(np.std(window_data))
+            moving_std = np.array(moving_std)
+            
+            # 绘制移动平均线
+            episodes_ma = range(window, len(episodes) + 1)
+            ax1.plot(episodes_ma, moving_avg,
                     color=COLORS['primary'], linewidth=3, label=f'{window}-Episode Avg')
+            
+            # 绘制置信区间（±1 标准差，约68%置信度）
+            ax1.fill_between(episodes_ma, 
+                            moving_avg - moving_std, 
+                            moving_avg + moving_std,
+                            color=COLORS['primary'], alpha=0.15, 
+                            label='±1σ Confidence Interval')
         
         self._apply_modern_style(ax1, 'Reward Convergence (Per Step)')
         ax1.set_xlabel('Episode')
         ax1.set_ylabel('Avg Reward per Step')
         ax1.legend(frameon=False)
         
-        # 2. 系统性能指标（右上）
+        # 2. 系统性能指标（右上）+ 置信区间
         metrics = ['task_completion_rate', 'avg_delay']
         metric_names = ['Completion Rate (%)', 'Avg Delay (s)']
         colors = [COLORS['success'], COLORS['warning']]
@@ -121,8 +138,26 @@ class ModernVisualizer:
                 if metric == 'task_completion_rate':
                     data = [x * 100 for x in data]  # 转为百分比
                 
+                # 绘制主线
                 ax2_twin.plot(episodes[:len(data)], data, 
                             color=color, linewidth=2.5, label=name)
+                
+                # 🎯 添加置信区间（如果数据足够多）
+                if len(data) > 20:
+                    window = max(5, len(data) // 20)
+                    moving_avg = np.convolve(data, np.ones(window)/window, mode='valid')
+                    moving_std = []
+                    for j in range(len(moving_avg)):
+                        window_data = data[j:j+window]
+                        moving_std.append(np.std(window_data))
+                    moving_std = np.array(moving_std)
+                    
+                    episodes_ma = range(window, len(data) + 1)
+                    ax2_twin.fill_between(episodes_ma,
+                                         moving_avg - moving_std,
+                                         moving_avg + moving_std,
+                                         color=color, alpha=0.1)
+                
                 ax2_twin.set_ylabel(name, color=color)
                 ax2_twin.tick_params(axis='y', labelcolor=color)
         

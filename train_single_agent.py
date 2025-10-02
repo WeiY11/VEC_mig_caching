@@ -9,6 +9,10 @@ python train_single_agent.py --algorithm DQN --episodes 200
 python train_single_agent.py --algorithm PPO --episodes 200
 python train_single_agent.py --algorithm SAC --episodes 200
 python train_single_agent.py --compare --episodes 200  # 比较所有算法
+
+🌐 实时可视化 (新功能):
+python train_single_agent.py --algorithm TD3 --episodes 200 --realtime-vis
+python train_single_agent.py --algorithm DDPG --episodes 100 --realtime-vis --vis-port 8080
 """ 
 import os
 import argparse
@@ -35,6 +39,14 @@ from single_agent.sac import SACEnvironment
 
 # 导入HTML报告生成器
 from utils.html_report_generator import HTMLReportGenerator
+
+# 🌐 导入实时可视化模块
+try:
+    from realtime_visualization import create_visualizer
+    REALTIME_AVAILABLE = True
+except ImportError:
+    REALTIME_AVAILABLE = False
+    print("⚠️  实时可视化功能不可用，请运行: pip install flask flask-socketio")
 
 
 def generate_timestamp() -> str:
@@ -724,8 +736,18 @@ class SingleAgentTrainingEnvironment:
 
 
 def train_single_algorithm(algorithm: str, num_episodes: Optional[int] = None, eval_interval: Optional[int] = None, 
-                          save_interval: Optional[int] = None) -> Dict:
-    """训练单个算法"""
+                          save_interval: Optional[int] = None, enable_realtime_vis: bool = False, 
+                          vis_port: int = 5000) -> Dict:
+    """训练单个算法
+    
+    Args:
+        algorithm: 算法名称
+        num_episodes: 训练轮次
+        eval_interval: 评估间隔
+        save_interval: 保存间隔
+        enable_realtime_vis: 是否启用实时可视化
+        vis_port: 可视化服务器端口
+    """
     # 使用配置中的默认值
     if num_episodes is None:
         num_episodes = config.experiment.num_episodes
@@ -761,11 +783,26 @@ def train_single_algorithm(algorithm: str, num_episodes: Optional[int] = None, e
     # 创建训练环境
     training_env = SingleAgentTrainingEnvironment(algorithm)
     
+    # 🌐 创建实时可视化器（如果启用）
+    visualizer = None
+    if enable_realtime_vis and REALTIME_AVAILABLE:
+        print(f"🌐 启动实时可视化服务器 (端口: {vis_port})")
+        visualizer = create_visualizer(
+            algorithm=algorithm,
+            total_episodes=num_episodes,
+            port=vis_port,
+            auto_open=True
+        )
+        print(f"✅ 实时可视化已启用，访问 http://localhost:{vis_port}")
+    elif enable_realtime_vis and not REALTIME_AVAILABLE:
+        print("⚠️  实时可视化未启用（缺少依赖包）")
+    
     print(f"训练配置:")
     print(f"  算法: {algorithm}")
     print(f"  总轮次: {num_episodes}")
     print(f"  评估间隔: {eval_interval} (自动调整)" if eval_interval != config.experiment.eval_interval else f"  评估间隔: {eval_interval}")
     print(f"  保存间隔: {save_interval} (自动调整)" if save_interval != config.experiment.save_interval else f"  保存间隔: {save_interval}")
+    print(f"  实时可视化: {'启用 ✓' if visualizer else '禁用'}")
     print("-" * 60)
     
     # 创建结果目录
@@ -807,7 +844,19 @@ def train_single_algorithm(algorithm: str, num_episodes: Optional[int] = None, e
         for system_key, episode_key in metric_mapping.items():
             if system_key in system_metrics and episode_key in training_env.episode_metrics:
                 training_env.episode_metrics[episode_key].append(system_metrics[system_key])
-                print(f"✅ 记录指标 {episode_key}: {system_metrics[system_key]:.3f}")  # 调试信息
+                # print(f"✅ 记录指标 {episode_key}: {system_metrics[system_key]:.3f}")  # 调试信息（减少输出）
+        
+        # 🌐 更新实时可视化
+        if visualizer:
+            vis_metrics = {
+                'avg_delay': system_metrics.get('avg_task_delay', 0),
+                'total_energy': system_metrics.get('total_energy_consumption', 0),
+                'task_completion_rate': system_metrics.get('task_completion_rate', 0),
+                'cache_hit_rate': system_metrics.get('cache_hit_rate', 0),
+                'data_loss_ratio_bytes': system_metrics.get('data_loss_ratio_bytes', 0),
+                'migration_success_rate': system_metrics.get('migration_success_rate', 0)
+            }
+            visualizer.update(episode, episode_result['avg_reward'], vis_metrics)
         
         episode_time = time.time() - episode_start_time
         
@@ -844,6 +893,12 @@ def train_single_algorithm(algorithm: str, num_episodes: Optional[int] = None, e
     
     # 训练完成
     total_training_time = time.time() - training_start_time
+    
+    # 🌐 标记实时可视化完成
+    if visualizer:
+        visualizer.complete()
+        print(f"✅ 实时可视化已标记完成")
+    
     print("\n" + "=" * 60)
     print(f"🎉 {algorithm}训练完成!")
     print(f"⏱️  总训练时间: {total_training_time/3600:.2f} 小时")
@@ -1194,6 +1249,9 @@ def main():
     parser.add_argument('--eval_interval', type=int, default=None, help=f'评估间隔 (默认: {config.experiment.eval_interval})')
     parser.add_argument('--save_interval', type=int, default=None, help=f'保存间隔 (默认: {config.experiment.save_interval})')
     parser.add_argument('--compare', action='store_true', help='比较所有算法')
+    # 🌐 实时可视化参数
+    parser.add_argument('--realtime-vis', action='store_true', help='启用实时可视化')
+    parser.add_argument('--vis-port', type=int, default=5000, help='实时可视化服务器端口 (默认: 5000)')
     
     args = parser.parse_args()
     
@@ -1206,7 +1264,14 @@ def main():
         compare_single_algorithms(algorithms, args.episodes)
     elif args.algorithm:
         # 训练单个算法
-        train_single_algorithm(args.algorithm, args.episodes, args.eval_interval, args.save_interval)
+        train_single_algorithm(
+            args.algorithm, 
+            args.episodes, 
+            args.eval_interval, 
+            args.save_interval,
+            enable_realtime_vis=args.realtime_vis,
+            vis_port=args.vis_port
+        )
     else:
         print("请指定 --algorithm 或使用 --compare 标志")
         print("使用 python train_single_agent.py --help 查看帮助")

@@ -1,6 +1,7 @@
 """
-独立HTML报告生成脚本
-用于从已有的训练结果JSON文件生成HTML报告
+训练可视化工具 - 支持实时可视化和事后报告生成
+- 实时模式：在训练过程中实时显示图表和指标
+- 报告模式：从已有的JSON文件生成静态HTML报告
 """
 import os
 import sys
@@ -9,6 +10,14 @@ import argparse
 import webbrowser
 from datetime import datetime
 from utils.html_report_generator import HTMLReportGenerator
+
+# 导入实时可视化模块
+try:
+    from realtime_visualization import create_visualizer, RealtimeVisualizer
+    REALTIME_AVAILABLE = True
+except ImportError:
+    REALTIME_AVAILABLE = False
+    print("⚠️  实时可视化功能不可用，请安装依赖: pip install flask flask-socketio")
 
 
 def load_training_results(json_path: str) -> dict:
@@ -101,12 +110,47 @@ def generate_report_from_json(json_path: str, output_path: str = None, open_brow
         return False
 
 
+def start_realtime_mode(algorithm: str = "Unknown", total_episodes: int = 100, port: int = 5000):
+    """启动实时可视化模式"""
+    if not REALTIME_AVAILABLE:
+        print("❌ 实时可视化功能不可用")
+        print("请安装依赖: pip install flask flask-socketio")
+        sys.exit(1)
+    
+    print(f"🚀 启动实时可视化模式")
+    print(f"   算法: {algorithm}")
+    print(f"   总轮次: {total_episodes}")
+    print(f"   端口: {port}")
+    print(f"\n📌 使用方法：")
+    print(f"   在训练代码中导入：from realtime_visualization import create_visualizer")
+    print(f"   创建可视化器：visualizer = create_visualizer('{algorithm}', {total_episodes})")
+    print(f"   训练循环中更新：visualizer.update(episode, reward, metrics)")
+    print(f"   训练完成：visualizer.complete()")
+    print(f"\n🌐 访问 http://localhost:{port} 查看实时可视化")
+    
+    visualizer = create_visualizer(algorithm, total_episodes, port, auto_open=True)
+    
+    try:
+        import time
+        print("\n✅ 实时可视化服务器运行中... 按 Ctrl+C 退出")
+        while True:
+            time.sleep(1)
+    except KeyboardInterrupt:
+        print("\n👋 退出实时可视化服务器")
+
+
 def main():
     parser = argparse.ArgumentParser(
-        description='从训练结果JSON文件生成HTML报告',
+        description='训练可视化工具 - 支持实时可视化和事后报告生成',
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 示例用法:
+
+【实时可视化模式】
+  # 启动实时监控服务器（在训练前运行）
+  python generate_html_report.py --realtime --algorithm TD3 --episodes 200 --port 5000
+
+【静态报告生成模式】
   # 从JSON文件生成报告（自动命名）
   python generate_html_report.py results/single_agent/ddpg/training_results_20250930_174833.json
   
@@ -121,42 +165,61 @@ def main():
         """
     )
     
-    parser.add_argument('json_files', nargs='+', help='训练结果JSON文件路径（支持多个文件）')
+    # 实时模式参数
+    parser.add_argument('--realtime', action='store_true', help='启动实时可视化模式')
+    parser.add_argument('--algorithm', default='Unknown', help='算法名称（实时模式）')
+    parser.add_argument('--episodes', type=int, default=100, help='总训练轮次（实时模式）')
+    parser.add_argument('--port', type=int, default=5000, help='Web服务器端口（实时模式）')
+    
+    # 报告生成模式参数
+    parser.add_argument('json_files', nargs='*', help='训练结果JSON文件路径（支持多个文件）')
     parser.add_argument('-o', '--output', help='输出HTML文件路径（仅单文件时有效）')
     parser.add_argument('--open', action='store_true', help='生成后在浏览器中打开')
     parser.add_argument('--quiet', action='store_true', help='静默模式，不显示详细信息')
     
     args = parser.parse_args()
     
-    # 处理多个文件
-    json_files = []
-    for pattern in args.json_files:
-        if '*' in pattern or '?' in pattern:
-            import glob
-            json_files.extend(glob.glob(pattern))
-        else:
-            json_files.append(pattern)
-    
-    if not json_files:
-        print("❌ 没有找到匹配的文件")
-        sys.exit(1)
-    
-    # 生成报告
-    success_count = 0
-    for i, json_file in enumerate(json_files, 1):
-        if not args.quiet and len(json_files) > 1:
+    # 判断运行模式
+    if args.realtime:
+        # 实时可视化模式
+        start_realtime_mode(args.algorithm, args.episodes, args.port)
+    else:
+        # 静态报告生成模式
+        if not args.json_files:
+            print("❌ 错误: 静态报告模式需要提供JSON文件路径")
+            print("使用 --realtime 启动实时可视化模式，或提供JSON文件路径生成报告")
+            parser.print_help()
+            sys.exit(1)
+        
+        # 处理多个文件
+        json_files = []
+        for pattern in args.json_files:
+            if '*' in pattern or '?' in pattern:
+                import glob
+                json_files.extend(glob.glob(pattern))
+            else:
+                json_files.append(pattern)
+        
+        if not json_files:
+            print("❌ 没有找到匹配的文件")
+            sys.exit(1)
+        
+        # 生成报告
+        success_count = 0
+        for i, json_file in enumerate(json_files, 1):
+            if not args.quiet and len(json_files) > 1:
+                print(f"\n{'='*60}")
+                print(f"处理文件 {i}/{len(json_files)}")
+            
+            output_path = args.output if len(json_files) == 1 else None
+            
+            if generate_report_from_json(json_file, output_path, args.open and i == 1):
+                success_count += 1
+        
+        # 总结
+        if len(json_files) > 1:
             print(f"\n{'='*60}")
-            print(f"处理文件 {i}/{len(json_files)}")
-        
-        output_path = args.output if len(json_files) == 1 else None
-        
-        if generate_report_from_json(json_file, output_path, args.open and i == 1):
-            success_count += 1
-    
-    # 总结
-    if len(json_files) > 1:
-        print(f"\n{'='*60}")
-        print(f"📊 完成! 成功生成 {success_count}/{len(json_files)} 个报告")
+            print(f"📊 完成! 成功生成 {success_count}/{len(json_files)} 个报告")
 
 
 if __name__ == "__main__":

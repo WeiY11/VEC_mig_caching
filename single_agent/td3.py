@@ -585,15 +585,10 @@ class TD3Environment:
                        cache_metrics: Optional[Dict] = None,
                        migration_metrics: Optional[Dict] = None) -> float:
         """
-        🔧 增强：计算针对性奖励，支持缓存和迁移子系统
+        使用统一奖励计算器
         """
-        try:
-            from utils.enhanced_reward_calculator import calculate_enhanced_reward
-            return calculate_enhanced_reward(system_metrics, cache_metrics, migration_metrics)
-        except ImportError:
-            # 回退到简单奖励计算
-            from utils.simple_reward_calculator import calculate_simple_reward
-            return calculate_simple_reward(system_metrics)
+        from utils.unified_reward_calculator import calculate_unified_reward
+        return calculate_unified_reward(system_metrics, cache_metrics, migration_metrics, algorithm="general")
     
     def train_step(self, state: np.ndarray, action: Union[np.ndarray, int], reward: float,
                    next_state: np.ndarray, done: bool) -> Dict:

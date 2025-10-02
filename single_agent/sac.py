@@ -37,11 +37,11 @@ class SACConfig:
     hidden_dim: int = 400      # 🔧 从256提升到400，与TD3一致
     actor_lr: float = 5e-5     # 🔧 从3e-4降至5e-5，与TD3一致
     critic_lr: float = 1e-4    # 🔧 从3e-4降至1e-4，与TD3一致
-    alpha_lr: float = 3e-4     # 温度参数学习率保持
+    alpha_lr: float = 5e-5     # 🔧 降低温度参数学习率，与actor保持一致，避免过快调整
     
     # SAC参数
-    initial_temperature: float = 0.2
-    target_entropy_ratio: float = -1.0  # 目标熵比例
+    initial_temperature: float = 0.1  # 🔧 降低初始温度，减少随机性
+    target_entropy_ratio: float = -0.5  # 🔧 目标熵从-18提升到-9，允许更多探索
     tau: float = 0.005  # 软更新系数
     gamma: float = 0.99  # 折扣因子
     
@@ -275,21 +275,24 @@ class SACAgent:
         self.critic_optimizer = optim.Adam(self.critic.parameters(), lr=config.critic_lr)
         
         # 学习率调度器 - 提高收敛稳定性
-        self.actor_scheduler = optim.lr_scheduler.StepLR(self.actor_optimizer, step_size=10000, gamma=0.9)
-        self.critic_scheduler = optim.lr_scheduler.StepLR(self.critic_optimizer, step_size=10000, gamma=0.9)
+        # 🔧 放宽调度器：每50000步衰减5%，避免学习率下降过快
+        self.actor_scheduler = optim.lr_scheduler.StepLR(self.actor_optimizer, step_size=50000, gamma=0.95)
+        self.critic_scheduler = optim.lr_scheduler.StepLR(self.critic_optimizer, step_size=50000, gamma=0.95)
         
         # 温度参数 (自动调节熵)
         if config.auto_entropy_tuning:
             self.target_entropy = config.target_entropy_ratio * action_dim
             self.log_alpha = torch.zeros(1, requires_grad=True, device=self.device)
             self.alpha_optimizer = optim.Adam([self.log_alpha], lr=config.alpha_lr)
-            self.alpha_scheduler = optim.lr_scheduler.StepLR(self.alpha_optimizer, step_size=10000, gamma=0.9)
+            # 🔧 温度参数调度器也放宽，与actor/critic保持一致
+            self.alpha_scheduler = optim.lr_scheduler.StepLR(self.alpha_optimizer, step_size=50000, gamma=0.95)
         else:
             self.log_alpha = torch.log(torch.FloatTensor([config.initial_temperature])).to(self.device)
             self.alpha_scheduler = None
         
         # 经验回放缓冲区 - 支持优先级经验回放
-        self.replay_buffer = SACReplayBuffer(config.buffer_size, state_dim, action_dim, alpha=0.6)
+        # 🔧 降低PER的alpha值，减少对高TD误差样本的偏向，提高稳定性
+        self.replay_buffer = SACReplayBuffer(config.buffer_size, state_dim, action_dim, alpha=0.3)
         
         # PER beta参数
         self.beta = 0.4
@@ -579,16 +582,10 @@ class SACEnvironment:
                        cache_metrics: Optional[Dict] = None,
                        migration_metrics: Optional[Dict] = None) -> float:
         """
-        🔧 修复：使用增强奖励计算器，与TD3和DDPG保持一致
-        支持缓存和迁移子系统的综合奖励计算
+        使用统一奖励计算器（SAC专用版本）
         """
-        try:
-            from utils.enhanced_reward_calculator import calculate_enhanced_reward
-            return calculate_enhanced_reward(system_metrics, cache_metrics, migration_metrics)
-        except ImportError:
-            # 回退到简单奖励
-            from utils.simple_reward_calculator import calculate_simple_reward
-            return calculate_simple_reward(system_metrics)
+        from utils.unified_reward_calculator import calculate_unified_reward
+        return calculate_unified_reward(system_metrics, cache_metrics, migration_metrics, algorithm="sac")
     
     def train_step(self, state: np.ndarray, action: Union[np.ndarray, int], reward: float,
                    next_state: np.ndarray, done: bool) -> Dict:

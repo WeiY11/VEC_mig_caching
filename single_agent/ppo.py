@@ -482,12 +482,14 @@ class PPOEnvironment:
         action, log_prob, value = self.agent.select_action(state, training)
         return self.decompose_action(action), log_prob, value
     
-    def calculate_reward(self, system_metrics: Dict) -> float:
+    def calculate_reward(self, system_metrics: Dict,
+                       cache_metrics: Optional[Dict] = None,
+                       migration_metrics: Optional[Dict] = None) -> float:
         """
-        计算奖励 - 使用简化的、基于成本的奖励函数
+        使用统一奖励计算器
         """
-        from utils.simple_reward_calculator import calculate_simple_reward
-        return calculate_simple_reward(system_metrics)
+        from utils.unified_reward_calculator import calculate_unified_reward
+        return calculate_unified_reward(system_metrics, cache_metrics, migration_metrics, algorithm="general")
     
     def save_models(self, filepath: str):
         """保存模型"""
