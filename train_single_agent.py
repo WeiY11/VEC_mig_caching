@@ -15,6 +15,14 @@ python train_single_agent.py --algorithm TD3 --episodes 200 --realtime-vis
 python train_single_agent.py --algorithm DDPG --episodes 100 --realtime-vis --vis-port 8080
 """ 
 import os
+import sys
+
+# 🔧 修复Windows编码问题
+if sys.platform == 'win32':
+    import io
+    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
+    sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', errors='replace')
+
 import argparse
 import numpy as np
 import matplotlib.pyplot as plt
@@ -383,6 +391,15 @@ class SingleAgentTrainingEnvironment:
         cache_metrics = self.adaptive_cache_controller.get_cache_metrics()
         migration_metrics = self.adaptive_migration_controller.get_migration_metrics()
         
+        # 🔍 调试日志：能耗与迁移敏感区间
+        current_episode = getattr(self, '_current_episode', 0)
+        if current_episode > 0 and (current_episode % 50 == 0 or avg_delay > 0.2 or migration_success_rate < 0.9):
+            print(
+                f"[调试] Episode {current_episode:04d}: 延迟 {avg_delay:.3f}s, 能耗 {total_energy:.2f}J, "
+                f"完成率 {completion_rate:.1%}, 迁移成功率 {migration_success_rate:.1%}, "
+                f"缓存命中 {cache_hit_rate:.1%}"
+            )
+
         # 🤖 更新缓存控制器统计（如果有实际数据）
         if cache_hit_rate > 0:
             # 🔧 修复：正确计算缓存统计
@@ -423,6 +440,9 @@ class SingleAgentTrainingEnvironment:
         
         # 重置环境
         state = self.reset_environment()
+        
+        # 🔧 保存当前episode编号
+        self._current_episode = episode
         
         # 🔧 重置episode步数跟踪，修复能耗计算
         self._current_episode_step = 0
@@ -564,7 +584,7 @@ class SingleAgentTrainingEnvironment:
             if done:
                 break
         
-        # Episode结束后进行PPO更新
+        # 🔧 PPO更新策略修复：累积多个episode后再更新
         last_value = 0.0
         if not done:
             if hasattr(self.agent_env, 'get_actions'):
@@ -577,8 +597,18 @@ class SingleAgentTrainingEnvironment:
         # 确保 last_value 为 float 类型
         last_value_float = float(last_value) if not isinstance(last_value, float) else last_value
         
-        # 进行更新 - 所有算法都支持统一接口
-        training_info = self.agent_env.update(last_value_float)
+        # 检查是否应该更新（每N个episode或buffer快满时）
+        ppo_config = self.agent_env.config
+        should_update = (
+            episode % ppo_config.update_frequency == 0 or  # 每N个episode
+            self.agent_env.buffer.size >= ppo_config.buffer_size * 0.9  # buffer接近满
+        )
+        
+        # 进行更新
+        if should_update:
+            training_info = self.agent_env.update(last_value_float, force_update=True)
+        else:
+            training_info = self.agent_env.update(last_value_float, force_update=False)
         
         system_metrics = info.get('system_metrics', {})
         
@@ -777,7 +807,7 @@ def train_single_algorithm(algorithm: str, num_episodes: Optional[int] = None, e
     if save_interval is None:
         save_interval = config.experiment.save_interval
     
-    print(f"\n🚀 开始{algorithm}单智能体算法训练")
+    print(f"\n>> 开始{algorithm}单智能体算法训练")
     print("=" * 60)
     
     # 创建训练环境
@@ -810,7 +840,8 @@ def train_single_algorithm(algorithm: str, num_episodes: Optional[int] = None, e
     os.makedirs(f"results/models/single_agent/{algorithm.lower()}", exist_ok=True)
     
     # 训练循环
-    best_avg_reward = -100.0  # 使用有限的初始值而不是-inf
+    # 🔧 修复：per-step奖励范围约为-2.0到-0.5，初始值应相应调整
+    best_avg_reward = -10.0  # per-step奖励初始阈值（负值越大越好）
     training_start_time = time.time()
     
     for episode in range(1, num_episodes + 1):
@@ -867,7 +898,7 @@ def train_single_algorithm(algorithm: str, num_episodes: Optional[int] = None, e
             avg_completion = training_env.performance_tracker['recent_completion'].get_average()
             
             print(f"轮次 {episode:4d}/{num_episodes}:")
-            print(f"  平均奖励: {avg_reward:8.3f}")
+            print(f"  Per-Step奖励: {avg_reward:8.3f}")
             print(f"  平均时延: {avg_delay:8.3f}s")
             print(f"  完成率:   {avg_completion:8.1%}")
             print(f"  轮次用时: {episode_time:6.3f}s")
@@ -876,7 +907,7 @@ def train_single_algorithm(algorithm: str, num_episodes: Optional[int] = None, e
         if episode % eval_interval == 0:
             eval_result = evaluate_single_model(algorithm, training_env, episode)
             print(f"\n📊 轮次 {episode} 评估结果:")
-            print(f"  评估奖励: {eval_result['avg_reward']:.3f}")
+            print(f"  Per-Step奖励: {eval_result['avg_reward']:.3f}")
             print(f"  评估时延: {eval_result['avg_delay']:.3f}s")
             print(f"  评估完成率: {eval_result['completion_rate']:.1%}")
             
@@ -884,7 +915,7 @@ def train_single_algorithm(algorithm: str, num_episodes: Optional[int] = None, e
             if eval_result['avg_reward'] > best_avg_reward:
                 best_avg_reward = eval_result['avg_reward']
                 training_env.agent_env.save_models(f"results/models/single_agent/{algorithm.lower()}/best_model")
-                print(f"  💾 保存最佳模型 (奖励: {best_avg_reward:.3f})")
+                print(f"  💾 保存最佳模型 (Per-Step奖励: {best_avg_reward:.3f})")
         
         # 定期保存模型
         if episode % save_interval == 0:
@@ -902,7 +933,7 @@ def train_single_algorithm(algorithm: str, num_episodes: Optional[int] = None, e
     print("\n" + "=" * 60)
     print(f"🎉 {algorithm}训练完成!")
     print(f"⏱️  总训练时间: {total_training_time/3600:.2f} 小时")
-    print(f"🏆 最佳平均奖励: {best_avg_reward:.3f}")
+    print(f"🏆 最佳Per-Step奖励: {best_avg_reward:.3f}")
     
     # 收集系统统计信息用于报告
     simulator_stats = {}
@@ -1121,6 +1152,10 @@ def save_single_training_results(algorithm: str, training_env: SingleAgentTraini
     # 生成时间戳
     timestamp = generate_timestamp()
     
+    # 🔧 同时提供Episode总奖励和Per-Step平均奖励
+    recent_episode_reward = training_env.performance_tracker['recent_rewards'].get_average()
+    avg_step_reward = recent_episode_reward / config.experiment.max_steps_per_episode
+    
     results = {
         'algorithm': algorithm,
         'agent_type': 'single_agent',
@@ -1134,7 +1169,10 @@ def save_single_training_results(algorithm: str, training_env: SingleAgentTraini
         'episode_rewards': training_env.episode_rewards,
         'episode_metrics': training_env.episode_metrics,
         'final_performance': {
-            'avg_reward': training_env.performance_tracker['recent_rewards'].get_average(),
+            # 提供两种奖励指标，用途不同
+            'avg_episode_reward': recent_episode_reward,  # Episode总奖励（训练目标）
+            'avg_step_reward': avg_step_reward,           # 每步平均奖励（对比评估）
+            'avg_reward': avg_step_reward,  # 向后兼容：默认使用per-step（与可视化一致）
             'avg_delay': training_env.performance_tracker['recent_delays'].get_average(),
             'avg_completion': training_env.performance_tracker['recent_completion'].get_average()
         }
@@ -1168,7 +1206,7 @@ def plot_single_training_curves(algorithm: str, training_env: SingleAgentTrainin
     chart_path = f"{algorithm_dir}/training_overview.png"
     create_training_chart(training_env, algorithm, chart_path)
     
-    # 🎯 生成目标函数分解图（显示时延、能耗、数据丢失的权重贡献）
+    # 🎯 生成目标函数分解图（显示时延、能耗两项核心目标的权重贡献）
     objective_path = f"{algorithm_dir}/objective_analysis.png"
     plot_objective_function_breakdown(training_env, algorithm, objective_path)
     

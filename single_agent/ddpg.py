@@ -31,31 +31,31 @@ from config import config
 
 @dataclass
 class DDPGConfig:
-    """🔧 DDPG算法配置 - 修复关键问题，对标TD3稳定性"""
-    # 网络结构 - 对标TD3容量
-    hidden_dim: int = 400      # 🔧 提升到400，与TD3一致
-    actor_lr: float = 5e-5     # 🔧 与TD3一致的学习率
-    critic_lr: float = 1e-4    # 保持critic学习率
+    """🔧 DDPG算法配置 - 加速收敛版"""
+    # 网络结构
+    hidden_dim: int = 300      # 🔧 降低容量，避免过拟合
+    actor_lr: float = 1e-4     # 🔧 提高学习率，加快收敛
+    critic_lr: float = 3e-4    # 🔧 大幅提高，更快的价值学习
     
     # 训练参数
     batch_size: int = 256
-    buffer_size: int = 100000  # 🔧 与TD3一致
-    tau: float = 0.003         # 软更新系数
+    buffer_size: int = 100000
+    tau: float = 0.005         # 🔧 提高到0.005，加快目标网络更新
     gamma: float = 0.99
     
-    # 探索参数
-    noise_scale: float = 0.2   # 🔧 与TD3的exploration_noise一致
-    noise_decay: float = 0.9998 # 🔧 与TD3一致的衰减率
+    # 探索参数 - 加快衰减
+    noise_scale: float = 0.25   # 🔧 初始噪声稍大
+    noise_decay: float = 0.9995 # 🔧 更快衰减（1000轮后降到60%）
     min_noise: float = 0.05
     
-    # 🔧 关键修复：引入策略延迟更新（借鉴TD3）
-    policy_delay: int = 4      # 🔧 每4次更新一次Actor，与TD3一致
-    update_freq: int = 1       # 改回每步都采样
-    warmup_steps: int = 1000   # 🔧 与TD3一致
+    # 策略更新控制
+    policy_delay: int = 2      # 🔧 降到2，更频繁的策略更新
+    update_freq: int = 1
+    warmup_steps: int = 1000
     
-    # 🔧 新增：目标策略平滑化（借鉴TD3）
-    target_noise: float = 0.05  # 目标动作噪声
-    noise_clip: float = 0.2     # 噪声裁剪范围
+    # 目标平滑化
+    target_noise: float = 0.1   # 🔧 增大目标噪声
+    noise_clip: float = 0.3     # 🔧 放宽裁剪
     
     # PER参数
     use_per: bool = True

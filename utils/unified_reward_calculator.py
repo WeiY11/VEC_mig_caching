@@ -38,9 +38,9 @@ class UnifiedRewardCalculator:
         self.penalty_dropped = config.rl.reward_penalty_dropped # 默认 0.02
         
         # 🎯 核心设计：归一化因子（确保时延和能耗在相同数量级）
-        # 目标：delay=0.2s 和 energy=1000J 归一化后贡献相当
+        # 目标：delay=0.2s 和 energy=600J 归一化后贡献相当
         self.delay_normalizer = 1.0      # 0.2s → 0.2
-        self.energy_normalizer = 1000.0  # 1000J → 1.0
+        self.energy_normalizer = 600.0   # 🔧 调整：突出能耗反馈
         
         # 🔧 SAC专用调整：更激进的归一化以平衡探索
         if self.algorithm == "SAC":
@@ -53,7 +53,7 @@ class UnifiedRewardCalculator:
             self.reward_clip_range = (-15.0, 3.0)
         else:
             # 通用版本：纯成本最小化
-            self.reward_clip_range = (-20.0, -0.01)
+            self.reward_clip_range = (-25.0, -0.01)
         
         print(f"[OK] 统一奖励计算器初始化 ({self.algorithm})")
         print(f"   核心权重: Delay={self.weight_delay:.1f}, Energy={self.weight_energy:.1f}")

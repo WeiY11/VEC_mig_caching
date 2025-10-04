@@ -463,72 +463,69 @@ def create_comparison_chart(results_dict: Dict, save_path: str):
     _visualizer.plot_performance_summary(results_dict, save_path)
 
 def plot_objective_function_breakdown(training_env, algorithm: str, save_path: str):
-    """绘制目标函数分解图 - 显示 ω_T×delay + ω_E×energy + ω_D×loss 的变化"""
+    """
+    绘制目标函数分解图 - 显示 ω_T×delay + ω_E×energy 的变化
+    
+    【核心目标函数】
+    Objective = ω_T × 时延 + ω_E × 能耗
+    其中: ω_T = 2.0, ω_E = 1.2
+    
+    dropped_tasks 不在此图中显示（仅0.02权重的轻微惩罚）
+    """
     
     # 计算目标函数各组成部分
     episodes = range(1, len(training_env.episode_rewards) + 1)
     
-    # 获取权重
+    # 🔧 获取统一奖励函数的权重
     try:
         from config import config
-        w_delay = config.rl.reward_weight_delay      # ω_T
-        w_energy = config.rl.reward_weight_energy    # ω_E  
-        w_loss = config.rl.reward_weight_loss        # ω_D
+        w_delay = config.rl.reward_weight_delay      # ω_T = 2.0
+        w_energy = config.rl.reward_weight_energy    # ω_E = 1.2
     except:
-        w_delay, w_energy, w_loss = 0.4, 0.3, 0.3
+        w_delay, w_energy = 2.0, 1.2  # 默认权重
     
-    # 计算各组成部分
+    # 计算各组成部分（只有时延和能耗）
     delay_components = []
     energy_components = []
-    loss_components = []
     total_objectives = []
     
     for i in episodes:
         idx = i - 1
         if idx < len(training_env.episode_metrics.get('avg_delay', [])):
             delay = training_env.episode_metrics['avg_delay'][idx]
-            # 🔧 修复：使用合理的延迟归一化基准（基于实际数据范围）
-            delay_norm = min(delay / 0.5, 2.0)  # 0.5秒为目标延迟，最高限制为2.0
-            delay_component = w_delay * delay_norm
+            # 🔧 使用实际时延值（秒）乘以权重
+            delay_component = w_delay * delay
             delay_components.append(delay_component)
         
         if idx < len(training_env.episode_metrics.get('total_energy', [])):
             energy = training_env.episode_metrics['total_energy'][idx]
-            # 🔧 修复：使用更合理的能耗归一化基准
-            energy_norm = min(energy / 800.0, 2.0)  # 800焦耳为目标能耗，最高限制为2.0
+            # 🔧 使用归一化能耗值（焦耳）乘以权重
+            # 典型能耗在200-600J，归一化到合理范围
+            energy_norm = energy / 100.0  # 归一化使其与时延量级相当
             energy_component = w_energy * energy_norm
             energy_components.append(energy_component)
         
-        if idx < len(training_env.episode_metrics.get('task_completion_rate', [])):
-            completion = training_env.episode_metrics['task_completion_rate'][idx]
-            loss_rate = 1.0 - completion
-            loss_component = w_loss * loss_rate
-            loss_components.append(loss_component)
-        
-        # 计算总目标函数值
-        if delay_components and energy_components and loss_components:
-            total_obj = delay_components[-1] + energy_components[-1] + loss_components[-1]
+        # 计算总目标函数值（只有时延+能耗）
+        if delay_components and energy_components:
+            total_obj = delay_components[-1] + energy_components[-1]
             total_objectives.append(total_obj)
     
     # 创建图表
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(15, 6))
     fig.suptitle(f'{algorithm} Objective Function Analysis', fontsize=16, fontweight='bold')
     
-    # 左图：组成部分分解
+    # 左图：组成部分分解（只显示时延和能耗）
     if delay_components:
         ax1.plot(episodes[:len(delay_components)], delay_components,
                 color=COLORS['warning'], linewidth=2.5, label=f'ω_T × Delay ({w_delay})')
     if energy_components:
         ax1.plot(episodes[:len(energy_components)], energy_components,
                 color=COLORS['secondary'], linewidth=2.5, label=f'ω_E × Energy ({w_energy})')
-    if loss_components:
-        ax1.plot(episodes[:len(loss_components)], loss_components,
-                color=COLORS['primary'], linewidth=2.5, label=f'ω_D × Loss ({w_loss})')
     
-    ax1.set_title('Objective Function Components')
+    ax1.set_title('Objective Function Components\n(Core: Delay + Energy)')
     ax1.set_xlabel('Episode')
     ax1.set_ylabel('Component Value')
-    ax1.legend(frameon=False)
+    ax1.legend(frameon=False, loc='upper right')
     ax1.grid(True, alpha=0.3)
     
     # 右图：总目标函数与奖励对比

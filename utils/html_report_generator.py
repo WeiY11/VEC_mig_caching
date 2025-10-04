@@ -380,9 +380,10 @@ class HTMLReportGenerator:
         num_episodes = len(training_env.episode_rewards)
         training_hours = training_time / 3600
         
-        # 计算改进幅度
+        # 计算改进幅度（基于Episode总奖励）
         initial_reward = training_env.episode_rewards[0] if training_env.episode_rewards else 0
         final_reward = training_env.episode_rewards[-1] if training_env.episode_rewards else 0
+        # 注意：负值奖励，越大越好（-100改进到-50是100%改进）
         improvement = ((final_reward - initial_reward) / abs(initial_reward) * 100) if initial_reward != 0 else 0
         
         return f"""
@@ -415,8 +416,15 @@ class HTMLReportGenerator:
             
             <div class="metrics-grid">
                 <div class="metric-card">
-                    <div class="metric-label">平均奖励</div>
+                    <div class="metric-label">Episode总奖励</div>
+                    <div class="metric-value">{final_perf.get('avg_episode_reward', avg_reward * 100):.2f}</div>
+                    <div style="font-size: 0.8em; color: #666; margin-top: 5px;">训练优化目标</div>
+                </div>
+                
+                <div class="metric-card">
+                    <div class="metric-label">每步平均奖励</div>
                     <div class="metric-value">{avg_reward:.3f}</div>
+                    <div style="font-size: 0.8em; color: #666; margin-top: 5px;">便于对比评估</div>
                 </div>
                 
                 <div class="metric-card">
@@ -434,6 +442,7 @@ class HTMLReportGenerator:
                     <div class="metric-value" style="color: {'#28a745' if improvement > 0 else '#dc3545'}">
                         {improvement:+.1f} <span class="metric-unit">%</span>
                     </div>
+                    <div style="font-size: 0.8em; color: #666; margin-top: 5px;">基于Episode总奖励</div>
                 </div>
             </div>
             
@@ -2191,7 +2200,8 @@ class HTMLReportGenerator:
             <h3 class="section-subtitle">总体评价</h3>
             <p style="line-height: 1.8; font-size: 1.1em;">
                 本次训练成功完成 <span class="highlight">{len(training_env.episode_rewards)}</span> 个轮次，
-                最终平均奖励为 <span class="highlight">{final_perf.get('avg_reward', 0):.3f}</span>，
+                Episode总奖励为 <span class="highlight">{final_perf.get('avg_episode_reward', final_perf.get('avg_reward', 0) * 100):.2f}</span>
+                （每步平均 <span class="highlight">{final_perf.get('avg_reward', 0):.3f}</span>），
                 任务完成率达到 <span class="highlight">{avg_completion*100:.1f}%</span>。
                 {'训练过程稳定，模型收敛良好。' if np.var(training_env.episode_rewards[-20:]) < 1000 else '建议继续优化以提高稳定性。'}
             </p>

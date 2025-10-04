@@ -45,13 +45,16 @@ class RLConfig:
         self.buffer_size = 100000
         self.warmup_steps = 1000
         
-        # 奖励权重 - 最终优化：极致时延控制 + 负载均衡
-        self.reward_weight_delay = 2.0     # ω_T: 极致时延优先，目标<0.25s
-        self.reward_weight_energy = 1.2    # ω_E: 强化能耗控制，防止浪费
-        self.reward_weight_loss = 0.1      # ω_D: 最小丢失权重，避免过度保守
-        self.reward_penalty_dropped = 0.02 # 📉 极轻微丢弃惩罚
-        self.reward_weight_completion = 0.2
-        self.reward_weight_cache = 0.1
+        # 🎯 核心奖励权重（统一奖励函数）
+        # Objective = ω_T × 时延 + ω_E × 能耗
+        self.reward_weight_delay = 2.0     # ω_T: 时延权重，目标<0.25s
+        self.reward_weight_energy = 1.2    # ω_E: 能耗权重
+        self.reward_penalty_dropped = 0.02 # 轻微惩罚（保证完成率约束）
+        
+        # ❌ 已弃用参数（保留以兼容旧代码）
+        self.reward_weight_loss = 0.0      # 已移除：data_loss是时延的衍生指标
+        self.reward_weight_completion = 0.0  # 已集成到dropped_penalty
+        self.reward_weight_cache = 0.0       # 缓存不是优化目标
 
 class QueueConfig:
     """队列配置类"""

@@ -31,40 +31,47 @@ from config import config
 
 @dataclass
 class TD3Config:
-    """TD3算法配置 (已调优)"""
+    """TD3算法配置 - 🎯 优化版v2.0（减少收敛后振荡）"""
     # 网络结构
-    hidden_dim: int = 400  # 提升容量
-    actor_lr: float = 5e-5  # 🔧 从1e-4降低到5e-5 - 防止过拟合
-    critic_lr: float = 1e-4  # 保持Critic学习率
+    hidden_dim: int = 400  
+    actor_lr: float = 1e-4  # 🔧 提高Actor学习率，增强策略更新力度
+    critic_lr: float = 8e-5  # 🔧 适度提高Critic学习率，追踪更精确
     
     # 训练参数
     batch_size: int = 256
     buffer_size: int = 100000
-    tau: float = 0.003  # 🔧 从0.005降低到0.003 - 更慢的目标网络更新
-    gamma: float = 0.99  # 折扣因子
+    tau: float = 0.005  # 🔧 回调至稳定值，平衡目标网络跟随速度
+    gamma: float = 0.99  
     
-    # TD3特有参数 - 抗过拟合优化
-    policy_delay: int = 4   # 🔧 从2增加到4 - 更少的策略更新频率
-    target_noise: float = 0.05  # 🔧 从0.1降低到0.05 - 减少探索噪声
-    noise_clip: float = 0.2  # 🔧 从0.3降低到0.2 - 限制噪声幅度
+    # TD3特有参数
+    policy_delay: int = 2  # 🔧 缩短策略延迟，减少策略落后现象
+    target_noise: float = 0.05
+    noise_clip: float = 0.2
     
     # 探索参数
     exploration_noise: float = 0.2
-    noise_decay: float = 0.9998  # 🔧 减缓噪声衰减，保持更长时间的探索
-    min_noise: float = 0.05
+    noise_decay: float = 0.9997  # 🔧 放慢噪声衰减，避免后期探索不足
+    min_noise: float = 0.05  # 🔧 提高最小噪声，保持长期探索
     
     # 🔧 新增：梯度裁剪防止过拟合
-    gradient_clip_norm: float = 1.0  # 梯度裁剪阈值
+    gradient_clip_norm: float = 0.7  # 🔧 放宽梯度裁剪，允许适度更新
     use_gradient_clip: bool = True   # 启用梯度裁剪
     
-    # PER 参数
-    per_alpha: float = 0.6  # 0 表示Uniform, 1 表示完全依赖TD误差
-    per_beta_start: float = 0.4  # IS权重的初始beta
-    per_beta_frames: int = 500000  # beta从初始值线性增加到1.0所需的步数
+    # PER 参数（优化以减少低质量样本影响）
+    per_alpha: float = 0.6  # 🔧 回调优先级指数，减轻早期过度关注
+    per_beta_start: float = 0.4  # 🔧 回调IS起点，平衡样本权重
+    per_beta_frames: int = 400000  # 🔧 放缓beta增长，稳定学习
+
+    # 后期稳定策略参数
+    late_stage_start_updates: int = 90000  # 🔧 约等于800轮更新步
+    late_stage_tau: float = 0.003
+    late_stage_policy_delay: int = 3
+    late_stage_noise_floor: float = 0.03
+    td_error_clip: float = 4.0
     
     # 训练频率
     update_freq: int = 1
-    warmup_steps: int = 1000  # 🔧 减少预热步数，确保短期训练能开始学习
+    warmup_steps: int = 1000
 
 
 class TD3Actor(nn.Module):
@@ -261,6 +268,7 @@ class TD3Agent:
         self.exploration_noise = config.exploration_noise
         self.step_count = 0
         self.update_count = 0
+        self.late_stage_applied = False
         
         # 训练统计
         self.actor_losses = []
@@ -320,6 +328,11 @@ class TD3Agent:
 
         training_info = {'critic_loss': critic_loss}
         
+        # 后期稳定策略：动态调整
+        if not self.late_stage_applied and self.update_count >= self.config.late_stage_start_updates:
+            self._apply_late_stage_strategy()
+            self.late_stage_applied = True
+
         # 延迟策略更新
         if self.update_count % self.config.policy_delay == 0:
             # 更新Actor
@@ -337,6 +350,15 @@ class TD3Agent:
         training_info['exploration_noise'] = self.exploration_noise
         
         return training_info
+
+    def _apply_late_stage_strategy(self):
+        """应用后期稳定策略，防止奖励崩溃"""
+        print("🔧 启用后期稳定策略：调整tau/policy_delay/噪声下限/TD误差裁剪")
+        self.config.tau = self.config.late_stage_tau
+        self.config.policy_delay = self.config.late_stage_policy_delay
+        self.config.min_noise = max(self.config.min_noise, self.config.late_stage_noise_floor)
+        # 限制现有噪声不低于新下限
+        self.exploration_noise = max(self.exploration_noise, self.config.min_noise)
     
     def _update_critic(self, states: torch.Tensor, actions: torch.Tensor, 
                       rewards: torch.Tensor, next_states: torch.Tensor, 
@@ -368,6 +390,9 @@ class TD3Agent:
         # 更新Critic
         self.critic_optimizer.zero_grad()
         critic_loss.backward()
+        # TD误差裁剪，防止极端值主导PER
+        if self.config.td_error_clip is not None:
+            td_errors = td_errors.clamp(-self.config.td_error_clip, self.config.td_error_clip)
         # 🔧 使用配置的梯度裁剪参数
         if self.config.use_gradient_clip:
             torch.nn.utils.clip_grad_norm_(self.critic.parameters(), self.config.gradient_clip_norm)

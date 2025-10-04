@@ -31,29 +31,33 @@ from config import config
 
 @dataclass
 class PPOConfig:
-    """🔧 PPO算法配置 - 优化版（提升稳定性和性能）"""
-    # 网络结构 - 对标TD3容量
-    hidden_dim: int = 400      # 🔧 从256提升到400
-    actor_lr: float = 1e-4     # 🔧 从3e-4降至1e-4
-    critic_lr: float = 3e-4    # 🔧 从1e-3降至3e-4
+    """🔧 PPO算法配置 - 修复版（解决数据量不足问题）"""
+    # 网络结构
+    hidden_dim: int = 256      # 🔧 降回256，避免过拟合
+    actor_lr: float = 3e-4     # 🔧 提高到3e-4，加快学习
+    critic_lr: float = 1e-3    # 🔧 提高到1e-3，更快的价值学习
     
-    # PPO参数
+    # PPO参数 - 关键调整
     clip_ratio: float = 0.2
-    entropy_coef: float = 0.01
+    entropy_coef: float = 0.05  # 🔧 从0.01提高到0.05，增强探索！
     value_coef: float = 0.5
-    max_grad_norm: float = 1.0  # 🔧 从0.5放宽到1.0，与TD3一致
+    max_grad_norm: float = 0.5  # 🔧 收紧梯度裁剪
     
-    # 训练参数 - 优化批次和缓冲区
-    batch_size: int = 128      # 🔧 从64增至128，提高梯度估计稳定性
-    buffer_size: int = 4096    # 🔧 从2048增至4096，增加样本多样性
-    ppo_epochs: int = 10
+    # 训练参数 - 关键修复
+    batch_size: int = 256      # 🔧 增大batch，提高梯度稳定性
+    buffer_size: int = 10000   # 🔧 大幅增加！50个episode的数据
+    ppo_epochs: int = 15       # 🔧 从10增至15，充分利用数据
     gamma: float = 0.99
     gae_lambda: float = 0.95
+    
+    # 更新控制 - 关键新增
+    update_frequency: int = 20  # 🔧 每20个episode更新一次（4000步）
+    min_buffer_size: int = 2000  # 🔧 最少2000步才更新
     
     # 其他参数
     normalize_advantages: bool = True
     use_gae: bool = True
-    target_kl: float = 0.01  # 自适应KL散度约束
+    target_kl: float = 0.015  # 🔧 略微放宽KL约束
 
 
 class PPOActor(nn.Module):
@@ -285,10 +289,11 @@ class PPOAgent:
         self.buffer.store(state, action, log_prob, reward, done, value)
         self.step_count += 1
     
-    def update(self, last_value: float = 0.0) -> Dict[str, float]:
+    def update(self, last_value: float = 0.0, force_update: bool = False) -> Dict[str, float]:
         """PPO更新"""
-        if self.buffer.size < self.config.batch_size:
-            return {}
+        # 🔧 修复：需要足够数据才更新
+        if not force_update and self.buffer.size < self.config.min_buffer_size:
+            return {'message': 'Waiting for more data', 'buffer_size': self.buffer.size}
         
         # 计算优势函数和回报
         self.buffer.compute_advantages_and_returns(
@@ -425,17 +430,18 @@ class PPOEnvironment:
         self.episode_count = 0
         self.step_count = 0
         
-        print(f"✓ PPO环境初始化完成 (已优化 + 缓存迁移DRL控制)")
+        print(f"✓ PPO环境初始化完成 (修复版 + 缓存迁移DRL控制)")
         print(f"✓ 状态维度: {self.state_dim}")
         print(f"✓ 动作维度: {self.action_dim} (18维支持缓存迁移控制)")
-        print(f"✓ 网络容量: hidden_dim={self.config.hidden_dim} (优化至400)")
-        print(f"✓ Actor学习率: {self.config.actor_lr} (优化至1e-4)")
-        print(f"✓ Critic学习率: {self.config.critic_lr} (优化至3e-4)")
-        print(f"✓ 批次大小: {self.config.batch_size} (优化至128)")
-        print(f"✓ 缓冲区大小: {self.config.buffer_size} (优化至4096)")
-        print(f"✓ 梯度裁剪: max_grad_norm={self.config.max_grad_norm}")
-        print(f"✓ 缓存迁移控制: 启用DRL参数调整 (action[11-17])")
+        print(f"✓ 网络容量: hidden_dim={self.config.hidden_dim}")
+        print(f"✓ Actor学习率: {self.config.actor_lr}")
+        print(f"✓ Critic学习率: {self.config.critic_lr}")
+        print(f"✓ 批次大小: {self.config.batch_size}")
+        print(f"✓ 缓冲区大小: {self.config.buffer_size}")
+        print(f"✓ 更新频率: 每{self.config.update_frequency}个episode")
+        print(f"✓ 最少数据量: {self.config.min_buffer_size}步")
         print(f"✓ PPO轮次: {self.config.ppo_epochs}")
+        print(f"✓ 熵系数: {self.config.entropy_coef} (增强探索)")
     
     def get_state_vector(self, node_states: Dict, system_metrics: Dict) -> np.ndarray:
         """构建全局状态向量"""
