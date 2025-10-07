@@ -46,7 +46,7 @@ def test_imports():
     imports = {
         'config': 'from config import config',
         'TD3Environment': 'from single_agent.td3 import TD3Environment',
-        'VECSystemSimulator': 'from evaluation.system_simulator import VECSystemSimulator',
+        'CompleteSystemSimulator': 'from evaluation.system_simulator import CompleteSystemSimulator',
         'numpy': 'import numpy as np',
         'matplotlib': 'import matplotlib.pyplot as plt'
     }
@@ -71,8 +71,14 @@ def test_td3_creation():
     print("="*60)
     
     try:
+        from evaluation.system_simulator import CompleteSystemSimulator
         from single_agent.td3 import TD3Environment
-        td3_env = TD3Environment()
+        simulator = CompleteSystemSimulator()
+        td3_env = TD3Environment(
+            num_vehicles=len(simulator.vehicles),
+            num_rsus=len(simulator.rsus),
+            num_uavs=len(simulator.uavs)
+        )
         print(f"  ✓ TD3环境创建成功")
         print(f"  状态维度: {td3_env.state_dim}")
         print(f"  动作维度: {td3_env.action_dim}")

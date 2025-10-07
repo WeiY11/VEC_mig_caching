@@ -60,8 +60,12 @@ def quick_test_single_config():
     # 创建TD3环境和仿真器
     print("\n正在初始化...")
     try:
-        td3_env = TD3Environment()
         simulator = CompleteSystemSimulator()
+        td3_env = TD3Environment(
+            num_vehicles=len(simulator.vehicles),
+            num_rsus=len(simulator.rsus),
+            num_uavs=len(simulator.uavs)
+        )
         print("初始化成功！")
     except Exception as e:
         print(f"初始化失败: {e}")
@@ -78,9 +82,9 @@ def quick_test_single_config():
         
         for step in range(50):  # 每轮只运行50步
             # 获取状态
-            node_states = simulator.get_all_node_states()
+            system_state = simulator.get_system_state()
             system_metrics = simulator.get_system_metrics()
-            state = td3_env.get_state_vector(node_states, system_metrics)
+            state = td3_env.get_state_vector(system_state, system_metrics)
             
             # 选择动作
             actions = td3_env.get_actions(state, training=True)
@@ -89,9 +93,9 @@ def quick_test_single_config():
             step_result = simulator.step(actions)
             
             # 获取下一状态
-            next_node_states = simulator.get_all_node_states()
+            next_system_state = simulator.get_system_state()
             next_system_metrics = simulator.get_system_metrics()
-            next_state = td3_env.get_state_vector(next_node_states, next_system_metrics)
+            next_state = td3_env.get_state_vector(next_system_state, next_system_metrics)
             
             # 计算奖励
             reward = td3_env.calculate_reward(

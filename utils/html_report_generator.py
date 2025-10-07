@@ -52,54 +52,72 @@ class HTMLReportGenerator:
         
         # 2. 训练配置
         html_parts.append(self._generate_training_config(results))
-        
-        # 3. 性能指标总览
+
+        # 3. 系统参数总览（新增）
+        html_parts.append(self._generate_system_parameters(results))
+
+        # 4. 网络配置参数（新增）
+        html_parts.append(self._generate_network_parameters(results))
+
+        # 5. 计算能力参数（新增）
+        html_parts.append(self._generate_compute_parameters(results))
+
+        # 6. 任务和迁移参数（新增）
+        html_parts.append(self._generate_task_migration_parameters(results))
+
+        # 7. 奖励函数参数（新增）
+        html_parts.append(self._generate_reward_parameters(results))
+
+        # 8. 算法配置参数（新增）
+        html_parts.append(self._generate_algorithm_parameters(results))
+
+        # 9. 性能指标总览
         html_parts.append(self._generate_performance_overview(training_env, results))
         
-        # 4. 训练曲线可视化
+        # 10. 训练曲线可视化
         html_parts.append(self._generate_training_charts(algorithm, training_env))
-        
-        # 5. 详细指标分析
+
+        # 11. 详细指标分析
         html_parts.append(self._generate_detailed_metrics(training_env))
-        
-        # 6. 算法超参数和网络架构
+
+        # 12. 算法超参数和网络架构
         html_parts.append(self._generate_algorithm_details(algorithm, training_env))
-        
-        # 7. 训练过程深度分析
+
+        # 13. 训练过程深度分析
         html_parts.append(self._generate_training_analysis(training_env, results))
-        
-        # 8. 每轮详细数据表格
+
+        # 14. 每轮详细数据表格
         html_parts.append(self._generate_episode_data_table(training_env, results))
         
-        # 9. 系统统计信息
+        # 15. 系统统计信息
         if simulator_stats:
             html_parts.append(self._generate_system_statistics(simulator_stats))
-        
-        # 10. 自适应控制器统计
+
+        # 16. 自适应控制器统计
         html_parts.append(self._generate_adaptive_controller_stats(training_env))
-        
-        # 11. 收敛性分析
+
+        # 17. 收敛性分析
         html_parts.append(self._generate_convergence_analysis(training_env))
-        
-        # 12. 指标相关性分析（新增）
+
+        # 18. 指标相关性分析（新增）
         html_parts.append(self._generate_correlation_analysis(training_env))
-        
-        # 13. 逐指标趋势分析（新增）
+
+        # 19. 逐指标趋势分析（新增）
         html_parts.append(self._generate_per_metric_analysis(training_env))
-        
-        # 14. 性能雷达图和对比（新增）
+
+        # 20. 性能雷达图和对比（新增）
         html_parts.append(self._generate_radar_chart_analysis(training_env, results))
-        
-        # 15. 完整数据导出表格（新增）
+
+        # 21. 完整数据导出表格（新增）
         html_parts.append(self._generate_complete_data_table(training_env))
-        
-        # 16. 峰值和异常分析（新增）
+
+        # 22. 峰值和异常分析（新增）
         html_parts.append(self._generate_peak_anomaly_analysis(training_env))
-        
-        # 17. 学习曲线平滑度分析（新增）
+
+        # 23. 学习曲线平滑度分析（新增）
         html_parts.append(self._generate_smoothness_analysis(training_env))
-        
-        # 18. 建议和结论
+
+        # 24. 建议和结论
         html_parts.append(self._generate_recommendations(training_env, results))
         
         # 添加HTML尾部
@@ -2208,13 +2226,481 @@ class HTMLReportGenerator:
         </div>
 """
     
+    def _generate_system_parameters(self, results: Dict) -> str:
+        """生成系统参数总览"""
+        system_config = results.get('system_config', {})
+
+        return f"""
+        <div class="section">
+            <h2 class="section-title">🏗️ 系统拓扑参数</h2>
+
+            <div class="metrics-grid">
+                <div class="metric-card">
+                    <div class="metric-label">车辆数量</div>
+                    <div class="metric-value">{system_config.get('num_vehicles', 'N/A')}</div>
+                    <div style="font-size: 0.8em; color: #666; margin-top: 5px;">移动计算节点</div>
+                </div>
+
+                <div class="metric-card">
+                    <div class="metric-label">RSU数量</div>
+                    <div class="metric-value">{system_config.get('num_rsus', 'N/A')}</div>
+                    <div style="font-size: 0.8em; color: #666; margin-top: 5px;">边缘计算节点</div>
+                </div>
+
+                <div class="metric-card">
+                    <div class="metric-label">UAV数量</div>
+                    <div class="metric-value">{system_config.get('num_uavs', 'N/A')}</div>
+                    <div style="font-size: 0.8em; color: #666; margin-top: 5px;">空中计算节点</div>
+                </div>
+
+                <div class="metric-card">
+                    <div class="metric-label">仿真时长</div>
+                    <div class="metric-value">{system_config.get('simulation_time', 'N/A')}</div>
+                    <div style="font-size: 0.8em; color: #666; margin-top: 5px;">时隙数</div>
+                </div>
+
+                <div class="metric-card">
+                    <div class="metric-label">时隙长度</div>
+                    <div class="metric-value">{system_config.get('time_slot', 'N/A')} <span class="metric-unit">秒</span></div>
+                    <div style="font-size: 0.8em; color: #666; margin-top: 5px;">决策周期</div>
+                </div>
+
+                <div class="metric-card">
+                    <div class="metric-label">计算设备</div>
+                    <div class="metric-value">{system_config.get('device', 'N/A')}</div>
+                    <div style="font-size: 0.8em; color: #666; margin-top: 5px;">硬件加速</div>
+                </div>
+
+                <div class="metric-card">
+                    <div class="metric-label">随机种子</div>
+                    <div class="metric-value">{system_config.get('random_seed', 'N/A')}</div>
+                    <div style="font-size: 0.8em; color: #666; margin-top: 5px;">可重复性保证</div>
+                </div>
+            </div>
+
+            <h3 class="section-subtitle">📊 网络拓扑信息</h3>
+            <table>
+                <thead>
+                    <tr>
+                        <th>拓扑参数</th>
+                        <th>值</th>
+                        <th>说明</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr>
+                        <td>车辆数量</td>
+                        <td><span class="highlight">{system_config.get('num_vehicles', 'N/A')}</span></td>
+                        <td>移动车辆节点，提供分布式计算能力</td>
+                    </tr>
+                    <tr>
+                        <td>RSU数量</td>
+                        <td>{system_config.get('num_rsus', 'N/A')}</td>
+                        <td>路边单元，提供边缘计算服务</td>
+                    </tr>
+                    <tr>
+                        <td>UAV数量</td>
+                        <td>{system_config.get('num_uavs', 'N/A')}</td>
+                        <td>无人机，提供空中计算支持</td>
+                    </tr>
+                    <tr>
+                        <td>仿真区域</td>
+                        <td>{results.get('network_config', {}).get('area_width', 'N/A')} × {results.get('network_config', {}).get('area_height', 'N/A')} m</td>
+                        <td>仿真场景的地理范围</td>
+                    </tr>
+                </tbody>
+            </table>
+        </div>
+"""
+
+    def _generate_network_parameters(self, results: Dict) -> str:
+        """生成网络配置参数"""
+        network_config = results.get('network_config', {})
+
+        return f"""
+        <div class="section">
+            <h2 class="section-title">📡 网络配置参数</h2>
+
+            <h3 class="section-subtitle">无线通信参数</h3>
+            <div class="metrics-grid">
+                <div class="metric-card">
+                    <div class="metric-label">系统带宽</div>
+                    <div class="metric-value">{network_config.get('bandwidth', 0)/1e6:.1f} <span class="metric-unit">MHz</span></div>
+                    <div style="font-size: 0.8em; color: #666; margin-top: 5px;">总可用带宽</div>
+                </div>
+
+                <div class="metric-card">
+                    <div class="metric-label">载波频率</div>
+                    <div class="metric-value">{network_config.get('carrier_frequency', 0)/1e9:.1f} <span class="metric-unit">GHz</span></div>
+                    <div style="font-size: 0.8em; color: #666; margin-top: 5px;">工作频段</div>
+                </div>
+
+                <div class="metric-card">
+                    <div class="metric-label">覆盖半径</div>
+                    <div class="metric-value">{network_config.get('coverage_radius', 'N/A')} <span class="metric-unit">米</span></div>
+                    <div style="font-size: 0.8em; color: #666; margin-top: 5px;">节点覆盖范围</div>
+                </div>
+            </div>
+
+            <h3 class="section-subtitle">3GPP标准通信参数</h3>
+            <table>
+                <thead>
+                    <tr>
+                        <th>通信参数</th>
+                        <th>车辆</th>
+                        <th>RSU</th>
+                        <th>UAV</th>
+                        <th>标准依据</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr>
+                        <td>发射功率 (dBm)</td>
+                        <td>{results.get('communication_config', {}).get('vehicle_tx_power', 'N/A')}</td>
+                        <td>{results.get('communication_config', {}).get('rsu_tx_power', 'N/A')}</td>
+                        <td>{results.get('communication_config', {}).get('uav_tx_power', 'N/A')}</td>
+                        <td>3GPP TS 38.101</td>
+                    </tr>
+                    <tr>
+                        <td>天线增益 (dBi)</td>
+                        <td>{results.get('communication_config', {}).get('antenna_gain_vehicle', 'N/A')}</td>
+                        <td>{results.get('communication_config', {}).get('antenna_gain_rsu', 'N/A')}</td>
+                        <td>{results.get('communication_config', {}).get('antenna_gain_uav', 'N/A')}</td>
+                        <td>3GPP TR 38.901</td>
+                    </tr>
+                    <tr>
+                        <td>总带宽 (MHz)</td>
+                        <td colspan="3">{results.get('communication_config', {}).get('total_bandwidth', 0)/1e6:.1f}</td>
+                        <td>3GPP标准配置</td>
+                    </tr>
+                </tbody>
+            </table>
+        </div>
+"""
+
+    def _generate_compute_parameters(self, results: Dict) -> str:
+        """生成计算能力参数"""
+        compute_config = results.get('compute_config', {})
+
+        return f"""
+        <div class="section">
+            <h2 class="section-title">💻 计算能力参数</h2>
+
+            <h3 class="section-subtitle">节点计算能力</h3>
+            <table>
+                <thead>
+                    <tr>
+                        <th>节点类型</th>
+                        <th>CPU频率 (GHz)</th>
+                        <th>内存容量 (GB)</th>
+                        <th>典型应用场景</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr>
+                        <td><strong>车辆节点</strong></td>
+                        <td>{compute_config.get('vehicle_cpu_freq', 0)/1e9:.1f}</td>
+                        <td>{compute_config.get('vehicle_memory', 0)/1e9:.1f}</td>
+                        <td>轻量级任务处理，移动计算</td>
+                    </tr>
+                    <tr>
+                        <td><strong>RSU节点</strong></td>
+                        <td>{compute_config.get('rsu_cpu_freq', 0)/1e9:.1f}</td>
+                        <td>{compute_config.get('rsu_memory', 0)/1e9:.1f}</td>
+                        <td>高性能边缘计算，大任务处理</td>
+                    </tr>
+                    <tr>
+                        <td><strong>UAV节点</strong></td>
+                        <td>{compute_config.get('uav_cpu_freq', 0)/1e9:.1f}</td>
+                        <td>{compute_config.get('uav_memory', 0)/1e9:.1f}</td>
+                        <td>中等计算能力，移动覆盖</td>
+                    </tr>
+                </tbody>
+            </table>
+
+            <h3 class="section-subtitle">能耗模型参数</h3>
+            <div class="metrics-grid">
+                <div class="metric-card">
+                    <div class="metric-label">车辆静态功耗</div>
+                    <div class="metric-value">{compute_config.get('vehicle_static_power', 'N/A')} <span class="metric-unit">W</span></div>
+                </div>
+                <div class="metric-card">
+                    <div class="metric-label">RSU静态功耗</div>
+                    <div class="metric-value">{compute_config.get('rsu_static_power', 'N/A')} <span class="metric-unit">W</span></div>
+                </div>
+                <div class="metric-card">
+                    <div class="metric-label">UAV悬停功耗</div>
+                    <div class="metric-value">{compute_config.get('uav_hover_power', 'N/A')} <span class="metric-unit">W</span></div>
+                </div>
+            </div>
+        </div>
+"""
+
+    def _generate_task_migration_parameters(self, results: Dict) -> str:
+        """生成任务和迁移参数"""
+        task_config = results.get('task_config', {})
+        migration_config = results.get('migration_config', {})
+        cache_config = results.get('cache_config', {})
+
+        return f"""
+        <div class="section">
+            <h2 class="section-title">📋 任务与迁移参数</h2>
+
+            <h3 class="section-subtitle">任务生成参数</h3>
+            <table>
+                <thead>
+                    <tr>
+                        <th>参数</th>
+                        <th>值</th>
+                        <th>说明</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr>
+                        <td>任务到达率</td>
+                        <td>{task_config.get('arrival_rate', 'N/A')} <span class="metric-unit">个/秒</span></td>
+                        <td>泊松过程生成任务频率</td>
+                    </tr>
+                    <tr>
+                        <td>数据大小范围</td>
+                        <td>{task_config.get('data_size_range', [0, 0])[0]/8/1e6:.2f} - {task_config.get('data_size_range', [0, 0])[1]/8/1e6:.2f} <span class="metric-unit">MB</span></td>
+                        <td>任务输入数据大小范围</td>
+                    </tr>
+                    <tr>
+                        <td>计算量范围</td>
+                        <td>{task_config.get('compute_cycles_range', [0, 0])[0]/1e9:.1f} - {task_config.get('compute_cycles_range', [0, 0])[1]/1e9:.1f} <span class="metric-unit">Gcycles</span></td>
+                        <td>任务计算复杂度范围</td>
+                    </tr>
+                    <tr>
+                        <td>截止时间范围</td>
+                        <td>{task_config.get('deadline_range', [0, 0])[0]:.1f} - {task_config.get('deadline_range', [0, 0])[1]:.1f} <span class="metric-unit">秒</span></td>
+                        <td>任务最大容忍延迟</td>
+                    </tr>
+                    <tr>
+                        <td>优先级等级</td>
+                        <td>{task_config.get('priority_levels', 'N/A')}</td>
+                        <td>任务调度优先级划分</td>
+                    </tr>
+                </tbody>
+            </table>
+
+            <h3 class="section-subtitle">迁移策略参数</h3>
+            <div class="metrics-grid">
+                <div class="metric-card">
+                    <div class="metric-label">迁移带宽</div>
+                    <div class="metric-value">{migration_config.get('migration_bandwidth', 0)/1e6:.1f} <span class="metric-unit">Mbps</span></div>
+                </div>
+                <div class="metric-card">
+                    <div class="metric-label">迁移阈值</div>
+                    <div class="metric-value">{migration_config.get('migration_threshold', 'N/A')}</div>
+                </div>
+                <div class="metric-card">
+                    <div class="metric-label">冷却周期</div>
+                    <div class="metric-value">{migration_config.get('cooldown_period', 'N/A')} <span class="metric-unit">秒</span></div>
+                </div>
+                <div class="metric-card">
+                    <div class="metric-label">RSU过载阈值</div>
+                    <div class="metric-value">{migration_config.get('rsu_overload_threshold', 'N/A')*100:.1f}<span class="metric-unit">%</span></div>
+                </div>
+                <div class="metric-card">
+                    <div class="metric-label">UAV过载阈值</div>
+                    <div class="metric-value">{migration_config.get('uav_overload_threshold', 'N/A')*100:.1f}<span class="metric-unit">%</span></div>
+                </div>
+            </div>
+
+            <h3 class="section-subtitle">缓存配置参数</h3>
+            <table>
+                <thead>
+                    <tr>
+                        <th>节点类型</th>
+                        <th>缓存容量 (GB)</th>
+                        <th>替换策略</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr>
+                        <td>车辆缓存</td>
+                        <td>{cache_config.get('vehicle_cache_capacity', 0)/1e9:.1f}</td>
+                        <td rowspan="3">{cache_config.get('cache_policy', 'N/A')}</td>
+                    </tr>
+                    <tr>
+                        <td>RSU缓存</td>
+                        <td>{cache_config.get('rsu_cache_capacity', 0)/1e9:.1f}</td>
+                    </tr>
+                    <tr>
+                        <td>UAV缓存</td>
+                        <td>{cache_config.get('uav_cache_capacity', 0)/1e9:.1f}</td>
+                    </tr>
+                </tbody>
+            </table>
+        </div>
+"""
+
+    def _generate_reward_parameters(self, results: Dict) -> str:
+        """生成奖励函数参数"""
+        reward_config = results.get('reward_config', {})
+
+        return f"""
+        <div class="section">
+            <h2 class="section-title">🎯 奖励函数参数</h2>
+
+            <h3 class="section-subtitle">优化目标权重</h3>
+            <div class="metrics-grid">
+                <div class="metric-card">
+                    <div class="metric-label">时延权重 (ω_T)</div>
+                    <div class="metric-value">{reward_config.get('reward_weight_delay', 'N/A')}</div>
+                    <div style="font-size: 0.8em; color: #666; margin-top: 5px;">核心优化目标：最小化任务时延</div>
+                </div>
+
+                <div class="metric-card">
+                    <div class="metric-label">能耗权重 (ω_E)</div>
+                    <div class="metric-value">{reward_config.get('reward_weight_energy', 'N/A')}</div>
+                    <div style="font-size: 0.8em; color: #666; margin-top: 5px;">核心优化目标：最小化系统能耗</div>
+                </div>
+
+                <div class="metric-card">
+                    <div class="metric-label">丢弃惩罚 (ω_D)</div>
+                    <div class="metric-value">{reward_config.get('reward_penalty_dropped', 'N/A')}</div>
+                    <div style="font-size: 0.8em; color: #666; margin-top: 5px;">约束条件：保证任务完成率</div>
+                </div>
+            </div>
+
+            <h3 class="section-subtitle">奖励函数公式</h3>
+            <div style="padding: 20px; background: white; border-radius: 8px; border: 2px solid #667eea; margin: 20px 0;">
+                <div style="font-family: 'Courier New', monospace; font-size: 1.1em; text-align: center;">
+                    <strong>Reward = -(ω_T × 时延 + ω_E × 能耗) - ω_D × dropped_tasks</strong>
+                </div>
+                <div style="margin-top: 15px; line-height: 1.8;">
+                    • <strong>主优化目标</strong>: ω_T × 时延 + ω_E × 能耗（权重分别为{reward_config.get('reward_weight_delay', 'N/A')}和{reward_config.get('reward_weight_energy', 'N/A')}）<br>
+                    • <strong>约束条件</strong>: ω_D × dropped_tasks（权重为{reward_config.get('reward_penalty_dropped', 'N/A')}，轻微惩罚保证完成率）<br>
+                    • <strong>设计理念</strong>: 聚焦于时延和能耗双目标优化，缓存和迁移成功率作为手段而非目标
+                </div>
+            </div>
+
+            <h3 class="section-subtitle">权重配置说明</h3>
+            <table>
+                <thead>
+                    <tr>
+                        <th>权重类型</th>
+                        <th>值</th>
+                        <th>优化目标</th>
+                        <th>论文依据</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr>
+                        <td>时延权重</td>
+                        <td><span class="highlight">{reward_config.get('reward_weight_delay', 'N/A')}</span></td>
+                        <td>最小化任务处理时延</td>
+                        <td>核心QoS指标，车联网首要目标</td>
+                    </tr>
+                    <tr>
+                        <td>能耗权重</td>
+                        <td>{reward_config.get('reward_weight_energy', 'N/A')}</td>
+                        <td>最小化系统总能耗</td>
+                        <td>绿色计算，资源效率优化</td>
+                    </tr>
+                    <tr>
+                        <td>丢弃惩罚</td>
+                        <td>{reward_config.get('reward_penalty_dropped', 'N/A')}</td>
+                        <td>保证任务完成率</td>
+                        <td>系统可靠性约束，轻微惩罚</td>
+                    </tr>
+                </tbody>
+            </table>
+        </div>
+"""
+
+    def _generate_algorithm_parameters(self, results: Dict) -> str:
+        """生成算法配置参数"""
+        algorithm_config = results.get('algorithm_config', {})
+
+        return f"""
+        <div class="section">
+            <h2 class="section-title">⚙️ 算法配置参数</h2>
+
+            <h3 class="section-subtitle">神经网络架构</h3>
+            <table>
+                <thead>
+                    <tr>
+                        <th>参数</th>
+                        <th>值</th>
+                        <th>说明</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr>
+                        <td>隐藏层维度</td>
+                        <td>{algorithm_config.get('hidden_dim', 'N/A')}</td>
+                        <td>神经网络隐藏层神经元数量</td>
+                    </tr>
+                    <tr>
+                        <td>批次大小</td>
+                        <td>{algorithm_config.get('batch_size', 'N/A')}</td>
+                        <td>每次训练使用的样本数量</td>
+                    </tr>
+                    <tr>
+                        <td>经验池大小</td>
+                        <td>{algorithm_config.get('memory_size', 'N/A')}</td>
+                        <td>存储历史经验的最大容量</td>
+                    </tr>
+                </tbody>
+            </table>
+
+            <h3 class="section-subtitle">学习率配置</h3>
+            <div class="metrics-grid">
+                <div class="metric-card">
+                    <div class="metric-label">Actor学习率</div>
+                    <div class="metric-value">{algorithm_config.get('actor_lr', 'N/A')}</div>
+                </div>
+                <div class="metric-card">
+                    <div class="metric-label">Critic学习率</div>
+                    <div class="metric-value">{algorithm_config.get('critic_lr', 'N/A')}</div>
+                </div>
+            </div>
+
+            <h3 class="section-subtitle">探索与稳定参数</h3>
+            <table>
+                <thead>
+                    <tr>
+                        <th>参数</th>
+                        <th>值</th>
+                        <th>说明</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr>
+                        <td>折扣因子 (γ)</td>
+                        <td>{algorithm_config.get('gamma', 'N/A')}</td>
+                        <td>未来奖励的衰减因子</td>
+                    </tr>
+                    <tr>
+                        <td>软更新参数 (τ)</td>
+                        <td>{algorithm_config.get('tau', 'N/A')}</td>
+                        <td>目标网络更新的平滑程度</td>
+                    </tr>
+                    <tr>
+                        <td>噪声标准差</td>
+                        <td>{algorithm_config.get('noise_std', 'N/A')}</td>
+                        <td>动作探索的噪声幅度</td>
+                    </tr>
+                    <tr>
+                        <td>策略延迟更新</td>
+                        <td>{algorithm_config.get('policy_delay', 'N/A')}</td>
+                        <td>Actor网络更新频率控制</td>
+                    </tr>
+                </tbody>
+            </table>
+        </div>
+"""
+
     def _generate_html_footer(self) -> str:
         """生成HTML尾部"""
         return f"""
         </div>
         <div class="footer">
             <p>VEC Migration Caching System - Training Report</p>
-            <p>Generated by HTML Report Generator v1.0</p>
+            <p>Generated by HTML Report Generator v2.0 (Enhanced Parameters)</p>
             <p style="margin-top: 10px; font-size: 0.9em;">
                 © 2025 All Rights Reserved | <a href="#">Documentation</a> | <a href="#">GitHub</a>
             </p>

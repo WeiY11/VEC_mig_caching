@@ -29,7 +29,7 @@ class CompleteSystemSimulator:
             self.sys_config = None
         
         # 网络拓扑
-        if self.sys_config is not None:
+        if self.sys_config is not None and not self.config.get('override_topology', False):
             self.num_vehicles = getattr(self.sys_config.network, 'num_vehicles', 12)
             self.num_rsus = getattr(self.sys_config.network, 'num_rsus', 6)
             self.num_uavs = getattr(self.sys_config.network, 'num_uavs', 2)
@@ -39,7 +39,7 @@ class CompleteSystemSimulator:
             self.num_uavs = self.config.get('num_uavs', 2)
         
         # 仿真参数
-        if self.sys_config is not None:
+        if self.sys_config is not None and not self.config.get('override_topology', False):
             self.simulation_time = getattr(self.sys_config, 'simulation_time', 1000)
             self.time_slot = getattr(self.sys_config.network, 'time_slot_duration', 0.2)  # 🚀 适应高负载时隙
             self.task_arrival_rate = getattr(self.sys_config.task, 'arrival_rate', 2.5)  # 🚀 高负载到达率

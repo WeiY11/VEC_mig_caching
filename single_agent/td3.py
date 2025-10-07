@@ -463,12 +463,15 @@ class TD3Agent:
 class TD3Environment:
     """TD3训练环境"""
     
-    def __init__(self):
+    def __init__(self, num_vehicles: int = 12, num_rsus: int = 4, num_uavs: int = 2):
         self.config = TD3Config()
+        self.num_vehicles = num_vehicles
+        self.num_rsus = num_rsus
+        self.num_uavs = num_uavs
         
-        # 🔧 修复：正确计算状态维度
-        # 车辆状态: 12×5=60维 + RSU状态: 6×9=54维 + UAV状态: 2×8=16维 = 130维
-        self.state_dim = 130  # 正确的状态维度
+        # 车辆状态: N×5维 + RSU状态: M×9维 + UAV状态: K×8维
+        self.state_dim = num_vehicles * 5 + num_rsus * 9 + num_uavs * 8
+        
         # 🤖 扩展动作空间: 11维原有 + 7维缓存迁移控制 = 18维
         self.action_dim = 18  # 支持自适应缓存迁移控制
         
@@ -480,19 +483,20 @@ class TD3Environment:
         self.step_count = 0
         
         print(f"✓ TD3环境初始化完成")
-        print(f"✓ 状态维度: {self.state_dim}")
+        print(f"✓ 网络拓扑: {num_vehicles}辆车 + {num_rsus}个RSU + {num_uavs}个UAV")
+        print(f"✓ 状态维度: {self.state_dim} ({num_vehicles}×5 + {num_rsus}×9 + {num_uavs}×8)")
         print(f"✓ 动作维度: {self.action_dim}")
         print(f"✓ 策略延迟更新: {self.config.policy_delay}")
     
     def get_state_vector(self, node_states: Dict, system_metrics: Dict) -> np.ndarray:
         """
-        🔧 修复：构建准确的130维状态向量，基于正确的缓存计算
-        状态组成: 车辆60维 + RSU54维 + UAV16维 = 130维
+        🔧 动态构建状态向量，支持不同网络拓扑
+        状态组成: 车辆(N×5)维 + RSU(M×9)维 + UAV(K×8)维
         """
         state_components = []
         
-        # 1. 车辆状态 (12×5=60维)  
-        for i in range(12):
+        # 1. 车辆状态 (N×5维) - 动态适配车辆数量
+        for i in range(self.num_vehicles):
             vehicle_key = f'vehicle_{i}'
             if vehicle_key in node_states:
                 vehicle_state = node_states[vehicle_key]
@@ -512,8 +516,8 @@ class TD3Environment:
                 # 默认车辆状态: [位置x, 位置y, 速度, 队列, 能耗]
                 state_components.extend([0.5, 0.5, 0.0, 0.0, 0.0])
         
-        # 2. RSU状态 (6×9=54维) - 🔧 确保使用正确的缓存计算
-        for i in range(6):
+        # 2. RSU状态 (M×9维) - 动态适配RSU数量
+        for i in range(self.num_rsus):
             rsu_key = f'rsu_{i}'
             if rsu_key in node_states:
                 rsu_state = node_states[rsu_key]
@@ -538,8 +542,8 @@ class TD3Environment:
                 # 默认RSU状态: [位置x, 位置y, 缓存利用率, 队列, 能耗, 缓存参数4维]
                 state_components.extend([0.5, 0.5, 0.0, 0.0, 0.0, 0.7, 0.35, 0.05, 0.3])
         
-        # 3. UAV状态 (2×8=16维) - 🔧 优化数值稳定性
-        for i in range(2):
+        # 3. UAV状态 (K×8维) - 动态适配UAV数量
+        for i in range(self.num_uavs):
             uav_key = f'uav_{i}'
             if uav_key in node_states:
                 uav_state = node_states[uav_key]
@@ -564,12 +568,13 @@ class TD3Environment:
                 # 默认UAV状态: [位置x, 位置y, 位置z, 缓存利用率, 能耗, 迁移参数3维]
                 state_components.extend([0.5, 0.5, 0.5, 0.0, 0.0, 0.75, 1.0, 0.3])
         
-        # 确保状态向量正好是130维
-        state_vector = np.array(state_components[:130], dtype=np.float32)
+        # 确保状态向量维度正确
+        expected_dim = self.state_dim
+        state_vector = np.array(state_components[:expected_dim], dtype=np.float32)
         
-        # 如果维度不足130，补齐
-        if len(state_vector) < 130:
-            padding_needed = 130 - len(state_vector)
+        # 如果维度不足，补齐
+        if len(state_vector) < expected_dim:
+            padding_needed = expected_dim - len(state_vector)
             state_vector = np.pad(state_vector, (0, padding_needed), mode='constant', constant_values=0.5)
         
         # 数值安全检查

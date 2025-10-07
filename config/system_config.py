@@ -147,12 +147,12 @@ class ComputeConfig:
         # CPU频率范围 - 符合内存规范
         self.vehicle_cpu_freq_range = (8e9, 25e9)  # 8-25 GHz
         self.rsu_cpu_freq_range = (45e9, 55e9)  # 50 GHz左右
-        self.uav_cpu_freq_range = (7e9, 9e9)  # 8 GHz左右
+        self.uav_cpu_freq_range = (1.5e9, 9e9)  # 1.5-9 GHz，包含优化后的1.8GHz
         
-        # 🔧 修复：大幅降低计算能力以触发队列积累和迁移
+        # 🔧 修复：优化UAV计算能力以平衡系统负载
         self.vehicle_default_freq = 2.5e9  # 2.5 GHz (保持车载芯片)
         self.rsu_default_freq = 12e9  # 恢复12GHz - 高性能边缘计算
-        self.uav_default_freq = 1.0e9  # 🔧 从1.8GHz降低到1.0GHz - 强制队列积累
+        self.uav_default_freq = 1.8e9  # 🔧 优化至1.8GHz - 平衡负载与能耗
         
         # 节点CPU频率（用于初始化）
         self.vehicle_cpu_freq = self.vehicle_default_freq

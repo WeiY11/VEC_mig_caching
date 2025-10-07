@@ -880,27 +880,126 @@ def evaluate_model(algorithm: str, training_env: MultiAgentTrainingEnvironment,
     }
 
 
-def save_training_results(algorithm: str, training_env: MultiAgentTrainingEnvironment, 
+def save_training_results(algorithm: str, training_env: MultiAgentTrainingEnvironment,
                          training_time: float) -> Dict:
-    """保存训练结果"""
+    """保存训练结果（包含所有系统参数）"""
     # 生成时间戳
     timestamp = generate_timestamp()
-    
+
+    # 保存完整系统配置
+    from config.system_config import config as system_config
+    from config.algorithm_config import AlgorithmConfig
+
+    algo_config = AlgorithmConfig()
+
     results = {
         'algorithm': algorithm,
         'timestamp': timestamp,
         'training_start_time': datetime.now().isoformat(),
+
+        # 训练基本信息
         'training_config': {
             'num_episodes': len(training_env.episode_rewards),
             'training_time_hours': training_time / 3600,
-            'max_steps_per_episode': config.experiment.max_steps_per_episode
+            'max_steps_per_episode': config.experiment.max_steps_per_episode,
+            'batch_size': system_config.rl.batch_size,
+            'memory_size': system_config.rl.memory_size,
+            'warmup_steps': getattr(system_config.rl, 'warmup_steps', 1000)
         },
+
+        # 系统拓扑配置
+        'system_config': {
+            'num_vehicles': system_config.num_vehicles,
+            'num_rsus': system_config.num_rsus,
+            'num_uavs': system_config.num_uavs,
+            'simulation_time': system_config.simulation_time,
+            'time_slot': system_config.time_slot,
+            'device': system_config.device,
+            'random_seed': system_config.random_seed
+        },
+
+        # 网络配置
+        'network_config': {
+            'bandwidth': system_config.network.bandwidth,
+            'carrier_frequency': system_config.network.carrier_frequency,
+            'coverage_radius': system_config.network.coverage_radius,
+            'area_width': system_config.network.area_width,
+            'area_height': system_config.network.area_height
+        },
+
+        # 计算能力配置
+        'compute_config': {
+            'vehicle_cpu_freq': system_config.compute.vehicle_cpu_freq,
+            'rsu_cpu_freq': system_config.compute.rsu_cpu_freq,
+            'uav_cpu_freq': system_config.compute.uav_cpu_freq,
+            'vehicle_memory': system_config.compute.vehicle_memory_size,
+            'rsu_memory': system_config.compute.rsu_memory_size,
+            'uav_memory': system_config.compute.uav_memory_size
+        },
+
+        # 任务配置
+        'task_config': {
+            'arrival_rate': system_config.task.arrival_rate,
+            'data_size_range': system_config.task.data_size_range,
+            'compute_cycles_range': system_config.task.compute_cycles_range,
+            'deadline_range': system_config.task.deadline_range,
+            'priority_levels': system_config.task.num_priority_levels
+        },
+
+        # 迁移配置
+        'migration_config': {
+            'migration_bandwidth': system_config.migration.migration_bandwidth,
+            'migration_threshold': system_config.migration.migration_threshold,
+            'cooldown_period': system_config.migration.cooldown_period,
+            'rsu_overload_threshold': system_config.migration.rsu_overload_threshold,
+            'uav_overload_threshold': system_config.migration.uav_overload_threshold
+        },
+
+        # 缓存配置
+        'cache_config': {
+            'vehicle_cache_capacity': system_config.cache.vehicle_cache_capacity,
+            'rsu_cache_capacity': system_config.cache.rsu_cache_capacity,
+            'uav_cache_capacity': system_config.cache.uav_cache_capacity,
+            'cache_policy': system_config.cache.cache_replacement_policy
+        },
+
+        # 通信配置（3GPP标准）
+        'communication_config': {
+            'vehicle_tx_power': system_config.communication.vehicle_tx_power,
+            'rsu_tx_power': system_config.communication.rsu_tx_power,
+            'uav_tx_power': system_config.communication.uav_tx_power,
+            'total_bandwidth': system_config.communication.total_bandwidth,
+            'carrier_frequency': system_config.communication.carrier_frequency,
+            'antenna_gain_rsu': system_config.communication.antenna_gain_rsu,
+            'antenna_gain_vehicle': system_config.communication.antenna_gain_vehicle,
+            'antenna_gain_uav': system_config.communication.antenna_gain_uav
+        },
+
+        # 奖励权重配置
+        'reward_config': {
+            'reward_weight_delay': system_config.rl.reward_weight_delay,
+            'reward_weight_energy': system_config.rl.reward_weight_energy,
+            'reward_penalty_dropped': system_config.rl.reward_penalty_dropped,
+            'reward_weight_loss': system_config.rl.reward_weight_loss
+        },
+
+        # 算法特定配置
+        'algorithm_config': algo_config.get_algorithm_config(algorithm),
+
+        # 训练数据
         'episode_rewards': training_env.episode_rewards,
         'episode_metrics': training_env.episode_metrics,
         'final_performance': {
             'avg_reward': training_env.performance_tracker['recent_rewards'].get_average(),
             'avg_delay': training_env.performance_tracker['recent_delays'].get_average(),
             'avg_completion': training_env.performance_tracker['recent_completion'].get_average()
+        },
+
+        # 环境状态信息
+        'environment_info': {
+            'state_dim': getattr(training_env, 'state_dim', 'N/A'),
+            'action_dim': getattr(training_env, 'action_dim', 'N/A'),
+            'num_agents': getattr(training_env, 'num_agents', 'N/A')
         }
     }
     

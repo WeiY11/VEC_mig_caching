@@ -91,14 +91,17 @@ def _build_vehicle_list(args: argparse.Namespace) -> List[int]:
 
 def _run_single_setting(num_vehicles: int, seed: int, episodes: int, eval_interval: int | None, save_interval: int | None) -> Dict:
     os.environ['RANDOM_SEED'] = str(seed)
-    os.environ['TRAINING_SCENARIO_OVERRIDES'] = json.dumps({"num_vehicles": num_vehicles})
+    overrides = {"num_vehicles": num_vehicles, "override_topology": True}
+    os.environ['TRAINING_SCENARIO_OVERRIDES'] = json.dumps(overrides)
     _apply_global_seed_from_env()
     try:
         return train_single_algorithm(
             "TD3",
             num_episodes=episodes,
             eval_interval=eval_interval,
-            save_interval=save_interval
+            save_interval=save_interval,
+            silent_mode=True,  # 🔧 启用静默模式，避免用户交互阻塞批量实验
+            override_scenario=overrides
         )
     finally:
         os.environ.pop('TRAINING_SCENARIO_OVERRIDES', None)
@@ -107,8 +110,15 @@ def _run_single_setting(num_vehicles: int, seed: int, episodes: int, eval_interv
 def _extract_summary(num_vehicles: int, run_result: Dict) -> Dict:
     final_perf = run_result.get("final_performance", {})
     training_cfg = run_result.get("training_config", {})
+    
+    # 从训练环境获取实际状态维度（如果可用）
+    state_dim = "N/A"
+    if "state_dim" in run_result:
+        state_dim = run_result["state_dim"]
+    
     return {
         "num_vehicles": num_vehicles,
+        "state_dim": state_dim,
         "episodes": training_cfg.get("num_episodes", 0),
         "training_time_hours": training_cfg.get("training_time_hours", 0.0),
         "avg_step_reward": final_perf.get("avg_step_reward", 0.0),
@@ -128,11 +138,11 @@ def _save_results(output_dir: Path, summaries: List[Dict]) -> None:
     md_path = output_dir / f"td3_vehicle_sweep_summary_{timestamp}.md"
     with md_path.open("w", encoding="utf-8") as fp:
         fp.write("# TD3 不同车辆数量实验结果\n\n")
-        fp.write("| Vehicles | Episodes | Training Hours | Avg Step Reward | Avg Delay (s) | Completion Rate |\n")
-        fp.write("| -------- | -------- | --------------- | ---------------- | ------------- | ---------------- |\n")
+        fp.write("| Vehicles | State Dim | Episodes | Training Hours | Avg Step Reward | Avg Delay (s) | Completion Rate |\n")
+        fp.write("| -------- | --------- | -------- | --------------- | ---------------- | ------------- | ---------------- |\n")
         for item in summaries:
             fp.write(
-                f"| {item['num_vehicles']} | {item['episodes']} | {item['training_time_hours']:.3f} |"
+                f"| {item['num_vehicles']} | {item['state_dim']} | {item['episodes']} | {item['training_time_hours']:.3f} |"
                 f" {item['avg_step_reward']:.4f} | {item['avg_delay']:.4f} | {item['avg_completion']:.2%} |\n"
             )
 

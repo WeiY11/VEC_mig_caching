@@ -166,9 +166,13 @@ def get_timestamped_filename(base_name: str, extension: str = ".json") -> str:
 class SingleAgentTrainingEnvironment:
     """单智能体训练环境基类"""
     
-    def __init__(self, algorithm: str):
+    def __init__(self, algorithm: str, override_scenario: Optional[Dict[str, Any]] = None):
         self.algorithm = algorithm.upper()
         scenario_config = _build_scenario_config()
+        # 应用外部覆盖
+        if override_scenario:
+            scenario_config.update(override_scenario)
+            scenario_config['override_topology'] = True
         self.simulator = CompleteSystemSimulator(scenario_config)
         
         # 🤖 初始化自适应控制组件
@@ -176,11 +180,16 @@ class SingleAgentTrainingEnvironment:
         self.adaptive_migration_controller = AdaptiveMigrationController()
         print(f"🤖 已启用自适应缓存和迁移控制功能")
         
-        # 根据算法创建相应环境
+        # 从仿真器获取实际网络拓扑参数
+        num_vehicles = len(self.simulator.vehicles)
+        num_rsus = len(self.simulator.rsus)
+        num_uavs = len(self.simulator.uavs)
+        
+        # 根据算法创建相应环境（传入拓扑参数以动态调整状态维度）
         if self.algorithm == "DDPG":
             self.agent_env = DDPGEnvironment()
         elif self.algorithm == "TD3":
-            self.agent_env = TD3Environment()
+            self.agent_env = TD3Environment(num_vehicles, num_rsus, num_uavs)
         elif self.algorithm == "DQN":
             self.agent_env = DQNEnvironment()
         elif self.algorithm == "PPO":
@@ -873,7 +882,7 @@ class SingleAgentTrainingEnvironment:
 
 def train_single_algorithm(algorithm: str, num_episodes: Optional[int] = None, eval_interval: Optional[int] = None, 
                           save_interval: Optional[int] = None, enable_realtime_vis: bool = False, 
-                          vis_port: int = 5000) -> Dict:
+                          vis_port: int = 5000, silent_mode: bool = False, override_scenario: Optional[Dict[str, Any]] = None) -> Dict:
     """训练单个算法
     
     Args:
@@ -883,6 +892,7 @@ def train_single_algorithm(algorithm: str, num_episodes: Optional[int] = None, e
         save_interval: 保存间隔
         enable_realtime_vis: 是否启用实时可视化
         vis_port: 可视化服务器端口
+        silent_mode: 静默模式，跳过用户交互（用于批量实验）
     """
     # 使用配置中的默认值
     if num_episodes is None:
@@ -916,8 +926,8 @@ def train_single_algorithm(algorithm: str, num_episodes: Optional[int] = None, e
     print(f"\n>> 开始{algorithm}单智能体算法训练")
     print("=" * 60)
     
-    # 创建训练环境
-    training_env = SingleAgentTrainingEnvironment(algorithm)
+    # 创建训练环境（应用额外场景覆盖）
+    training_env = SingleAgentTrainingEnvironment(algorithm, override_scenario=override_scenario)
     
     # 🌐 创建实时可视化器（如果启用）
     visualizer = None
@@ -1109,7 +1119,7 @@ def train_single_algorithm(algorithm: str, num_episodes: Optional[int] = None, e
         print(f"⚠️ 中央调度报告获取失败: {e}")
     
     # 保存训练结果
-    results = save_single_training_results(algorithm, training_env, total_training_time)
+    results = save_single_training_results(algorithm, training_env, total_training_time, override_scenario=override_scenario)
     
     # 绘制训练曲线
     plot_single_training_curves(algorithm, training_env)
@@ -1142,27 +1152,35 @@ def train_single_algorithm(algorithm: str, num_episodes: Optional[int] = None, e
         print(f"   - 自适应控制器分析")
         print(f"   - 优化建议与结论")
         
-        # 询问用户是否保存报告
-        print("\n" + "-" * 60)
-        save_choice = input("💾 是否保存HTML训练报告? (y/n, 默认y): ").strip().lower()
-        
-        if save_choice in ['', 'y', 'yes', '是']:
+        # 询问用户是否保存报告（静默模式下自动保存）
+        if silent_mode:
+            # 静默模式：自动保存，不打开浏览器
             if report_generator.save_report(html_content, report_path):
-                print(f"✅ 报告已保存到: {report_path}")
-                print(f"💡 提示: 使用浏览器打开该文件即可查看完整报告")
-                
-                # 尝试自动打开报告（可选）
-                auto_open = input("🌐 是否在浏览器中打开报告? (y/n, 默认n): ").strip().lower()
-                if auto_open in ['y', 'yes', '是']:
-                    import webbrowser
-                    abs_path = os.path.abspath(report_path)
-                    webbrowser.open(f'file://{abs_path}')
-                    print("✅ 报告已在浏览器中打开")
+                print(f"✅ 报告已自动保存到: {report_path}")
             else:
                 print("❌ 报告保存失败")
         else:
-            print("ℹ️ 报告未保存")
-            print(f"💡 如需查看，请手动运行报告生成功能")
+            # 交互模式：询问用户
+            print("\n" + "-" * 60)
+            save_choice = input("💾 是否保存HTML训练报告? (y/n, 默认y): ").strip().lower()
+            
+            if save_choice in ['', 'y', 'yes', '是']:
+                if report_generator.save_report(html_content, report_path):
+                    print(f"✅ 报告已保存到: {report_path}")
+                    print(f"💡 提示: 使用浏览器打开该文件即可查看完整报告")
+                    
+                    # 尝试自动打开报告（可选）
+                    auto_open = input("🌐 是否在浏览器中打开报告? (y/n, 默认n): ").strip().lower()
+                    if auto_open in ['y', 'yes', '是']:
+                        import webbrowser
+                        abs_path = os.path.abspath(report_path)
+                        webbrowser.open(f'file://{abs_path}')
+                        print("✅ 报告已在浏览器中打开")
+                else:
+                    print("❌ 报告保存失败")
+            else:
+                print("ℹ️ 报告未保存")
+                print(f"💡 如需查看，请手动运行报告生成功能")
     
     except Exception as e:
         print(f"⚠️ 生成训练报告时出错: {e}")
@@ -1252,26 +1270,134 @@ def evaluate_single_model(algorithm: str, training_env: SingleAgentTrainingEnvir
     }
 
 
-def save_single_training_results(algorithm: str, training_env: SingleAgentTrainingEnvironment, 
-                                training_time: float) -> Dict:
-    """保存训练结果"""
+def save_single_training_results(algorithm: str, training_env: SingleAgentTrainingEnvironment,
+                                training_time: float,
+                                override_scenario: Optional[Dict[str, Any]] = None) -> Dict:
+    """保存训练结果（包含所有系统参数）"""
     # 生成时间戳
     timestamp = generate_timestamp()
-    
+
     # 🔧 同时提供Episode总奖励和Per-Step平均奖励
     recent_episode_reward = training_env.performance_tracker['recent_rewards'].get_average()
     avg_step_reward = recent_episode_reward / config.experiment.max_steps_per_episode
-    
+
+    # 获取网络拓扑信息
+    num_vehicles = len(training_env.simulator.vehicles)
+    num_rsus = len(training_env.simulator.rsus)
+    num_uavs = len(training_env.simulator.uavs)
+    state_dim = getattr(training_env.agent_env, 'state_dim', 'N/A')
+
+    # 保存完整系统配置
+    from config.system_config import config as system_config
+    from config.algorithm_config import AlgorithmConfig
+
+    algo_config = AlgorithmConfig()
+
     results = {
         'algorithm': algorithm,
         'agent_type': 'single_agent',
         'timestamp': timestamp,
         'training_start_time': datetime.now().isoformat(),
+
+        # 网络拓扑信息
+        'network_topology': {
+            'num_vehicles': num_vehicles,
+            'num_rsus': num_rsus,
+            'num_uavs': num_uavs,
+        },
+        'state_dim': state_dim,
+        'override_scenario': override_scenario,
+
+        # 训练基本信息
         'training_config': {
             'num_episodes': len(training_env.episode_rewards),
             'training_time_hours': training_time / 3600,
-            'max_steps_per_episode': config.experiment.max_steps_per_episode
+            'max_steps_per_episode': config.experiment.max_steps_per_episode,
+            'batch_size': system_config.rl.batch_size,
+            'memory_size': system_config.rl.memory_size,
+            'warmup_steps': getattr(system_config.rl, 'warmup_steps', 1000)
         },
+
+        # 系统拓扑配置
+        'system_config': {
+            'num_vehicles': system_config.num_vehicles,
+            'num_rsus': system_config.num_rsus,
+            'num_uavs': system_config.num_uavs,
+            'simulation_time': system_config.simulation_time,
+            'time_slot': system_config.time_slot,
+            'device': system_config.device,
+            'random_seed': system_config.random_seed
+        },
+
+        # 网络配置
+        'network_config': {
+            'bandwidth': system_config.network.bandwidth,
+            'carrier_frequency': system_config.network.carrier_frequency,
+            'coverage_radius': system_config.network.coverage_radius,
+            'area_width': system_config.network.area_width,
+            'area_height': system_config.network.area_height
+        },
+
+        # 计算能力配置
+        'compute_config': {
+            'vehicle_cpu_freq': system_config.compute.vehicle_cpu_freq,
+            'rsu_cpu_freq': system_config.compute.rsu_cpu_freq,
+            'uav_cpu_freq': system_config.compute.uav_cpu_freq,
+            'vehicle_memory': system_config.compute.vehicle_memory_size,
+            'rsu_memory': system_config.compute.rsu_memory_size,
+            'uav_memory': system_config.compute.uav_memory_size
+        },
+
+        # 任务配置
+        'task_config': {
+            'arrival_rate': system_config.task.arrival_rate,
+            'data_size_range': system_config.task.data_size_range,
+            'compute_cycles_range': system_config.task.compute_cycles_range,
+            'deadline_range': system_config.task.deadline_range,
+            'priority_levels': system_config.task.num_priority_levels
+        },
+
+        # 迁移配置
+        'migration_config': {
+            'migration_bandwidth': system_config.migration.migration_bandwidth,
+            'migration_threshold': system_config.migration.migration_threshold,
+            'cooldown_period': system_config.migration.cooldown_period,
+            'rsu_overload_threshold': system_config.migration.rsu_overload_threshold,
+            'uav_overload_threshold': system_config.migration.uav_overload_threshold
+        },
+
+        # 缓存配置
+        'cache_config': {
+            'vehicle_cache_capacity': system_config.cache.vehicle_cache_capacity,
+            'rsu_cache_capacity': system_config.cache.rsu_cache_capacity,
+            'uav_cache_capacity': system_config.cache.uav_cache_capacity,
+            'cache_policy': system_config.cache.cache_replacement_policy
+        },
+
+        # 通信配置（3GPP标准）
+        'communication_config': {
+            'vehicle_tx_power': system_config.communication.vehicle_tx_power,
+            'rsu_tx_power': system_config.communication.rsu_tx_power,
+            'uav_tx_power': system_config.communication.uav_tx_power,
+            'total_bandwidth': system_config.communication.total_bandwidth,
+            'carrier_frequency': system_config.communication.carrier_frequency,
+            'antenna_gain_rsu': system_config.communication.antenna_gain_rsu,
+            'antenna_gain_vehicle': system_config.communication.antenna_gain_vehicle,
+            'antenna_gain_uav': system_config.communication.antenna_gain_uav
+        },
+
+        # 奖励权重配置
+        'reward_config': {
+            'reward_weight_delay': system_config.rl.reward_weight_delay,
+            'reward_weight_energy': system_config.rl.reward_weight_energy,
+            'reward_penalty_dropped': system_config.rl.reward_penalty_dropped,
+            'reward_weight_loss': system_config.rl.reward_weight_loss
+        },
+
+        # 算法特定配置
+        'algorithm_config': algo_config.get_algorithm_config(algorithm),
+
+        # 训练数据
         'episode_rewards': training_env.episode_rewards,
         'episode_metrics': training_env.episode_metrics,
         'final_performance': {
@@ -1281,6 +1407,13 @@ def save_single_training_results(algorithm: str, training_env: SingleAgentTraini
             'avg_reward': avg_step_reward,  # 向后兼容：默认使用per-step（与可视化一致）
             'avg_delay': training_env.performance_tracker['recent_delays'].get_average(),
             'avg_completion': training_env.performance_tracker['recent_completion'].get_average()
+        },
+
+        # 环境状态信息
+        'environment_info': {
+            'state_dim': getattr(training_env.agent_env, 'state_dim', 'N/A'),
+            'action_dim': getattr(training_env.agent_env, 'action_dim', 'N/A'),
+            'num_agents': 1  # 单智能体
         }
     }
     

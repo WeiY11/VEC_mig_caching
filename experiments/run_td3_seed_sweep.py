@@ -90,7 +90,13 @@ def _run_single_seed(seed: int, episodes: int, eval_interval: int | None, save_i
     os.environ["RANDOM_SEED"] = str(seed)
     _apply_global_seed_from_env()
     try:
-        return train_single_algorithm("TD3", num_episodes=episodes, eval_interval=eval_interval, save_interval=save_interval)
+        return train_single_algorithm(
+            "TD3",
+            num_episodes=episodes,
+            eval_interval=eval_interval,
+            save_interval=save_interval,
+            silent_mode=True  # 🔧 启用静默模式，避免用户交互阻塞批量实验
+        )
     finally:
         if previous_seed is not None:
             os.environ["RANDOM_SEED"] = previous_seed

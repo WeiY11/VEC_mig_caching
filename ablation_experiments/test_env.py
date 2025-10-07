@@ -43,26 +43,32 @@ def test_all():
     except Exception as e:
         print(f"  失败: {e}")
     
-    # 测试3: TD3环境
-    print("\n[测试3] TD3环境创建...")
+    # 测试3: 系统仿真器
+    print("\n[测试3] 系统仿真器...")
     try:
-        from single_agent.td3 import TD3Environment
-        td3_env = TD3Environment()
-        print(f"  成功: 状态维度={td3_env.state_dim}, 动作维度={td3_env.action_dim}")
+        from evaluation.system_simulator import CompleteSystemSimulator
+        simulator = CompleteSystemSimulator()
+        simulator.reset()
+        state_dict = simulator.get_system_state()
+        print(f"  成功: 车辆={state_dict.get('vehicles')}, RSU={state_dict.get('rsus')}, UAV={state_dict.get('uavs')}")
         success_count += 1
     except Exception as e:
         print(f"  失败: {e}")
         import traceback
         traceback.print_exc()
     
-    # 测试4: 系统仿真器
-    print("\n[测试4] 系统仿真器...")
+    # 测试4: TD3环境
+    print("\n[测试4] TD3环境创建...")
     try:
         from evaluation.system_simulator import CompleteSystemSimulator
+        from single_agent.td3 import TD3Environment
         simulator = CompleteSystemSimulator()
-        simulator.reset()
-        states = simulator.get_all_node_states()
-        print(f"  成功: 节点数={len(states)}")
+        td3_env = TD3Environment(
+            num_vehicles=len(simulator.vehicles),
+            num_rsus=len(simulator.rsus),
+            num_uavs=len(simulator.uavs)
+        )
+        print(f"  成功: 状态维度={td3_env.state_dim}, 动作维度={td3_env.action_dim}")
         success_count += 1
     except Exception as e:
         print(f"  失败: {e}")

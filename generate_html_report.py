@@ -45,36 +45,78 @@ def create_mock_training_env(results: dict):
                 'recent_energy': type('obj', (), {'get_average': lambda: 0})(),
                 'recent_completion': type('obj', (), {'get_average': lambda: results_data.get('final_performance', {}).get('avg_completion', 0)})()
             }
-            
+
+            # 模拟智能体环境
+            class MockAgentEnv:
+                def __init__(self):
+                    self.state_dim = results_data.get('state_dim', 'N/A')
+                    self.action_dim = results_data.get('environment_info', {}).get('action_dim', 'N/A')
+
+                    # 模拟神经网络
+                    class MockActor:
+                        def __init__(self):
+                            self.fc1 = type('obj', (), {'out_features': 256})()
+                            self.fc2 = type('obj', (), {'out_features': 128})()
+
+                    class MockCritic:
+                        def __init__(self):
+                            self.fc1 = type('obj', (), {'out_features': 256})()
+                            self.fc2 = type('obj', (), {'out_features': 128})()
+
+                    self.actor = MockActor()
+                    self.critic = MockCritic()
+
+                    # 模拟优化器
+                    self.actor_optimizer = type('obj', (), {'param_groups': [{'lr': 0.0003}]})()
+                    self.critic_optimizer = type('obj', (), {'param_groups': [{'lr': 0.0003}]})()
+
+                    # 模拟超参数
+                    self.gamma = 0.99
+                    self.tau = 0.005
+                    self.policy_noise = 0.1
+                    self.noise_clip = 0.3
+                    self.policy_delay = 2
+
+            self.agent_env = MockAgentEnv()
+
+            # 模拟仿真器
+            class MockSimulator:
+                def __init__(self):
+                    self.vehicles = []
+                    self.rsus = []
+                    self.uavs = []
+
+            self.simulator = MockSimulator()
+
             # 模拟自适应控制器
             class MockController:
                 def get_cache_metrics(self):
                     return {'effectiveness': 0.85, 'utilization': 0.72, 'agent_params': {}}
                 def get_migration_metrics(self):
                     return {'effectiveness': 0.78, 'decision_quality': 0.83, 'agent_params': {}}
-            
+
             self.adaptive_cache_controller = MockController()
             self.adaptive_migration_controller = MockController()
-    
+
     return MockTrainingEnv(results)
 
 
 def generate_report_from_json(json_path: str, output_path: str = None, open_browser: bool = False):
     """从JSON文件生成HTML报告"""
-    print(f"📖 读取训练结果: {json_path}")
+    print(f"Reading training results: {json_path}")
     results = load_training_results(json_path)
-    
+
     # 提取信息
     algorithm = results.get('algorithm', 'Unknown')
     training_time = results.get('training_config', {}).get('training_time_hours', 0) * 3600
-    
+
     # 创建模拟环境
     training_env = create_mock_training_env(results)
-    
+
     # 生成报告
-    print("📝 生成HTML报告...")
+    print("Generating HTML report...")
     generator = HTMLReportGenerator()
-    
+
     html_content = generator.generate_full_report(
         algorithm=algorithm,
         training_env=training_env,
@@ -82,31 +124,31 @@ def generate_report_from_json(json_path: str, output_path: str = None, open_brow
         results=results,
         simulator_stats={}  # 如果JSON中有，可以提取
     )
-    
+
     # 确定输出路径
     if output_path is None:
         # 自动生成输出路径
         dir_name = os.path.dirname(json_path)
         timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
         output_path = os.path.join(dir_name, f"training_report_{timestamp}.html")
-    
+
     # 保存报告
-    print(f"💾 保存报告到: {output_path}")
+    print(f"Saving report to: {output_path}")
     if generator.save_report(html_content, output_path):
-        print(f"✅ 报告保存成功!")
-        
+        print(f"Report saved successfully!")
+
         # 打开浏览器
         if open_browser:
-            print("🌐 在浏览器中打开报告...")
+            print("Opening report in browser...")
             abs_path = os.path.abspath(output_path)
             webbrowser.open(f'file://{abs_path}')
-            print("✅ 报告已在浏览器中打开")
+            print("Report opened in browser")
         else:
-            print(f"💡 使用浏览器打开文件查看: {output_path}")
-        
+            print(f"Open file in browser to view: {output_path}")
+
         return True
     else:
-        print("❌ 报告保存失败")
+        print("Failed to save report")
         return False
 
 
