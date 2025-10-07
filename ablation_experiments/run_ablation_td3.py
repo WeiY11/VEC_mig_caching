@@ -15,6 +15,8 @@ TD3算法消融实验主脚本
 标准实验: python run_ablation_td3.py --episodes 200
 完整实验: python run_ablation_td3.py --episodes 500 --full
 单独配置: python run_ablation_td3.py --config No-Cache --episodes 100
+cd ablation_experiments
+python run_ablation_td3.py --episodes 200
 """
 
 import os
@@ -26,6 +28,12 @@ import numpy as np
 from datetime import datetime
 from typing import Dict, List
 from pathlib import Path
+
+# 修复Windows编码问题
+if sys.platform == 'win32':
+    import io
+    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
+    sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', errors='replace')
 
 # 添加父目录到路径，以导入主项目模块
 parent_dir = Path(__file__).parent.parent
@@ -95,11 +103,9 @@ class TD3AblationExperiment:
         # 应用消融配置
         ablation_config.apply_to_system()
         
-        # 创建TD3环境
-        td3_env = TD3Environment()
-        
-        # 创建系统仿真器
-        simulator = CompleteSystemSimulator()
+        # 创建训练环境（使用SingleAgentTrainingEnvironment）
+        from train_single_agent import SingleAgentTrainingEnvironment
+        training_env = SingleAgentTrainingEnvironment("TD3")
         
         # 训练统计
         episode_rewards = []
@@ -113,57 +119,20 @@ class TD3AblationExperiment:
         
         # ========== 训练循环 ==========
         for episode in range(1, num_episodes + 1):
-            # 重置环境
-            simulator.reset()
+            # 运行一个完整的Episode
+            episode_result = training_env.run_episode(episode)
             
-            # Episode统计
-            episode_reward = 0
-            episode_steps = 0
+            # 收集指标
+            episode_rewards.append(episode_result['avg_reward'])
             
-            # 运行Episode
-            for step in range(config.experiment.max_steps_per_episode):
-                # 获取状态
-                node_states = simulator.get_all_node_states()
-                system_metrics = simulator.get_system_metrics()
-                state = td3_env.get_state_vector(node_states, system_metrics)
-                
-                # 选择动作
-                actions = td3_env.get_actions(state, training=True)
-                
-                # 执行动作
-                step_result = simulator.step(actions)
-                
-                # 获取下一状态
-                next_node_states = simulator.get_all_node_states()
-                next_system_metrics = simulator.get_system_metrics()
-                next_state = td3_env.get_state_vector(next_node_states, next_system_metrics)
-                
-                # 计算奖励
-                reward = td3_env.calculate_reward(
-                    next_system_metrics,
-                    step_result.get('cache_metrics'),
-                    step_result.get('migration_metrics')
-                )
-                
-                # 存储经验并更新
-                td3_env.train_step(state, actions['vehicle_agent'], reward, next_state, False)
-                
-                episode_reward += reward
-                episode_steps += 1
-            
-            # Episode结束，收集指标
-            final_metrics = simulator.get_system_metrics()
-            episode_rewards.append(episode_reward / episode_steps)
-            episode_delays.append(final_metrics.get('avg_task_delay', 0))
-            episode_energies.append(final_metrics.get('total_energy_consumption', 0))
-            episode_completion_rates.append(final_metrics.get('task_completion_rate', 0))
+            system_metrics = episode_result.get('system_metrics', {})
+            episode_delays.append(system_metrics.get('avg_task_delay', 0))
+            episode_energies.append(system_metrics.get('total_energy_consumption', 0))
+            episode_completion_rates.append(system_metrics.get('task_completion_rate', 0))
             
             # 缓存和迁移统计
-            cache_stats = simulator.get_cache_statistics()
-            migration_stats = simulator.get_migration_statistics()
-            
-            cache_hit_rate = cache_stats.get('cache_hit_rate', 0) if cache_stats else 0
-            migration_success_rate = migration_stats.get('migration_success_rate', 0) if migration_stats else 0
+            cache_hit_rate = system_metrics.get('cache_hit_rate', 0)
+            migration_success_rate = system_metrics.get('migration_success_rate', 0)
             
             episode_cache_hits.append(cache_hit_rate)
             episode_migration_success.append(migration_success_rate)
@@ -434,8 +403,29 @@ class TD3AblationExperiment:
         # 生成训练曲线图
         self._generate_training_curves()
     
+    def _smooth_curve(self, data, window_size=20):
+        """
+        滑动平均平滑曲线
+        
+        【参数】
+        - data: 原始数据
+        - window_size: 滑动窗口大小
+        
+        【返回】平滑后的数据
+        """
+        if len(data) < window_size:
+            return data
+        
+        smoothed = []
+        for i in range(len(data)):
+            start = max(0, i - window_size + 1)
+            end = i + 1
+            smoothed.append(np.mean(data[start:end]))
+        
+        return smoothed
+    
     def _generate_training_curves(self):
-        """生成训练曲线图"""
+        """生成训练曲线图（添加滑动平滑）"""
         try:
             import matplotlib.pyplot as plt
         except ImportError:
@@ -443,38 +433,52 @@ class TD3AblationExperiment:
         
         fig, axes = plt.subplots(2, 2, figsize=(14, 10))
         
-        for config_name, result in self.results.items():
-            # 时延曲线
-            axes[0, 0].plot(result['episode_delays'], label=config_name, alpha=0.7)
-            # 能耗曲线
-            axes[0, 1].plot(result['episode_energies'], label=config_name, alpha=0.7)
-            # 完成率曲线
-            axes[1, 0].plot(result['episode_completion_rates'], label=config_name, alpha=0.7)
-            # 奖励曲线
-            axes[1, 1].plot(result['episode_rewards'], label=config_name, alpha=0.7)
+        # 滑动窗口大小
+        window_size = 20
         
-        axes[0, 0].set_title('时延训练曲线', fontweight='bold')
-        axes[0, 0].set_xlabel('Episode')
-        axes[0, 0].set_ylabel('平均时延 (s)')
-        axes[0, 0].legend(fontsize=8)
+        for config_name, result in self.results.items():
+            # 时延曲线（原始+平滑）
+            delays_raw = result['episode_delays']
+            delays_smooth = self._smooth_curve(delays_raw, window_size)
+            axes[0, 0].plot(delays_smooth, label=config_name, alpha=0.8, linewidth=1.5)
+            
+            # 能耗曲线（原始+平滑）
+            energies_raw = result['episode_energies']
+            energies_smooth = self._smooth_curve(energies_raw, window_size)
+            axes[0, 1].plot(energies_smooth, label=config_name, alpha=0.8, linewidth=1.5)
+            
+            # 完成率曲线（原始+平滑）
+            completions_raw = result['episode_completion_rates']
+            completions_smooth = self._smooth_curve(completions_raw, window_size)
+            axes[1, 0].plot(completions_smooth, label=config_name, alpha=0.8, linewidth=1.5)
+            
+            # 奖励曲线（原始+平滑）⭐ 重点优化
+            rewards_raw = result['episode_rewards']
+            rewards_smooth = self._smooth_curve(rewards_raw, window_size)
+            axes[1, 1].plot(rewards_smooth, label=config_name, alpha=0.8, linewidth=1.5)
+        
+        axes[0, 0].set_title('时延训练曲线 (滑动平均)', fontweight='bold', fontsize=12)
+        axes[0, 0].set_xlabel('Episode', fontsize=10)
+        axes[0, 0].set_ylabel('平均时延 (s)', fontsize=10)
+        axes[0, 0].legend(fontsize=8, loc='upper right')
         axes[0, 0].grid(alpha=0.3)
         
-        axes[0, 1].set_title('能耗训练曲线', fontweight='bold')
-        axes[0, 1].set_xlabel('Episode')
-        axes[0, 1].set_ylabel('总能耗 (J)')
-        axes[0, 1].legend(fontsize=8)
+        axes[0, 1].set_title('能耗训练曲线 (滑动平均)', fontweight='bold', fontsize=12)
+        axes[0, 1].set_xlabel('Episode', fontsize=10)
+        axes[0, 1].set_ylabel('总能耗 (J)', fontsize=10)
+        axes[0, 1].legend(fontsize=8, loc='upper right')
         axes[0, 1].grid(alpha=0.3)
         
-        axes[1, 0].set_title('完成率训练曲线', fontweight='bold')
-        axes[1, 0].set_xlabel('Episode')
-        axes[1, 0].set_ylabel('完成率')
-        axes[1, 0].legend(fontsize=8)
+        axes[1, 0].set_title('完成率训练曲线 (滑动平均)', fontweight='bold', fontsize=12)
+        axes[1, 0].set_xlabel('Episode', fontsize=10)
+        axes[1, 0].set_ylabel('完成率', fontsize=10)
+        axes[1, 0].legend(fontsize=8, loc='lower right')
         axes[1, 0].grid(alpha=0.3)
         
-        axes[1, 1].set_title('奖励训练曲线', fontweight='bold')
-        axes[1, 1].set_xlabel('Episode')
-        axes[1, 1].set_ylabel('平均奖励')
-        axes[1, 1].legend(fontsize=8)
+        axes[1, 1].set_title('奖励训练曲线 (滑动平均, 窗口=20)', fontweight='bold', fontsize=12)
+        axes[1, 1].set_xlabel('Episode', fontsize=10)
+        axes[1, 1].set_ylabel('平均奖励', fontsize=10)
+        axes[1, 1].legend(fontsize=8, loc='lower right')
         axes[1, 1].grid(alpha=0.3)
         
         plt.tight_layout()

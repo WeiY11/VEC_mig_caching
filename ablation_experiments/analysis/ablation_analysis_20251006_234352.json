@@ -1,0 +1,54 @@
+{
+  "baseline": {
+    "config_name": "Full-System",
+    "description": "完整系统（所有模块启用）- 基准配置",
+    "num_episodes": 5,
+    "random_seed": 42,
+    "experiment_time": 2.612064838409424,
+    "avg_delay": 0.24064571581575875,
+    "std_delay": 0.0017536736802524339,
+    "avg_energy": 950.9278142113222,
+    "std_energy": 47.178240994614576,
+    "avg_completion_rate": 0.9447207375005977,
+    "avg_cache_hit_rate": 0.5428571428571428,
+    "avg_migration_success_rate": 0.8214649978259113,
+    "episode_rewards": [
+      -362.8139041545384,
+      -401.2387243016646,
+      -367.32037079615446,
+      -406.7881625090942,
+      -393.9489911716682
+    ],
+    "episode_delays": [
+      0.22941253782263454,
+      0.23740152212742296,
+      0.2385596000509774,
+      0.2405272454689774,
+      0.24285030192732132
+    ],
+    "episode_energies": [
+      853.1892157060091,
+      947.8022541640427,
+      885.2072197382065,
+      993.7521583964894,
+      973.8240644992711
+    ],
+    "episode_completion_rates": [
+      0.9473067915690867,
+      0.9477866061293984,
+      0.9422382671480144,
+      0.946843853820598,
+      0.9450800915331807
+    ],
+    "config": {
+      "name": "Full-System",
+      "description": "完整系统（所有模块启用）- 基准配置",
+      "enable_cache": true,
+      "enable_migration": true,
+      "enable_priority": true,
+      "enable_adaptive": true,
+      "enable_collaboration": true
+    }
+  },
+  "comparisons": {}
+}

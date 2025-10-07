@@ -3,33 +3,50 @@
 支持DDPG、TD3、DQN、PPO、SAC等算法的训练和比较
 
 使用方法:
+python train_single_agent.py --algorithm TD3 --episodes 200
+python train_single_agent.py --algorithm TD3 --episodes 200 --seed 123 --num-vehicles 16
 python train_single_agent.py --algorithm DDPG --episodes 200
-python train_single_agent.py --algorithm TD3 --episodes 200  
-python train_single_agent.py --algorithm DQN --episodes 200
-python train_single_agent.py --algorithm PPO --episodes 200
-python train_single_agent.py --algorithm SAC --episodes 200
+python train_single_agent.py --algorithm PPO --episodes 150 --seed 3407
 python train_single_agent.py --compare --episodes 200  # 比较所有算法
 
 🌐 实时可视化 (新功能):
 python train_single_agent.py --algorithm TD3 --episodes 200 --realtime-vis
 python train_single_agent.py --algorithm DDPG --episodes 100 --realtime-vis --vis-port 8080
+
+📊 批量实验脚本:
+python experiments/run_td3_seed_sweep.py --seeds 42 2025 3407 --episodes 200
+python experiments/run_td3_vehicle_sweep.py --vehicles 8 12 16 --episodes 200
 """ 
 import os
 import sys
+import random
 
 # 🔧 修复Windows编码问题
 if sys.platform == 'win32':
-    import io
-    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
-    sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', errors='replace')
+    try:
+        if hasattr(sys.stdout, 'reconfigure'):
+            sys.stdout.reconfigure(encoding='utf-8', errors='replace')
+        elif hasattr(sys.stdout, 'buffer'):
+            import io
+            sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace', line_buffering=True)
+    except Exception:
+        pass
+    try:
+        if hasattr(sys.stderr, 'reconfigure'):
+            sys.stderr.reconfigure(encoding='utf-8', errors='replace')
+        elif hasattr(sys.stderr, 'buffer'):
+            import io
+            sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', errors='replace', line_buffering=True)
+    except Exception:
+        pass
 
 import argparse
+import json
 import numpy as np
 import matplotlib.pyplot as plt
-import json
 import time
 from datetime import datetime
-from typing import Dict, List, Tuple, Optional
+from typing import Dict, List, Tuple, Optional, Any
 
 # 导入核心模块
 from config import config
@@ -55,6 +72,74 @@ try:
 except ImportError:
     REALTIME_AVAILABLE = False
     print("⚠️  实时可视化功能不可用，请运行: pip install flask flask-socketio")
+
+# 尝试导入PyTorch以设置随机种子；如果不可用则跳过
+try:
+    import torch
+except ImportError:  # pragma: no cover - 容错处理
+    torch = None
+
+
+def _apply_global_seed_from_env():
+    """根据环境变量RANDOM_SEED设置随机种子，确保可重复性"""
+    seed_env = os.environ.get('RANDOM_SEED')
+    if not seed_env:
+        return
+    try:
+        seed = int(seed_env)
+    except ValueError:
+        print(f"⚠️  RANDOM_SEED 环境变量无效: {seed_env}")
+        return
+
+    random.seed(seed)
+    np.random.seed(seed)
+    if torch is not None:
+        torch.manual_seed(seed)
+        if torch.cuda.is_available():  # pragma: no cover - GPU可选
+            torch.cuda.manual_seed_all(seed)
+        torch.backends.cudnn.deterministic = True  # type: ignore[attr-defined]
+        torch.backends.cudnn.benchmark = False  # type: ignore[attr-defined]
+    config.random_seed = seed
+    os.environ['PYTHONHASHSEED'] = str(seed)
+    print(f"🔐 全局随机种子已设置为 {seed}")
+
+
+def _build_scenario_config() -> Dict[str, Any]:
+    """构建模拟环境配置，允许通过环境变量覆盖默认值"""
+    scenario = {
+        "num_vehicles": 12,
+        "num_rsus": 4,
+        "num_uavs": 2,
+        "task_arrival_rate": 1.8,
+        "time_slot": 0.2,
+        "simulation_time": 1000,
+        "computation_capacity": 800,
+        "bandwidth": 15,
+        "cache_capacity": 80,
+        "transmission_power": 0.15,
+        "computation_power": 1.2,
+        "high_load_mode": True,
+        "task_complexity_multiplier": 1.5,
+        "rsu_load_divisor": 4.0,
+        "uav_load_divisor": 2.0,
+        "enhanced_task_generation": True,
+    }
+
+    override_env = os.environ.get('TRAINING_SCENARIO_OVERRIDES')
+    if override_env:
+        try:
+            overrides = json.loads(override_env)
+            if isinstance(overrides, dict):
+                scenario.update(overrides)
+            else:
+                print("⚠️  TRAINING_SCENARIO_OVERRIDES 需为JSON对象，已忽略。")
+        except json.JSONDecodeError as exc:
+            print(f"⚠️  TRAINING_SCENARIO_OVERRIDES 解析失败: {exc}")
+
+    return scenario
+
+
+_apply_global_seed_from_env()
 
 
 def generate_timestamp() -> str:
@@ -83,7 +168,8 @@ class SingleAgentTrainingEnvironment:
     
     def __init__(self, algorithm: str):
         self.algorithm = algorithm.upper()
-        self.simulator = CompleteSystemSimulator({"num_vehicles": 12, "num_rsus": 4, "num_uavs": 2, "task_arrival_rate": 1.8, "time_slot": 0.2, "simulation_time": 1000, "computation_capacity": 800, "bandwidth": 15, "cache_capacity": 80, "transmission_power": 0.15, "computation_power": 1.2, "high_load_mode": True, "task_complexity_multiplier": 1.5, "rsu_load_divisor": 4.0, "uav_load_divisor": 2.0, "enhanced_task_generation": True})
+        scenario_config = _build_scenario_config()
+        self.simulator = CompleteSystemSimulator(scenario_config)
         
         # 🤖 初始化自适应控制组件
         self.adaptive_cache_controller = AdaptiveCacheController()
@@ -718,6 +804,26 @@ class SingleAgentTrainingEnvironment:
             # 默认18维零动作
             return np.zeros(18, dtype=np.float32)
     
+    def _build_actions_from_vector(self, action_vector: np.ndarray) -> Dict[str, np.ndarray]:
+        """将18维连续动作向量恢复为仿真器需要的动作字典"""
+        import numpy as np
+
+        if not isinstance(action_vector, np.ndarray):
+            action_vector = np.array(action_vector, dtype=np.float32)
+
+        if action_vector.size < 18:
+            padded = np.zeros(18, dtype=np.float32)
+            padded[:action_vector.size] = action_vector
+            action_vector = padded
+        else:
+            action_vector = action_vector.astype(np.float32)[:18]
+
+        return {
+            'vehicle_agent': action_vector,
+            'rsu_agent': action_vector[3:9],
+            'uav_agent': action_vector[9:11]
+        }
+
     def _encode_discrete_action(self, actions_dict) -> int:
         """将动作字典编码为离散动作索引"""
         # 处理可能的不同输入类型
@@ -1287,11 +1393,23 @@ def main():
     parser.add_argument('--eval_interval', type=int, default=None, help=f'评估间隔 (默认: {config.experiment.eval_interval})')
     parser.add_argument('--save_interval', type=int, default=None, help=f'保存间隔 (默认: {config.experiment.save_interval})')
     parser.add_argument('--compare', action='store_true', help='比较所有算法')
+    parser.add_argument('--seed', type=int, default=None, help='覆盖随机种子 (默认读取config或环境变量)')
+    parser.add_argument('--num-vehicles', type=int, default=None, help='覆盖车辆数量用于实验')
     # 🌐 实时可视化参数
     parser.add_argument('--realtime-vis', action='store_true', help='启用实时可视化')
     parser.add_argument('--vis-port', type=int, default=5000, help='实时可视化服务器端口 (默认: 5000)')
     
     args = parser.parse_args()
+
+    if args.seed is not None:
+        os.environ['RANDOM_SEED'] = str(args.seed)
+        _apply_global_seed_from_env()
+
+    if args.num_vehicles is not None:
+        overrides = {
+            "num_vehicles": args.num_vehicles,
+        }
+        os.environ['TRAINING_SCENARIO_OVERRIDES'] = json.dumps(overrides)
     
     # 创建结果目录
     os.makedirs("results/single_agent", exist_ok=True)
