@@ -50,6 +50,9 @@ class HTMLReportGenerator:
         # 1. 执行摘要
         html_parts.append(self._generate_executive_summary(algorithm, training_env, training_time, results))
         
+        # 🆕 1.5. 智能分析洞察（新增）
+        html_parts.append(self._generate_smart_insights(algorithm, training_env, results))
+        
         # 2. 训练配置
         html_parts.append(self._generate_training_config(results))
 
@@ -126,14 +129,44 @@ class HTMLReportGenerator:
         return '\n'.join(html_parts)
     
     def _generate_html_header(self, algorithm: str) -> str:
-        """生成HTML头部和CSS样式"""
+        """生成HTML头部和CSS样式（增强版 - 包含导航、深色模式、交互功能）"""
         return f"""<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>{algorithm} 训练报告 - {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}</title>
+    
+    <!-- 🆕 Plotly.js for interactive charts -->
+    <script src="https://cdn.plot.ly/plotly-2.27.0.min.js" charset="utf-8"></script>
+    
     <style>
+        /* ==================== 基础样式 ==================== */
+        :root {{
+            --primary-color: #667eea;
+            --secondary-color: #764ba2;
+            --success-color: #28a745;
+            --warning-color: #ffc107;
+            --danger-color: #dc3545;
+            --bg-gradient: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            --text-color: #333;
+            --bg-color: #ffffff;
+            --section-bg: #f8f9fa;
+            --border-color: #dee2e6;
+            --shadow: 0 2px 10px rgba(0,0,0,0.1);
+            --shadow-hover: 0 5px 15px rgba(0,0,0,0.2);
+        }}
+        
+        /* 🌙 深色模式变量 */
+        [data-theme="dark"] {{
+            --text-color: #e0e0e0;
+            --bg-color: #1a1a1a;
+            --section-bg: #2d2d2d;
+            --border-color: #404040;
+            --shadow: 0 2px 10px rgba(0,0,0,0.3);
+            --shadow-hover: 0 5px 15px rgba(0,0,0,0.5);
+        }}
+        
         * {{
             margin: 0;
             padding: 0;
@@ -143,25 +176,33 @@ class HTMLReportGenerator:
         body {{
             font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
             line-height: 1.6;
-            color: #333;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: var(--text-color);
+            background: var(--bg-gradient);
             padding: 20px;
+            transition: background-color 0.3s ease, color 0.3s ease;
         }}
         
         .container {{
             max-width: 1400px;
-            margin: 0 auto;
-            background: white;
+            margin: 0 auto 0 250px;  /* 🆕 为左侧导航留空间 */
+            background: var(--bg-color);
             border-radius: 15px;
             box-shadow: 0 20px 60px rgba(0,0,0,0.3);
             overflow: hidden;
+            transition: margin-left 0.3s ease, background-color 0.3s ease;
+        }}
+        
+        /* 🆕 导航栏收起时的样式 */
+        .container.nav-collapsed {{
+            margin-left: 20px;
         }}
         
         .header {{
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            background: var(--bg-gradient);
             color: white;
             padding: 40px;
             text-align: center;
+            position: relative;
         }}
         
         .header h1 {{
@@ -175,6 +216,39 @@ class HTMLReportGenerator:
             opacity: 0.9;
         }}
         
+        /* 🆕 工具栏（深色模式、导出等按钮） */
+        .toolbar {{
+            position: absolute;
+            top: 20px;
+            right: 20px;
+            display: flex;
+            gap: 10px;
+            z-index: 100;
+        }}
+        
+        .toolbar-btn {{
+            background: rgba(255,255,255,0.2);
+            border: 2px solid rgba(255,255,255,0.4);
+            color: white;
+            padding: 10px 20px;
+            border-radius: 25px;
+            cursor: pointer;
+            font-size: 0.9em;
+            font-weight: 600;
+            transition: all 0.3s ease;
+            backdrop-filter: blur(10px);
+        }}
+        
+        .toolbar-btn:hover {{
+            background: rgba(255,255,255,0.3);
+            border-color: rgba(255,255,255,0.6);
+            transform: translateY(-2px);
+        }}
+        
+        .toolbar-btn i {{
+            margin-right: 5px;
+        }}
+        
         .content {{
             padding: 40px;
         }}
@@ -182,23 +256,203 @@ class HTMLReportGenerator:
         .section {{
             margin-bottom: 40px;
             padding: 30px;
-            background: #f8f9fa;
+            background: var(--section-bg);
             border-radius: 10px;
-            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+            box-shadow: var(--shadow);
+            transition: all 0.3s ease;
         }}
         
+        /* 🆕 章节折叠功能 */
         .section-title {{
             font-size: 1.8em;
-            color: #667eea;
+            color: var(--primary-color);
             margin-bottom: 20px;
             padding-bottom: 10px;
-            border-bottom: 3px solid #667eea;
+            border-bottom: 3px solid var(--primary-color);
+            cursor: pointer;
+            user-select: none;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            transition: all 0.3s ease;
+        }}
+        
+        .section-title:hover {{
+            color: var(--secondary-color);
+            border-bottom-color: var(--secondary-color);
+        }}
+        
+        .section-title .toggle-icon {{
+            font-size: 0.7em;
+            transition: transform 0.3s ease;
+        }}
+        
+        .section-title.collapsed .toggle-icon {{
+            transform: rotate(-90deg);
+        }}
+        
+        .section-content {{
+            transition: max-height 0.3s ease, opacity 0.3s ease;
+            overflow: hidden;
+        }}
+        
+        .section-content.collapsed {{
+            max-height: 0 !important;
+            opacity: 0;
+            margin: 0;
+            padding: 0;
         }}
         
         .section-subtitle {{
             font-size: 1.3em;
-            color: #764ba2;
+            color: var(--secondary-color);
             margin: 25px 0 15px 0;
+        }}
+        
+        /* 🆕 浮动导航栏 */
+        .floating-nav {{
+            position: fixed;
+            left: 20px;
+            top: 20px;
+            width: 220px;
+            background: var(--bg-color);
+            border-radius: 15px;
+            box-shadow: var(--shadow-hover);
+            padding: 20px;
+            max-height: calc(100vh - 40px);
+            overflow-y: auto;
+            z-index: 1000;
+            transition: all 0.3s ease;
+        }}
+        
+        .floating-nav.collapsed {{
+            width: 60px;
+            padding: 15px;
+        }}
+        
+        .floating-nav.collapsed .nav-title,
+        .floating-nav.collapsed .nav-links {{
+            display: none;
+        }}
+        
+        .nav-header {{
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 15px;
+            padding-bottom: 10px;
+            border-bottom: 2px solid var(--border-color);
+        }}
+        
+        .nav-title {{
+            font-weight: 700;
+            color: var(--primary-color);
+            font-size: 1.1em;
+        }}
+        
+        .nav-toggle {{
+            background: none;
+            border: none;
+            font-size: 1.3em;
+            cursor: pointer;
+            color: var(--text-color);
+            padding: 5px;
+            transition: transform 0.3s ease;
+        }}
+        
+        .nav-toggle:hover {{
+            transform: scale(1.1);
+        }}
+        
+        .nav-links {{
+            list-style: none;
+        }}
+        
+        .nav-link {{
+            display: block;
+            padding: 10px 15px;
+            margin: 5px 0;
+            color: var(--text-color);
+            text-decoration: none;
+            border-radius: 8px;
+            transition: all 0.2s ease;
+            font-size: 0.95em;
+            border-left: 3px solid transparent;
+        }}
+        
+        .nav-link:hover {{
+            background: var(--section-bg);
+            border-left-color: var(--primary-color);
+            padding-left: 20px;
+        }}
+        
+        .nav-link.active {{
+            background: var(--bg-gradient);
+            color: white;
+            font-weight: 600;
+            border-left-color: white;
+        }}
+        
+        /* 🆕 返回顶部按钮 */
+        .back-to-top {{
+            position: fixed;
+            bottom: 30px;
+            right: 30px;
+            width: 50px;
+            height: 50px;
+            background: var(--bg-gradient);
+            color: white;
+            border: none;
+            border-radius: 50%;
+            font-size: 1.5em;
+            cursor: pointer;
+            box-shadow: var(--shadow-hover);
+            opacity: 0;
+            visibility: hidden;
+            transition: all 0.3s ease;
+            z-index: 999;
+        }}
+        
+        .back-to-top.visible {{
+            opacity: 1;
+            visibility: visible;
+        }}
+        
+        .back-to-top:hover {{
+            transform: translateY(-5px) scale(1.1);
+        }}
+        
+        /* 🆕 数据导出按钮组 */
+        .export-buttons {{
+            display: flex;
+            gap: 10px;
+            margin: 15px 0;
+            flex-wrap: wrap;
+        }}
+        
+        .export-btn {{
+            background: var(--primary-color);
+            color: white;
+            border: none;
+            padding: 10px 20px;
+            border-radius: 8px;
+            cursor: pointer;
+            font-size: 0.9em;
+            font-weight: 600;
+            transition: all 0.3s ease;
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+        }}
+        
+        .export-btn:hover {{
+            background: var(--secondary-color);
+            transform: translateY(-2px);
+            box-shadow: var(--shadow-hover);
+        }}
+        
+        .export-btn:active {{
+            transform: translateY(0);
         }}
         
         .metrics-grid {{
@@ -209,67 +463,104 @@ class HTMLReportGenerator:
         }}
         
         .metric-card {{
-            background: white;
+            background: var(--bg-color);
             padding: 20px;
             border-radius: 8px;
-            box-shadow: 0 2px 8px rgba(0,0,0,0.1);
-            border-left: 4px solid #667eea;
-            transition: transform 0.2s;
+            box-shadow: var(--shadow);
+            border-left: 4px solid var(--primary-color);
+            transition: all 0.3s ease;
         }}
         
         .metric-card:hover {{
             transform: translateY(-5px);
-            box-shadow: 0 5px 15px rgba(0,0,0,0.2);
+            box-shadow: var(--shadow-hover);
         }}
         
         .metric-label {{
             font-size: 0.9em;
-            color: #666;
+            color: var(--text-color);
+            opacity: 0.7;
             margin-bottom: 5px;
         }}
         
         .metric-value {{
             font-size: 2em;
             font-weight: bold;
-            color: #667eea;
+            color: var(--primary-color);
         }}
         
         .metric-unit {{
             font-size: 0.5em;
-            color: #999;
+            color: var(--text-color);
+            opacity: 0.6;
         }}
         
         .chart-container {{
             margin: 30px 0;
             text-align: center;
+            position: relative;
+        }}
+        
+        /* 🆕 图表下载按钮 */
+        .chart-download {{
+            position: absolute;
+            top: 10px;
+            right: 10px;
+            background: rgba(102, 126, 234, 0.9);
+            color: white;
+            border: none;
+            padding: 8px 15px;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 0.85em;
+            opacity: 0;
+            transition: opacity 0.3s ease;
+        }}
+        
+        .chart-container:hover .chart-download {{
+            opacity: 1;
         }}
         
         .chart-container img {{
             max-width: 100%;
             height: auto;
             border-radius: 8px;
-            box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+            box-shadow: var(--shadow);
+            transition: all 0.3s ease;
+        }}
+        
+        .chart-container img:hover {{
+            box-shadow: var(--shadow-hover);
         }}
         
         .chart-title {{
             font-size: 1.2em;
             margin-bottom: 15px;
-            color: #333;
+            color: var(--text-color);
             font-weight: 600;
+        }}
+        
+        /* 🆕 交互式图表容器 */
+        .plotly-chart {{
+            margin: 30px 0;
+            background: var(--bg-color);
+            border-radius: 8px;
+            padding: 15px;
+            box-shadow: var(--shadow);
         }}
         
         table {{
             width: 100%;
             border-collapse: collapse;
             margin: 20px 0;
-            background: white;
+            background: var(--bg-color);
             border-radius: 8px;
             overflow: hidden;
-            box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+            box-shadow: var(--shadow);
         }}
         
         th {{
-            background: #667eea;
+            background: var(--primary-color);
             color: white;
             padding: 15px;
             text-align: left;
@@ -278,11 +569,12 @@ class HTMLReportGenerator:
         
         td {{
             padding: 12px 15px;
-            border-bottom: 1px solid #eee;
+            border-bottom: 1px solid var(--border-color);
+            color: var(--text-color);
         }}
         
         tr:hover {{
-            background: #f8f9fa;
+            background: var(--section-bg);
         }}
         
         .status-badge {{
@@ -365,6 +657,168 @@ class HTMLReportGenerator:
             border-radius: 4px;
         }}
         
+        /* 🆕 智能分析卡片 */
+        .insight-card {{
+            background: linear-gradient(135deg, rgba(102, 126, 234, 0.1) 0%, rgba(118, 75, 162, 0.1) 100%);
+            border-left: 4px solid var(--primary-color);
+            padding: 20px;
+            margin: 20px 0;
+            border-radius: 10px;
+            box-shadow: var(--shadow);
+        }}
+        
+        .insight-card.warning {{
+            background: linear-gradient(135deg, rgba(255, 193, 7, 0.1) 0%, rgba(255, 152, 0, 0.1) 100%);
+            border-left-color: var(--warning-color);
+        }}
+        
+        .insight-card.success {{
+            background: linear-gradient(135deg, rgba(40, 167, 69, 0.1) 0%, rgba(76, 175, 80, 0.1) 100%);
+            border-left-color: var(--success-color);
+        }}
+        
+        .insight-card.danger {{
+            background: linear-gradient(135deg, rgba(220, 53, 69, 0.1) 0%, rgba(255, 87, 34, 0.1) 100%);
+            border-left-color: var(--danger-color);
+        }}
+        
+        .insight-title {{
+            font-size: 1.1em;
+            font-weight: 700;
+            margin-bottom: 10px;
+            color: var(--text-color);
+        }}
+        
+        .insight-content {{
+            font-size: 0.95em;
+            color: var(--text-color);
+            line-height: 1.8;
+        }}
+        
+        /* 🆕 评级指示器 */
+        .rating {{
+            display: inline-flex;
+            align-items: center;
+            gap: 5px;
+            padding: 5px 15px;
+            border-radius: 20px;
+            font-size: 0.9em;
+            font-weight: 600;
+        }}
+        
+        .rating.excellent {{
+            background: #d4edda;
+            color: #155724;
+        }}
+        
+        .rating.good {{
+            background: #d1ecf1;
+            color: #0c5460;
+        }}
+        
+        .rating.fair {{
+            background: #fff3cd;
+            color: #856404;
+        }}
+        
+        .rating.poor {{
+            background: #f8d7da;
+            color: #721c24;
+        }}
+        
+        /* 🆕 异常标记 */
+        .anomaly-marker {{
+            display: inline-block;
+            width: 10px;
+            height: 10px;
+            border-radius: 50%;
+            background: var(--danger-color);
+            animation: pulse 2s infinite;
+        }}
+        
+        @keyframes pulse {{
+            0%, 100% {{
+                opacity: 1;
+            }}
+            50% {{
+                opacity: 0.3;
+            }}
+        }}
+        
+        /* 🆕 性能对比表 */
+        .comparison-table {{
+            display: grid;
+            grid-template-columns: 1fr 1fr 1fr;
+            gap: 15px;
+            margin: 20px 0;
+        }}
+        
+        .comparison-item {{
+            background: var(--bg-color);
+            padding: 15px;
+            border-radius: 8px;
+            box-shadow: var(--shadow);
+            text-align: center;
+        }}
+        
+        .comparison-label {{
+            font-size: 0.85em;
+            color: var(--text-color);
+            opacity: 0.7;
+            margin-bottom: 8px;
+        }}
+        
+        .comparison-value {{
+            font-size: 1.5em;
+            font-weight: 700;
+            color: var(--primary-color);
+        }}
+        
+        /* 🆕 加载动画 */
+        .loading-spinner {{
+            display: inline-block;
+            width: 20px;
+            height: 20px;
+            border: 3px solid rgba(102, 126, 234, 0.3);
+            border-top-color: var(--primary-color);
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+        }}
+        
+        @keyframes spin {{
+            to {{ transform: rotate(360deg); }}
+        }}
+        
+        /* 🆕 响应式设计 */
+        @media (max-width: 1200px) {{
+            .container {{
+                margin-left: 20px;
+            }}
+            
+            .floating-nav {{
+                transform: translateX(-100%);
+            }}
+            
+            .floating-nav:hover {{
+                transform: translateX(0);
+            }}
+        }}
+        
+        @media (max-width: 768px) {{
+            .toolbar {{
+                flex-direction: column;
+                gap: 5px;
+            }}
+            
+            .metrics-grid {{
+                grid-template-columns: 1fr;
+            }}
+            
+            .comparison-table {{
+                grid-template-columns: 1fr;
+            }}
+        }}
+        
         @media print {{
             body {{
                 background: white;
@@ -377,11 +831,293 @@ class HTMLReportGenerator:
             }}
         }}
     </style>
+    
+    <script>
+        /* ==================== JavaScript功能 ==================== */
+        
+        // 页面加载完成后初始化
+        document.addEventListener('DOMContentLoaded', function() {{
+            initDarkMode();
+            initNavigation();
+            initBackToTop();
+            initSectionToggle();
+            initExportFunctions();
+            initLazyLoading();
+            initSmartAnalysis();
+        }});
+        
+        // 🌙 深色模式
+        function initDarkMode() {{
+            const darkModeBtn = document.getElementById('darkModeToggle');
+            const html = document.documentElement;
+            
+            // 检查本地存储的主题设置
+            const savedTheme = localStorage.getItem('theme');
+            if (savedTheme) {{
+                html.setAttribute('data-theme', savedTheme);
+                updateDarkModeIcon(savedTheme === 'dark');
+            }}
+            
+            if (darkModeBtn) {{
+                darkModeBtn.addEventListener('click', function() {{
+                    const isDark = html.getAttribute('data-theme') === 'dark';
+                    const newTheme = isDark ? 'light' : 'dark';
+                    html.setAttribute('data-theme', newTheme);
+                    localStorage.setItem('theme', newTheme);
+                    updateDarkModeIcon(!isDark);
+                }});
+            }}
+        }}
+        
+        function updateDarkModeIcon(isDark) {{
+            const btn = document.getElementById('darkModeToggle');
+            if (btn) {{
+                btn.textContent = isDark ? '☀️ 浅色' : '🌙 深色';
+            }}
+        }}
+        
+        // 🧭 导航功能
+        function initNavigation() {{
+            // 生成导航链接
+            const sections = document.querySelectorAll('.section');
+            const navLinks = document.getElementById('navLinks');
+            
+            if (navLinks) {{
+                sections.forEach((section, index) => {{
+                    const title = section.querySelector('.section-title');
+                    if (title) {{
+                        const titleText = title.textContent.replace(/[▼▶]/g, '').trim();
+                        const sectionId = `section-${{index}}`;
+                        section.id = sectionId;
+                        
+                        const li = document.createElement('li');
+                        const a = document.createElement('a');
+                        a.href = `#${{sectionId}}`;
+                        a.className = 'nav-link';
+                        a.textContent = titleText;
+                        a.addEventListener('click', function(e) {{
+                            e.preventDefault();
+                            section.scrollIntoView({{ behavior: 'smooth' }});
+                            updateActiveNav();
+                        }});
+                        li.appendChild(a);
+                        navLinks.appendChild(li);
+                    }}
+                }});
+            }}
+            
+            // 导航栏折叠/展开
+            const navToggle = document.getElementById('navToggle');
+            const floatingNav = document.querySelector('.floating-nav');
+            const container = document.querySelector('.container');
+            
+            if (navToggle && floatingNav) {{
+                navToggle.addEventListener('click', function() {{
+                    floatingNav.classList.toggle('collapsed');
+                    container.classList.toggle('nav-collapsed');
+                }});
+            }}
+            
+            // 滚动时更新导航高亮
+            window.addEventListener('scroll', updateActiveNav);
+        }}
+        
+        function updateActiveNav() {{
+            const sections = document.querySelectorAll('.section');
+            const navLinks = document.querySelectorAll('.nav-link');
+            
+            let currentSection = '';
+            sections.forEach(section => {{
+                const sectionTop = section.offsetTop;
+                const sectionHeight = section.clientHeight;
+                if (window.pageYOffset >= sectionTop - 100) {{
+                    currentSection = section.getAttribute('id');
+                }}
+            }});
+            
+            navLinks.forEach(link => {{
+                link.classList.remove('active');
+                if (link.getAttribute('href') === '#' + currentSection) {{
+                    link.classList.add('active');
+                }}
+            }});
+        }}
+        
+        // ⬆️ 返回顶部
+        function initBackToTop() {{
+            const backToTopBtn = document.getElementById('backToTop');
+            
+            window.addEventListener('scroll', function() {{
+                if (window.pageYOffset > 300) {{
+                    backToTopBtn.classList.add('visible');
+                }} else {{
+                    backToTopBtn.classList.remove('visible');
+                }}
+            }});
+            
+            if (backToTopBtn) {{
+                backToTopBtn.addEventListener('click', function() {{
+                    window.scrollTo({{ top: 0, behavior: 'smooth' }});
+                }});
+            }}
+        }}
+        
+        // 📁 章节折叠/展开
+        function initSectionToggle() {{
+            const sectionTitles = document.querySelectorAll('.section-title');
+            
+            sectionTitles.forEach(title => {{
+                // 添加折叠图标
+                const icon = document.createElement('span');
+                icon.className = 'toggle-icon';
+                icon.textContent = '▼';
+                title.appendChild(icon);
+                
+                // 获取章节内容
+                const section = title.parentElement;
+                const content = Array.from(section.children).filter(el => el !== title);
+                
+                // 创建内容包装器
+                const contentWrapper = document.createElement('div');
+                contentWrapper.className = 'section-content';
+                content.forEach(el => contentWrapper.appendChild(el));
+                section.appendChild(contentWrapper);
+                
+                // 点击标题折叠/展开
+                title.addEventListener('click', function() {{
+                    title.classList.toggle('collapsed');
+                    contentWrapper.classList.toggle('collapsed');
+                }});
+            }});
+        }}
+        
+        // 📤 导出功能
+        function initExportFunctions() {{
+            // CSV导出
+            window.exportTableToCSV = function(tableId, filename) {{
+                const table = document.getElementById(tableId);
+                if (!table) return;
+                
+                const csv = [];
+                const rows = table.querySelectorAll('tr');
+                
+                rows.forEach(row => {{
+                    const cols = row.querySelectorAll('td, th');
+                    const csvRow = [];
+                    cols.forEach(col => csvRow.push(col.textContent));
+                    csv.push(csvRow.join(','));
+                }});
+                
+                downloadFile(csv.join('\\n'), filename, 'text/csv');
+            }};
+            
+            // JSON导出
+            window.exportJSON = function() {{
+                const data = {{
+                    algorithm: '{algorithm}',
+                    generatedAt: new Date().toISOString(),
+                    // 这里可以添加更多数据
+                }};
+                downloadFile(JSON.stringify(data, null, 2), 'training_report.json', 'application/json');
+            }};
+            
+            // 图表下载
+            window.downloadChart = function(imgElement) {{
+                const canvas = document.createElement('canvas');
+                const ctx = canvas.getContext('2d');
+                const img = new Image();
+                img.src = imgElement.src;
+                img.onload = function() {{
+                    canvas.width = img.width;
+                    canvas.height = img.height;
+                    ctx.drawImage(img, 0, 0);
+                    canvas.toBlob(function(blob) {{
+                        const url = URL.createObjectURL(blob);
+                        const a = document.createElement('a');
+                        a.href = url;
+                        a.download = 'chart_{{Date.now()}}.png';
+                        a.click();
+                        URL.revokeObjectURL(url);
+                    }});
+                }};
+            }};
+            
+            // 打印优化
+            window.optimizedPrint = function() {{
+                window.print();
+            }};
+        }}
+        
+        function downloadFile(content, filename, mimeType) {{
+            const blob = new Blob([content], {{ type: mimeType }});
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = filename;
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            URL.revokeObjectURL(url);
+        }}
+        
+        // 🖼️ 图片懒加载
+        function initLazyLoading() {{
+            const images = document.querySelectorAll('img[data-src]');
+            
+            const imageObserver = new IntersectionObserver((entries, observer) => {{
+                entries.forEach(entry => {{
+                    if (entry.isIntersecting) {{
+                        const img = entry.target;
+                        img.src = img.dataset.src;
+                        img.removeAttribute('data-src');
+                        observer.unobserve(img);
+                    }}
+                }});
+            }});
+            
+            images.forEach(img => imageObserver.observe(img));
+        }}
+        
+        // 🤖 智能分析（简化版 - 基于规则）
+        function initSmartAnalysis() {{
+            // 这个函数会在报告生成时由Python代码填充实际的分析逻辑
+            console.log('Smart analysis initialized');
+        }}
+        
+        // 🎨 动态生成Plotly图表的辅助函数
+        window.createInteractiveChart = function(divId, data, layout, config) {{
+            if (typeof Plotly !== 'undefined') {{
+                Plotly.newPlot(divId, data, layout, config);
+            }} else {{
+                console.warn('Plotly is not loaded');
+            }}
+        }};
+    </script>
 </head>
 <body>
+    <!-- 🆕 浮动导航栏 -->
+    <nav class="floating-nav" id="floatingNav">
+        <div class="nav-header">
+            <span class="nav-title">📑 目录</span>
+            <button class="nav-toggle" id="navToggle">☰</button>
+        </div>
+        <ul class="nav-links" id="navLinks">
+            <!-- 导航链接将由JavaScript动态生成 -->
+        </ul>
+    </nav>
+    
+    <!-- 🆕 返回顶部按钮 -->
+    <button class="back-to-top" id="backToTop">↑</button>
+    
     <div class="container">
         <div class="header">
-            <h1>🚀 {algorithm} 训练报告</h1>
+            <!-- 🆕 工具栏 -->
+            <div class="toolbar">
+                <button class="toolbar-btn" id="darkModeToggle">🌙 深色</button>
+                <button class="toolbar-btn" onclick="optimizedPrint()">🖨️ 打印</button>
+                <button class="toolbar-btn" onclick="exportJSON()">📥 导出JSON</button>
+            </div>
+            <h1>🚀 {algorithm} 训练报告（增强版）</h1>
             <div class="subtitle">生成时间: {datetime.now().strftime('%Y年%m月%d日 %H:%M:%S')}</div>
         </div>
         <div class="content">
@@ -472,6 +1208,258 @@ class HTMLReportGenerator:
             </div>
         </div>
 """
+    
+    def _generate_smart_insights(self, algorithm: str, training_env: Any, results: Dict) -> str:
+        """
+        🤖 生成智能分析洞察
+        基于训练数据自动生成性能评语、异常检测、收敛评级和优化建议
+        """
+        insights_html = []
+        insights_html.append("""
+        <div class="section">
+            <h2 class="section-title">🤖 智能分析洞察</h2>
+            <p class="metric-description">基于训练数据的自动化分析和建议</p>
+""")
+        
+        # 分析训练数据
+        rewards = training_env.episode_rewards
+        if not rewards:
+            return ""
+        
+        # 1. 收敛性分析
+        convergence_analysis = self._analyze_convergence(rewards)
+        insights_html.append(f"""
+            <div class="insight-card {convergence_analysis['level']}">
+                <div class="insight-title">📈 收敛性评估: <span class="rating {convergence_analysis['rating']}">{convergence_analysis['rating_text']}</span></div>
+                <div class="insight-content">
+                    {convergence_analysis['description']}
+                </div>
+            </div>
+""")
+        
+        # 2. 性能评级
+        performance_rating = self._evaluate_performance(training_env, results)
+        insights_html.append(f"""
+            <div class="insight-card {performance_rating['level']}">
+                <div class="insight-title">⭐ 性能评级: <span class="rating {performance_rating['rating']}">{performance_rating['rating_text']}</span></div>
+                <div class="insight-content">
+                    {performance_rating['description']}
+                </div>
+            </div>
+""")
+        
+        # 3. 异常检测
+        anomalies = self._detect_anomalies(rewards)
+        if anomalies['count'] > 0:
+            insights_html.append(f"""
+            <div class="insight-card warning">
+                <div class="insight-title">⚠️ 异常检测: 发现 {anomalies['count']} 个异常Episode</div>
+                <div class="insight-content">
+                    {anomalies['description']}
+                </div>
+            </div>
+""")
+        
+        # 4. 优化建议
+        recommendations = self._generate_smart_recommendations(algorithm, training_env, results)
+        insights_html.append(f"""
+            <div class="insight-card">
+                <div class="insight-title">💡 优化建议</div>
+                <div class="insight-content">
+                    <ul style="margin-left: 20px; line-height: 2;">
+""")
+        for rec in recommendations:
+            insights_html.append(f"                        <li>{rec}</li>\n")
+        
+        insights_html.append("""
+                    </ul>
+                </div>
+            </div>
+        </div>
+""")
+        
+        return '\n'.join(insights_html)
+    
+    def _analyze_convergence(self, rewards: List[float]) -> Dict:
+        """分析收敛性"""
+        if len(rewards) < 20:
+            return {
+                'rating': 'fair',
+                'rating_text': '数据不足',
+                'level': 'warning',
+                'description': '训练轮次较少，无法准确评估收敛性。建议至少训练100轮以上。'
+            }
+        
+        # 计算后期稳定性（最后20%的方差）
+        last_20_percent = rewards[-len(rewards)//5:]
+        variance = np.var(last_20_percent)
+        mean_reward = np.mean(last_20_percent)
+        cv = np.sqrt(variance) / abs(mean_reward) if mean_reward != 0 else float('inf')
+        
+        # 计算改进趋势
+        first_half = np.mean(rewards[:len(rewards)//2])
+        second_half = np.mean(rewards[len(rewards)//2:])
+        improvement = ((second_half - first_half) / abs(first_half) * 100) if first_half != 0 else 0
+        
+        # 评级
+        if cv < 0.1 and improvement > 10:
+            return {
+                'rating': 'excellent',
+                'rating_text': '优秀',
+                'level': 'success',
+                'description': f'✅ 算法收敛良好，后期稳定性高（变异系数: {cv:.3f}）。性能提升显著（{improvement:.1f}%），建议保存当前模型。'
+            }
+        elif cv < 0.2 and improvement > 5:
+            return {
+                'rating': 'good',
+                'rating_text': '良好',
+                'level': 'success',
+                'description': f'✅ 算法基本收敛（变异系数: {cv:.3f}），性能有所提升（{improvement:.1f}%）。可以继续训练或进行超参数微调。'
+            }
+        elif cv < 0.3:
+            return {
+                'rating': 'fair',
+                'rating_text': '一般',
+                'level': 'warning',
+                'description': f'⚠️ 算法收敛缓慢（变异系数: {cv:.3f}），性能提升有限（{improvement:.1f}%）。建议检查学习率、奖励函数设计或增加训练轮次。'
+            }
+        else:
+            return {
+                'rating': 'poor',
+                'rating_text': '较差',
+                'level': 'danger',
+                'description': f'❌ 算法未收敛（变异系数: {cv:.3f}），性能波动较大。建议降低学习率、检查环境稳定性或更换算法。'
+            }
+    
+    def _evaluate_performance(self, training_env: Any, results: Dict) -> Dict:
+        """评估整体性能"""
+        final_perf = results.get('final_performance', {})
+        completion_rate = final_perf.get('avg_completion', 0)
+        avg_delay = final_perf.get('avg_delay', float('inf'))
+        
+        # 综合评分
+        score = 0
+        details = []
+        
+        if completion_rate > 0.95:
+            score += 40
+            details.append(f'任务完成率优秀（{completion_rate*100:.1f}%）')
+        elif completion_rate > 0.9:
+            score += 30
+            details.append(f'任务完成率良好（{completion_rate*100:.1f}%）')
+        else:
+            score += 20
+            details.append(f'任务完成率需提升（{completion_rate*100:.1f}%）')
+        
+        if avg_delay < 2.0:
+            score += 30
+            details.append(f'平均时延优秀（{avg_delay:.2f}s）')
+        elif avg_delay < 5.0:
+            score += 20
+            details.append(f'平均时延良好（{avg_delay:.2f}s）')
+        else:
+            score += 10
+            details.append(f'平均时延较高（{avg_delay:.2f}s）')
+        
+        # 根据分数评级
+        if score >= 60:
+            return {
+                'rating': 'excellent',
+                'rating_text': '优秀（{}/100分）'.format(score),
+                'level': 'success',
+                'description': '🎉 ' + '；'.join(details) + '。系统性能表现优异！'
+            }
+        elif score >= 45:
+            return {
+                'rating': 'good',
+                'rating_text': '良好（{}/100分）'.format(score),
+                'level': 'success',
+                'description': '👍 ' + '；'.join(details) + '。系统性能达到预期目标。'
+            }
+        elif score >= 30:
+            return {
+                'rating': 'fair',
+                'rating_text': '一般（{}/100分）'.format(score),
+                'level': 'warning',
+                'description': '⚠️ ' + '；'.join(details) + '。系统性能有待提升。'
+            }
+        else:
+            return {
+                'rating': 'poor',
+                'rating_text': '较差（{}/100分）'.format(score),
+                'level': 'danger',
+                'description': '❌ ' + '；'.join(details) + '。系统性能需要优化。'
+            }
+    
+    def _detect_anomalies(self, rewards: List[float]) -> Dict:
+        """检测异常Episode"""
+        if len(rewards) < 10:
+            return {'count': 0, 'description': '数据不足，无法检测异常。'}
+        
+        mean = np.mean(rewards)
+        std = np.std(rewards)
+        
+        # 异常定义：超过3个标准差
+        anomalies = []
+        for i, reward in enumerate(rewards):
+            if abs(reward - mean) > 3 * std:
+                anomalies.append((i+1, reward))
+        
+        if len(anomalies) == 0:
+            return {'count': 0, 'description': '未检测到显著异常。'}
+        
+        anomaly_list = ', '.join([f'Episode {ep}' for ep, _ in anomalies[:5]])
+        if len(anomalies) > 5:
+            anomaly_list += f' 等{len(anomalies)}个'
+        
+        return {
+            'count': len(anomalies),
+            'description': f'在 {anomaly_list} 检测到异常表现（偏离均值超过3σ）。这可能是由于：<br>' +
+                          '• 环境随机性导致的极端情况<br>' +
+                          '• 探索策略产生的随机动作<br>' +
+                          '• 系统状态的罕见配置<br>' +
+                          '建议检查这些Episode的详细日志以确定原因。'
+        }
+    
+    def _generate_smart_recommendations(self, algorithm: str, training_env: Any, results: Dict) -> List[str]:
+        """生成智能优化建议（用于智能分析洞察章节）"""
+        recommendations = []
+        
+        rewards = training_env.episode_rewards
+        if not rewards:
+            return ['训练数据不足，无法生成建议。']
+        
+        # 基于收敛性的建议
+        last_episodes = rewards[-min(50, len(rewards)):]
+        variance = np.var(last_episodes)
+        mean_reward = np.mean(last_episodes)
+        
+        if variance / (mean_reward ** 2) > 0.1:
+            recommendations.append('🔧 <strong>减小学习率</strong>：后期训练波动较大，建议将学习率降低至当前的50%以提高稳定性。')
+        
+        # 基于性能的建议
+        final_perf = results.get('final_performance', {})
+        completion_rate = final_perf.get('avg_completion', 0)
+        
+        if completion_rate < 0.9:
+            recommendations.append('⚠️ <strong>提升任务完成率</strong>：当前完成率{:.1f}%，建议增加dropped_tasks的惩罚权重或优化资源分配策略。'.format(completion_rate * 100))
+        
+        # 基于算法的建议
+        if algorithm in ['TD3', 'DDPG']:
+            recommendations.append('🎯 <strong>探索策略优化</strong>：考虑调整噪声参数（policy_noise、noise_clip）以平衡探索与利用。')
+        elif algorithm == 'SAC':
+            recommendations.append('🌡️ <strong>温度参数调节</strong>：SAC算法的熵温度系数影响探索程度，建议根据收敛情况调整alpha值。')
+        elif algorithm == 'PPO':
+            recommendations.append('📊 <strong>批次大小优化</strong>：PPO对批次大小敏感，当前batch_size可能需要调整以提高样本效率。')
+        
+        # 通用建议
+        if len(rewards) < 200:
+            recommendations.append('⏱️ <strong>增加训练轮次</strong>：当前训练{}轮，建议至少训练200-500轮以充分收敛。'.format(len(rewards)))
+        
+        recommendations.append('💾 <strong>保存检查点</strong>：定期保存训练检查点，以便在性能下降时回滚到最佳模型。')
+        recommendations.append('📈 <strong>对比实验</strong>：与其他算法（DDPG、SAC、PPO等）进行对比实验，验证当前算法的优势。')
+        
+        return recommendations
     
     def _generate_training_config(self, results: Dict) -> str:
         """生成训练配置信息"""
@@ -628,14 +1616,20 @@ class HTMLReportGenerator:
         charts_html.append(f"""
         <div class="section">
             <h2 class="section-title">📊 训练曲线可视化</h2>
+            <p class="metric-description">包含Per-Step级别的详细训练曲线和Episode级别的汇总指标</p>
 """)
+        
+        # 🆕 0. 检查并嵌入已生成的训练总览图（Per-Step版本）
+        external_charts = self._embed_external_charts(algorithm)
+        if external_charts:
+            charts_html.append(external_charts)
         
         # 1. 奖励曲线
         if training_env.episode_rewards:
             reward_chart = self._create_reward_chart(training_env.episode_rewards)
             charts_html.append(f"""
             <div class="chart-container">
-                <div class="chart-title">奖励演化曲线</div>
+                <div class="chart-title">奖励演化曲线 (Episode级别)</div>
                 <img src="data:image/png;base64,{reward_chart}" alt="奖励曲线">
             </div>
 """)
@@ -644,7 +1638,7 @@ class HTMLReportGenerator:
         multi_metric_chart = self._create_multi_metric_chart(training_env.episode_metrics)
         charts_html.append(f"""
             <div class="chart-container">
-                <div class="chart-title">关键性能指标演化</div>
+                <div class="chart-title">关键性能指标演化 (Episode级别)</div>
                 <img src="data:image/png;base64,{multi_metric_chart}" alt="多指标对比">
             </div>
 """)
@@ -653,10 +1647,90 @@ class HTMLReportGenerator:
         energy_delay_chart = self._create_energy_delay_chart(training_env.episode_metrics)
         charts_html.append(f"""
             <div class="chart-container">
-                <div class="chart-title">能耗与时延权衡分析</div>
+                <div class="chart-title">能耗与时延权衡分析 (Episode级别)</div>
                 <img src="data:image/png;base64,{energy_delay_chart}" alt="能耗时延">
             </div>
         </div>
+""")
+        
+        return '\n'.join(charts_html)
+    
+    def _embed_external_charts(self, algorithm: str) -> str:
+        """
+        嵌入已生成的训练图表（training_overview.png 和 objective_analysis.png）
+        
+        Args:
+            algorithm: 算法名称（如TD3, DDPG等）
+            
+        Returns:
+            包含嵌入图表的HTML字符串，如果图表不存在则返回空字符串
+        """
+        charts_html = []
+        algorithm_lower = algorithm.lower()
+        
+        # 查找图表文件的可能位置
+        possible_paths = [
+            f"results/single_agent/{algorithm_lower}",
+            f"results/multi_agent/{algorithm_lower}",
+            f"results/{algorithm_lower}",
+        ]
+        
+        chart_files = {
+            'training_overview.png': '训练总览 - Per-Step详细分析',
+            'objective_analysis.png': '优化目标分析 - 时延与能耗'
+        }
+        
+        found_charts = {}
+        
+        # 搜索图表文件
+        for chart_file, chart_title in chart_files.items():
+            for base_path in possible_paths:
+                chart_path = os.path.join(base_path, chart_file)
+                if os.path.exists(chart_path):
+                    # 读取图片并转换为base64
+                    try:
+                        with open(chart_path, 'rb') as f:
+                            img_data = base64.b64encode(f.read()).decode('utf-8')
+                            found_charts[chart_file] = {
+                                'title': chart_title,
+                                'data': img_data,
+                                'path': chart_path
+                            }
+                        break
+                    except Exception as e:
+                        print(f"⚠️  无法读取图表 {chart_path}: {e}")
+                        continue
+        
+        # 如果找到了图表，生成HTML
+        if found_charts:
+            charts_html.append("""
+            <div class="subsection">
+                <h3 class="section-subtitle">🎯 Per-Step级别训练曲线</h3>
+                <p class="metric-description">
+                    以下图表展示了每个训练步骤(step)的平均性能指标，相比Episode级别的聚合数据，
+                    Per-Step分析能够更细致地揭示算法的学习动态和收敛特性。
+                </p>
+""")
+            
+            # 嵌入找到的图表
+            for chart_file, chart_info in found_charts.items():
+                charts_html.append(f"""
+                <div class="chart-container" style="margin-top: 20px;">
+                    <div class="chart-title" style="font-size: 1.1em; color: #764ba2;">
+                        {chart_info['title']}
+                    </div>
+                    <div style="font-size: 0.85em; color: #666; margin-bottom: 10px;">
+                        📂 来源: {chart_info['path']}
+                    </div>
+                    <img src="data:image/png;base64,{chart_info['data']}" 
+                         alt="{chart_info['title']}" 
+                         style="max-width: 100%; height: auto; border-radius: 8px; box-shadow: 0 4px 12px rgba(0,0,0,0.15);">
+                </div>
+""")
+            
+            charts_html.append("""
+            </div>
+            <hr style="margin: 30px 0; border: none; border-top: 2px solid #eee;">
 """)
         
         return '\n'.join(charts_html)
