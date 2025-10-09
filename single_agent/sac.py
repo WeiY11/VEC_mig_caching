@@ -506,14 +506,20 @@ class SACAgent:
 
 
 class SACEnvironment:
-    """SAC训练环境"""
+    """SAC训练环境 - 优化版"""
     
-    def __init__(self):
-        self.config = SACConfig()
+    def __init__(self, num_vehicles: int = 12, num_rsus: int = 4, num_uavs: int = 2):
+        from single_agent.common_state_action import UnifiedStateActionSpace
         
-        # 🔧 修复：正确计算状态维度，与TD3保持一致
-        self.state_dim = 130  # 车辆60 + RSU54 + UAV16 = 130维
-        self.action_dim = 18  # 🔧 修复：支持自适应缓存迁移控制，与TD3/DDPG保持一致
+        self.config = SACConfig()
+        self.num_vehicles = num_vehicles
+        self.num_rsus = num_rsus
+        self.num_uavs = num_uavs
+        
+        # 🔧 使用统一的状态/动作维度计算
+        self.local_state_dim, self.global_state_dim, self.state_dim = \
+            UnifiedStateActionSpace.calculate_state_dim(num_vehicles, num_rsus, num_uavs)
+        self.action_dim = UnifiedStateActionSpace.calculate_action_dim(num_rsus, num_uavs)
         
         # 创建智能体
         self.agent = SACAgent(self.state_dim, self.action_dim, self.config)
@@ -522,32 +528,27 @@ class SACEnvironment:
         self.episode_count = 0
         self.step_count = 0
         
-        print(f"✓ SAC环境初始化完成 (已优化 + 缓存迁移DRL控制)")
-        print(f"✓ 状态维度: {self.state_dim}")
-        print(f"✓ 动作维度: {self.action_dim} (18维支持缓存迁移控制)")
-        print(f"✓ 网络容量: hidden_dim={self.config.hidden_dim} (优化至400)")
-        print(f"✓ Actor学习率: {self.config.actor_lr} (优化至5e-5)")
-        print(f"✓ Critic学习率: {self.config.critic_lr} (优化至1e-4)")
-        print(f"✓ 梯度裁剪: {self.config.gradient_clip} (借鉴TD3)")
-        print(f"✓ 缓存迁移控制: 启用DRL参数调整 (action[11-17])")
-        print(f"✓ 自动熵调节: {self.config.auto_entropy_tuning}")
-        print(f"✓ 目标熵: {self.config.target_entropy_ratio * self.action_dim}")
+        print(f"SAC环境初始化完成（优化版v2.0）")
+        print(f"网络拓扑: {num_vehicles}辆车 + {num_rsus}个RSU + {num_uavs}个UAV")
+        print(f"状态维度: {self.state_dim} = 局部{self.local_state_dim} + 全局{self.global_state_dim}")
+        print(f"动作维度: {self.action_dim} (动态适配: 3+{num_rsus}+{num_uavs}+7)")
+        print(f"网络容量: hidden_dim={self.config.hidden_dim}")
+        print(f"优化特性: 统一状态空间, 动态拓扑适配, 全局状态")
+        print(f"Actor学习率: {self.config.actor_lr} (优化至5e-5)")
+        print(f"Critic学习率: {self.config.critic_lr} (优化至1e-4)")
+        print(f"梯度裁剪: {self.config.gradient_clip} (借鉴TD3)")
+        print(f"缓存迁移控制: 启用DRL参数调整 (action[11-17])")
+        print(f"自动熵调节: {self.config.auto_entropy_tuning}")
+        print(f"目标熵: {self.config.target_entropy_ratio * self.action_dim}")
     
     def get_state_vector(self, node_states: Dict, system_metrics: Dict) -> np.ndarray:
-        """构建全局状态向量"""
-        # 基础系统状态
-        base_state = np.array([
-            system_metrics.get('avg_task_delay', 0.0) / 1.0,
-            system_metrics.get('total_energy_consumption', 0.0) / 1000.0,
-            system_metrics.get('data_loss_rate', 0.0),
-            system_metrics.get('cache_hit_rate', 0.0),
-            system_metrics.get('migration_success_rate', 0.0),
-        ])
-        
-        # 节点特定状态 (简化实现)
-        node_states_flat = np.random.randn(self.state_dim - len(base_state))
-        
-        return np.concatenate([base_state, node_states_flat])
+        """🔧 优化版：使用统一的状态向量构建"""
+        from single_agent.common_state_action import UnifiedStateActionSpace
+        return UnifiedStateActionSpace.build_state_vector(
+            node_states, system_metrics,
+            self.num_vehicles, self.num_rsus, self.num_uavs,
+            self.state_dim
+        )
     
     def decompose_action(self, action: np.ndarray) -> Dict[str, np.ndarray]:
         """

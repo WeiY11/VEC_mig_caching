@@ -28,9 +28,10 @@ if str(parent_dir) not in sys.path:
     sys.path.insert(0, str(parent_dir))
 
 from train_single_agent import _apply_global_seed_from_env, train_single_algorithm
-import matplotlib.pyplot as plt
+from utils.vehicle_sweep_html_generator import VehicleSweepHTMLGenerator
 import matplotlib
-matplotlib.use('Agg')
+matplotlib.use('Agg')  # 必须在导入pyplot之前设置
+import matplotlib.pyplot as plt
 import numpy as np
 import base64
 from io import BytesIO
@@ -106,7 +107,49 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
+def _create_empty_result(num_vehicles: int, episodes: int) -> Dict:
+    """
+    创建空的训练结果（用于失败情况）
+    
+    Args:
+        num_vehicles: 车辆数量
+        episodes: 预期的训练轮次
+        
+    Returns:
+        空的结果字典
+    """
+    return {
+        'algorithm': 'TD3',
+        'network_topology': {
+            'num_vehicles': num_vehicles,
+            'num_rsus': 4,
+            'num_uavs': 2,
+        },
+        'state_dim': 'N/A',
+        'training_config': {
+            'num_episodes': episodes,
+            'training_time_hours': 0.0
+        },
+        'episode_rewards': [],
+        'episode_metrics': {},
+        'final_performance': {
+            'avg_step_reward': -999.0,  # 明显的失败标记
+            'avg_delay': 999.0,
+            'avg_completion': 0.0
+        }
+    }
+
+
 def _build_vehicle_list(args: argparse.Namespace) -> List[int]:
+    """
+    构建车辆数量列表
+    
+    Args:
+        args: 命令行参数
+        
+    Returns:
+        车辆数量列表
+    """
     if args.vehicles:
         return args.vehicles
     if args.vehicle_range:
@@ -114,49 +157,109 @@ def _build_vehicle_list(args: argparse.Namespace) -> List[int]:
         if step <= 0:
             raise ValueError("vehicle-range 的步长必须为正数")
         return list(range(start, end, step))
-    return [8, 12, 16]
+    
+    # 🔧 优化：使用配置中的默认车辆数量作为基准
+    from config import config
+    default_vehicles = config.num_vehicles
+    return [default_vehicles // 2, default_vehicles, default_vehicles + 4]  # 例如：[6, 12, 16]
 
 
 def _run_single_setting(num_vehicles: int, seed: int, episodes: int, eval_interval: int | None, save_interval: int | None) -> Dict:
+    """
+    运行单个车辆配置的训练
+    
+    Args:
+        num_vehicles: 车辆数量
+        seed: 随机种子
+        episodes: 训练轮次
+        eval_interval: 评估间隔
+        save_interval: 保存间隔
+        
+    Returns:
+        训练结果字典
+    """
+    # 设置随机种子
     os.environ['RANDOM_SEED'] = str(seed)
-    overrides = {"num_vehicles": num_vehicles, "override_topology": True}
-    os.environ['TRAINING_SCENARIO_OVERRIDES'] = json.dumps(overrides)
     _apply_global_seed_from_env()
+    
+    # 构建场景覆盖配置
+    overrides = {
+        "num_vehicles": num_vehicles,
+        "override_topology": True
+    }
+    
     try:
-        return train_single_algorithm(
+        # 🔧 优化：直接通过override_scenario参数传递，无需环境变量
+        result = train_single_algorithm(
             "TD3",
             num_episodes=episodes,
             eval_interval=eval_interval,
             save_interval=save_interval,
-            silent_mode=True,  # 🔧 启用静默模式，避免用户交互阻塞批量实验
+            silent_mode=True,  # 启用静默模式，避免用户交互阻塞批量实验
             override_scenario=overrides
         )
+        
+        # 验证结果完整性
+        if not result or 'final_performance' not in result:
+            print(f"⚠️  训练结果不完整 (vehicles={num_vehicles})")
+            return _create_empty_result(num_vehicles, episodes)
+            
+        return result
+        
+    except Exception as e:
+        print(f"❌ 训练失败 (vehicles={num_vehicles}): {e}")
+        import traceback
+        traceback.print_exc()
+        return _create_empty_result(num_vehicles, episodes)
     finally:
+        # 清理环境变量（如果有设置的话）
         os.environ.pop('TRAINING_SCENARIO_OVERRIDES', None)
 
 
 def _extract_summary(num_vehicles: int, run_result: Dict) -> Dict:
+    """
+    提取训练结果摘要
+    
+    Args:
+        num_vehicles: 车辆数量
+        run_result: 训练结果字典
+        
+    Returns:
+        摘要字典
+    """
     final_perf = run_result.get("final_performance", {})
     training_cfg = run_result.get("training_config", {})
     
-    # 从训练环境获取实际状态维度（如果可用）
-    state_dim = "N/A"
-    if "state_dim" in run_result:
-        state_dim = run_result["state_dim"]
+    # 🔧 优化：获取实际状态维度，支持多种格式
+    state_dim = run_result.get("state_dim", "N/A")
+    if state_dim == "N/A" and "network_topology" in run_result:
+        # 尝试计算状态维度
+        topo = run_result["network_topology"]
+        num_v = topo.get("num_vehicles", num_vehicles)
+        num_r = topo.get("num_rsus", 4)
+        num_u = topo.get("num_uavs", 2)
+        # 使用统一的状态维度计算公式
+        state_dim = num_v * 5 + num_r * 5 + num_u * 5 + 8
     
-    # 🆕 保存完整的episode数据用于图表生成
+    # 保存完整的episode数据用于图表生成
     episode_rewards = run_result.get("episode_rewards", [])
     episode_metrics = run_result.get("episode_metrics", {})
+    
+    # 🔧 优化：确保avg_step_reward存在（兼容旧版本结果）
+    avg_step_reward = final_perf.get("avg_step_reward")
+    if avg_step_reward is None:
+        # 尝试从avg_reward获取（旧版本）
+        avg_step_reward = final_perf.get("avg_reward", 0.0)
     
     return {
         "num_vehicles": num_vehicles,
         "state_dim": state_dim,
         "episodes": training_cfg.get("num_episodes", 0),
         "training_time_hours": training_cfg.get("training_time_hours", 0.0),
-        "avg_step_reward": final_perf.get("avg_step_reward", 0.0),
+        "avg_step_reward": avg_step_reward,
         "avg_delay": final_perf.get("avg_delay", 0.0),
         "avg_completion": final_perf.get("avg_completion", 0.0),
-        # 🆕 保存时间序列数据
+        # 保存时间序列数据
         "episode_rewards": episode_rewards,
         "episode_metrics": episode_metrics,
     }
@@ -382,398 +485,6 @@ def _generate_detailed_charts(output_dir: Path, summaries: List[Dict], timestamp
     print(f"[OK] Bar chart saved: {chart_path}")
 
 
-def _generate_html_report(output_dir: Path, summaries: List[Dict], timestamp: str, 
-                         chart1_path: Path, chart2_path: Path) -> None:
-    """
-    生成HTML报告
-    """
-    print("\n" + "=" * 80)
-    print("[HTML Report] Generating HTML report...")
-    print("=" * 80 + "\n")
-    
-    # 读取图表并转换为base64
-    def img_to_base64(img_path: Path) -> str:
-        if img_path.exists():
-            with open(img_path, 'rb') as f:
-                return base64.b64encode(f.read()).decode('utf-8')
-        return ""
-    
-    chart1_base64 = img_to_base64(chart1_path)
-    chart2_base64 = img_to_base64(chart2_path)
-    
-    # 提取数据
-    vehicles = [s['num_vehicles'] for s in summaries]
-    
-    # 生成HTML内容
-    html_content = f"""<!DOCTYPE html>
-<html lang="zh-CN">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>TD3 Vehicle Sweep Experiment Report</title>
-    <style>
-        * {{
-            margin: 0;
-            padding: 0;
-            box-sizing: border-box;
-        }}
-        
-        body {{
-            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-            line-height: 1.6;
-            color: #333;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            padding: 20px;
-        }}
-        
-        .container {{
-            max-width: 1400px;
-            margin: 0 auto;
-            background: white;
-            border-radius: 15px;
-            box-shadow: 0 20px 60px rgba(0,0,0,0.3);
-            overflow: hidden;
-        }}
-        
-        .header {{
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            color: white;
-            padding: 40px;
-            text-align: center;
-        }}
-        
-        .header h1 {{
-            font-size: 2.5em;
-            margin-bottom: 10px;
-            text-shadow: 2px 2px 4px rgba(0,0,0,0.3);
-        }}
-        
-        .header .subtitle {{
-            font-size: 1.2em;
-            opacity: 0.9;
-        }}
-        
-        .content {{
-            padding: 40px;
-        }}
-        
-        .section {{
-            margin-bottom: 40px;
-            padding: 30px;
-            background: #f8f9fa;
-            border-radius: 10px;
-            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
-        }}
-        
-        .section-title {{
-            font-size: 1.8em;
-            color: #667eea;
-            margin-bottom: 20px;
-            padding-bottom: 10px;
-            border-bottom: 3px solid #667eea;
-        }}
-        
-        .metrics-grid {{
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-            gap: 20px;
-            margin: 20px 0;
-        }}
-        
-        .metric-card {{
-            background: white;
-            padding: 20px;
-            border-radius: 8px;
-            box-shadow: 0 2px 8px rgba(0,0,0,0.1);
-            border-left: 4px solid #667eea;
-            transition: transform 0.2s;
-        }}
-        
-        .metric-card:hover {{
-            transform: translateY(-5px);
-            box-shadow: 0 5px 15px rgba(0,0,0,0.2);
-        }}
-        
-        .metric-label {{
-            font-size: 0.9em;
-            color: #666;
-            margin-bottom: 5px;
-        }}
-        
-        .metric-value {{
-            font-size: 2em;
-            font-weight: bold;
-            color: #667eea;
-        }}
-        
-        .metric-unit {{
-            font-size: 0.5em;
-            color: #999;
-        }}
-        
-        table {{
-            width: 100%;
-            border-collapse: collapse;
-            margin: 20px 0;
-            background: white;
-            border-radius: 8px;
-            overflow: hidden;
-            box-shadow: 0 2px 8px rgba(0,0,0,0.1);
-        }}
-        
-        th {{
-            background: #667eea;
-            color: white;
-            padding: 15px;
-            text-align: left;
-            font-weight: 600;
-        }}
-        
-        td {{
-            padding: 12px 15px;
-            border-bottom: 1px solid #eee;
-        }}
-        
-        tr:hover {{
-            background: #f8f9fa;
-        }}
-        
-        .chart-container {{
-            margin: 30px 0;
-            text-align: center;
-        }}
-        
-        .chart-container img {{
-            max-width: 100%;
-            height: auto;
-            border-radius: 8px;
-            box-shadow: 0 4px 12px rgba(0,0,0,0.15);
-        }}
-        
-        .chart-title {{
-            font-size: 1.2em;
-            margin-bottom: 15px;
-            color: #333;
-            font-weight: 600;
-        }}
-        
-        .insight-card {{
-            background: linear-gradient(135deg, rgba(102, 126, 234, 0.1) 0%, rgba(118, 75, 162, 0.1) 100%);
-            border-left: 4px solid #667eea;
-            padding: 20px;
-            margin: 20px 0;
-            border-radius: 10px;
-        }}
-        
-        .insight-title {{
-            font-size: 1.1em;
-            font-weight: 700;
-            margin-bottom: 10px;
-            color: #667eea;
-        }}
-        
-        .insight-content {{
-            font-size: 0.95em;
-            color: #333;
-            line-height: 1.8;
-        }}
-        
-        .footer {{
-            background: #2c3e50;
-            color: white;
-            padding: 30px;
-            text-align: center;
-        }}
-        
-        @media print {{
-            body {{
-                background: white;
-            }}
-            .container {{
-                box-shadow: none;
-            }}
-        }}
-    </style>
-</head>
-<body>
-    <div class="container">
-        <div class="header">
-            <h1>🚗 TD3 Vehicle Sweep Experiment Report</h1>
-            <div class="subtitle">Scalability Analysis | Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}</div>
-        </div>
-        
-        <div class="content">
-            <!-- Executive Summary -->
-            <div class="section">
-                <h2 class="section-title">📊 Executive Summary</h2>
-                
-                <div class="metrics-grid">
-                    <div class="metric-card">
-                        <div class="metric-label">Configurations Tested</div>
-                        <div class="metric-value">{len(summaries)}</div>
-                    </div>
-                    
-                    <div class="metric-card">
-                        <div class="metric-label">Vehicle Range</div>
-                        <div class="metric-value">{min(vehicles)}-{max(vehicles)}</div>
-                    </div>
-                    
-                    <div class="metric-card">
-                        <div class="metric-label">Episodes per Config</div>
-                        <div class="metric-value">{summaries[0]['episodes']}</div>
-                    </div>
-                    
-                    <div class="metric-card">
-                        <div class="metric-label">Total Training Time</div>
-                        <div class="metric-value">{sum(s['training_time_hours'] for s in summaries):.2f} <span class="metric-unit">hours</span></div>
-                    </div>
-                </div>
-            </div>
-            
-            <!-- Detailed Results Table -->
-            <div class="section">
-                <h2 class="section-title">📋 Detailed Results</h2>
-                
-                <table>
-                    <thead>
-                        <tr>
-                            <th>Vehicles</th>
-                            <th>State Dim</th>
-                            <th>Episodes</th>
-                            <th>Training Time</th>
-                            <th>Avg Step Reward</th>
-                            <th>Avg Delay (s)</th>
-                            <th>Completion Rate</th>
-                        </tr>
-                    </thead>
-                    <tbody>
-"""
-    
-    # 添加数据行
-    for summary in summaries:
-        html_content += f"""
-                        <tr>
-                            <td><strong>{summary['num_vehicles']}</strong></td>
-                            <td>{summary['state_dim']}</td>
-                            <td>{summary['episodes']}</td>
-                            <td>{summary['training_time_hours']:.3f}h</td>
-                            <td>{summary['avg_step_reward']:.4f}</td>
-                            <td>{summary['avg_delay']:.4f}</td>
-                            <td>{summary['avg_completion']:.2%}</td>
-                        </tr>
-"""
-    
-    # 智能分析
-    best_delay_idx = min(range(len(summaries)), key=lambda i: summaries[i]['avg_delay'])
-    best_completion_idx = max(range(len(summaries)), key=lambda i: summaries[i]['avg_completion'])
-    best_reward_idx = max(range(len(summaries)), key=lambda i: summaries[i]['avg_step_reward'])
-    
-    delay_increase = ((summaries[-1]['avg_delay'] - summaries[0]['avg_delay']) / summaries[0]['avg_delay'] * 100) if summaries[0]['avg_delay'] > 0 else 0
-    completion_change = ((summaries[-1]['avg_completion'] - summaries[0]['avg_completion']) * 100) if len(summaries) > 1 else 0
-    
-    html_content += f"""
-                    </tbody>
-                </table>
-            </div>
-            
-            <!-- Smart Insights -->
-            <div class="section">
-                <h2 class="section-title">🤖 Smart Insights</h2>
-                
-                <div class="insight-card">
-                    <div class="insight-title">🏆 Best Configurations</div>
-                    <div class="insight-content">
-                        <ul style="margin-left: 20px; line-height: 2;">
-                            <li><strong>Lowest Delay:</strong> {summaries[best_delay_idx]['num_vehicles']} vehicles ({summaries[best_delay_idx]['avg_delay']:.4f}s)</li>
-                            <li><strong>Highest Completion Rate:</strong> {summaries[best_completion_idx]['num_vehicles']} vehicles ({summaries[best_completion_idx]['avg_completion']:.2%})</li>
-                            <li><strong>Best Reward:</strong> {summaries[best_reward_idx]['num_vehicles']} vehicles ({summaries[best_reward_idx]['avg_step_reward']:.4f})</li>
-                        </ul>
-                    </div>
-                </div>
-                
-                <div class="insight-card">
-                    <div class="insight-title">📈 Scalability Analysis</div>
-                    <div class="insight-content">
-                        <ul style="margin-left: 20px; line-height: 2;">
-                            <li><strong>Delay Growth:</strong> From {summaries[0]['avg_delay']:.4f}s to {summaries[-1]['avg_delay']:.4f}s ({delay_increase:+.1f}% change)</li>
-                            <li><strong>Completion Rate Change:</strong> {completion_change:+.2f} percentage points</li>
-                            <li><strong>Training Time Scaling:</strong> {summaries[-1]['training_time_hours'] / summaries[0]['training_time_hours']:.2f}x increase for {summaries[-1]['num_vehicles'] / summaries[0]['num_vehicles']:.2f}x vehicles</li>
-                        </ul>
-                    </div>
-                </div>
-                
-                <div class="insight-card">
-                    <div class="insight-title">💡 Recommendations</div>
-                    <div class="insight-content">
-                        <ul style="margin-left: 20px; line-height: 2;">
-"""
-    
-    # 智能建议
-    if summaries[-1]['avg_completion'] > 0.90:
-        html_content += "                            <li>✅ <strong>System maintains high completion rate (>90%)</strong> across all scales, indicating robust performance.</li>\n"
-    else:
-        html_content += "                            <li>⚠️ <strong>Completion rate drops below 90%</strong> at higher scales. Consider optimizing resource allocation.</li>\n"
-    
-    if delay_increase < 50:
-        html_content += "                            <li>✅ <strong>Delay growth is manageable (<50%)</strong>, showing good scalability.</li>\n"
-    else:
-        html_content += "                            <li>⚠️ <strong>Delay increases significantly (>50%)</strong>. System may be reaching capacity limits.</li>\n"
-    
-    html_content += f"""
-                            <li>📊 <strong>Optimal configuration</strong> appears to be around {summaries[best_completion_idx]['num_vehicles']} vehicles for best balance.</li>
-                        </ul>
-                    </div>
-                </div>
-            </div>
-            
-            <!-- Charts -->
-            <div class="section">
-                <h2 class="section-title">📈 Visualization Charts</h2>
-"""
-    
-    if chart1_base64:
-        html_content += f"""
-                <div class="chart-container">
-                    <div class="chart-title">Comprehensive Comparison (6 Subplots)</div>
-                    <img src="data:image/png;base64,{chart1_base64}" alt="Comprehensive Comparison">
-                </div>
-"""
-    
-    if chart2_base64:
-        html_content += f"""
-                <div class="chart-container">
-                    <div class="chart-title">Bar Chart Comparison</div>
-                    <img src="data:image/png;base64,{chart2_base64}" alt="Bar Chart Comparison">
-                </div>
-"""
-    
-    html_content += """
-            </div>
-        </div>
-        
-        <div class="footer">
-            <p>VEC Migration Caching System - Vehicle Sweep Experiment Report</p>
-            <p>Generated by TD3 Scalability Analysis Tool</p>
-            <p style="margin-top: 10px; font-size: 0.9em;">
-                © 2025 All Rights Reserved
-            </p>
-        </div>
-    </div>
-</body>
-</html>
-"""
-    
-    # 保存HTML报告
-    html_path = output_dir / f"vehicle_sweep_report_{timestamp}.html"
-    with html_path.open('w', encoding='utf-8') as f:
-        f.write(html_content)
-    
-    print(f"[OK] HTML report saved: {html_path}")
-    print("\n" + "=" * 80)
-    print("[SUCCESS] HTML report generated!")
-    print("=" * 80 + "\n")
-
-
 def main() -> None:
     args = parse_args()
     vehicle_list = _build_vehicle_list(args)
@@ -821,18 +532,30 @@ def main() -> None:
             print(f"[WARNING] Failed to generate charts: {e}")
             print("Results are still saved successfully.")
     
-    # 🆕 生成HTML报告（在图表生成之后）
+    # 🆕 生成增强版HTML报告（在图表生成之后）
     if generate_html:
         try:
-            _generate_html_report(args.output_dir, summaries, timestamp, chart1_path, chart2_path)
+            print("\n" + "=" * 80)
+            print("[HTML Report] Generating enhanced HTML report...")
+            print("=" * 80 + "\n")
             
-            # 自动打开HTML报告
-            import webbrowser
+            # 使用增强版HTML生成器
+            generator = VehicleSweepHTMLGenerator()
+            html_content = generator.generate_enhanced_report(summaries, timestamp, chart1_path, chart2_path)
+            
             html_path = args.output_dir / f"vehicle_sweep_report_{timestamp}.html"
-            if html_path.exists():
+            if generator.save_report(html_content, html_path):
+                print(f"[OK] HTML report saved: {html_path}")
+                
+                # 自动打开HTML报告
+                import webbrowser
                 abs_path = html_path.resolve()
                 webbrowser.open(f'file://{abs_path}')
                 print(f"[OK] HTML report opened in browser")
+                
+                print("\n" + "=" * 80)
+                print("[SUCCESS] Enhanced HTML report generated!")
+                print("=" * 80 + "\n")
         except Exception as e:
             print(f"[WARNING] Failed to generate HTML report: {e}")
             print("Results and charts are still saved successfully.")

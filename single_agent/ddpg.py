@@ -458,14 +458,20 @@ class DDPGAgent:
 
 
 class DDPGEnvironment:
-    """DDPG训练环境"""
+    """DDPG训练环境 - 优化版"""
     
-    def __init__(self):
-        self.config = DDPGConfig()
+    def __init__(self, num_vehicles: int = 12, num_rsus: int = 4, num_uavs: int = 2):
+        from single_agent.common_state_action import UnifiedStateActionSpace
         
-        # 🔧 修复：正确计算状态维度，与TD3保持一致
-        self.state_dim = 130  # 车辆60 + RSU54 + UAV16 = 130维
-        self.action_dim = 18  # 支持自适应缓存迁移控制，与TD3保持一致
+        self.config = DDPGConfig()
+        self.num_vehicles = num_vehicles
+        self.num_rsus = num_rsus
+        self.num_uavs = num_uavs
+        
+        # 🔧 使用统一的状态/动作维度计算
+        self.local_state_dim, self.global_state_dim, self.state_dim = \
+            UnifiedStateActionSpace.calculate_state_dim(num_vehicles, num_rsus, num_uavs)
+        self.action_dim = UnifiedStateActionSpace.calculate_action_dim(num_rsus, num_uavs)
         
         # 创建智能体
         self.agent = DDPGAgent(self.state_dim, self.action_dim, self.config)
@@ -474,17 +480,28 @@ class DDPGEnvironment:
         self.episode_count = 0
         self.step_count = 0
         
-        print(f"✓ DDPG环境初始化完成 (已优化)")
-        print(f"✓ 状态维度: {self.state_dim}")
-        print(f"✓ 动作维度: {self.action_dim}")
-        print(f"✓ 策略延迟更新: {self.config.policy_delay} (借鉴TD3)")
-        print(f"✓ 目标策略平滑化: 已启用 (target_noise={self.config.target_noise})")
-        print(f"✓ 网络容量: hidden_dim={self.config.hidden_dim}")
+        print(f"DDPG环境初始化完成（优化版v2.0）")
+        print(f"网络拓扑: {num_vehicles}辆车 + {num_rsus}个RSU + {num_uavs}个UAV")
+        print(f"状态维度: {self.state_dim} = 局部{self.local_state_dim} + 全局{self.global_state_dim}")
+        print(f"动作维度: {self.action_dim} (动态适配: 3+{num_rsus}+{num_uavs}+7)")
+        print(f"策略延迟更新: {self.config.policy_delay} (借鉴TD3)")
+        print(f"目标策略平滑化: 已启用 (target_noise={self.config.target_noise})")
+        print(f"优化特性: 统一状态空间, 动态拓扑适配, 全局状态")
     
     def get_state_vector(self, node_states: Dict, system_metrics: Dict) -> np.ndarray:
         """
-        🔧 修复：构建准确的130维状态向量，与TD3完全一致
-        状态组成: 车辆60维 + RSU54维 + UAV16维 = 130维
+        🔧 优化版：使用统一的状态向量构建
+        """
+        from single_agent.common_state_action import UnifiedStateActionSpace
+        return UnifiedStateActionSpace.build_state_vector(
+            node_states, system_metrics,
+            self.num_vehicles, self.num_rsus, self.num_uavs,
+            self.state_dim
+        )
+    
+    def _get_state_vector_legacy(self, node_states: Dict, system_metrics: Dict) -> np.ndarray:
+        """
+        遗留的状态构建方法（保留作参考）
         """
         state_components = []
         

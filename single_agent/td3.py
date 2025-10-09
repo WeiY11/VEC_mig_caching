@@ -469,11 +469,15 @@ class TD3Environment:
         self.num_rsus = num_rsus
         self.num_uavs = num_uavs
         
-        # 车辆状态: N×5维 + RSU状态: M×9维 + UAV状态: K×8维
-        self.state_dim = num_vehicles * 5 + num_rsus * 9 + num_uavs * 8
+        # 🔧 优化后的状态维度：所有节点统一为5维 + 全局状态8维
+        # 车辆状态: N×5维 + RSU状态: M×5维 + UAV状态: K×5维 + 全局: 8维
+        self.local_state_dim = num_vehicles * 5 + num_rsus * 5 + num_uavs * 5
+        self.global_state_dim = 8
+        self.state_dim = self.local_state_dim + self.global_state_dim
         
-        # 🤖 扩展动作空间: 11维原有 + 7维缓存迁移控制 = 18维
-        self.action_dim = 18  # 支持自适应缓存迁移控制
+        # 🔧 优化后的动作空间：动态适配网络拓扑
+        # 3(任务分配) + num_rsus(RSU选择) + num_uavs(UAV选择) + 7(控制参数)
+        self.action_dim = 3 + num_rsus + num_uavs + 7
         
         # 创建智能体
         self.agent = TD3Agent(self.state_dim, self.action_dim, self.config)
@@ -482,127 +486,149 @@ class TD3Environment:
         self.episode_count = 0
         self.step_count = 0
         
-        print(f"✓ TD3环境初始化完成")
-        print(f"✓ 网络拓扑: {num_vehicles}辆车 + {num_rsus}个RSU + {num_uavs}个UAV")
-        print(f"✓ 状态维度: {self.state_dim} ({num_vehicles}×5 + {num_rsus}×9 + {num_uavs}×8)")
-        print(f"✓ 动作维度: {self.action_dim}")
-        print(f"✓ 策略延迟更新: {self.config.policy_delay}")
+        print(f"TD3环境初始化完成（优化版）")
+        print(f"网络拓扑: {num_vehicles}辆车 + {num_rsus}个RSU + {num_uavs}个UAV")
+        print(f"状态维度: {self.state_dim} = 局部{self.local_state_dim} ({num_vehicles}×5 + {num_rsus}×5 + {num_uavs}×5) + 全局{self.global_state_dim}")
+        print(f"动作维度: {self.action_dim} (动态适配: 3+{num_rsus}+{num_uavs}+7)")
+        print(f"策略延迟更新: {self.config.policy_delay}")
+        print(f"优化特性: 移除控制参数冗余, 添加全局状态, 统一归一化")
     
     def get_state_vector(self, node_states: Dict, system_metrics: Dict) -> np.ndarray:
         """
-        🔧 动态构建状态向量，支持不同网络拓扑
-        状态组成: 车辆(N×5)维 + RSU(M×9)维 + UAV(K×8)维
+        🔧 优化版状态向量构建
+        状态组成: 车辆(N×5) + RSU(M×5) + UAV(K×5) + 全局(8) 维
         """
         state_components = []
         
-        # 1. 车辆状态 (N×5维) - 动态适配车辆数量
+        # ========== 1. 局部节点状态 ==========
+        
+        # 车辆状态 (N×5维)
         for i in range(self.num_vehicles):
             vehicle_key = f'vehicle_{i}'
             if vehicle_key in node_states:
-                vehicle_state = node_states[vehicle_key]
-                # 确保数值有效性
-                valid_state = []
-                for val in vehicle_state[:5]:
-                    if np.isfinite(val):
-                        valid_state.append(float(val))
-                    else:
-                        valid_state.append(0.5)
+                vehicle_state = node_states[vehicle_key][:5]  # 只取前5维
+                valid_state = [float(v) if np.isfinite(v) else 0.5 for v in vehicle_state]
                 state_components.extend(valid_state)
-                
-                # 补齐到5维
-                while len(state_components) % 5 != 0:
-                    state_components.append(0.0)
             else:
-                # 默认车辆状态: [位置x, 位置y, 速度, 队列, 能耗]
                 state_components.extend([0.5, 0.5, 0.0, 0.0, 0.0])
         
-        # 2. RSU状态 (M×9维) - 动态适配RSU数量
+        # RSU状态 (M×5维) - 统一为5维
         for i in range(self.num_rsus):
             rsu_key = f'rsu_{i}'
             if rsu_key in node_states:
-                rsu_state = node_states[rsu_key]
-                # 确保数值有效性和维度正确
-                valid_rsu_state = []
-                for j, val in enumerate(rsu_state[:9]):
-                    if np.isfinite(val):
-                        # 对缓存利用率(第2维)进行特殊检查
-                        if j == 2:  # 缓存利用率维度
-                            valid_rsu_state.append(min(1.0, max(0.0, float(val))))
-                        else:
-                            valid_rsu_state.append(float(val))
-                    else:
-                        valid_rsu_state.append(0.5 if j < 2 else 0.0)
-                
-                # 补齐到9维
-                while len(valid_rsu_state) < 9:
-                    valid_rsu_state.append(0.0)
-                
-                state_components.extend(valid_rsu_state)
+                rsu_state = node_states[rsu_key][:5]  # 只取前5维
+                valid_state = [float(v) if np.isfinite(v) else 0.5 for v in rsu_state]
+                state_components.extend(valid_state)
             else:
-                # 默认RSU状态: [位置x, 位置y, 缓存利用率, 队列, 能耗, 缓存参数4维]
-                state_components.extend([0.5, 0.5, 0.0, 0.0, 0.0, 0.7, 0.35, 0.05, 0.3])
+                state_components.extend([0.5, 0.5, 0.0, 0.0, 0.0])
         
-        # 3. UAV状态 (K×8维) - 动态适配UAV数量
+        # UAV状态 (K×5维) - 统一为5维
         for i in range(self.num_uavs):
             uav_key = f'uav_{i}'
             if uav_key in node_states:
-                uav_state = node_states[uav_key]
-                # 确保数值有效性
-                valid_uav_state = []
-                for j, val in enumerate(uav_state[:8]):
-                    if np.isfinite(val):
-                        # 对缓存利用率(第3维)进行特殊处理
-                        if j == 3:  # 缓存利用率维度
-                            valid_uav_state.append(min(1.0, max(0.0, float(val))))
-                        else:
-                            valid_uav_state.append(float(val))
-                    else:
-                        valid_uav_state.append(0.5 if j < 3 else 0.0)
-                
-                # 补齐到8维
-                while len(valid_uav_state) < 8:
-                    valid_uav_state.append(0.0)
-                
-                state_components.extend(valid_uav_state)
+                uav_state = node_states[uav_key][:5]  # 只取前5维
+                valid_state = [float(v) if np.isfinite(v) else 0.5 for v in uav_state]
+                state_components.extend(valid_state)
             else:
-                # 默认UAV状态: [位置x, 位置y, 位置z, 缓存利用率, 能耗, 迁移参数3维]
-                state_components.extend([0.5, 0.5, 0.5, 0.0, 0.0, 0.75, 1.0, 0.3])
+                state_components.extend([0.5, 0.5, 0.5, 0.0, 0.0])
         
-        # 确保状态向量维度正确
-        expected_dim = self.state_dim
-        state_vector = np.array(state_components[:expected_dim], dtype=np.float32)
+        # ========== 2. 全局系统状态 (8维) ==========
+        global_state = self._build_global_state(node_states, system_metrics)
+        state_components.extend(global_state)
         
-        # 如果维度不足，补齐
-        if len(state_vector) < expected_dim:
-            padding_needed = expected_dim - len(state_vector)
+        # ========== 3. 最终处理 ==========
+        state_vector = np.array(state_components[:self.state_dim], dtype=np.float32)
+        
+        # 维度不足时补齐
+        if len(state_vector) < self.state_dim:
+            padding_needed = self.state_dim - len(state_vector)
             state_vector = np.pad(state_vector, (0, padding_needed), mode='constant', constant_values=0.5)
         
         # 数值安全检查
         state_vector = np.nan_to_num(state_vector, nan=0.5, posinf=1.0, neginf=0.0)
+        state_vector = np.clip(state_vector, 0.0, 1.0)  # 确保所有值在[0,1]
         
         return state_vector
     
+    def _build_global_state(self, node_states: Dict, system_metrics: Dict) -> np.ndarray:
+        """
+        构建全局系统状态（8维）
+        提供系统级别的整体信息，辅助智能体进行全局协调决策
+        """
+        # 收集所有节点的队列信息（从局部状态中提取）
+        all_queues = []
+        for i in range(self.num_vehicles):
+            v_state = node_states.get(f'vehicle_{i}')
+            if v_state is not None and len(v_state) > 3:
+                all_queues.append(v_state[3])  # 队列维度
+        for i in range(self.num_rsus):
+            r_state = node_states.get(f'rsu_{i}')
+            if r_state is not None and len(r_state) > 3:
+                all_queues.append(r_state[3])
+        
+        # 计算全局指标
+        avg_queue = np.mean(all_queues) if all_queues else 0.0
+        congestion_ratio = len([q for q in all_queues if q > 0.5]) / max(1, len(all_queues))
+        
+        # 从system_metrics获取系统级指标
+        completion_rate = system_metrics.get('task_completion_rate', 0.5)
+        avg_energy = system_metrics.get('total_energy_consumption', 0.0) / max(1, self.num_vehicles + self.num_rsus + self.num_uavs)
+        cache_hit_rate = system_metrics.get('cache_hit_rate', 0.0)
+        
+        # 构建全局状态向量
+        global_state = np.array([
+            np.clip(avg_queue, 0.0, 1.0),           # 平均队列占用率
+            np.clip(congestion_ratio, 0.0, 1.0),    # 拥塞节点比例
+            np.clip(completion_rate, 0.0, 1.0),     # 任务完成率
+            np.clip(avg_energy / 1000.0, 0.0, 1.0), # 平均能耗
+            np.clip(cache_hit_rate, 0.0, 1.0),      # 缓存命中率
+            0.0,  # episode进度（需要从外部传入）
+            np.clip(len([q for q in all_queues if q > 0]) / max(1, len(all_queues)), 0.0, 1.0),  # 活跃节点比例
+            np.clip(sum(all_queues) / max(1, len(all_queues)), 0.0, 1.0)  # 网络总负载
+        ], dtype=np.float32)
+        
+        return global_state
+    
     def decompose_action(self, action: np.ndarray) -> Dict[str, np.ndarray]:
         """
-        将全局动作分解为各节点动作
-        🤖 更新支持18维动作空间：
-        - vehicle_agent: 18维 (11维原有 + 7维缓存迁移控制)
+        🔧 优化版动作分解：动态适配网络拓扑
+        动作空间：3(分配) + num_rsus(RSU选择) + num_uavs(UAV选择) + 7(控制)
         """
         actions = {}
         
         # 确保action长度足够
-        if len(action) < 18:
-            action = np.pad(action, (0, 18-len(action)), mode='constant')
+        if len(action) < self.action_dim:
+            action = np.pad(action, (0, self.action_dim - len(action)), mode='constant')
         
-        # 🤖 vehicle_agent 获得所有18维动作
-        # 前11维：任务分配(3) + RSU选择(6) + UAV选择(2)
-        # 后7维：缓存控制(4) + 迁移控制(3)
-        actions['vehicle_agent'] = action[:18]
+        # 动态分解动作
+        idx = 0
         
-        # 🔧 关键修复：从vehicle_agent中提取RSU和UAV选择
-        # 训练框架需要从rsu_agent和uav_agent获取选择概率
-        actions['rsu_agent'] = action[3:9]   # RSU选择（6维）
-        actions['uav_agent'] = action[9:11]  # UAV选择（2维）
+        # 1. 任务分配偏好（3维）
+        task_allocation = action[idx:idx+3]
+        idx += 3
+        
+        # 2. RSU选择权重（num_rsus维）
+        rsu_selection = action[idx:idx+self.num_rsus]
+        idx += self.num_rsus
+        
+        # 3. UAV选择权重（num_uavs维）
+        uav_selection = action[idx:idx+self.num_uavs]
+        idx += self.num_uavs
+        
+        # 4. 控制参数（7维）
+        control_params = action[idx:idx+7]
+        
+        # 构建vehicle_agent的完整动作（用于仿真器）
+        actions['vehicle_agent'] = np.concatenate([
+            task_allocation,   # 3维
+            rsu_selection,     # num_rsus维
+            uav_selection,     # num_uavs维
+            control_params     # 7维
+        ])
+        
+        # RSU和UAV agent的动作（用于选择概率计算）
+        actions['rsu_agent'] = rsu_selection
+        actions['uav_agent'] = uav_selection
         
         return actions
     

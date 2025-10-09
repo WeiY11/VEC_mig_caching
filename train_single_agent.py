@@ -188,17 +188,17 @@ class SingleAgentTrainingEnvironment:
         num_rsus = len(self.simulator.rsus)
         num_uavs = len(self.simulator.uavs)
         
-        # 根据算法创建相应环境（传入拓扑参数以动态调整状态维度）
+        # 🔧 优化：所有算法统一传入拓扑参数，实现动态适配
         if self.algorithm == "DDPG":
-            self.agent_env = DDPGEnvironment()
+            self.agent_env = DDPGEnvironment(num_vehicles, num_rsus, num_uavs)
         elif self.algorithm == "TD3":
             self.agent_env = TD3Environment(num_vehicles, num_rsus, num_uavs)
         elif self.algorithm == "DQN":
-            self.agent_env = DQNEnvironment()
+            self.agent_env = DQNEnvironment(num_vehicles, num_rsus, num_uavs)
         elif self.algorithm == "PPO":
-            self.agent_env = PPOEnvironment()
+            self.agent_env = PPOEnvironment(num_vehicles, num_rsus, num_uavs)
         elif self.algorithm == "SAC":
-            self.agent_env = SACEnvironment()
+            self.agent_env = SACEnvironment(num_vehicles, num_rsus, num_uavs)
         else:
             raise ValueError(f"不支持的算法: {algorithm}")
         
@@ -212,7 +212,8 @@ class SingleAgentTrainingEnvironment:
             'data_loss_ratio_bytes': [],
             'task_completion_rate': [],
             'cache_hit_rate': [],
-            'migration_success_rate': []
+            'migration_success_rate': [],
+            'episode_steps': []  # 🔧 新增：记录每个episode的实际步数
         }
         
         # 性能追踪器
@@ -258,37 +259,36 @@ class SingleAgentTrainingEnvironment:
         # 收集系统状态
         node_states = {}
         
-        # 车辆状态
+        # 车辆状态（与step保持一致的归一化方式）
         for i, vehicle in enumerate(self.simulator.vehicles):
-            # 生成车辆状态
             vehicle_state = np.array([
-                vehicle['position'][0] / 1000,  # 归一化位置x
-                vehicle['position'][1] / 1000,  # 归一化位置y
-                vehicle['velocity'] / 50,       # 归一化速度
-                len(vehicle.get('tasks', [])) / 10,  # 归一化任务数
-                vehicle.get('energy_consumed', 0) / 1000  # 归一化能耗
+                np.clip(vehicle['position'][0] / 1000, 0.0, 1.0),
+                np.clip(vehicle['position'][1] / 1000, 0.0, 1.0),
+                np.clip(vehicle['velocity'] / 50, 0.0, 1.0),
+                np.clip(len(vehicle.get('tasks', [])) / 20.0, 0.0, 1.0),
+                np.clip(vehicle.get('energy_consumed', 0) / 1000.0, 0.0, 1.0)
             ])
             node_states[f'vehicle_{i}'] = vehicle_state
-        
-        # RSU状态
+
+        # RSU状态（统一归一化/裁剪）
         for i, rsu in enumerate(self.simulator.rsus):
             rsu_state = np.array([
-                rsu['position'][0] / 1000,  # 归一化位置x
-                rsu['position'][1] / 1000,  # 归一化位置y
-                self._calculate_correct_cache_utilization(rsu.get('cache', {}), rsu.get('cache_capacity', 1000.0)),  # 🔧 修复：正确的缓存利用率
-                len(rsu.get('computation_queue', [])) / 10,  # 归一化队列长度
-                rsu.get('energy_consumed', 0) / 1000  # 归一化能耗
+                np.clip(rsu['position'][0] / 1000, 0.0, 1.0),
+                np.clip(rsu['position'][1] / 1000, 0.0, 1.0),
+                self._calculate_correct_cache_utilization(rsu.get('cache', {}), rsu.get('cache_capacity', 1000.0)),
+                np.clip(len(rsu.get('computation_queue', [])) / 20.0, 0.0, 1.0),
+                np.clip(rsu.get('energy_consumed', 0) / 1000.0, 0.0, 1.0)
             ])
             node_states[f'rsu_{i}'] = rsu_state
-        
-        # UAV状态
+
+        # UAV状态（统一归一化/裁剪）
         for i, uav in enumerate(self.simulator.uavs):
             uav_state = np.array([
-                uav['position'][0] / 1000,  # 归一化位置x
-                uav['position'][1] / 1000,  # 归一化位置y
-                uav['position'][2] / 200,   # 归一化高度
-                self._calculate_correct_cache_utilization(uav.get('cache', {}), uav.get('cache_capacity', 200.0)),  # 🔧 修复：正确的UAV缓存利用率
-                uav.get('energy_consumed', 0) / 1000  # 归一化能耗
+                np.clip(uav['position'][0] / 1000, 0.0, 1.0),
+                np.clip(uav['position'][1] / 1000, 0.0, 1.0),
+                np.clip(uav['position'][2] / 200, 0.0, 1.0),
+                self._calculate_correct_cache_utilization(uav.get('cache', {}), uav.get('cache_capacity', 200.0)),
+                np.clip(uav.get('energy_consumed', 0) / 1000.0, 0.0, 1.0)
             ])
             node_states[f'uav_{i}'] = uav_state
         
@@ -324,63 +324,40 @@ class SingleAgentTrainingEnvironment:
         # 收集下一步状态
         node_states = {}
         
-        # 车辆状态
+        # 车辆状态 (5维 - 统一归一化)
         for i, vehicle in enumerate(self.simulator.vehicles):
             vehicle_state = np.array([
-                vehicle['position'][0] / 1000,
-                vehicle['position'][1] / 1000,
-                vehicle['velocity'] / 50,
-                len(vehicle.get('tasks', [])) / 10,
-                vehicle.get('energy_consumed', 0) / 1000
+                np.clip(vehicle['position'][0] / 1000, 0.0, 1.0),  # 位置x
+                np.clip(vehicle['position'][1] / 1000, 0.0, 1.0),  # 位置y
+                np.clip(vehicle['velocity'] / 50, 0.0, 1.0),  # 速度
+                np.clip(len(vehicle.get('tasks', [])) / 20.0, 0.0, 1.0),  # 队列（扩大范围到20）
+                np.clip(vehicle.get('energy_consumed', 0) / 1000.0, 0.0, 1.0)  # 能耗
             ])
             node_states[f'vehicle_{i}'] = vehicle_state
         
-        # 🤖 RSU增强状态 (原5维 + 缓存控制状态)
+        # RSU状态 (5维 - 清理版，移除控制参数)
         for i, rsu in enumerate(self.simulator.rsus):
-            # 原有状态
-            base_state = np.array([
-                rsu['position'][0] / 1000,
-                rsu['position'][1] / 1000,
-                len(rsu.get('cache', {})) / rsu.get('cache_capacity', 100),
-                len(rsu.get('computation_queue', [])) / 10,
-                rsu.get('energy_consumed', 0) / 1000
+            # 标准化归一化：确保所有值在[0,1]范围
+            rsu_state = np.array([
+                np.clip(rsu['position'][0] / 1000, 0.0, 1.0),  # 位置x
+                np.clip(rsu['position'][1] / 1000, 0.0, 1.0),  # 位置y
+                np.clip(len(rsu.get('cache', {})) / max(1, rsu.get('cache_capacity', 100)), 0.0, 1.0),  # 缓存利用率
+                np.clip(len(rsu.get('computation_queue', [])) / 20.0, 0.0, 1.0),  # 队列利用率（扩大范围到20）
+                np.clip(rsu.get('energy_consumed', 0) / 1000.0, 0.0, 1.0)  # 能耗
             ])
-            
-            # 🤖 新增缓存控制状态
-            cache_params = self.adaptive_cache_controller.agent_params
-            cache_state = np.array([
-                cache_params['heat_threshold_high'],
-                cache_params['heat_threshold_medium'],
-                len(rsu.get('cache', {})) / max(1, rsu.get('cache_capacity', 100)),  # 缓存利用率
-                self.adaptive_cache_controller.cache_stats.get('total_requests', 0) / 100.0  # 归一化请求数
-            ])
-            
-            # 合并状态
-            enhanced_state = np.concatenate([base_state, cache_state])
-            node_states[f'rsu_{i}'] = enhanced_state
+            node_states[f'rsu_{i}'] = rsu_state
         
-        # 🤖 UAV增强状态 (原5维 + 迁移控制状态)
+        # UAV状态 (5维 - 清理版，移除控制参数)
         for i, uav in enumerate(self.simulator.uavs):
-            # 原有状态
-            base_state = np.array([
-                uav['position'][0] / 1000,
-                uav['position'][1] / 1000,
-                uav['position'][2] / 200,
-                len(uav.get('cache', {})) / uav.get('cache_capacity', 100),
-                uav.get('energy_consumed', 0) / 1000
+            # 标准化归一化：确保所有值在[0,1]范围
+            uav_state = np.array([
+                np.clip(uav['position'][0] / 1000, 0.0, 1.0),  # 位置x
+                np.clip(uav['position'][1] / 1000, 0.0, 1.0),  # 位置y
+                np.clip(uav['position'][2] / 200, 0.0, 1.0),   # 位置z（高度）
+                np.clip(len(uav.get('cache', {})) / max(1, uav.get('cache_capacity', 100)), 0.0, 1.0),  # 缓存利用率
+                np.clip(uav.get('energy_consumed', 0) / 1000.0, 0.0, 1.0)  # 能耗
             ])
-            
-            # 🤖 新增迁移控制状态
-            migration_params = self.adaptive_migration_controller.agent_params
-            migration_state = np.array([
-                migration_params['uav_battery_threshold'],
-                uav.get('battery_level', 1.0),
-                migration_params['migration_cost_weight']
-            ])
-            
-            # 合并状态
-            enhanced_state = np.concatenate([base_state, migration_state])
-            node_states[f'uav_{i}'] = enhanced_state
+            node_states[f'uav_{i}'] = uav_state
         
         # 计算系统指标
         system_metrics = self._calculate_system_metrics(step_stats)
@@ -766,18 +743,29 @@ class SingleAgentTrainingEnvironment:
                 sim_actions['uav_selection_probs'] = [float(x) for x in uav_probs]
             
             # 🤖 =============== 新增7维缓存迁移控制 ===============
-            if isinstance(vehicle_action, (list, tuple, np.ndarray)) and len(vehicle_action) >= 18:
-                # 提取缓存迁移控制动作 (维度11-17)
-                cache_migration_actions = np.array(vehicle_action[11:18], dtype=np.float32)
+            if isinstance(vehicle_action, (list, tuple, np.ndarray)):
+                vehicle_action_array = np.array(vehicle_action, dtype=np.float32)
+                control_start = 3 + num_rsus + num_uavs
+                control_end = control_start + 7
+                if vehicle_action_array.size >= control_end:
+                    cache_migration_actions = vehicle_action_array[control_start:control_end]
+                elif vehicle_action_array.size > control_start:
+                    # 若长度不足7维，做安全补零
+                    cache_migration_actions = np.zeros(7, dtype=np.float32)
+                    available = vehicle_action_array[control_start:]
+                    cache_migration_actions[:available.size] = available
+                else:
+                    cache_migration_actions = np.zeros(7, dtype=np.float32)
+
                 cache_migration_actions = np.clip(cache_migration_actions, -1.0, 1.0)
-                
+
                 # 映射为参数字典
                 cache_params, migration_params = map_agent_actions_to_params(cache_migration_actions)
-                
+
                 # 更新自适应控制器参数
                 self.adaptive_cache_controller.update_agent_params(cache_params)
                 self.adaptive_migration_controller.update_agent_params(migration_params)
-                
+
                 # 将自适应参数传递给仿真器
                 sim_actions.update({
                     'adaptive_cache_params': cache_params,
@@ -793,47 +781,52 @@ class SingleAgentTrainingEnvironment:
     
     def _encode_continuous_action(self, actions_dict) -> np.ndarray:
         """
-        🤖 将动作字典编码为连续动作向量 - 支持18维动作空间
-        现在只使用vehicle_agent的18维动作
+        🤖 将动作字典编码为连续动作向量 - 动态适配动作维度
         """
         # 处理可能的不同输入类型
+        action_dim = getattr(self.agent_env, 'action_dim', 18)
         if not isinstance(actions_dict, dict):
-            # 如果不是字典，返回默认18维动作
-            return np.zeros(18)
-        
-        # 🤖 只使用vehicle_agent的18维动作
+            # 如果不是字典，返回默认动作维度
+            return np.zeros(action_dim, dtype=np.float32)
+
+        # 🤖 只使用vehicle_agent的完整动作向量
         vehicle_action = actions_dict.get('vehicle_agent')
         if isinstance(vehicle_action, (list, tuple, np.ndarray)):
-            # 确保是18维
-            if len(vehicle_action) >= 18:
-                return np.array(vehicle_action[:18], dtype=np.float32)
-            else:
-                # 如果不足18维，补零
-                action = np.zeros(18, dtype=np.float32)
-                action[:len(vehicle_action)] = vehicle_action
-                return action
-        else:
-            # 默认18维零动作
-            return np.zeros(18, dtype=np.float32)
+            vehicle_action = np.array(vehicle_action, dtype=np.float32)
+            if vehicle_action.size >= action_dim:
+                return vehicle_action[:action_dim]
+            action = np.zeros(action_dim, dtype=np.float32)
+            action[:vehicle_action.size] = vehicle_action
+            return action
+
+        # 默认返回全零动作
+        return np.zeros(action_dim, dtype=np.float32)
     
     def _build_actions_from_vector(self, action_vector: np.ndarray) -> Dict[str, np.ndarray]:
-        """将18维连续动作向量恢复为仿真器需要的动作字典"""
+        """将连续动作向量恢复为仿真器需要的动作字典（动态维度）"""
         import numpy as np
 
         if not isinstance(action_vector, np.ndarray):
             action_vector = np.array(action_vector, dtype=np.float32)
 
-        if action_vector.size < 18:
-            padded = np.zeros(18, dtype=np.float32)
+        action_dim = getattr(self.agent_env, 'action_dim', action_vector.size)
+        if action_vector.size < action_dim:
+            padded = np.zeros(action_dim, dtype=np.float32)
             padded[:action_vector.size] = action_vector
             action_vector = padded
         else:
-            action_vector = action_vector.astype(np.float32)[:18]
+            action_vector = action_vector.astype(np.float32)[:action_dim]
+
+        num_rsus = len(getattr(self.simulator, 'rsus', []))
+        num_uavs = len(getattr(self.simulator, 'uavs', []))
+        rsu_start = 3
+        rsu_end = rsu_start + num_rsus
+        uav_end = rsu_end + num_uavs
 
         return {
             'vehicle_agent': action_vector,
-            'rsu_agent': action_vector[3:9],
-            'uav_agent': action_vector[9:11]
+            'rsu_agent': action_vector[rsu_start:rsu_end],
+            'uav_agent': action_vector[rsu_end:uav_end]
         }
 
     def _encode_discrete_action(self, actions_dict) -> int:
@@ -971,6 +964,10 @@ def train_single_algorithm(algorithm: str, num_episodes: Optional[int] = None, e
         
         # 记录训练数据
         training_env.episode_rewards.append(episode_result['avg_reward'])
+        
+        # 🔧 新增：记录实际步数
+        episode_steps = episode_result.get('steps', config.experiment.max_steps_per_episode)
+        training_env.episode_metrics['episode_steps'].append(episode_steps)
         
         # 更新性能追踪器
         training_env.performance_tracker['recent_rewards'].update(episode_result['avg_reward'])
@@ -1341,7 +1338,17 @@ def save_single_training_results(algorithm: str, training_env: SingleAgentTraini
     
     # 🔧 同时提供Episode总奖励和Per-Step平均奖励
     recent_episode_reward = training_env.performance_tracker['recent_rewards'].get_average()
-    avg_step_reward = recent_episode_reward / config.experiment.max_steps_per_episode
+    
+    # 🔧 优化：使用实际平均步数计算 avg_step_reward
+    if 'episode_steps' in training_env.episode_metrics and training_env.episode_metrics['episode_steps']:
+        # 使用最近100个episode的平均步数
+        recent_steps = training_env.episode_metrics['episode_steps'][-100:]
+        avg_steps_per_episode = sum(recent_steps) / len(recent_steps)
+    else:
+        # 回退到配置的默认值
+        avg_steps_per_episode = config.experiment.max_steps_per_episode
+    
+    avg_step_reward = recent_episode_reward / avg_steps_per_episode
     
     # 获取网络拓扑信息
     num_vehicles = len(training_env.simulator.vehicles)

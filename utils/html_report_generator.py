@@ -50,37 +50,46 @@ class HTMLReportGenerator:
         # 1. 执行摘要
         html_parts.append(self._generate_executive_summary(algorithm, training_env, training_time, results))
         
-        # 🆕 1.5. 智能分析洞察（新增）
+        # 🆕 2. 智能分析洞察（提前）
         html_parts.append(self._generate_smart_insights(algorithm, training_env, results))
         
-        # 2. 训练配置
-        html_parts.append(self._generate_training_config(results))
-
-        # 3. 系统参数总览（新增）
-        html_parts.append(self._generate_system_parameters(results))
-
-        # 4. 网络配置参数（新增）
-        html_parts.append(self._generate_network_parameters(results))
-
-        # 5. 计算能力参数（新增）
-        html_parts.append(self._generate_compute_parameters(results))
-
-        # 6. 任务和迁移参数（新增）
-        html_parts.append(self._generate_task_migration_parameters(results))
-
-        # 7. 奖励函数参数（新增）
-        html_parts.append(self._generate_reward_parameters(results))
-
-        # 8. 算法配置参数（新增）
-        html_parts.append(self._generate_algorithm_parameters(results))
-
-        # 9. 性能指标总览
-        html_parts.append(self._generate_performance_overview(training_env, results))
-        
-        # 10. 训练曲线可视化
+        # 🆕 3. 训练曲线可视化（移到前面⭐）
         html_parts.append(self._generate_training_charts(algorithm, training_env))
 
-        # 11. 详细指标分析
+        # 🆕 4. 交互式图表分析（移到前面⭐）
+        html_parts.append(self._generate_interactive_charts(algorithm, training_env))
+        
+        # 🆕 5. 阶段性能对比（移到前面⭐）
+        html_parts.append(self._generate_phase_comparison(training_env))
+        
+        # 🆕 6. 统计分析详情（移到前面⭐）
+        html_parts.append(self._generate_statistical_details(training_env))
+        
+        # 7. 性能指标总览
+        html_parts.append(self._generate_performance_overview(training_env, results))
+        
+        # 8. 训练配置
+        html_parts.append(self._generate_training_config(results))
+
+        # 9. 系统参数总览
+        html_parts.append(self._generate_system_parameters(results))
+
+        # 10. 网络配置参数
+        html_parts.append(self._generate_network_parameters(results))
+
+        # 11. 计算能力参数
+        html_parts.append(self._generate_compute_parameters(results))
+
+        # 12. 任务和迁移参数
+        html_parts.append(self._generate_task_migration_parameters(results))
+
+        # 13. 奖励函数参数
+        html_parts.append(self._generate_reward_parameters(results))
+
+        # 14. 算法配置参数
+        html_parts.append(self._generate_algorithm_parameters(results))
+
+        # 15. 详细指标分析
         html_parts.append(self._generate_detailed_metrics(training_env))
 
         # 12. 算法超参数和网络架构
@@ -1365,28 +1374,28 @@ class HTMLReportGenerator:
         if score >= 60:
             return {
                 'rating': 'excellent',
-                'rating_text': '优秀（{}/100分）'.format(score),
+                'rating_text': f'优秀（{score}/100分）',
                 'level': 'success',
                 'description': '🎉 ' + '；'.join(details) + '。系统性能表现优异！'
             }
         elif score >= 45:
             return {
                 'rating': 'good',
-                'rating_text': '良好（{}/100分）'.format(score),
+                'rating_text': f'良好（{score}/100分）',
                 'level': 'success',
                 'description': '👍 ' + '；'.join(details) + '。系统性能达到预期目标。'
             }
         elif score >= 30:
             return {
                 'rating': 'fair',
-                'rating_text': '一般（{}/100分）'.format(score),
+                'rating_text': f'一般（{score}/100分）',
                 'level': 'warning',
                 'description': '⚠️ ' + '；'.join(details) + '。系统性能有待提升。'
             }
         else:
             return {
                 'rating': 'poor',
-                'rating_text': '较差（{}/100分）'.format(score),
+                'rating_text': f'较差（{score}/100分）',
                 'level': 'danger',
                 'description': '❌ ' + '；'.join(details) + '。系统性能需要优化。'
             }
@@ -1442,7 +1451,7 @@ class HTMLReportGenerator:
         completion_rate = final_perf.get('avg_completion', 0)
         
         if completion_rate < 0.9:
-            recommendations.append('⚠️ <strong>提升任务完成率</strong>：当前完成率{:.1f}%，建议增加dropped_tasks的惩罚权重或优化资源分配策略。'.format(completion_rate * 100))
+            recommendations.append(f'⚠️ <strong>提升任务完成率</strong>：当前完成率{completion_rate * 100:.1f}%，建议增加dropped_tasks的惩罚权重或优化资源分配策略。')
         
         # 基于算法的建议
         if algorithm in ['TD3', 'DDPG']:
@@ -1454,7 +1463,7 @@ class HTMLReportGenerator:
         
         # 通用建议
         if len(rewards) < 200:
-            recommendations.append('⏱️ <strong>增加训练轮次</strong>：当前训练{}轮，建议至少训练200-500轮以充分收敛。'.format(len(rewards)))
+            recommendations.append(f'⏱️ <strong>增加训练轮次</strong>：当前训练{len(rewards)}轮，建议至少训练200-500轮以充分收敛。')
         
         recommendations.append('💾 <strong>保存检查点</strong>：定期保存训练检查点，以便在性能下降时回滚到最佳模型。')
         recommendations.append('📈 <strong>对比实验</strong>：与其他算法（DDPG、SAC、PPO等）进行对比实验，验证当前算法的优势。')
@@ -1734,6 +1743,440 @@ class HTMLReportGenerator:
 """)
         
         return '\n'.join(charts_html)
+    
+    def _generate_interactive_charts(self, algorithm: str, training_env: Any) -> str:
+        """
+        🆕 生成交互式图表（Plotly.js）
+        提供可缩放、悬停显示数值的动态图表
+        """
+        import json
+        
+        # 检查是否有足够的数据
+        if not training_env.episode_rewards or len(training_env.episode_rewards) < 5:
+            return ""  # 数据不足，跳过
+        
+        # 准备数据
+        episodes = list(range(1, len(training_env.episode_rewards) + 1))
+        rewards = training_env.episode_rewards
+        
+        # 提取指标数据
+        delays = training_env.episode_metrics.get('avg_delay', [])
+        energies = training_env.episode_metrics.get('total_energy', [])
+        completions = training_env.episode_metrics.get('task_completion_rate', [])
+        cache_hits = training_env.episode_metrics.get('cache_hit_rate', [])
+        
+        # 构建JSON数据
+        chart_data = {
+            'episodes': episodes,
+            'rewards': rewards,
+            'delays': delays[:len(episodes)],
+            'energies': energies[:len(episodes)],
+            'completions': [c * 100 for c in completions[:len(episodes)]],  # 转为百分比
+            'cache_hits': [c * 100 for c in cache_hits[:len(episodes)]]  # 转为百分比
+        }
+        
+        html = f"""
+        <div class="section">
+            <h2 class="section-title">🎯 Interactive Analysis (Plotly)</h2>
+            <p class="metric-description">
+                交互式图表：鼠标悬停查看精确数值，双击重置视图，拖拽选择区域缩放
+            </p>
+            
+            <div class="plotly-chart" id="interactiveRewardChart"></div>
+            <div class="plotly-chart" id="interactiveMetricsChart"></div>
+            
+            <script>
+                (function() {{
+                    var chartData = {json.dumps(chart_data)};
+                    
+                    // Chart 1: Reward Evolution with Smoothing
+                    var rawTrace = {{
+                        x: chartData.episodes,
+                        y: chartData.rewards,
+                        name: 'Raw Reward',
+                        type: 'scatter',
+                        mode: 'lines',
+                        line: {{color: 'rgba(102, 126, 234, 0.3)', width: 1}},
+                        hovertemplate: 'Episode %{{x}}<br>Reward: %{{y:.3f}}<extra></extra>'
+                    }};
+                    
+                    // 计算移动平均
+                    var window = Math.max(5, Math.floor(chartData.rewards.length / 20));
+                    var smoothed = [];
+                    for (var i = window - 1; i < chartData.rewards.length; i++) {{
+                        var sum = 0;
+                        for (var j = 0; j < window; j++) {{
+                            sum += chartData.rewards[i - j];
+                        }}
+                        smoothed.push(sum / window);
+                    }}
+                    
+                    var smoothTrace = {{
+                        x: chartData.episodes.slice(window - 1),
+                        y: smoothed,
+                        name: 'Smoothed (MA-' + window + ')',
+                        type: 'scatter',
+                        mode: 'lines',
+                        line: {{color: '#667eea', width: 3}},
+                        hovertemplate: 'Episode %{{x}}<br>Avg Reward: %{{y:.3f}}<extra></extra>'
+                    }};
+                    
+                    var layout1 = {{
+                        title: '{algorithm} Reward Evolution (Interactive)',
+                        xaxis: {{title: 'Episode', gridcolor: '#e0e0e0'}},
+                        yaxis: {{title: 'Average Reward', gridcolor: '#e0e0e0'}},
+                        hovermode: 'x unified',
+                        plot_bgcolor: 'rgba(248, 249, 250, 0.5)',
+                        paper_bgcolor: 'rgba(0,0,0,0)',
+                        font: {{family: 'Segoe UI, sans-serif'}},
+                        showlegend: true,
+                        legend: {{x: 0.02, y: 0.98}}
+                    }};
+                    
+                    Plotly.newPlot('interactiveRewardChart', [rawTrace, smoothTrace], layout1, {{
+                        responsive: true,
+                        displayModeBar: true,
+                        modeBarButtonsToRemove: ['lasso2d', 'select2d'],
+                        toImageButtonOptions: {{
+                            format: 'png',
+                            filename: '{algorithm.lower()}_reward_interactive',
+                            height: 600,
+                            width: 1200,
+                            scale: 2
+                        }}
+                    }});
+                    
+                    // Chart 2: Multi-Metric Comparison
+                    var delayTrace = {{
+                        x: chartData.episodes.slice(0, chartData.delays.length),
+                        y: chartData.delays,
+                        name: 'Avg Delay (s)',
+                        type: 'scatter',
+                        mode: 'lines+markers',
+                        marker: {{color: '#D55E00', size: 4}},
+                        line: {{width: 2}},
+                        yaxis: 'y1',
+                        hovertemplate: 'Delay: %{{y:.4f}}s<extra></extra>'
+                    }};
+                    
+                    var completionTrace = {{
+                        x: chartData.episodes.slice(0, chartData.completions.length),
+                        y: chartData.completions,
+                        name: 'Completion Rate (%)',
+                        type: 'scatter',
+                        mode: 'lines+markers',
+                        marker: {{color: '#029E73', size: 4}},
+                        line: {{width: 2}},
+                        yaxis: 'y2',
+                        hovertemplate: 'Completion: %{{y:.1f}}%<extra></extra>'
+                    }};
+                    
+                    var cacheTrace = {{
+                        x: chartData.episodes.slice(0, chartData.cache_hits.length),
+                        y: chartData.cache_hits,
+                        name: 'Cache Hit Rate (%)',
+                        type: 'scatter',
+                        mode: 'lines+markers',
+                        marker: {{color: '#0173B2', size: 4}},
+                        line: {{width: 2}},
+                        yaxis: 'y2',
+                        hovertemplate: 'Cache Hit: %{{y:.1f}}%<extra></extra>'
+                    }};
+                    
+                    var layout2 = {{
+                        title: 'Multi-Metric Evolution (Interactive)',
+                        xaxis: {{title: 'Episode', gridcolor: '#e0e0e0'}},
+                        yaxis: {{
+                            title: 'Delay (s)',
+                            titlefont: {{color: '#D55E00'}},
+                            tickfont: {{color: '#D55E00'}},
+                            gridcolor: '#e0e0e0'
+                        }},
+                        yaxis2: {{
+                            title: 'Rate (%)',
+                            titlefont: {{color: '#029E73'}},
+                            tickfont: {{color: '#029E73'}},
+                            overlaying: 'y',
+                            side: 'right'
+                        }},
+                        hovermode: 'x unified',
+                        plot_bgcolor: 'rgba(248, 249, 250, 0.5)',
+                        paper_bgcolor: 'rgba(0,0,0,0)',
+                        font: {{family: 'Segoe UI, sans-serif'}},
+                        showlegend: true,
+                        legend: {{x: 0.02, y: 0.98}}
+                    }};
+                    
+                    Plotly.newPlot('interactiveMetricsChart', [delayTrace, completionTrace, cacheTrace], layout2, {{
+                        responsive: true,
+                        displayModeBar: true,
+                        modeBarButtonsToRemove: ['lasso2d', 'select2d'],
+                        toImageButtonOptions: {{
+                            format: 'png',
+                            filename: '{algorithm.lower()}_metrics_interactive',
+                            height: 600,
+                            width: 1200,
+                            scale: 2
+                        }}
+                    }});
+                }})();
+            </script>
+        </div>
+"""
+        return html
+    
+    def _generate_phase_comparison(self, training_env: Any) -> str:
+        """
+        🆕 生成训练阶段对比分析
+        比较训练前期、中期、后期的性能差异
+        """
+        rewards = training_env.episode_rewards
+        if not rewards or len(rewards) < 30:
+            return ""  # 数据不足
+        
+        # 分为三个阶段
+        n = len(rewards)
+        early = rewards[:n//3]
+        middle = rewards[n//3:2*n//3]
+        late = rewards[2*n//3:]
+        
+        # 同样分析指标
+        delays = training_env.episode_metrics.get('avg_delay', [])
+        completions = training_env.episode_metrics.get('task_completion_rate', [])
+        
+        early_delay = delays[:n//3] if len(delays) >= n//3 else []
+        middle_delay = delays[n//3:2*n//3] if len(delays) >= 2*n//3 else []
+        late_delay = delays[2*n//3:] if len(delays) > 2*n//3 else []
+        
+        early_comp = completions[:n//3] if len(completions) >= n//3 else []
+        middle_comp = completions[n//3:2*n//3] if len(completions) >= 2*n//3 else []
+        late_comp = completions[2*n//3:] if len(completions) > 2*n//3 else []
+        
+        # 计算统计量
+        def safe_mean(data):
+            return np.mean(data) if len(data) > 0 else 0.0
+        
+        def safe_std(data):
+            return np.std(data) if len(data) > 0 else 0.0
+        
+        def safe_improvement(early_data, late_data):
+            early_mean = safe_mean(early_data)
+            late_mean = safe_mean(late_data)
+            if early_mean != 0:
+                return ((late_mean - early_mean) / abs(early_mean) * 100)
+            return 0.0
+        
+        # 计算改进幅度
+        reward_improvement = safe_improvement(early, late)
+        delay_improvement = -safe_improvement(early_delay, late_delay)  # 时延减少是改进
+        completion_improvement = safe_improvement(early_comp, late_comp) * 100  # 百分点
+        
+        # 评估训练效果
+        if reward_improvement > 15:
+            training_effectiveness = "excellent"
+            effectiveness_text = "优秀"
+            effectiveness_desc = "训练效果显著，性能大幅提升"
+        elif reward_improvement > 8:
+            training_effectiveness = "good"
+            effectiveness_text = "良好"
+            effectiveness_desc = "训练效果良好，性能稳步提升"
+        elif reward_improvement > 3:
+            training_effectiveness = "fair"
+            effectiveness_text = "一般"
+            effectiveness_desc = "训练有效果，但提升有限"
+        else:
+            training_effectiveness = "poor"
+            effectiveness_text = "较差"
+            effectiveness_desc = "训练效果不明显，需检查配置"
+        
+        html = f"""
+        <div class="section">
+            <h2 class="section-title">📊 Training Phase Comparison</h2>
+            <p class="metric-description">
+                对比训练前期、中期、后期的性能变化，评估训练效果
+            </p>
+            
+            <div class="insight-card {training_effectiveness}">
+                <div class="insight-title">🎯 训练效果评估: <span class="rating {training_effectiveness}">{effectiveness_text}</span></div>
+                <div class="insight-content">
+                    {effectiveness_desc} - 奖励提升{reward_improvement:+.1f}%
+                </div>
+            </div>
+            
+            <div class="comparison-table">
+                <div class="comparison-item">
+                    <div class="comparison-label">前期 (1-33%)</div>
+                    <div class="comparison-value">{safe_mean(early):.3f}</div>
+                    <div style="font-size: 0.8em; color: #666;">Reward ± {safe_std(early):.3f}</div>
+                </div>
+                
+                <div class="comparison-item">
+                    <div class="comparison-label">中期 (34-66%)</div>
+                    <div class="comparison-value">{safe_mean(middle):.3f}</div>
+                    <div style="font-size: 0.8em; color: #666;">Reward ± {safe_std(middle):.3f}</div>
+                </div>
+                
+                <div class="comparison-item">
+                    <div class="comparison-label">后期 (67-100%)</div>
+                    <div class="comparison-value">{safe_mean(late):.3f}</div>
+                    <div style="font-size: 0.8em; color: #666;">Reward ± {safe_std(late):.3f}</div>
+                </div>
+            </div>
+            
+            <h3 style="margin-top: 30px; color: var(--primary-color);">📈 关键指标改进</h3>
+            <div class="metrics-grid">
+                <div class="metric-card">
+                    <div class="metric-label">奖励提升</div>
+                    <div class="metric-value" style="color: {'var(--success-color)' if reward_improvement > 0 else 'var(--danger-color)'};">
+                        {reward_improvement:+.1f}%
+                    </div>
+                </div>
+                
+                <div class="metric-card">
+                    <div class="metric-label">时延改进</div>
+                    <div class="metric-value" style="color: {'var(--success-color)' if delay_improvement > 0 else 'var(--danger-color)'};">
+                        {delay_improvement:+.1f}%
+                    </div>
+                </div>
+                
+                <div class="metric-card">
+                    <div class="metric-label">完成率变化</div>
+                    <div class="metric-value" style="color: {'var(--success-color)' if completion_improvement > 0 else 'var(--danger-color)'};">
+                        {completion_improvement:+.2f} <span class="metric-unit">pp</span>
+                    </div>
+                </div>
+            </div>
+        </div>
+"""
+        return html
+    
+    def _generate_statistical_details(self, training_env: Any) -> str:
+        """
+        🆕 生成详细的统计分析
+        包括分布分析、趋势检验等
+        """
+        rewards = training_env.episode_rewards
+        if not rewards or len(rewards) < 10:
+            return ""
+        
+        from scipy import stats as scipy_stats
+        
+        # 基础统计
+        mean_reward = np.mean(rewards)
+        median_reward = np.median(rewards)
+        std_reward = np.std(rewards)
+        min_reward = np.min(rewards)
+        max_reward = np.max(rewards)
+        q25 = np.percentile(rewards, 25)
+        q75 = np.percentile(rewards, 75)
+        
+        # 趋势分析（线性回归）
+        x = np.arange(len(rewards))
+        slope, intercept, r_value, p_value, std_err = scipy_stats.linregress(x, rewards)
+        
+        # 正态性检验
+        _, normality_p = scipy_stats.shapiro(rewards[:min(5000, len(rewards))])  # Shapiro-Wilk test
+        
+        # 趋势评估
+        if p_value < 0.05 and slope > 0:
+            trend_assessment = "显著上升趋势 ✅"
+            trend_color = "success"
+        elif p_value < 0.05 and slope < 0:
+            trend_assessment = "显著下降趋势 ⚠️"
+            trend_color = "warning"
+        else:
+            trend_assessment = "无显著趋势"
+            trend_color = ""
+        
+        html = f"""
+        <div class="section">
+            <h2 class="section-title">📊 Statistical Analysis Details</h2>
+            
+            <h3 style="color: var(--primary-color); margin-bottom: 15px;">描述性统计</h3>
+            <div class="metrics-grid">
+                <div class="metric-card">
+                    <div class="metric-label">均值 (Mean)</div>
+                    <div class="metric-value">{mean_reward:.4f}</div>
+                </div>
+                
+                <div class="metric-card">
+                    <div class="metric-label">中位数 (Median)</div>
+                    <div class="metric-value">{median_reward:.4f}</div>
+                </div>
+                
+                <div class="metric-card">
+                    <div class="metric-label">标准差 (Std)</div>
+                    <div class="metric-value">{std_reward:.4f}</div>
+                </div>
+                
+                <div class="metric-card">
+                    <div class="metric-label">变异系数 (CV)</div>
+                    <div class="metric-value">{(std_reward/abs(mean_reward)*100 if mean_reward != 0 else 0):.1f}%</div>
+                </div>
+                
+                <div class="metric-card">
+                    <div class="metric-label">范围 (Range)</div>
+                    <div class="metric-value">{max_reward - min_reward:.4f}</div>
+                </div>
+                
+                <div class="metric-card">
+                    <div class="metric-label">四分位距 (IQR)</div>
+                    <div class="metric-value">{q75 - q25:.4f}</div>
+                </div>
+            </div>
+            
+            <h3 style="color: var(--primary-color); margin: 30px 0 15px 0;">趋势分析</h3>
+            <div class="insight-card {trend_color}">
+                <div class="insight-title">📈 线性趋势检验</div>
+                <div class="insight-content">
+                    <ul style="margin-left: 20px; line-height: 2;">
+                        <li><strong>趋势评估:</strong> {trend_assessment}</li>
+                        <li><strong>回归斜率:</strong> {slope:.6f} (每episode变化)</li>
+                        <li><strong>R² 值:</strong> {r_value**2:.4f} (拟合优度)</li>
+                        <li><strong>P-value:</strong> {p_value:.4e} (显著性水平)</li>
+                        <li><strong>回归方程:</strong> y = {slope:.4f}x + {intercept:.4f}</li>
+                    </ul>
+                </div>
+            </div>
+            
+            <h3 style="color: var(--primary-color); margin: 30px 0 15px 0;">分布特征</h3>
+            <div class="metrics-grid">
+                <div class="metric-card">
+                    <div class="metric-label">最小值</div>
+                    <div class="metric-value">{min_reward:.4f}</div>
+                </div>
+                
+                <div class="metric-card">
+                    <div class="metric-label">25% 分位数</div>
+                    <div class="metric-value">{q25:.4f}</div>
+                </div>
+                
+                <div class="metric-card">
+                    <div class="metric-label">50% 分位数</div>
+                    <div class="metric-value">{median_reward:.4f}</div>
+                </div>
+                
+                <div class="metric-card">
+                    <div class="metric-label">75% 分位数</div>
+                    <div class="metric-value">{q75:.4f}</div>
+                </div>
+                
+                <div class="metric-card">
+                    <div class="metric-label">最大值</div>
+                    <div class="metric-value">{max_reward:.4f}</div>
+                </div>
+                
+                <div class="metric-card">
+                    <div class="metric-label">正态性检验</div>
+                    <div class="metric-value" style="font-size: 1.2em;">
+                        {'✅ 正态' if normality_p > 0.05 else '⚠️ 非正态'}
+                    </div>
+                    <div style="font-size: 0.8em; color: #666;">p = {normality_p:.4f}</div>
+                </div>
+            </div>
+        </div>
+"""
+        return html
     
     def _create_reward_chart(self, rewards: List[float]) -> str:
         """创建奖励曲线图并返回base64编码"""
@@ -3515,6 +3958,13 @@ class HTMLReportGenerator:
         task_config = results.get('task_config', {})
         migration_config = results.get('migration_config', {})
         cache_config = results.get('cache_config', {})
+        
+        # 处理可能为None的值
+        rsu_threshold = migration_config.get('rsu_overload_threshold')
+        rsu_threshold_str = f"{rsu_threshold*100:.1f}" if rsu_threshold is not None else "N/A"
+        
+        uav_threshold = migration_config.get('uav_overload_threshold')
+        uav_threshold_str = f"{uav_threshold*100:.1f}" if uav_threshold is not None else "N/A"
 
         return f"""
         <div class="section">
@@ -3574,11 +4024,11 @@ class HTMLReportGenerator:
                 </div>
                 <div class="metric-card">
                     <div class="metric-label">RSU过载阈值</div>
-                    <div class="metric-value">{migration_config.get('rsu_overload_threshold', 'N/A')*100:.1f}<span class="metric-unit">%</span></div>
+                    <div class="metric-value">{rsu_threshold_str}<span class="metric-unit">%</span></div>
                 </div>
                 <div class="metric-card">
                     <div class="metric-label">UAV过载阈值</div>
-                    <div class="metric-value">{migration_config.get('uav_overload_threshold', 'N/A')*100:.1f}<span class="metric-unit">%</span></div>
+                    <div class="metric-value">{uav_threshold_str}<span class="metric-unit">%</span></div>
                 </div>
             </div>
 

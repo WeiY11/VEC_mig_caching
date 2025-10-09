@@ -35,7 +35,7 @@ class CompleteSystemSimulator:
             self.num_uavs = getattr(self.sys_config.network, 'num_uavs', 2)
         else:
             self.num_vehicles = self.config.get('num_vehicles', 12)
-            self.num_rsus = self.config.get('num_rsus', 6)
+            self.num_rsus = self.config.get('num_rsus', 4)  # 🔧 修复：使用正确的默认值
             self.num_uavs = self.config.get('num_uavs', 2)
         
         # 仿真参数
@@ -115,16 +115,25 @@ class CompleteSystemSimulator:
         
         # RSU节点
         self.rsus = []
-        # 固定4个RSU的部署：左路口、中段、右路口、下游端
-        # 坐标系 0..1000：左路口(300,500)、中段(500,500)、右路口(700,500)、下游端(900,500)
-        rsu_positions = [
-            np.array([300.0, 500.0]),
-            np.array([500.0, 500.0]),
-            np.array([700.0, 500.0]),
-            np.array([900.0, 500.0]),
-        ]
-        # 截断到需要的数量（如果外部配置不是4，则按最小值）
-        for i in range(min(self.num_rsus, len(rsu_positions))):
+        # 🔧 动态RSU部署：根据num_rsus均匀分布在道路上
+        if self.num_rsus <= 4:
+            # 原始固定4个RSU的部署
+            rsu_positions = [
+                np.array([300.0, 500.0]),
+                np.array([500.0, 500.0]),
+                np.array([700.0, 500.0]),
+                np.array([900.0, 500.0]),
+            ]
+        else:
+            # 动态生成RSU位置，均匀分布在200-900之间
+            rsu_positions = []
+            spacing = 700.0 / (self.num_rsus - 1)  # 均匀间隔
+            for i in range(self.num_rsus):
+                x_pos = 200.0 + i * spacing
+                rsu_positions.append(np.array([x_pos, 500.0]))
+        
+        # 创建RSU
+        for i in range(self.num_rsus):
             rsu = {
                 'id': f'RSU_{i}',
                 'position': rsu_positions[i],
@@ -139,12 +148,23 @@ class CompleteSystemSimulator:
         
         # UAV节点
         self.uavs = []
-        # 两架UAV悬停于两个路口上方：左路口(300,500,120)、右路口(700,500,120)
-        uav_positions = [
-            np.array([300.0, 500.0, 120.0]),
-            np.array([700.0, 500.0, 120.0]),
-        ]
-        for i in range(min(self.num_uavs, len(uav_positions))):
+        # 🔧 动态UAV部署：根据num_uavs均匀分布
+        if self.num_uavs <= 2:
+            # 原始2架UAV的部署
+            uav_positions = [
+                np.array([300.0, 500.0, 120.0]),
+                np.array([700.0, 500.0, 120.0]),
+            ]
+        else:
+            # 动态生成UAV位置，均匀分布在道路上方
+            uav_positions = []
+            spacing = 600.0 / (self.num_uavs - 1)  # 均匀间隔
+            for i in range(self.num_uavs):
+                x_pos = 200.0 + i * spacing
+                uav_positions.append(np.array([x_pos, 500.0, 120.0]))
+        
+        # 创建UAV
+        for i in range(self.num_uavs):
             uav = {
                 'id': f'UAV_{i}',
                 'position': uav_positions[i],  # 固定悬停位置
