@@ -16,6 +16,9 @@ python train_single_agent.py --algorithm DDPG --episodes 100 --realtime-vis --vi
 📊 批量实验脚本:
 python experiments/run_td3_seed_sweep.py --seeds 42 2025 3407 --episodes 200
 python experiments/run_td3_vehicle_sweep.py --vehicles 8 12 16 --episodes 200
+python experiments/run_td3_vehicle_sweep.py --vehicles 8 12 16 20 24 --episodes 800
+    生成学术图表:
+python generate_academic_charts.py results/single_agent/td3/training_results_20251007_220900.json
 """ 
 import os
 import sys
@@ -1270,6 +1273,65 @@ def evaluate_single_model(algorithm: str, training_env: SingleAgentTrainingEnvir
     }
 
 
+def _calculate_stable_delay_average(training_env: SingleAgentTrainingEnvironment) -> float:
+    """
+    计算稳定的时延平均值，避免MovingAverage(100)的训练波动影响
+    
+    策略：
+    1. 优先使用episode_metrics中的完整数据（如果可用）
+    2. 使用后50%的数据（排除前期学习阶段）
+    3. 如果数据不足，回退到MovingAverage(100)
+    
+    Returns:
+        float: 稳定的平均时延
+    """
+    # 尝试从episode_metrics获取完整时延数据
+    if hasattr(training_env, 'episode_metrics') and 'avg_delay' in training_env.episode_metrics:
+        delay_history = training_env.episode_metrics['avg_delay']
+        
+        if len(delay_history) >= 100:
+            # 使用后50%的数据（更成熟的策略）
+            half_point = len(delay_history) // 2
+            converged_delays = delay_history[half_point:]
+            return float(np.mean(converged_delays))
+        elif len(delay_history) >= 50:
+            # 如果不足100轮，使用后30轮
+            return float(np.mean(delay_history[-30:]))
+        elif len(delay_history) > 0:
+            # 数据很少，使用全部
+            return float(np.mean(delay_history))
+    
+    # 回退：使用MovingAverage
+    return training_env.performance_tracker['recent_delays'].get_average()
+
+
+def _calculate_stable_completion_average(training_env: SingleAgentTrainingEnvironment) -> float:
+    """
+    计算稳定的完成率平均值
+    
+    Returns:
+        float: 稳定的平均完成率
+    """
+    # 尝试从episode_metrics获取完整完成率数据
+    if hasattr(training_env, 'episode_metrics') and 'task_completion_rate' in training_env.episode_metrics:
+        completion_history = training_env.episode_metrics['task_completion_rate']
+        
+        if len(completion_history) >= 100:
+            # 使用后50%的数据
+            half_point = len(completion_history) // 2
+            converged_completions = completion_history[half_point:]
+            return float(np.mean(converged_completions))
+        elif len(completion_history) >= 50:
+            # 如果不足100轮，使用后30轮
+            return float(np.mean(completion_history[-30:]))
+        elif len(completion_history) > 0:
+            # 数据很少，使用全部
+            return float(np.mean(completion_history))
+    
+    # 回退：使用MovingAverage
+    return training_env.performance_tracker['recent_completion'].get_average()
+
+
 def save_single_training_results(algorithm: str, training_env: SingleAgentTrainingEnvironment, 
                                 training_time: float,
                                 override_scenario: Optional[Dict[str, Any]] = None) -> Dict:
@@ -1311,8 +1373,10 @@ def save_single_training_results(algorithm: str, training_env: SingleAgentTraini
             'avg_episode_reward': recent_episode_reward,  # Episode总奖励（训练目标）
             'avg_step_reward': avg_step_reward,           # 每步平均奖励（对比评估）
             'avg_reward': avg_step_reward,  # 向后兼容：默认使用per-step（与可视化一致）
-            'avg_delay': training_env.performance_tracker['recent_delays'].get_average(),
-            'avg_completion': training_env.performance_tracker['recent_completion'].get_average()
+            
+            # 🔧 修复：使用更稳定的平均方法，避免MovingAverage(100)的波动影响
+            'avg_delay': _calculate_stable_delay_average(training_env),
+            'avg_completion': _calculate_stable_completion_average(training_env)
         }
     }
     
