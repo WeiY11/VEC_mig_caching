@@ -40,9 +40,13 @@ class BaselineAlgorithm:
         根据状态选择动作
 
         【参数】
-        - state: 130维系统状态向量
+        - state: 系统状态向量（维度取决于网络拓扑）
 
-        【返回】18维连续动作向量
+        【返回】16维连续动作向量（固定拓扑：3+4+2+7=16）
+        - 3维: 任务分配（local, RSU, UAV）
+        - 4维: RSU选择（4个RSU的选择概率）
+        - 2维: UAV选择（2个UAV的选择概率）
+        - 7维: 控制参数（缓存、迁移等）
         """
         raise NotImplementedError
     
@@ -53,14 +57,15 @@ class BaselineAlgorithm:
 
 
 class RandomBaseline(BaselineAlgorithm):
-    """随机策略"""
+    """随机策略 - 完全随机选择"""
     
     def __init__(self):
         super().__init__("Random")
     
     def select_action(self, state: np.ndarray) -> np.ndarray:
         self.step_count += 1
-        return np.random.uniform(-1, 1, 18)
+        # 16维动作：3(分配) + 4(RSU) + 2(UAV) + 7(控制)
+        return np.random.uniform(-1, 1, 16)
 
 
 class GreedyBaseline(BaselineAlgorithm):

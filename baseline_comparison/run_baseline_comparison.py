@@ -39,7 +39,14 @@ sys.path.insert(0, str(parent_dir))
 from config import config
 from train_single_agent import SingleAgentTrainingEnvironment
 from evaluation.system_simulator import CompleteSystemSimulator
-from baseline_comparison.baseline_algorithms import create_baseline_algorithm
+
+# 优先使用改进的baseline算法，如果不存在则使用旧版
+try:
+    from baseline_comparison.improved_baseline_algorithms import create_baseline_algorithm
+    print("[INFO] 使用改进的Baseline算法（16维动作）")
+except ImportError:
+    from baseline_comparison.baseline_algorithms import create_baseline_algorithm
+    print("[WARN] 使用旧版Baseline算法（18维动作）")
 
 
 class BaselineComparisonExperiment:
@@ -52,7 +59,7 @@ class BaselineComparisonExperiment:
     3. 公平对比和分析
     """
     
-    def __init__(self, save_dir: str = None):
+    def __init__(self, save_dir: str = None, num_vehicles: int = 12):
         """初始化实验环境"""
         if save_dir is None:
             self.save_dir = Path(__file__).parent / "results"
@@ -68,11 +75,17 @@ class BaselineComparisonExperiment:
         # 实验结果存储
         self.results = {}
         
+        # 网络拓扑配置（固定RSU和UAV）
+        self.num_vehicles = num_vehicles
+        self.num_rsus = 4  # 固定
+        self.num_uavs = 2  # 固定
+        
         print("="*80)
         print("Baseline对比实验环境初始化")
         print("="*80)
         print(f"结果保存目录: {self.save_dir}")
         print(f"分析保存目录: {self.analysis_dir}")
+        print(f"网络拓扑: {self.num_vehicles}辆车 + {self.num_rsus}个RSU + {self.num_uavs}个UAV (固定)")
         print("="*80)
     
     def run_drl_algorithm(self, algorithm: str, num_episodes: int, random_seed: int = 42) -> Dict:
@@ -90,6 +103,12 @@ class BaselineComparisonExperiment:
         
         # 设置随机种子
         np.random.seed(random_seed)
+        os.environ['RANDOM_SEED'] = str(random_seed)
+        
+        # 设置车辆数（保持固定拓扑）
+        if self.num_vehicles != 12:  # 如果不是默认值，需要覆盖
+            overrides = {"num_vehicles": self.num_vehicles}
+            os.environ['TRAINING_SCENARIO_OVERRIDES'] = json.dumps(overrides)
         
         # 创建训练环境
         training_env = SingleAgentTrainingEnvironment(algorithm)
@@ -178,7 +197,17 @@ class BaselineComparisonExperiment:
         print(f"\n{'='*80}")
         print(f"运行 Baseline算法: {algorithm}")
         print(f"{'='*80}")
+        
+        # 设置随机种子
+        np.random.seed(random_seed)
+        os.environ['RANDOM_SEED'] = str(random_seed)
+        
+        # 设置车辆数（保持固定拓扑）
+        if self.num_vehicles != 12:
+            overrides = {"num_vehicles": self.num_vehicles}
+            os.environ['TRAINING_SCENARIO_OVERRIDES'] = json.dumps(overrides)
 
+        # 创建环境（使用TD3环境以确保一致性）
         env = SingleAgentTrainingEnvironment("TD3")
         baseline_algo = create_baseline_algorithm(algorithm)
         baseline_algo.update_environment(env)
@@ -400,6 +429,101 @@ class BaselineComparisonExperiment:
                       f"{energy:<12.1f} {energy_improve:>+10.1f}% {completion*100:<10.1f} {marker}")
         
         print("\n" + "="*80)
+        
+        # 计算复合指标和统计显著性
+        self._calculate_composite_metrics()
+    
+    def _calculate_composite_metrics(self):
+        """
+        计算复合指标（目标函数值）和统计显著性检验
+        
+        目标函数: J = ω_T × 时延 + ω_E × 能耗
+        其中: ω_T = 2.0, ω_E = 1.2
+        """
+        if not self.results or 'TD3' not in self.results:
+            return
+        
+        print("\n" + "="*80)
+        print("复合指标分析（目标函数）")
+        print("="*80)
+        print(f"目标函数: J = 2.0 × Delay + 1.2 × Energy (越小越好)")
+        print("="*80)
+        
+        # 计算每个算法的目标函数值
+        objective_values = {}
+        for algo_name, result in self.results.items():
+            delay = result['avg_delay']
+            energy = result['avg_energy']
+            # 目标函数：J = ω_T × delay + ω_E × (energy/600)
+            # 能耗归一化以匹配时延的数量级
+            objective = 2.0 * delay + 1.2 * (energy / 600.0)
+            objective_values[algo_name] = objective
+            result['objective_value'] = objective
+        
+        # 按目标函数值排序
+        sorted_by_objective = sorted(objective_values.items(), key=lambda x: x[1])
+        
+        print(f"\n{'算法':<15} {'类型':<10} {'目标函数值':<15} {'相对TD3':<15}")
+        print("-"*60)
+        
+        td3_objective = objective_values.get('TD3', 1.0)
+        
+        for algo_name, obj_value in sorted_by_objective:
+            algo_type = self.results[algo_name]['algorithm_type']
+            relative_perf = (obj_value - td3_objective) / td3_objective * 100
+            marker = "⭐" if algo_name == 'TD3' else ""
+            
+            print(f"{algo_name:<15} {algo_type:<10} {obj_value:<15.4f} {relative_perf:>+13.1f}% {marker}")
+        
+        # 统计显著性检验（仅对有历史数据的算法）
+        self._perform_statistical_test()
+    
+    def _perform_statistical_test(self):
+        """执行统计显著性检验（t-test）"""
+        try:
+            from scipy import stats
+        except ImportError:
+            print("\n[WARN] scipy未安装，跳过统计检验")
+            return
+        
+        if 'TD3' not in self.results:
+            return
+        
+        print("\n" + "="*80)
+        print("统计显著性检验（vs TD3）")
+        print("="*80)
+        
+        td3_delays = self.results['TD3']['episode_delays']
+        td3_energies = self.results['TD3']['episode_energies']
+        
+        # 使用稳定期数据
+        stable_start = len(td3_delays) // 2
+        td3_delays_stable = td3_delays[stable_start:]
+        td3_energies_stable = td3_energies[stable_start:]
+        
+        print(f"\n{'算法':<15} {'时延p-value':<15} {'能耗p-value':<15} {'显著性':<10}")
+        print("-"*60)
+        
+        for algo_name, result in self.results.items():
+            if algo_name == 'TD3':
+                continue
+            
+            algo_delays = result['episode_delays'][stable_start:]
+            algo_energies = result['episode_energies'][stable_start:]
+            
+            # t检验（双侧）
+            _, p_delay = stats.ttest_ind(td3_delays_stable, algo_delays)
+            _, p_energy = stats.ttest_ind(td3_energies_stable, algo_energies)
+            
+            # 判断显著性（p < 0.05为显著）
+            sig_delay = "***" if p_delay < 0.001 else ("**" if p_delay < 0.01 else ("*" if p_delay < 0.05 else "n.s."))
+            sig_energy = "***" if p_energy < 0.001 else ("**" if p_energy < 0.01 else ("*" if p_energy < 0.05 else "n.s."))
+            significance = f"{sig_delay}/{sig_energy}"
+            
+            print(f"{algo_name:<15} {p_delay:<15.6f} {p_energy:<15.6f} {significance:<10}")
+        
+        print("\n说明: *** p<0.001, ** p<0.01, * p<0.05, n.s. 不显著")
+        print("="*80)
     
     def generate_plots(self):
         """生成对比图表"""
@@ -483,11 +607,83 @@ class BaselineComparisonExperiment:
         plt.tight_layout()
         plot_path = self.analysis_dir / 'performance_comparison.png'
         plt.savefig(plot_path, dpi=300, bbox_inches='tight')
-        print(f"  性能对比图: {plot_path}")
+        print(f"  [OK] 性能对比图: {plot_path}")
         plt.close()
+        
+        # 生成复合指标对比图
+        self._generate_objective_comparison()
         
         # 生成收敛曲线（仅DRL）
         self._generate_convergence_curves()
+    
+    def _generate_objective_comparison(self):
+        """生成目标函数对比图（论文核心指标）"""
+        try:
+            import matplotlib.pyplot as plt
+        except ImportError:
+            return
+        
+        if not self.results or 'objective_value' not in list(self.results.values())[0]:
+            return
+        
+        print("\n生成目标函数对比图...")
+        
+        # 提取数据
+        drl_names = []
+        drl_objectives = []
+        baseline_names = []
+        baseline_objectives = []
+        
+        for algo_name, result in self.results.items():
+            obj_val = result.get('objective_value', 0)
+            if result['algorithm_type'] == 'DRL':
+                drl_names.append(algo_name)
+                drl_objectives.append(obj_val)
+            else:
+                baseline_names.append(algo_name)
+                baseline_objectives.append(obj_val)
+        
+        # 创建图表
+        fig, ax = plt.subplots(1, 1, figsize=(12, 6))
+        
+        x_drl = np.arange(len(drl_names))
+        x_baseline = np.arange(len(baseline_names)) + len(drl_names) + 0.5
+        
+        # 绘制柱状图
+        bars1 = ax.bar(x_drl, drl_objectives, width=0.6, label='DRL Algorithms', 
+                       color='#2E86AB', edgecolor='navy', alpha=0.85)
+        bars2 = ax.bar(x_baseline, baseline_objectives, width=0.6, label='Heuristic Algorithms', 
+                       color='#C73E1D', edgecolor='darkred', alpha=0.85)
+        
+        # 突出显示TD3
+        if 'TD3' in drl_names:
+            td3_idx = drl_names.index('TD3')
+            bars1[td3_idx].set_color('#F18F01')
+            bars1[td3_idx].set_edgecolor('darkorange')
+            bars1[td3_idx].set_linewidth(3)
+        
+        ax.set_title('Objective Function Comparison (J = 2.0×Delay + 1.2×Energy)', 
+                    fontsize=14, fontweight='bold')
+        ax.set_ylabel('Objective Value (Lower is Better)', fontsize=12)
+        ax.set_xticks(list(x_drl) + list(x_baseline))
+        ax.set_xticklabels(drl_names + baseline_names, rotation=45, ha='right')
+        ax.legend(frameon=False, fontsize=11)
+        ax.grid(axis='y', alpha=0.3, linestyle='--')
+        ax.axvline(x=len(drl_names)-0.25, color='gray', linestyle='--', alpha=0.5)
+        
+        # 添加数值标签
+        for bars in [bars1, bars2]:
+            for bar in bars:
+                height = bar.get_height()
+                ax.text(bar.get_x() + bar.get_width()/2., height,
+                       f'{height:.3f}',
+                       ha='center', va='bottom', fontsize=9, rotation=0)
+        
+        plt.tight_layout()
+        plot_path = self.analysis_dir / 'objective_comparison.png'
+        plt.savefig(plot_path, dpi=300, bbox_inches='tight')
+        print(f"  [OK] 目标函数对比图: {plot_path}")
+        plt.close()
     
     def _generate_convergence_curves(self):
         """生成DRL算法收敛曲线"""
@@ -557,7 +753,119 @@ class BaselineComparisonExperiment:
         plt.tight_layout()
         curve_path = self.analysis_dir / 'convergence_curves.png'
         plt.savefig(curve_path, dpi=300, bbox_inches='tight')
-        print(f"  收敛曲线图: {curve_path}")
+        print(f"  [OK] 收敛曲线图: {curve_path}")
+        plt.close()
+        
+        # 生成训练过程数据点图（可选，用于展示训练细节）
+        self._generate_training_scatter_plots()
+    
+    def _generate_training_scatter_plots(self):
+        """
+        生成训练过程数据点图（每个episode一个点）
+        用途: 展示训练过程的波动和收敛细节
+        注意: 这不是参数扫描对比图，而是单次实验的详细视图
+        """
+        try:
+            import matplotlib.pyplot as plt
+        except ImportError:
+            return
+        
+        drl_results = {k: v for k, v in self.results.items() if v['algorithm_type'] == 'DRL'}
+        
+        if not drl_results:
+            return
+        
+        print("\n生成离散折线图...")
+        
+        # 定义marker样式
+        markers = ['o', 's', '^', 'D', 'v', 'p', '*', 'h']
+        colors = ['#2E86AB', '#A23B72', '#F18F01', '#C73E1D', '#6C757D', 
+                 '#17BEBB', '#9B59B6', '#E67E22']
+        
+        # 创建2x2布局
+        fig, axes = plt.subplots(2, 2, figsize=(15, 11))
+        fig.suptitle('Discrete Line Plots with Data Points', 
+                    fontsize=16, fontweight='bold', y=0.995)
+        
+        # 降采样函数（避免数据点过密）
+        def downsample(data, max_points=50):
+            """智能降采样，保留关键数据点"""
+            n = len(data)
+            if n <= max_points:
+                return list(range(n)), data
+            
+            # 计算采样间隔
+            step = n // max_points
+            indices = list(range(0, n, step))
+            
+            # 确保包含最后一个点
+            if indices[-1] != n - 1:
+                indices.append(n - 1)
+            
+            sampled_data = [data[i] for i in indices]
+            return indices, sampled_data
+        
+        for idx, (algo_name, result) in enumerate(drl_results.items()):
+            marker = markers[idx % len(markers)]
+            color = colors[idx % len(colors)]
+            
+            # 图1: 时延（离散点）
+            episodes_delay, delays_sampled = downsample(result['episode_delays'])
+            axes[0, 0].plot(episodes_delay, delays_sampled, 
+                          label=algo_name, marker=marker, markersize=6,
+                          color=color, linewidth=1.5, alpha=0.8,
+                          markerfacecolor='white', markeredgewidth=2, markeredgecolor=color)
+            
+            # 图2: 能耗（离散点）
+            episodes_energy, energies_sampled = downsample(result['episode_energies'])
+            axes[0, 1].plot(episodes_energy, energies_sampled,
+                          label=algo_name, marker=marker, markersize=6,
+                          color=color, linewidth=1.5, alpha=0.8,
+                          markerfacecolor='white', markeredgewidth=2, markeredgecolor=color)
+            
+            # 图3: 完成率（离散点）
+            episodes_comp, completions_sampled = downsample(result['episode_completion_rates'])
+            axes[1, 0].plot(episodes_comp, completions_sampled,
+                          label=algo_name, marker=marker, markersize=6,
+                          color=color, linewidth=1.5, alpha=0.8,
+                          markerfacecolor='white', markeredgewidth=2, markeredgecolor=color)
+            
+            # 图4: 奖励（离散点）
+            episodes_reward, rewards_sampled = downsample(result['episode_rewards'])
+            axes[1, 1].plot(episodes_reward, rewards_sampled,
+                          label=algo_name, marker=marker, markersize=6,
+                          color=color, linewidth=1.5, alpha=0.8,
+                          markerfacecolor='white', markeredgewidth=2, markeredgecolor=color)
+        
+        # 配置子图
+        axes[0, 0].set_title('Average Task Delay', fontweight='bold', fontsize=12)
+        axes[0, 0].set_xlabel('Episode', fontsize=11)
+        axes[0, 0].set_ylabel('Delay (seconds)', fontsize=11)
+        axes[0, 0].legend(fontsize=9, framealpha=0.9, loc='best')
+        axes[0, 0].grid(alpha=0.3, linestyle='--')
+        
+        axes[0, 1].set_title('Total Energy Consumption', fontweight='bold', fontsize=12)
+        axes[0, 1].set_xlabel('Episode', fontsize=11)
+        axes[0, 1].set_ylabel('Energy (Joules)', fontsize=11)
+        axes[0, 1].legend(fontsize=9, framealpha=0.9, loc='best')
+        axes[0, 1].grid(alpha=0.3, linestyle='--')
+        
+        axes[1, 0].set_title('Task Completion Rate', fontweight='bold', fontsize=12)
+        axes[1, 0].set_xlabel('Episode', fontsize=11)
+        axes[1, 0].set_ylabel('Completion Rate', fontsize=11)
+        axes[1, 0].legend(fontsize=9, framealpha=0.9, loc='best')
+        axes[1, 0].grid(alpha=0.3, linestyle='--')
+        
+        axes[1, 1].set_title('Episode Reward', fontweight='bold', fontsize=12)
+        axes[1, 1].set_xlabel('Episode', fontsize=11)
+        axes[1, 1].set_ylabel('Average Reward', fontsize=11)
+        axes[1, 1].legend(fontsize=9, framealpha=0.9, loc='best')
+        axes[1, 1].grid(alpha=0.3, linestyle='--')
+        
+        plt.tight_layout()
+        scatter_plot_path = self.analysis_dir / 'training_scatter_plots.png'
+        plt.savefig(scatter_plot_path, dpi=300, bbox_inches='tight')
+        print(f"  [OK] 训练数据点图: {scatter_plot_path}")
         plt.close()
     
     def save_all_results(self):
@@ -574,12 +882,32 @@ class BaselineComparisonExperiment:
 
 def main():
     """主函数"""
-    parser = argparse.ArgumentParser(description='Baseline对比实验（真实训练）')
-    parser.add_argument('--episodes', type=int, default=200, help='训练/运行轮次')
-    parser.add_argument('--algorithm', type=str, default=None, help='单独运行某个算法')
-    parser.add_argument('--seed', type=int, default=42, help='随机种子')
-    parser.add_argument('--quick', action='store_true', help='快速测试（50轮）')
-    parser.add_argument('--full', action='store_true', help='完整实验（500轮）')
+    parser = argparse.ArgumentParser(
+        description='Baseline对比实验（真实训练）',
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+示例用法:
+  快速测试:   python run_baseline_comparison.py --quick
+  标准对比:   python run_baseline_comparison.py --episodes 200
+  完整实验:   python run_baseline_comparison.py --full
+  单独算法:   python run_baseline_comparison.py --algorithm TD3 --episodes 100
+  指定车辆数: python run_baseline_comparison.py --episodes 200 --num-vehicles 16
+  多seed运行: python run_baseline_comparison.py --episodes 200 --multi-seed 3
+        """
+    )
+    
+    parser.add_argument('--episodes', type=int, default=200, help='训练/运行轮次（默认:200）')
+    parser.add_argument('--algorithm', type=str, default=None, 
+                       help='单独运行某个算法（TD3/DDPG/SAC/PPO/DQN/Random/Greedy/RoundRobin/LocalFirst/NearestNode）')
+    parser.add_argument('--seed', type=int, default=42, help='随机种子（默认:42）')
+    parser.add_argument('--num-vehicles', type=int, default=12, 
+                       help='车辆数量（默认:12，固定拓扑4 RSU+2 UAV）')
+    parser.add_argument('--quick', action='store_true', help='快速测试模式（50轮）')
+    parser.add_argument('--full', action='store_true', help='完整实验模式（500轮）')
+    parser.add_argument('--multi-seed', type=int, default=1, 
+                       help='多seed运行次数（用于统计可靠性，默认:1）')
+    parser.add_argument('--only-drl', action='store_true', help='只运行DRL算法（跳过启发式算法）')
+    parser.add_argument('--only-baseline', action='store_true', help='只运行启发式算法（跳过DRL）')
     
     args = parser.parse_args()
     
@@ -591,32 +919,93 @@ def main():
     else:
         num_episodes = args.episodes
     
-    # 创建实验环境
-    experiment = BaselineComparisonExperiment()
+    print("\n" + "="*80)
+    print("Baseline对比实验配置")
+    print("="*80)
+    print(f"  训练轮次: {num_episodes}")
+    print(f"  车辆数量: {args.num_vehicles}")
+    print(f"  固定拓扑: 4 RSU + 2 UAV")
+    print(f"  随机种子: {args.seed}")
+    print(f"  多seed运行: {args.multi_seed} 次")
+    print(f"  模式: {'快速测试' if args.quick else ('完整实验' if args.full else '标准对比')}")
+    print("="*80)
     
-    # 运行实验
-    if args.algorithm:
-        # 单独运行某个算法
-        print(f"\n单独运行算法: {args.algorithm}")
-        experiment.run_single_algorithm(args.algorithm, num_episodes, args.seed)
+    # 多seed运行
+    if args.multi_seed > 1:
+        print(f"\n将运行 {args.multi_seed} 个不同随机种子的实验...")
+        all_seeds_results = []
+        
+        for seed_idx in range(args.multi_seed):
+            current_seed = args.seed + seed_idx * 100
+            print(f"\n{'='*80}")
+            print(f"运行第 {seed_idx + 1}/{args.multi_seed} 个seed: {current_seed}")
+            print("="*80)
+            
+            # 创建实验环境
+            experiment = BaselineComparisonExperiment(num_vehicles=args.num_vehicles)
+            
+            # 运行实验
+            if args.algorithm:
+                experiment.run_single_algorithm(args.algorithm, num_episodes, current_seed)
+            else:
+                experiment.run_all_algorithms(num_episodes, current_seed)
+            
+            all_seeds_results.append(experiment.results)
+        
+        # 合并多seed结果（计算平均和方差）
+        print("\n" + "="*80)
+        print(f"多seed结果汇总（{args.multi_seed}个seeds）")
+        print("="*80)
+        # TODO: 实现多seed结果聚合
+        print("[INFO] 多seed结果聚合功能开发中...")
+        
+        # 使用最后一个seed的experiment对象进行分析
+        experiment.analyze_results()
+        experiment.generate_plots()
+        experiment.save_all_results()
+        
     else:
-        # 运行所有算法
-        experiment.run_all_algorithms(num_episodes, args.seed)
-    
-    # 分析结果
-    experiment.analyze_results()
-    
-    # 生成图表
-    experiment.generate_plots()
-    
-    # 保存结果
-    experiment.save_all_results()
+        # 单seed运行
+        experiment = BaselineComparisonExperiment(num_vehicles=args.num_vehicles)
+        
+        # 运行实验
+        if args.algorithm:
+            # 单独运行某个算法
+            print(f"\n单独运行算法: {args.algorithm}")
+            experiment.run_single_algorithm(args.algorithm, num_episodes, args.seed)
+        elif args.only_drl:
+            # 只运行DRL算法
+            print("\n只运行DRL算法...")
+            drl_algorithms = ['TD3', 'DDPG', 'SAC', 'PPO', 'DQN']
+            for algo in drl_algorithms:
+                result = experiment.run_drl_algorithm(algo, num_episodes, args.seed)
+                experiment.results[algo] = result
+        elif args.only_baseline:
+            # 只运行启发式算法
+            print("\n只运行启发式算法...")
+            baseline_algorithms = ['Random', 'Greedy', 'RoundRobin', 'LocalFirst', 'NearestNode']
+            for algo in baseline_algorithms:
+                result = experiment.run_baseline_algorithm(algo, num_episodes, args.seed)
+                experiment.results[algo] = result
+        else:
+            # 运行所有算法
+            experiment.run_all_algorithms(num_episodes, args.seed)
+        
+        # 分析结果
+        experiment.analyze_results()
+        
+        # 生成图表
+        experiment.generate_plots()
+        
+        # 保存结果
+        experiment.save_all_results()
     
     print("\n" + "="*80)
     print("实验全部完成!")
     print("="*80)
     print(f"  结果目录: {experiment.save_dir}")
     print(f"  分析目录: {experiment.analysis_dir}")
+    print(f"  车辆配置: {args.num_vehicles}辆车 + 4 RSU + 2 UAV")
     print("="*80)
 
 

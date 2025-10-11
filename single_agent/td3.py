@@ -57,6 +57,43 @@ class TD3Config:
     gradient_clip_norm: float = 0.7  # 🔧 放宽梯度裁剪，允许适度更新
     use_gradient_clip: bool = True   # 启用梯度裁剪
     
+    def __post_init__(self):
+        """从环境变量读取配置，用于固定拓扑优化"""
+        import os
+        
+        # 读取固定拓扑优化器设置的环境变量
+        if 'TD3_HIDDEN_DIM' in os.environ:
+            self.hidden_dim = int(os.environ['TD3_HIDDEN_DIM'])
+            print(f"[TD3Config] 从环境变量读取 hidden_dim: {self.hidden_dim}")
+            
+        if 'TD3_ACTOR_LR' in os.environ:
+            self.actor_lr = float(os.environ['TD3_ACTOR_LR'])
+            print(f"[TD3Config] 从环境变量读取 actor_lr: {self.actor_lr}")
+            
+        if 'TD3_CRITIC_LR' in os.environ:
+            self.critic_lr = float(os.environ['TD3_CRITIC_LR'])
+            print(f"[TD3Config] 从环境变量读取 critic_lr: {self.critic_lr}")
+            
+        if 'TD3_BATCH_SIZE' in os.environ:
+            self.batch_size = int(os.environ['TD3_BATCH_SIZE'])
+            print(f"[TD3Config] 从环境变量读取 batch_size: {self.batch_size}")
+            
+        if 'TD3_TAU' in os.environ:
+            self.tau = float(os.environ['TD3_TAU'])
+            print(f"[TD3Config] 从环境变量读取 tau: {self.tau}")
+            
+        if 'TD3_EXPLORATION_NOISE' in os.environ:
+            self.exploration_noise = float(os.environ['TD3_EXPLORATION_NOISE'])
+            print(f"[TD3Config] 从环境变量读取 exploration_noise: {self.exploration_noise}")
+            
+        if 'TD3_POLICY_DELAY' in os.environ:
+            self.policy_delay = int(os.environ['TD3_POLICY_DELAY'])
+            print(f"[TD3Config] 从环境变量读取 policy_delay: {self.policy_delay}")
+            
+        if 'TD3_GRADIENT_CLIP' in os.environ:
+            self.gradient_clip_norm = float(os.environ['TD3_GRADIENT_CLIP'])
+            print(f"[TD3Config] 从环境变量读取 gradient_clip_norm: {self.gradient_clip_norm}")
+    
     # PER 参数（优化以减少低质量样本影响）
     per_alpha: float = 0.6  # 🔧 回调优先级指数，减轻早期过度关注
     per_beta_start: float = 0.4  # 🔧 回调IS起点，平衡样本权重

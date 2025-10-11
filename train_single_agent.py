@@ -8,7 +8,12 @@ python train_single_agent.py --algorithm TD3 --episodes 200 --seed 123 --num-veh
 python train_single_agent.py --algorithm DDPG --episodes 200
 python train_single_agent.py --algorithm PPO --episodes 150 --seed 3407
 python train_single_agent.py --compare --episodes 200  # 比较所有算法
-
+# 扫描不同车辆数的性能表现
+python train_single_agent.py --algorithm TD3 --episodes 1600 --num-vehicles 8
+python train_single_agent.py --algorithm TD3 --episodes 1600 --num-vehicles 12
+python train_single_agent.py --algorithm TD3 --episodes 1600 --num-vehicles 16
+python train_single_agent.py --algorithm TD3 --episodes 1600 --num-vehicles 20
+python train_single_agent.py --algorithm TD3 --episodes 1600 --num-vehicles 24
 🌐 实时可视化 (新功能):
 python train_single_agent.py --algorithm TD3 --episodes 200 --realtime-vis
 python train_single_agent.py --algorithm DDPG --episodes 100 --realtime-vis --vis-port 8080
@@ -19,6 +24,21 @@ python experiments/run_td3_vehicle_sweep.py --vehicles 8 12 16 --episodes 200
 python experiments/run_td3_vehicle_sweep.py --vehicles 8 12 16 20 24 --episodes 800
     生成学术图表:
 python generate_academic_charts.py results/single_agent/td3/training_results_20251007_220900.json
+
+# 8辆车 + 增强缓存
+python train_single_agent.py --algorithm TD3 --episodes 1600 --num-vehicles 8 --enhanced-cache
+
+# 12辆车 + 增强缓存（默认）
+python train_single_agent.py --algorithm TD3 --episodes 1600 --num-vehicles 12 --enhanced-cache
+
+# 16辆车 + 增强缓存
+python train_single_agent.py --algorithm TD3 --episodes 1600 --num-vehicles 16 --enhanced-cache
+
+# 20辆车 + 增强缓存
+python train_single_agent.py --algorithm TD3 --episodes 1600 --num-vehicles 20 --enhanced-cache
+
+# 24辆车 + 增强缓存
+python train_single_agent.py --algorithm TD3 --episodes 1600 --num-vehicles 24 --enhanced-cache
 """ 
 import os
 import sys
@@ -45,6 +65,7 @@ if sys.platform == 'win32':
 
 import argparse
 import json
+from fixed_topology_optimizer import FixedTopologyOptimizer
 import numpy as np
 import matplotlib.pyplot as plt
 import time
@@ -54,6 +75,12 @@ from typing import Dict, List, Tuple, Optional, Any
 # 导入核心模块
 from config import config
 from evaluation.system_simulator import CompleteSystemSimulator
+try:
+    from evaluation.enhanced_system_simulator import EnhancedSystemSimulator
+    ENHANCED_CACHE_AVAILABLE = True
+except ImportError:
+    ENHANCED_CACHE_AVAILABLE = False
+    print("[Warning] Enhanced cache system not available, using standard simulator")
 from utils import MovingAverage
 # 🤖 导入自适应控制组件
 from utils.adaptive_control import AdaptiveCacheController, AdaptiveMigrationController, map_agent_actions_to_params
@@ -169,14 +196,25 @@ def get_timestamped_filename(base_name: str, extension: str = ".json") -> str:
 class SingleAgentTrainingEnvironment:
     """单智能体训练环境基类"""
     
-    def __init__(self, algorithm: str, override_scenario: Optional[Dict[str, Any]] = None):
+    def __init__(self, algorithm: str, override_scenario: Optional[Dict[str, Any]] = None, 
+                 use_enhanced_cache: bool = False):
         self.algorithm = algorithm.upper()
         scenario_config = _build_scenario_config()
         # 应用外部覆盖
         if override_scenario:
             scenario_config.update(override_scenario)
             scenario_config['override_topology'] = True
-        self.simulator = CompleteSystemSimulator(scenario_config)
+        
+        # 选择仿真器类型
+        self.use_enhanced_cache = use_enhanced_cache and ENHANCED_CACHE_AVAILABLE
+        if self.use_enhanced_cache:
+            print("🚀 [Training] Using Enhanced Cache System with:")
+            print("   - Hierarchical L1/L2 caching")
+            print("   - LSTM popularity prediction")
+            print("   - Inter-RSU collaboration")
+            self.simulator = EnhancedSystemSimulator(scenario_config)
+        else:
+            self.simulator = CompleteSystemSimulator(scenario_config)
         
         # 🤖 初始化自适应控制组件
         self.adaptive_cache_controller = AdaptiveCacheController()
@@ -187,6 +225,20 @@ class SingleAgentTrainingEnvironment:
         num_vehicles = len(self.simulator.vehicles)
         num_rsus = len(self.simulator.rsus)
         num_uavs = len(self.simulator.uavs)
+        
+        # 应用固定拓扑的参数优化（保持4 RSU + 2 UAV）
+        if self.algorithm == "TD3":
+            topology_optimizer = FixedTopologyOptimizer()
+            opt_params = topology_optimizer.get_optimized_params(num_vehicles)
+            
+            # 应用优化的超参数到TD3配置
+            os.environ['TD3_HIDDEN_DIM'] = str(opt_params.get('hidden_dim', 400))
+            os.environ['TD3_ACTOR_LR'] = str(opt_params.get('actor_lr', 1e-4))
+            os.environ['TD3_CRITIC_LR'] = str(opt_params.get('critic_lr', 8e-5))
+            os.environ['TD3_BATCH_SIZE'] = str(opt_params.get('batch_size', 256))
+            
+            print(f"[FIXED-TOPOLOGY] 车辆数:{num_vehicles} → Hidden:{opt_params['hidden_dim']}, LR:{opt_params['actor_lr']:.1e}, Batch:{opt_params['batch_size']}")
+            print(f"[FIXED-TOPOLOGY] 保持固定: RSU=4, UAV=2（验证算法策略有效性）")
         
         # 🔧 优化：所有算法统一传入拓扑参数，实现动态适配
         if self.algorithm == "DDPG":
@@ -878,7 +930,8 @@ class SingleAgentTrainingEnvironment:
 
 def train_single_algorithm(algorithm: str, num_episodes: Optional[int] = None, eval_interval: Optional[int] = None, 
                           save_interval: Optional[int] = None, enable_realtime_vis: bool = False, 
-                          vis_port: int = 5000, silent_mode: bool = False, override_scenario: Optional[Dict[str, Any]] = None) -> Dict:
+                          vis_port: int = 5000, silent_mode: bool = False, override_scenario: Optional[Dict[str, Any]] = None,
+                          use_enhanced_cache: bool = False) -> Dict:
     """训练单个算法
     
     Args:
@@ -923,7 +976,8 @@ def train_single_algorithm(algorithm: str, num_episodes: Optional[int] = None, e
     print("=" * 60)
     
     # 创建训练环境（应用额外场景覆盖）
-    training_env = SingleAgentTrainingEnvironment(algorithm, override_scenario=override_scenario)
+    training_env = SingleAgentTrainingEnvironment(algorithm, override_scenario=override_scenario, 
+                                                  use_enhanced_cache=use_enhanced_cache)
     
     # 🌐 创建实时可视化器（如果启用）
     visualizer = None
@@ -1356,6 +1410,9 @@ def save_single_training_results(algorithm: str, training_env: SingleAgentTraini
     num_uavs = len(training_env.simulator.uavs)
     state_dim = getattr(training_env.agent_env, 'state_dim', 'N/A')
     
+    # 🆕 修复：收集完整的系统配置参数（用于HTML报告显示）
+    # 直接使用已导入的config对象
+    
     results = {
         'algorithm': algorithm,
         'agent_type': 'single_agent',
@@ -1373,6 +1430,55 @@ def save_single_training_results(algorithm: str, training_env: SingleAgentTraini
             'training_time_hours': training_time / 3600,
             'max_steps_per_episode': config.experiment.max_steps_per_episode
         },
+        # 🆕 添加系统配置参数（HTML报告需要）
+        'system_config': {
+            'num_vehicles': num_vehicles,
+            'num_rsus': num_rsus,
+            'num_uavs': num_uavs,
+            'simulation_time': config.simulation_time,
+            'time_slot': config.time_slot,
+            'device': str(config.device),
+            'random_seed': config.random_seed,
+        },
+        # 🆕 添加网络配置参数
+        'network_config': {
+            'bandwidth': config.network.bandwidth,
+            'carrier_frequency': config.communication.carrier_frequency,
+            'coverage_radius': config.network.coverage_radius,
+        },
+        # 🆕 添加通信配置参数
+        'communication_config': {
+            'vehicle_tx_power': config.communication.vehicle_tx_power,
+            'rsu_tx_power': config.communication.rsu_tx_power,
+            'uav_tx_power': config.communication.uav_tx_power,
+            'antenna_gain_vehicle': config.communication.antenna_gain_vehicle,
+            'antenna_gain_rsu': config.communication.antenna_gain_rsu,
+            'antenna_gain_uav': config.communication.antenna_gain_uav,
+        },
+        # 🆕 添加计算能力参数
+        'compute_config': {
+            'vehicle_cpu_freq': config.compute.vehicle_cpu_freq,
+            'rsu_cpu_freq': config.compute.rsu_cpu_freq,
+            'uav_cpu_freq': config.compute.uav_cpu_freq,
+            'vehicle_memory': getattr(config.compute, 'vehicle_memory', 4e9),
+            'rsu_memory': getattr(config.compute, 'rsu_memory', 32e9),
+            'uav_memory': getattr(config.compute, 'uav_memory', 16e9),
+            'vehicle_static_power': config.compute.vehicle_static_power,
+            'rsu_static_power': config.compute.rsu_static_power,
+            'uav_static_power': getattr(config.compute, 'uav_static_power', 20.0),
+        },
+        # 🆕 添加任务和迁移参数
+        'task_migration_config': {
+            'task_arrival_rate': config.task.arrival_rate,
+            'task_size_mean': sum(config.task.data_size_range) / 2,
+            'task_size_std': (config.task.data_size_range[1] - config.task.data_size_range[0]) / 4,
+            'task_cpu_cycles_mean': sum(config.task.compute_cycles_range) / 2,
+            'task_cpu_cycles_std': (config.task.compute_cycles_range[1] - config.task.compute_cycles_range[0]) / 4,
+            'task_deadline_mean': sum(config.task.deadline_range) / 2,
+            'cache_capacity_rsu': config.cache.rsu_cache_capacity,
+            'cache_capacity_uav': config.cache.uav_cache_capacity,
+            'migration_threshold': getattr(config.migration, 'threshold', 0.8),
+        },
         'episode_rewards': training_env.episode_rewards,
         'episode_metrics': training_env.episode_metrics,
         'final_performance': {
@@ -1386,6 +1492,11 @@ def save_single_training_results(algorithm: str, training_env: SingleAgentTraini
             'avg_completion': _calculate_stable_completion_average(training_env)
         }
     }
+    
+    print(f"📊 收集的配置参数:")
+    print(f"   系统拓扑: {num_vehicles}车辆, {num_rsus}RSU, {num_uavs}UAV")
+    print(f"   网络配置: 带宽{config.network.bandwidth/1e6:.0f}MHz, 频率{config.communication.carrier_frequency/1e9:.1f}GHz")
+    print(f"   任务参数: 到达率{config.task.arrival_rate:.1f}, 数据量{sum(config.task.data_size_range)/2/1e6:.1f}MB")
     
     # 使用时间戳文件名
     filename = get_timestamped_filename("training_results")
@@ -1501,6 +1612,9 @@ def main():
     # 🌐 实时可视化参数
     parser.add_argument('--realtime-vis', action='store_true', help='启用实时可视化')
     parser.add_argument('--vis-port', type=int, default=5000, help='实时可视化服务器端口 (默认: 5000)')
+    # 🚀 增强缓存参数
+    parser.add_argument('--enhanced-cache', action='store_true', 
+                       help='启用增强缓存系统 (分层L1/L2 + LSTM预测 + RSU协作)')
     
     args = parser.parse_args()
 
@@ -1508,11 +1622,15 @@ def main():
         os.environ['RANDOM_SEED'] = str(args.seed)
         _apply_global_seed_from_env()
 
+    # 🔧 修复：正确构建override_scenario参数
+    override_scenario = None
     if args.num_vehicles is not None:
-        overrides = {
+        override_scenario = {
             "num_vehicles": args.num_vehicles,
         }
-        os.environ['TRAINING_SCENARIO_OVERRIDES'] = json.dumps(overrides)
+        # 同时设置环境变量（向后兼容）
+        os.environ['TRAINING_SCENARIO_OVERRIDES'] = json.dumps(override_scenario)
+        print(f"📋 覆盖参数: 车辆数 = {args.num_vehicles}")
     
     # 创建结果目录
     os.makedirs("results/single_agent", exist_ok=True)
@@ -1522,14 +1640,16 @@ def main():
         algorithms = ['DDPG', 'TD3', 'DQN', 'PPO', 'SAC']
         compare_single_algorithms(algorithms, args.episodes)
     elif args.algorithm:
-        # 训练单个算法
+        # 训练单个算法 - 🔧 传递override_scenario参数
         train_single_algorithm(
             args.algorithm, 
             args.episodes, 
             args.eval_interval, 
             args.save_interval,
             enable_realtime_vis=args.realtime_vis,
-            vis_port=args.vis_port
+            vis_port=args.vis_port,
+            override_scenario=override_scenario,  # 🔧 新增：传递覆盖参数
+            use_enhanced_cache=args.enhanced_cache  # 🚀 新增：增强缓存
         )
     else:
         print("请指定 --algorithm 或使用 --compare 标志")

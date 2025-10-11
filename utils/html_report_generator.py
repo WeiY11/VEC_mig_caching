@@ -1171,7 +1171,7 @@ class HTMLReportGenerator:
                 
                 <div class="metric-card">
                     <div class="metric-label">平均每轮时间</div>
-                    <div class="metric-value">{training_time/num_episodes:.2f} <span class="metric-unit">秒</span></div>
+                    <div class="metric-value">{training_time/num_episodes if num_episodes > 0 else 0:.2f} <span class="metric-unit">秒</span></div>
                 </div>
             </div>
             
@@ -2416,29 +2416,38 @@ class HTMLReportGenerator:
         """生成算法超参数和网络架构详情"""
         # 获取算法特定配置
         algo_params = {}
-        if hasattr(training_env.agent_env, 'actor') and hasattr(training_env.agent_env.actor, 'fc1'):
-            # 网络结构信息
-            actor = training_env.agent_env.actor
-            if hasattr(actor, 'fc1'):
-                algo_params['actor_layer1'] = actor.fc1.out_features if hasattr(actor.fc1, 'out_features') else 'N/A'
-            if hasattr(actor, 'fc2'):
-                algo_params['actor_layer2'] = actor.fc2.out_features if hasattr(actor.fc2, 'out_features') else 'N/A'
         
-        # 获取学习率等超参数
-        if hasattr(training_env.agent_env, 'actor_optimizer'):
-            algo_params['actor_lr'] = training_env.agent_env.actor_optimizer.param_groups[0]['lr']
-        if hasattr(training_env.agent_env, 'critic_optimizer'):
-            algo_params['critic_lr'] = training_env.agent_env.critic_optimizer.param_groups[0]['lr']
-        if hasattr(training_env.agent_env, 'gamma'):
-            algo_params['gamma'] = training_env.agent_env.gamma
-        if hasattr(training_env.agent_env, 'tau'):
-            algo_params['tau'] = training_env.agent_env.tau
-        if hasattr(training_env.agent_env, 'policy_noise'):
-            algo_params['policy_noise'] = training_env.agent_env.policy_noise
-        if hasattr(training_env.agent_env, 'noise_clip'):
-            algo_params['noise_clip'] = training_env.agent_env.noise_clip
-        if hasattr(training_env.agent_env, 'policy_delay'):
-            algo_params['policy_delay'] = training_env.agent_env.policy_delay
+        # 检查是否有agent对象（TD3/DDPG/SAC等）
+        agent = None
+        if hasattr(training_env, 'agent_env') and hasattr(training_env.agent_env, 'agent'):
+            agent = training_env.agent_env.agent
+        
+        if agent:
+            # 网络结构信息
+            if hasattr(agent, 'actor') and hasattr(agent.actor, 'fc1'):
+                actor = agent.actor
+                if hasattr(actor, 'fc1'):
+                    algo_params['actor_layer1'] = actor.fc1.out_features if hasattr(actor.fc1, 'out_features') else 'N/A'
+                if hasattr(actor, 'fc2'):
+                    algo_params['actor_layer2'] = actor.fc2.out_features if hasattr(actor.fc2, 'out_features') else 'N/A'
+            
+            # 获取学习率等超参数
+            if hasattr(agent, 'actor_optimizer'):
+                algo_params['actor_lr'] = agent.actor_optimizer.param_groups[0]['lr']
+            if hasattr(agent, 'critic_optimizer'):
+                algo_params['critic_lr'] = agent.critic_optimizer.param_groups[0]['lr']
+            if hasattr(agent, 'config'):
+                config = agent.config
+                if hasattr(config, 'gamma'):
+                    algo_params['gamma'] = config.gamma
+                if hasattr(config, 'tau'):
+                    algo_params['tau'] = config.tau
+                if hasattr(config, 'policy_noise'):
+                    algo_params['policy_noise'] = config.policy_noise
+                if hasattr(config, 'noise_clip'):
+                    algo_params['noise_clip'] = config.noise_clip
+                if hasattr(config, 'policy_delay'):
+                    algo_params['policy_delay'] = config.policy_delay
         
         params_html = ""
         if algo_params:
