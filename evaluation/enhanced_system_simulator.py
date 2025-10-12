@@ -9,17 +9,17 @@ from dataclasses import dataclass
 import torch
 
 # 导入原始系统仿真器
-from .system_simulator import SystemSimulator
+from .system_simulator import CompleteSystemSimulator
 
 # 导入高级缓存组件
 from caching.collaborative_cache_system import CollaborativeCacheSystem
-from caching.lstm_popularity_predictor import LSTMPopularityPredictor
+from caching.cache_manager import HeatBasedCacheStrategy
 
 # 导入配置
 from config import config
 
 
-class EnhancedSystemSimulator(SystemSimulator):
+class EnhancedSystemSimulator(CompleteSystemSimulator):
     """
     增强版系统仿真器
     在原有基础上集成高级缓存功能
@@ -47,14 +47,12 @@ class EnhancedSystemSimulator(SystemSimulator):
                 enable_prediction=True  # 启用LSTM预测
             )
             
-            # 创建独立的LSTM预测器（用于更精细的控制）
-            self.popularity_predictor = LSTMPopularityPredictor(
-                content_dim=64,      # 减小特征维度，加快训练
-                hidden_dim=64,       # 减小隐藏层，提高效率
-                sequence_length=10,  # 较短的序列长度
-                prediction_horizon=3, # 预测未来3个时间步
-                learning_rate=0.01   # 较高学习率，快速适应
+            # 创建热度策略（使用优化的HeatBasedCacheStrategy，支持自适应时间槽）
+            self.heat_strategy = HeatBasedCacheStrategy(
+                slot_duration=None,   # 自适应时间槽（根据访问密度调整5-30秒）
+                total_slots=200       # 总共200个时间槽
             )
+            print("[EnhancedSimulator] Using adaptive HeatBasedCacheStrategy")
             
             # 预热缓存系统
             self._warmup_cache_system()
@@ -80,7 +78,7 @@ class EnhancedSystemSimulator(SystemSimulator):
         预热缓存系统
         生成一些初始数据让LSTM有训练样本
         """
-        # 生成100个预热请求
+        # 生成100个预热请求（让统计预测器建立初始模式）
         for i in range(100):
             content_id = f"warmup_content_{i % 20}"
             
@@ -88,12 +86,8 @@ class EnhancedSystemSimulator(SystemSimulator):
             if np.random.random() < 0.7:  # 70%概率访问热门内容
                 content_id = f"warmup_content_{np.random.choice([0, 1, 2, 3, 4])}"
             
-            # 记录到LSTM
-            self.popularity_predictor.record_access(
-                content_id,
-                time.time() + i,
-                {'size': np.random.uniform(1e6, 10e6), 'type': 'video'}
-            )
+            # 记录到热度策略
+            self.heat_strategy.update_heat(content_id, access_weight=1.0)
             
             # 添加到协作缓存
             rsu_id = f"RSU_{i % self.num_rsus}"
@@ -103,11 +97,6 @@ class EnhancedSystemSimulator(SystemSimulator):
                 {'content': f"data_{content_id}", 'size': np.random.uniform(1e6, 10e6)},
                 np.random.uniform(1e6, 10e6)
             )
-        
-        # 训练LSTM（如果有足够数据）
-        if len(self.popularity_predictor.training_data) >= 50:
-            self.popularity_predictor.train(epochs=5, batch_size=16)
-            self.cache_performance['lstm_training_count'] += 1
     
     def process_task_with_cache(self, task: Any, node_id: str) -> Dict[str, float]:
         """
@@ -120,20 +109,11 @@ class EnhancedSystemSimulator(SystemSimulator):
         Returns:
             处理结果指标
         """
-        # 生成内容ID（基于任务特征）
-        content_id = f"task_content_{hash(str(task.task_id)) % 1000}"
+        # 生成内容ID（基于任务特征，增加到5000种以减少哈希冲突）
+        content_id = f"task_content_{hash(str(task.task_id)) % 5000}"
         
-        # 记录访问（用于LSTM训练）
-        current_time = self.current_time if hasattr(self, 'current_time') else time.time()
-        self.popularity_predictor.record_access(
-            content_id,
-            current_time,
-            {
-                'size': task.data_size,
-                'type': task.task_type.value if hasattr(task, 'task_type') else 'general',
-                'node': node_id
-            }
-        )
+        # 记录访问到热度策略
+        self.heat_strategy.update_heat(content_id, access_weight=1.0)
         
         # 尝试从缓存获取
         cache_hit = False
@@ -209,7 +189,7 @@ class EnhancedSystemSimulator(SystemSimulator):
     
     def _should_cache_content(self, content_id: str, size: float) -> bool:
         """
-        使用LSTM预测决定是否缓存内容
+        使用热度策略决定是否缓存内容
         
         Args:
             content_id: 内容ID
@@ -222,18 +202,15 @@ class EnhancedSystemSimulator(SystemSimulator):
         if size > 10e9:  # 10GB
             return False
         
-        # 使用LSTM预测流行度
-        predictions = self.popularity_predictor.predict(
-            [content_id],
-            self.current_time if hasattr(self, 'current_time') else time.time()
-        )
+        # 使用HeatBasedCacheStrategy计算优先级
+        total_contents = len(self.heat_strategy.historical_heat) + 1
+        cache_priority = self.heat_strategy.get_cache_priority(content_id, size, total_contents)
         
-        predicted_popularity = predictions.get(content_id, 0.0)
         self.cache_performance['predictions_made'] += 1
         
-        # 基于预测流行度决定
-        threshold = 0.5  # 可调节的阈值
-        should_cache = predicted_popularity > threshold
+        # 基于优先级决定（阈值0.3，经验值）
+        threshold = 0.3
+        should_cache = cache_priority > threshold
         
         if should_cache:
             self.cache_performance['prediction_hits'] += 1
@@ -248,11 +225,11 @@ class EnhancedSystemSimulator(SystemSimulator):
         if self.use_advanced_cache:
             self.collaborative_cache.periodic_maintenance()
         
-        # 定期训练LSTM（每500个任务）
-        if self.processed_tasks % 500 == 0:
-            if len(self.popularity_predictor.training_data) >= 100:
-                self.popularity_predictor.train(epochs=3, batch_size=32)
-                self.cache_performance['lstm_training_count'] += 1
+        # 定期清理过期数据（每1000个任务）
+        if self.processed_tasks % 1000 == 0:
+            from utils.unified_time_manager import get_simulation_time
+            current_time = get_simulation_time()
+            self.heat_strategy.cleanup_stale_data(current_time, staleness_threshold=7200)
     
     def get_cache_statistics(self) -> Dict[str, Any]:
         """
@@ -280,11 +257,13 @@ class EnhancedSystemSimulator(SystemSimulator):
                     if self.cache_performance['predictions_made'] > 0 else 0
                 )
             
-            # LSTM模型状态
-            stats['lstm_status'] = {
-                'is_trained': self.popularity_predictor.is_trained,
-                'training_samples': len(self.popularity_predictor.training_data),
-                'training_count': self.cache_performance['lstm_training_count']
+            # 热度策略状态
+            stats['heat_strategy_status'] = {
+                'slot_duration': self.heat_strategy.slot_duration,
+                'total_slots': self.heat_strategy.total_slots,
+                'unique_contents': len(self.heat_strategy.historical_heat),
+                'total_accesses': sum(len(h) for h in self.heat_strategy.access_history.values()),
+                'adaptive_enabled': self.heat_strategy.adaptive_slot
             }
         
         return stats
@@ -362,10 +341,9 @@ class EnhancedSystemSimulator(SystemSimulator):
         if self.use_advanced_cache:
             self.collaborative_cache.shutdown()
             
-            # 保存LSTM模型
-            if self.popularity_predictor.is_trained:
-                self.popularity_predictor.save_model("models/lstm_cache_predictor.pth")
-                print("[EnhancedSimulator] LSTM model saved")
+            # 打印热度策略统计
+            print(f"[EnhancedSimulator] Heat strategy: {len(self.heat_strategy.historical_heat)} unique contents")
+            print(f"                     Adaptive slot duration: {self.heat_strategy.slot_duration:.1f}s")
         
         # 调用父类close
         if hasattr(super(), 'close'):

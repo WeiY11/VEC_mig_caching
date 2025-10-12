@@ -55,9 +55,22 @@ def generate_exponential_service_time(rate: float) -> float:
     return np.random.exponential(1 / rate)
 
 
+# Zipf归一化常数缓存（优化性能）
+_zipf_normalization_cache = {}
+
 def calculate_zipf_probability(rank: int, num_items: int, exponent: float = 1.0) -> float:
-    """计算Zipf分布的概率"""
-    normalization = sum(1 / (i ** exponent) for i in range(1, num_items + 1))
+    """
+    计算Zipf分布的概率（优化版：缓存归一化常数）
+    
+    性能优化：归一化常数只计算一次，后续O(1)查表
+    """
+    cache_key = (num_items, exponent)
+    
+    # 检查缓存
+    if cache_key not in _zipf_normalization_cache:
+        _zipf_normalization_cache[cache_key] = sum(1 / (i ** exponent) for i in range(1, num_items + 1))
+    
+    normalization = _zipf_normalization_cache[cache_key]
     return (1 / (rank ** exponent)) / normalization
 
 

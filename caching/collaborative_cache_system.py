@@ -13,7 +13,7 @@ from enum import Enum
 
 # 导入分层缓存管理器
 from .hierarchical_cache_manager import HierarchicalCacheManager
-from .lstm_popularity_predictor import LSTMPopularityPredictor
+from .cache_manager import HeatBasedCacheStrategy
 
 
 class MessageType(Enum):
@@ -65,10 +65,13 @@ class CollaborativeCacheSystem:
                 l2_capacity=7e9   # 7GB L2
             )
         
-        # 流行度预测器（全局共享）
-        self.popularity_predictor = None
+        # 热度策略（全局共享，使用优化的HeatBasedCacheStrategy）
+        self.heat_strategy = None
         if enable_prediction:
-            self.popularity_predictor = LSTMPopularityPredictor()
+            self.heat_strategy = HeatBasedCacheStrategy(
+                slot_duration=None,   # 自适应时间槽
+                total_slots=200       # 200个时间槽
+            )
         
         # 缓存目录（记录哪个RSU有哪些内容）
         self.cache_directory = defaultdict(set)  # content_id -> set of RSU IDs
@@ -120,13 +123,9 @@ class CollaborativeCacheSystem:
             self.collab_stats['local_hits'] += 1
             self._update_cache_directory(content_id, requesting_rsu)
             
-            # 记录访问用于预测
-            if self.popularity_predictor:
-                self.popularity_predictor.record_access(
-                    content_id, 
-                    time.time(),
-                    {'rsu': requesting_rsu}
-                )
+            # 记录访问到热度策略
+            if self.heat_strategy:
+                self.heat_strategy.update_heat(content_id, access_weight=1.0)
             
             return content
         
@@ -160,15 +159,12 @@ class CollaborativeCacheSystem:
         Returns:
             是否成功缓存
         """
-        # 判断是否为热点内容
+        # 判断是否为热点内容（使用热度策略）
         is_hot = False
-        if self.popularity_predictor:
-            # 预测流行度
-            predictions = self.popularity_predictor.predict(
-                [content_id], 
-                time.time()
-            )
-            is_hot = predictions.get(content_id, 0) > 0.7
+        if self.heat_strategy:
+            # 计算综合热度
+            combined_heat = self.heat_strategy.calculate_combined_heat(content_id)
+            is_hot = combined_heat > 5.0  # 热度阈值（经验值）
         
         # 存储到本地缓存
         cache_manager = self.cache_managers[rsu_id]
@@ -228,7 +224,7 @@ class CollaborativeCacheSystem:
     
     def _should_replicate(self, content_id: str) -> bool:
         """
-        决定是否应该复制内容
+        决定是否应该复制内容（使用热度策略）
         
         Args:
             content_id: 内容ID
@@ -236,12 +232,12 @@ class CollaborativeCacheSystem:
         Returns:
             是否应该复制
         """
-        # 基于访问频率决定
-        if self.popularity_predictor:
-            predictions = self.popularity_predictor.predict([content_id], time.time())
-            return predictions.get(content_id, 0) > 0.6
+        # 基于热度决定
+        if self.heat_strategy:
+            combined_heat = self.heat_strategy.calculate_combined_heat(content_id)
+            return combined_heat > 3.0  # 中等热度即复制
         
-        # 简单策略：如果被访问超过3次就复制
+        # 回退策略：基于访问频率
         access_count = sum(
             1 for cache in self.cache_managers.values() 
             if content_id in cache.access_frequency
@@ -353,22 +349,18 @@ class CollaborativeCacheSystem:
         # 更新本地的缓存目录信息
         self._update_cache_directory(msg.content_id, msg.sender_id)
         
-        # 如果启用预测，记录访问模式
-        if self.popularity_predictor:
-            self.popularity_predictor.record_access(
-                msg.content_id,
-                msg.timestamp,
-                msg.data
-            )
+        # 记录访问到热度策略
+        if self.heat_strategy:
+            self.heat_strategy.update_heat(msg.content_id, access_weight=1.0)
     
     def _handle_popularity_share(self, node_id: str, msg: CacheMessage):
         """处理流行度共享消息"""
-        if self.popularity_predictor and 'popularity_scores' in msg.data:
-            # 合并流行度信息
-            for content_id, score in msg.data['popularity_scores'].items():
-                self.popularity_predictor.popularity_scores[content_id].append(
-                    (msg.timestamp, score)
-                )
+        if self.heat_strategy and 'heat_scores' in msg.data:
+            # 合并热度信息
+            for content_id, heat in msg.data['heat_scores'].items():
+                # 更新本地热度（使用较小权重避免过度影响）
+                current_heat = self.heat_strategy.historical_heat.get(content_id, 0)
+                self.heat_strategy.historical_heat[content_id] = current_heat * 0.8 + heat * 0.2
     
     def _handle_load_balance(self, node_id: str, msg: CacheMessage):
         """处理负载均衡请求"""
@@ -428,15 +420,18 @@ class CollaborativeCacheSystem:
                         )
                         self.message_queues[target_rsu].put(msg)
     
-    def share_popularity_predictions(self):
+    def share_heat_information(self):
         """
-        在RSU间共享流行度预测信息
+        在RSU间共享热度信息
         """
-        if not self.popularity_predictor:
+        if not self.heat_strategy:
             return
         
-        # 获取预测的热门内容
-        top_predictions = self.popularity_predictor.get_top_predictions(20)
+        # 获取最热门的内容（前20个）
+        heat_scores = {
+            cid: heat for cid, heat in self.heat_strategy.historical_heat.items()
+        }
+        top_heat = sorted(heat_scores.items(), key=lambda x: x[1], reverse=True)[:20]
         
         # 广播给所有节点
         for rsu_id in self.cache_managers:
@@ -445,7 +440,7 @@ class CollaborativeCacheSystem:
                 sender_id="GLOBAL",
                 receiver_id=rsu_id,
                 content_id="",
-                data={'popularity_scores': dict(top_predictions)},
+                data={'heat_scores': dict(top_heat)},
                 timestamp=time.time()
             )
             self.message_queues[rsu_id].put(msg)
@@ -501,12 +496,14 @@ class CollaborativeCacheSystem:
         # 1. 触发负载均衡
         self.trigger_load_balancing()
         
-        # 2. 共享流行度预测
-        self.share_popularity_predictions()
+        # 2. 共享热度信息
+        self.share_heat_information()
         
-        # 3. 训练预测模型
-        if self.popularity_predictor and not self.popularity_predictor.is_trained:
-            self.popularity_predictor.train(epochs=5)
+        # 3. 清理过期热度数据
+        if self.heat_strategy:
+            from utils.unified_time_manager import get_simulation_time
+            current_time = get_simulation_time()
+            self.heat_strategy.cleanup_stale_data(current_time, staleness_threshold=3600)
         
         # 4. 清理过期的缓存目录条目
         self._cleanup_cache_directory()
@@ -549,6 +546,7 @@ class CollaborativeCacheSystem:
         for processor in self.message_processors:
             processor.join(timeout=2)
         
-        # 保存预测模型
-        if self.popularity_predictor and self.popularity_predictor.is_trained:
-            self.popularity_predictor.save_model("cache_popularity_model.pth")
+        # 打印热度策略统计
+        if self.heat_strategy:
+            print(f"[CollaborativeCache] Tracked {len(self.heat_strategy.historical_heat)} contents")
+            print(f"                     Adaptive slot duration: {self.heat_strategy.slot_duration:.1f}s")
