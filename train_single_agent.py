@@ -1,20 +1,35 @@
 """
+
+🐍🖥️📚
+cd offloading_strategy_comparison
+# 1. 测试（1分钟）
+python test_offloading_strategies.py
+# 2. 快速实验（10分钟）
+python run_offloading_comparison.py --mode vehicle --episodes 5
+# 3. 完整实验（3-4小时，论文用）
+python run_offloading_comparison.py --mode all --episodes 50
+# 4. 生成图表
+python visualize_offloading_comparison.py --results all_experiments_*.json --mode all
+
 单智能体算法训练脚本
 支持DDPG、TD3、DQN、PPO、SAC等算法的训练和比较
-
 使用方法:
 python train_single_agent.py --algorithm TD3 --episodes 200
 python train_single_agent.py --algorithm TD3 --episodes 200 --seed 123 --num-vehicles 16
 python train_single_agent.py --algorithm DDPG --episodes 200
 python train_single_agent.py --algorithm PPO --episodes 150 --seed 3407
 python train_single_agent.py --compare --episodes 200  # 比较所有算法
-# 扫描不同车辆数的性能表现
+🚀 增强缓存模式 (默认启用 - 分层L1/L2 + 自适应热度策略 + RSU协作):
 python train_single_agent.py --algorithm TD3 --episodes 1600 --num-vehicles 8
 python train_single_agent.py --algorithm TD3 --episodes 1600 --num-vehicles 12
 python train_single_agent.py --algorithm TD3 --episodes 1600 --num-vehicles 16
 python train_single_agent.py --algorithm TD3 --episodes 1600 --num-vehicles 20
 python train_single_agent.py --algorithm TD3 --episodes 1600 --num-vehicles 24
-🌐 实时可视化 (新功能):
+
+🔧 禁用增强缓存 (如需baseline对比):
+python train_single_agent.py --algorithm TD3 --episodes 1600 --num-vehicles 20 --no-enhanced-cache
+
+🌐 实时可视化:
 python train_single_agent.py --algorithm TD3 --episodes 200 --realtime-vis
 python train_single_agent.py --algorithm DDPG --episodes 100 --realtime-vis --vis-port 8080
 
@@ -22,23 +37,9 @@ python train_single_agent.py --algorithm DDPG --episodes 100 --realtime-vis --vi
 python experiments/run_td3_seed_sweep.py --seeds 42 2025 3407 --episodes 200
 python experiments/run_td3_vehicle_sweep.py --vehicles 8 12 16 --episodes 200
 python experiments/run_td3_vehicle_sweep.py --vehicles 8 12 16 20 24 --episodes 800
-    生成学术图表:
+🐍 生成学术图表:
 python generate_academic_charts.py results/single_agent/td3/training_results_20251007_220900.json
 
-# 8辆车 + 增强缓存
-python train_single_agent.py --algorithm TD3 --episodes 1600 --num-vehicles 8 --enhanced-cache
-
-# 12辆车 + 增强缓存（默认）
-python train_single_agent.py --algorithm TD3 --episodes 1600 --num-vehicles 12 --enhanced-cache
-
-# 16辆车 + 增强缓存
-python train_single_agent.py --algorithm TD3 --episodes 1600 --num-vehicles 16 --enhanced-cache
-
-# 20辆车 + 增强缓存
-python train_single_agent.py --algorithm TD3 --episodes 1600 --num-vehicles 20 --enhanced-cache
-
-# 24辆车 + 增强缓存
-python train_single_agent.py --algorithm TD3 --episodes 1600 --num-vehicles 24 --enhanced-cache
 """ 
 import os
 import sys
@@ -208,9 +209,9 @@ class SingleAgentTrainingEnvironment:
         # 选择仿真器类型
         self.use_enhanced_cache = use_enhanced_cache and ENHANCED_CACHE_AVAILABLE
         if self.use_enhanced_cache:
-            print("🚀 [Training] Using Enhanced Cache System with:")
-            print("   - Hierarchical L1/L2 caching")
-            print("   - LSTM popularity prediction")
+            print("🚀 [Training] Using Enhanced Cache System (Default) with:")
+            print("   - Hierarchical L1/L2 caching (3GB + 7GB)")
+            print("   - Adaptive HeatBasedCacheStrategy")
             print("   - Inter-RSU collaboration")
             self.simulator = EnhancedSystemSimulator(scenario_config)
         else:
@@ -1612,9 +1613,9 @@ def main():
     # 🌐 实时可视化参数
     parser.add_argument('--realtime-vis', action='store_true', help='启用实时可视化')
     parser.add_argument('--vis-port', type=int, default=5000, help='实时可视化服务器端口 (默认: 5000)')
-    # 🚀 增强缓存参数
-    parser.add_argument('--enhanced-cache', action='store_true', 
-                       help='启用增强缓存系统 (分层L1/L2 + LSTM预测 + RSU协作)')
+    # 🚀 增强缓存参数（默认启用）
+    parser.add_argument('--no-enhanced-cache', action='store_true', 
+                       help='禁用增强缓存系统（默认启用分层L1/L2 + 热度策略 + RSU协作）')
     
     args = parser.parse_args()
 
@@ -1649,7 +1650,7 @@ def main():
             enable_realtime_vis=args.realtime_vis,
             vis_port=args.vis_port,
             override_scenario=override_scenario,  # 🔧 新增：传递覆盖参数
-            use_enhanced_cache=args.enhanced_cache  # 🚀 新增：增强缓存
+            use_enhanced_cache=not args.no_enhanced_cache  # 🚀 默认启用增强缓存
         )
     else:
         print("请指定 --algorithm 或使用 --compare 标志")

@@ -1,0 +1,22 @@
+# Individual Runners 依赖说明
+# 
+# 核心依赖（项目已包含）：
+# - numpy>=1.21.0
+# - torch>=1.10.0
+# - gym>=0.26.0
+#
+# 可选依赖（xuance框架）：
+# xuance[torch]>=1.1.5
+#
+# 安装xuance（可选）：
+# pip install xuance[torch]
+#
+# 注意：如果不安装xuance，DRL脚本会自动使用项目自带的算法实现（fallback模式）
+
+
+
+
+
+
+
+
