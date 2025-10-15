@@ -240,8 +240,8 @@ class MigrationConfig:
         self.migration_cost_factor = 0.1
         
         # 🔧 调整：合理的迁移触发阈值
-        self.rsu_overload_threshold = 0.8   # 恢复到80%，更合理的触发点
-        self.uav_overload_threshold = 0.75  # UAV 75%负载触发，略早于RSU
+        self.rsu_overload_threshold = 0.85   # 恢复到80%，更合理的触发点
+        self.uav_overload_threshold = 0.85  # UAV 75%负载触发，略早于RSU
         self.rsu_underload_threshold = 0.3
         # 队列/切换阈值（用于车辆跟随与过载切换）
         self.follow_handover_distance = 30.0  # meters，车辆跟随触发的最小距离改善
