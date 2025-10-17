@@ -12,12 +12,13 @@ python run_offloading_comparison.py --mode all --episodes 50
 python visualize_offloading_comparison.py --results all_experiments_*.json --mode all
 
 单智能体算法训练脚本
-支持DDPG、TD3、DQN、PPO、SAC等算法的训练和比较
+支持DDPG、TD3、TD3-LE、DQN、PPO、SAC等算法的训练和比较
 使用方法:
 python train_single_agent.py --algorithm TD3 --episodes 200
 python train_single_agent.py --algorithm TD3 --episodes 200 --seed 123 --num-vehicles 16
 python train_single_agent.py --algorithm DDPG --episodes 200
 python train_single_agent.py --algorithm PPO --episodes 150 --seed 3407
+python train_single_agent.py --algorithm TD3-LE --episodes 200  # 延时-能耗协同优化
 python train_single_agent.py --compare --episodes 200  # 比较所有算法
 🚀 增强缓存模式 (默认启用 - 分层L1/L2 + 自适应热度策略 + RSU协作):
 python train_single_agent.py --algorithm TD3 --episodes 1600 --num-vehicles 8
@@ -25,7 +26,7 @@ python train_single_agent.py --algorithm TD3 --episodes 1600 --num-vehicles 12
 python train_single_agent.py --algorithm TD3 --episodes 1600 --num-vehicles 16
 python train_single_agent.py --algorithm TD3 --episodes 1600 --num-vehicles 20
 python train_single_agent.py --algorithm TD3 --episodes 1600 --num-vehicles 24
-
+python train_single_agent.py --algorithm TD3-LE --episodes 1600 --num-vehicles 12
 🔧 禁用增强缓存 (如需baseline对比):
 python train_single_agent.py --algorithm TD3 --episodes 1600 --num-vehicles 20 --no-enhanced-cache
 
@@ -89,6 +90,7 @@ from utils.adaptive_control import AdaptiveCacheController, AdaptiveMigrationCon
 # 导入各种单智能体算法
 from single_agent.ddpg import DDPGEnvironment
 from single_agent.td3 import TD3Environment
+from single_agent.td3_latency_energy import TD3LatencyEnergyEnvironment
 from single_agent.dqn import DQNEnvironment
 from single_agent.ppo import PPOEnvironment
 from single_agent.sac import SACEnvironment
@@ -199,7 +201,17 @@ class SingleAgentTrainingEnvironment:
     
     def __init__(self, algorithm: str, override_scenario: Optional[Dict[str, Any]] = None, 
                  use_enhanced_cache: bool = False):
-        self.algorithm = algorithm.upper()
+        self.input_algorithm = algorithm
+        normalized_algorithm = algorithm.upper().replace('-', '_')
+        alias_map = {
+            "TD3LE": "TD3_LATENCY_ENERGY",
+            "TD3_LE": "TD3_LATENCY_ENERGY",
+            "TD3LATENCY": "TD3_LATENCY_ENERGY",
+            "TD3_LATENCY": "TD3_LATENCY_ENERGY",
+            "TD3_LATENCY_ENERGY": "TD3_LATENCY_ENERGY",
+        }
+        alias_key = normalized_algorithm.replace('_', '')
+        self.algorithm = alias_map.get(normalized_algorithm, alias_map.get(alias_key, normalized_algorithm))
         scenario_config = _build_scenario_config()
         # 应用外部覆盖
         if override_scenario:
@@ -228,7 +240,7 @@ class SingleAgentTrainingEnvironment:
         num_uavs = len(self.simulator.uavs)
         
         # 应用固定拓扑的参数优化（保持4 RSU + 2 UAV）
-        if self.algorithm == "TD3":
+        if self.algorithm in {"TD3", "TD3_LATENCY_ENERGY"}:
             topology_optimizer = FixedTopologyOptimizer()
             opt_params = topology_optimizer.get_optimized_params(num_vehicles)
             
@@ -246,6 +258,8 @@ class SingleAgentTrainingEnvironment:
             self.agent_env = DDPGEnvironment(num_vehicles, num_rsus, num_uavs)
         elif self.algorithm == "TD3":
             self.agent_env = TD3Environment(num_vehicles, num_rsus, num_uavs)
+        elif self.algorithm == "TD3_LATENCY_ENERGY":
+            self.agent_env = TD3LatencyEnergyEnvironment(num_vehicles, num_rsus, num_uavs)
         elif self.algorithm == "DQN":
             self.agent_env = DQNEnvironment(num_vehicles, num_rsus, num_uavs)
         elif self.algorithm == "PPO":
@@ -627,7 +641,7 @@ class SingleAgentTrainingEnvironment:
                 # DQN首选整数动作，但接受Union类型
                 safe_action = self._safe_int_conversion(action)
                 training_info = self.agent_env.train_step(state, safe_action, reward, next_state, done)
-            elif self.algorithm in ["DDPG", "TD3", "SAC"]:
+            elif self.algorithm in ["DDPG", "TD3", "TD3_LATENCY_ENERGY", "SAC"]:
                 # 连续动作算法首选numpy数组，但接受Union类型
                 safe_action = action if isinstance(action, np.ndarray) else np.array([action], dtype=np.float32)
                 training_info = self.agent_env.train_step(state, safe_action, reward, next_state, done)
@@ -979,6 +993,10 @@ def train_single_algorithm(algorithm: str, num_episodes: Optional[int] = None, e
     # 创建训练环境（应用额外场景覆盖）
     training_env = SingleAgentTrainingEnvironment(algorithm, override_scenario=override_scenario, 
                                                   use_enhanced_cache=use_enhanced_cache)
+    canonical_algorithm = training_env.algorithm
+    if canonical_algorithm != algorithm:
+        print(f"⚙️  规范化算法标识: {canonical_algorithm}")
+    algorithm = canonical_algorithm
     
     # 🌐 创建实时可视化器（如果启用）
     visualizer = None
@@ -1602,7 +1620,7 @@ def compare_single_algorithms(algorithms: List[str], num_episodes: Optional[int]
 def main():
     """主函数"""
     parser = argparse.ArgumentParser(description='单智能体算法训练脚本')
-    parser.add_argument('--algorithm', type=str, choices=['DDPG', 'TD3', 'DQN', 'PPO', 'SAC'],
+    parser.add_argument('--algorithm', type=str, choices=['DDPG', 'TD3', 'TD3-LE', 'TD3_LE', 'TD3_LATENCY_ENERGY', 'DQN', 'PPO', 'SAC'],
                        help='选择训练算法')
     parser.add_argument('--episodes', type=int, default=None, help=f'训练轮次 (默认: {config.experiment.num_episodes})')
     parser.add_argument('--eval_interval', type=int, default=None, help=f'评估间隔 (默认: {config.experiment.eval_interval})')
@@ -1638,7 +1656,7 @@ def main():
     
     if args.compare:
         # 比较所有算法
-        algorithms = ['DDPG', 'TD3', 'DQN', 'PPO', 'SAC']
+        algorithms = ['DDPG', 'TD3', 'TD3-LE', 'DQN', 'PPO', 'SAC']
         compare_single_algorithms(algorithms, args.episodes)
     elif args.algorithm:
         # 训练单个算法 - 🔧 传递override_scenario参数

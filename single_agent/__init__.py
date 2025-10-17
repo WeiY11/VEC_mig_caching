@@ -8,6 +8,7 @@ from .ddpg import DDPGEnvironment, DDPGAgent, DDPGActor, DDPGCritic, DDPGReplayB
 
 # TD3算法  
 from .td3 import TD3Environment, TD3Agent, TD3Actor, TD3Critic, TD3ReplayBuffer
+from .td3_latency_energy import TD3LatencyEnergyEnvironment
 
 # DQN算法
 from .dqn import DQNEnvironment, DQNAgent, DQNNetwork, DQNReplayBuffer
@@ -23,7 +24,7 @@ __all__ = [
     'DDPGEnvironment', 'DDPGAgent', 'DDPGActor', 'DDPGCritic', 'DDPGReplayBuffer',
     
     # TD3
-    'TD3Environment', 'TD3Agent', 'TD3Actor', 'TD3Critic', 'TD3ReplayBuffer',
+    'TD3Environment', 'TD3Agent', 'TD3Actor', 'TD3Critic', 'TD3ReplayBuffer', 'TD3LatencyEnergyEnvironment',
     
     # DQN
     'DQNEnvironment', 'DQNAgent', 'DQNNetwork', 'DQNReplayBuffer',

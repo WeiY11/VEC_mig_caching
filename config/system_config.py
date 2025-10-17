@@ -56,6 +56,12 @@ class RLConfig:
         self.reward_weight_completion = 0.0  # 已集成到dropped_penalty
         self.reward_weight_cache = 0.0       # 缓存不是优化目标
 
+        # 🎯 延时-能耗优化目标阈值（供算法动态调整）
+        self.latency_target = 0.20          # 目标平均延时（秒）
+        self.latency_upper_tolerance = 0.30 # 超过此值触发强化惩罚
+        self.energy_target = 2200.0         # 目标能耗（焦耳）
+        self.energy_upper_tolerance = 3200.0# 超过此值触发强化惩罚
+
 class QueueConfig:
     """队列配置类"""
     
