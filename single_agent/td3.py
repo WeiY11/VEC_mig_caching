@@ -513,8 +513,8 @@ class TD3Environment:
         self.state_dim = self.local_state_dim + self.global_state_dim
         
         # 🔧 优化后的动作空间：动态适配网络拓扑
-        # 3(任务分配) + num_rsus(RSU选择) + num_uavs(UAV选择) + 7(控制参数)
-        self.action_dim = 3 + num_rsus + num_uavs + 7
+        # 3(任务分配) + num_rsus(RSU选择) + num_uavs(UAV选择) + 8(控制参数)
+        self.action_dim = 3 + num_rsus + num_uavs + 8
         
         # 创建智能体
         self.agent = TD3Agent(self.state_dim, self.action_dim, self.config)
@@ -526,7 +526,7 @@ class TD3Environment:
         print(f"TD3环境初始化完成（优化版）")
         print(f"网络拓扑: {num_vehicles}辆车 + {num_rsus}个RSU + {num_uavs}个UAV")
         print(f"状态维度: {self.state_dim} = 局部{self.local_state_dim} ({num_vehicles}×5 + {num_rsus}×5 + {num_uavs}×5) + 全局{self.global_state_dim}")
-        print(f"动作维度: {self.action_dim} (动态适配: 3+{num_rsus}+{num_uavs}+7)")
+        print(f"动作维度: {self.action_dim} (动态适配: 3+{num_rsus}+{num_uavs}+8)")
         print(f"策略延迟更新: {self.config.policy_delay}")
         print(f"优化特性: 移除控制参数冗余, 添加全局状态, 统一归一化")
     
@@ -628,8 +628,7 @@ class TD3Environment:
     
     def decompose_action(self, action: np.ndarray) -> Dict[str, np.ndarray]:
         """
-        🔧 优化版动作分解：动态适配网络拓扑
-        动作空间：3(分配) + num_rsus(RSU选择) + num_uavs(UAV选择) + 7(控制)
+        动作分解：3(任务分配) + RSU选择 + UAV选择 + 8(控制参数)
         """
         actions = {}
         
@@ -652,15 +651,15 @@ class TD3Environment:
         uav_selection = action[idx:idx+self.num_uavs]
         idx += self.num_uavs
         
-        # 4. 控制参数（7维）
-        control_params = action[idx:idx+7]
+        # 4. 控制参数（8维）
+        control_params = action[idx:idx+8]
         
         # 构建vehicle_agent的完整动作（用于仿真器）
         actions['vehicle_agent'] = np.concatenate([
             task_allocation,   # 3维
             rsu_selection,     # num_rsus维
             uav_selection,     # num_uavs维
-            control_params     # 7维
+            control_params     # 8维
         ])
         
         # RSU和UAV agent的动作（用于选择概率计算）

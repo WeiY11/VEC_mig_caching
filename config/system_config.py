@@ -54,7 +54,8 @@ class RLConfig:
         # ❌ 已弃用参数（保留以兼容旧代码）
         self.reward_weight_loss = 0.0      # 已移除：data_loss是时延的衍生指标
         self.reward_weight_completion = 0.0  # 已集成到dropped_penalty
-        self.reward_weight_cache = 0.0       # 缓存不是优化目标
+        self.reward_weight_cache = 0.3       # 缓存命中率 / 淘汰成本权重
+        self.reward_weight_migration = 0.2   # 迁移收益 / 成本权重
 
         # 🎯 延时-能耗优化目标阈值（供算法动态调整）
         self.latency_target = 0.20          # 目标平均延时（秒）

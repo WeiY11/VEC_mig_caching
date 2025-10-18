@@ -7,7 +7,7 @@
 import numpy as np
 import torch
 import random
-from typing import Dict, List, Tuple, Any
+from typing import Dict, List, Tuple, Any, Optional
 import json
 from datetime import datetime
 # 🔧 修复：导入统一时间管理器
@@ -48,24 +48,16 @@ class CompleteSystemSimulator:
             self.time_slot = self.config.get('time_slot', 0.2)  # 🚀 高负载默认时隙
             self.task_arrival_rate = self.config.get('task_arrival_rate', 2.5)  # 🚀 高负载默认到达率
         
-        # 性能统计
-        self.stats = {
-            'total_tasks': 0,
-            'completed_tasks': 0,
-            'dropped_tasks': 0,
-            'generated_data_bytes': 0.0,  # 累计生成数据量(bytes)
-            'dropped_data_bytes': 0.0,    # 累计丢失数据量(bytes)
-            'total_delay': 0.0,
-            'total_energy': 0.0,
-            'cache_hits': 0,
-            'cache_misses': 0
-        }
-        # 跨时隙在制任务管理
+        # 性能统计与运行态
+        self.stats = self._fresh_stats_dict()
         self.active_tasks: List[Dict] = []  # 每项: {id, vehicle_id, arrival_time, deadline, work_remaining, node_type, node_idx}
         self.task_counter = 0
+        self.current_step = 0
+        self.current_time = 0.0
         
         # 初始化组件
         self.initialize_components()
+        self._reset_runtime_states()
     
     def get_default_config(self) -> Dict:
         """获取默认配置"""
@@ -109,6 +101,8 @@ class CompleteSystemSimulator:
                 'lane_bias': y0 - self.road_y,
                 'tasks': [],
                 'energy_consumed': 0.0,
+                'device_cache': {},
+                'device_cache_capacity': 32.0
             }
             self.vehicles.append(vehicle)
         print("🚦 车辆初始化完成：主干道双路口场景")
@@ -211,7 +205,60 @@ class CompleteSystemSimulator:
         """设置仿真场景"""
         # 重新初始化组件（如果需要）
         self.initialize_components()
+        self._reset_runtime_states()
         print("✓ 初始化了 6 个缓存管理器")
+
+    def _fresh_stats_dict(self) -> Dict[str, float]:
+        """创建新的统计字典，保证关键指标齐全"""
+        return {
+            'total_tasks': 0,
+            'processed_tasks': 0,
+            'completed_tasks': 0,
+            'dropped_tasks': 0,
+            'generated_data_bytes': 0.0,
+            'dropped_data_bytes': 0.0,
+            'total_delay': 0.0,
+            'total_energy': 0.0,
+            'energy_uplink': 0.0,
+            'energy_downlink': 0.0,
+            'local_cache_hits': 0,
+            'cache_hits': 0,
+            'cache_misses': 0,
+            'migrations_executed': 0,
+            'migrations_successful': 0,
+            'rsu_migration_delay': 0.0,
+            'rsu_migration_energy': 0.0,
+            'rsu_migration_data': 0.0,
+            'uav_migration_distance': 0.0,
+            'uav_migration_count': 0
+        }
+
+    def _reset_runtime_states(self):
+        """重置运行时状态（用于episode重启）"""
+        reset_simulation_time()
+        self.current_step = 0
+        self.current_time = 0.0
+        self.task_counter = 0
+        self.stats = self._fresh_stats_dict()
+        self.active_tasks = []
+
+        # 重置车辆/节点状态
+        for vehicle in self.vehicles:
+            vehicle.setdefault('tasks', [])
+            vehicle['tasks'].clear()
+            vehicle['energy_consumed'] = 0.0
+            vehicle['device_cache'] = {}
+            vehicle['device_cache_capacity'] = vehicle.get('device_cache_capacity', 32.0)
+
+        for rsu in self.rsus:
+            rsu.setdefault('cache', {})
+            rsu['computation_queue'] = []
+            rsu['energy_consumed'] = 0.0
+
+        for uav in self.uavs:
+            uav.setdefault('cache', {})
+            uav['computation_queue'] = []
+            uav['energy_consumed'] = 0.0
     
     def _get_realistic_content_size(self, content_id: str) -> float:
         """
@@ -372,10 +419,6 @@ class CompleteSystemSimulator:
                 print(f"📊 任务分类统计({self.task_counter}): 类型1={type1_pct:.1f}%, 类型2={type2_pct:.1f}%, 类型3={type3_pct:.1f}%, 类型4={type4_pct:.1f}%")
                 print(f"   当前任务: {app_name}, {deadline_duration:.2f}s → 类型{task_type}, 数据{data_size_mb:.2f}MB")
         
-        self.stats['total_tasks'] += 1
-        # 统计累计生成的数据量（bytes）
-        self.stats['generated_data_bytes'] = self.stats.get('generated_data_bytes', 0.0) + data_size_bytes
-
         return task
     
     def calculate_distance(self, pos1: np.ndarray, pos2: np.ndarray) -> float:
@@ -413,106 +456,81 @@ class CompleteSystemSimulator:
         for uav in self.uavs:
             self._process_single_node_queue(uav, 'UAV')
     
+
     def _process_single_node_queue(self, node: Dict, node_type: str):
-        """处理单个节点的计算队列"""
-        queue = node.get('computation_queue', [])
+        "处理单个节点的计算队列"
+        queue = node.get('computation_queue', []) or []
         if not queue:
             return
-        
-        # 每个时隙处理1-3个任务（根据节点性能）
+
         max_tasks_per_slot = 3 if node_type == 'RSU' else 2
         tasks_to_process = min(len(queue), max_tasks_per_slot)
-        
-        completed_tasks = []
-        remaining_tasks = []
-        
+
+        new_queue: List[Dict] = []
         current_time = getattr(self, 'current_time', 0.0)
-        for i, task in enumerate(queue):
-            # 刚入队的任务（同一步）不予处理，避免"瞬时完成"假象
+
+        for idx, task in enumerate(queue):
             if current_time - task.get('queued_at', -1e9) < self.time_slot:
-                remaining_tasks.append(task)
+                new_queue.append(task)
                 continue
-            if i < tasks_to_process:
-                # 处理这个任务
-                remaining_work = task.get('work_remaining', 0.5)
-                
-                # 本时隙工作量（考虑节点性能）
-                if node_type == 'RSU':
-                    work_capacity = self.time_slot * 2.0  # RSU处理能力更强
-                elif node_type == 'UAV':
-                    work_capacity = self.time_slot * 1.5  # UAV处理能力中等
-                else:
-                    work_capacity = self.time_slot * 1.0  # 默认
-                
-                # 更新剩余工作量
-                remaining_work -= work_capacity
-                task['work_remaining'] = max(0.0, remaining_work)
-                
-                # 检查是否完成
-                if task['work_remaining'] <= 0.0:
-                    # 任务完成
-                    self.stats['completed_tasks'] += 1
-                    
-                    # 计算实际延迟
-                    actual_delay = current_time - task['arrival_time']
-                    actual_delay = max(0.001, min(actual_delay, 20.0))
-                    self.stats['total_delay'] += actual_delay
-                    
-                    # 计算任务完成的下行传输能耗
-                    vehicle_id = task.get('vehicle_id', 'V_0')
-                    vehicle = next((v for v in self.vehicles if v['id'] == vehicle_id), None)
-                    if vehicle is not None:
-                        # 计算下行传输距离
-                        if len(node['position']) == 2:
-                            node_pos = np.append(node['position'], 0)
-                        else:
-                            node_pos = node['position']
-                        vehicle_pos = vehicle['position']
-                        if len(vehicle_pos) == 2:
-                            vehicle_pos = np.append(vehicle_pos, 0)
-                        distance = np.linalg.norm(node_pos - vehicle_pos)
-                        
-                        # 结果下载大小（假设为输入的10%）
-                        result_size = task.get('data_size_bytes', task.get('data_size', 1.0)*1e6) * 0.1
-                        
-                        # 下行传输时延和能耗
-                        if node_type == 'RSU':
-                            down_tx_power_dbm = 46.0  # RSU发射功率
-                        elif node_type == 'UAV':
-                            down_tx_power_dbm = 30.0  # UAV发射功率
-                        else:
-                            down_tx_power_dbm = 23.0  # 默认
-                        
-                        down_tx_power_w = 10**((down_tx_power_dbm - 30) / 10)
-                        down_tx_time = self.calculate_transmission_delay(result_size, distance, node_type.lower())
-                        down_tx_energy = down_tx_power_w * down_tx_time
-                        
-                        self.stats['energy_downlink'] = self.stats.get('energy_downlink', 0.0) + down_tx_energy
-                    
-                    # 计算能耗（仅处理能耗，传输能耗已单独计算）
-                    if node_type == 'RSU':
-                        processing_power = 50.0  # 简化处理功率
-                    elif node_type == 'UAV':
-                        processing_power = 20.0
-                    else:
-                        processing_power = 10.0
-                    
-                    task_energy = processing_power * work_capacity
-                    self.stats['total_energy'] += task_energy
-                    node['energy_consumed'] += task_energy
-                    
-                    completed_tasks.append(task)
-                    print(f"✅ 队列任务 {task['id']} 在{node['id']}完成: 延迟{actual_delay:.3f}s")
-                else:
-                    # 继续处理
-                    remaining_tasks.append(task)
+
+            if idx >= tasks_to_process:
+                new_queue.append(task)
+                continue
+
+            remaining_work = float(task.get('work_remaining', 0.5))
+            if node_type == 'RSU':
+                work_capacity = self.time_slot * 2.0
+            elif node_type == 'UAV':
+                work_capacity = self.time_slot * 1.5
             else:
-                # 未处理的任务保持在队列中
-                remaining_tasks.append(task)
-        
-        # 更新队列
-        node['computation_queue'] = remaining_tasks
-    
+                work_capacity = self.time_slot
+
+            remaining_work -= work_capacity
+            task['work_remaining'] = max(0.0, remaining_work)
+
+            if task['work_remaining'] > 0.0:
+                new_queue.append(task)
+                continue
+
+            self.stats['completed_tasks'] += 1
+            self.stats['processed_tasks'] = self.stats.get('processed_tasks', 0) + 1
+
+            actual_delay = current_time - task.get('arrival_time', current_time)
+            actual_delay = max(0.001, min(actual_delay, 20.0))
+            self.stats['total_delay'] += actual_delay
+
+            vehicle_id = task.get('vehicle_id', 'V_0')
+            vehicle = next((v for v in self.vehicles if v['id'] == vehicle_id), None)
+            if vehicle is not None:
+                node_pos = node.get('position', np.zeros(3))
+                if len(node_pos) == 2:
+                    node_pos = np.append(node_pos, 0.0)
+                vehicle_pos = vehicle.get('position', np.zeros(3))
+                if len(vehicle_pos) == 2:
+                    vehicle_pos = np.append(vehicle_pos, 0.0)
+                distance = np.linalg.norm(node_pos - vehicle_pos)
+                result_size = task.get('data_size_bytes', task.get('data_size', 1.0) * 1e6) * 0.1
+                down_delay, down_energy = self._estimate_transmission(result_size, distance, node_type.lower())
+                self.stats['energy_downlink'] = self.stats.get('energy_downlink', 0.0) + down_energy
+                self.stats['total_delay'] += down_delay
+                self.stats['total_energy'] += down_energy
+
+            if node_type == 'RSU':
+                processing_power = 50.0
+            elif node_type == 'UAV':
+                processing_power = 20.0
+            else:
+                processing_power = 10.0
+
+            task_energy = processing_power * work_capacity
+            self.stats['total_energy'] += task_energy
+            node['energy_consumed'] = node.get('energy_consumed', 0.0) + task_energy
+
+            task['completed'] = True
+
+        node['computation_queue'] = new_queue
+
     def find_nearest_rsu(self, vehicle_pos: np.ndarray) -> Dict:
         """找到最近的RSU"""
         min_distance = float('inf')
@@ -548,7 +566,13 @@ class CompleteSystemSimulator:
             self.stats['cache_misses'] += 1
             return False
     
-    def check_cache_hit_adaptive(self, content_id: str, node: Dict, agents_actions: Dict = None) -> bool:
+    def check_cache_hit_adaptive(
+        self,
+        content_id: str,
+        node: Dict,
+        agents_actions: Dict = None,
+        node_type: str = 'RSU'
+    ) -> bool:
         """🤖 智能体控制的自适应缓存检查"""
         # 基础缓存检查
         cache_hit = content_id in node.get('cache', {})
@@ -556,6 +580,8 @@ class CompleteSystemSimulator:
         # 更新统计
         if cache_hit:
             self.stats['cache_hits'] += 1
+            if node_type == 'RSU':
+                self._propagate_cache_after_hit(content_id, node, agents_actions)
         else:
             self.stats['cache_misses'] += 1
             
@@ -569,24 +595,41 @@ class CompleteSystemSimulator:
                 
                 # 🔧 修复：使用realistic内容大小和正确容量计算
                 data_size = self._get_realistic_content_size(content_id)
+                capacity_limit = node.get('cache_capacity', 1000.0 if node_type == 'RSU' else 200.0)
                 available_capacity = self._calculate_available_cache_capacity(
-                    node.get('cache', {}), node.get('cache_capacity', 1000.0)
+                    node.get('cache', {}), capacity_limit
                 )
                 
-                should_cache, reason = cache_controller.should_cache_content(
-                    content_id, data_size, available_capacity
+                should_cache, reason, evictions = cache_controller.should_cache_content(
+                    content_id,
+                    data_size,
+                    available_capacity,
+                    node.get('cache', {}),
+                    capacity_limit
                 )
                 
                 if should_cache:
-                    # 🔧 修复：执行正确的缓存操作
                     if 'cache' not in node:
                         node['cache'] = {}
-                    node['cache'][content_id] = {
-                        'size': data_size,  # 现在是realistic大小
+                    cache_dict = node['cache']
+                    reclaimed = 0.0
+                    for evict_id in evictions:
+                        removed = cache_dict.pop(evict_id, None)
+                        if removed:
+                            reclaimed += float(removed.get('size', 0.0) or 0.0)
+                            cache_controller.cache_stats['evicted_items'] += 1
+                    if reclaimed > 0.0:
+                        available_capacity += reclaimed
+                    if available_capacity < data_size:
+                        return cache_hit
+                    cache_dict[content_id] = {
+                        'size': data_size,
                         'timestamp': self.current_time,
                         'reason': reason,
                         'content_type': self._infer_content_type(content_id)
                     }
+                    if 'Collaborative cache' in reason:
+                        cache_controller.cache_stats['collaborative_writes'] += 1
         
         # 记录缓存控制器统计
         if agents_actions and 'cache_controller' in agents_actions and cache_hit:
@@ -644,6 +687,400 @@ class CompleteSystemSimulator:
         
         utilization = total_used_mb / cache_capacity_mb
         return min(1.0, max(0.0, utilization))
+
+    # ==================== 新增：一步仿真涉及的核心辅助函数 ====================
+
+    def _update_vehicle_positions(self):
+        """简单更新车辆位置，模拟车辆沿主干道移动"""
+        for vehicle in self.vehicles:
+            position = vehicle.get('position')
+            if position is None or len(position) < 2:
+                continue
+
+            direction = vehicle.get('direction', 0.0)
+            speed = float(vehicle.get('velocity', 15.0))
+            dx = np.cos(direction) * speed * self.time_slot
+            dy = np.sin(direction) * speed * self.time_slot
+
+            # 道路长度取 1000m，超界循环
+            new_x = (position[0] + dx) % 1000.0
+            new_y = float(self.road_y + vehicle.get('lane_bias', 0.0)) + dy * 0.05  # 微小扰动
+            vehicle['position'][0] = new_x
+            vehicle['position'][1] = np.clip(new_y, self.road_y - 6.0, self.road_y + 6.0)
+
+    def _sample_arrivals(self) -> int:
+        """按泊松过程采样每车每时隙的任务到达数"""
+        lam = max(1e-6, float(self.task_arrival_rate) * float(self.time_slot))
+        return int(np.random.poisson(lam))
+
+    def _choose_offload_target(self, actions: Dict, rsu_available: bool, uav_available: bool) -> str:
+        """根据智能体提供的偏好选择卸载目标"""
+        prefs = actions.get('vehicle_offload_pref') or {}
+        probs = np.array([
+            max(0.0, float(prefs.get('local', 0.0))),
+            max(0.0, float(prefs.get('rsu', 0.0))) if rsu_available else 0.0,
+            max(0.0, float(prefs.get('uav', 0.0))) if uav_available else 0.0,
+        ], dtype=float)
+
+        if probs.sum() <= 0:
+            probs = np.array([
+                0.34,
+                0.33 if rsu_available else 0.0,
+                0.33 if uav_available else 0.0
+            ], dtype=float)
+
+        if probs.sum() <= 0:
+            return 'local'
+
+        probs = probs / probs.sum()
+        target_labels = np.array(['local', 'rsu', 'uav'])
+        return str(np.random.choice(target_labels, p=probs))
+
+    def _estimate_remote_work_units(self, task: Dict, node_type: str) -> float:
+        """估计远程节点的工作量单位（供队列调度使用）"""
+        requirement = float(task.get('computation_requirement', 1500.0))
+        base_divisor = 1200.0 if node_type == 'RSU' else 1600.0
+        work_units = requirement / base_divisor
+        return float(np.clip(work_units, 0.5, 12.0))
+
+    def _estimate_local_processing(self, task: Dict, vehicle: Dict) -> Tuple[float, float]:
+        """估计本地处理的延迟与能耗"""
+        cpu_freq = 2.5e9
+        power = 6.5
+        if self.sys_config is not None:
+            cpu_freq = getattr(self.sys_config.compute, 'vehicle_cpu_freq', cpu_freq)
+            power = getattr(self.sys_config.compute, 'vehicle_static_power', power)
+        else:
+            cpu_freq = float(self.config.get('vehicle_cpu_freq', cpu_freq))
+            power = float(self.config.get('vehicle_static_power', power))
+
+        requirement = float(task.get('computation_requirement', 1500.0)) * 1e6  # cycles
+        processing_time = requirement / max(cpu_freq, 1e6)
+        processing_time = float(np.clip(processing_time, 0.03, 0.8))
+        energy = float(power) * processing_time
+        vehicle['energy_consumed'] = vehicle.get('energy_consumed', 0.0) + energy
+        return processing_time, energy
+
+    def _estimate_transmission(self, data_size_bytes: float, distance: float, link: str) -> Tuple[float, float]:
+        """估计上传耗时与能耗"""
+        # 有效吞吐量 (bit/s)
+        if link == 'uav':
+            base_rate = 45e6
+            power_w = 0.12
+        else:
+            base_rate = 80e6
+            power_w = 0.18
+
+        attenuation = 1.0 + max(0.0, distance) / 800.0
+        rate = base_rate / attenuation
+        delay = (float(data_size_bytes) * 8.0) / max(rate, 1e6)
+        delay = float(np.clip(delay, 0.01, 1.2))
+        energy = power_w * delay
+        return delay, energy
+
+    def _append_active_task(self, task_entry: Dict):
+        """将任务记录加入活跃列表"""
+        self.active_tasks.append(task_entry)
+
+    def _cleanup_active_tasks(self):
+        """移除已经完成或丢弃的任务"""
+        self.active_tasks = [
+            task for task in self.active_tasks
+            if not task.get('completed') and not task.get('dropped')
+        ]
+
+    def _handle_deadlines(self):
+        """检查队列任务是否超期并丢弃"""
+        for node_list, node_type in ((self.rsus, 'RSU'), (self.uavs, 'UAV')):
+            for idx, node in enumerate(node_list):
+                queue = node.get('computation_queue', [])
+                if not queue:
+                    continue
+
+                remaining = []
+                for task in queue:
+                    if self.current_time > task.get('deadline', float('inf')):
+                        task['dropped'] = True
+                        self.stats['dropped_tasks'] += 1
+                        self.stats['dropped_data_bytes'] += float(task.get('data_size_bytes', 0.0))
+                else:
+                    remaining.append(task)
+                node['computation_queue'] = remaining
+
+    def _store_in_vehicle_cache(self, vehicle: Dict, content_id: str, size_mb: float,
+                                cache_controller: Optional[Any] = None):
+        """将内容推送到车载缓存，使用简单LRU淘汰"""
+        if size_mb <= 0.0:
+            return
+        capacity = float(vehicle.get('device_cache_capacity', 32.0))
+        if size_mb > capacity:
+            return
+        cache = vehicle.setdefault('device_cache', {})
+        total_used = sum(float(meta.get('size', 0.0) or 0.0) for meta in cache.values())
+        if total_used + size_mb > capacity:
+            # LRU淘汰
+            ordered = sorted(cache.items(), key=lambda item: item[1].get('timestamp', 0.0))
+            for cid, meta in ordered:
+                removed_size = float(meta.get('size', 0.0) or 0.0)
+                cache.pop(cid, None)
+                total_used -= removed_size
+                if cache_controller:
+                    cache_controller.cache_stats['evicted_items'] += 1
+                if total_used + size_mb <= capacity:
+                    break
+        if total_used + size_mb > capacity:
+            return
+        cache[content_id] = {
+            'size': size_mb,
+            'timestamp': self.current_time,
+            'source': 'rsu_push'
+        }
+        if cache_controller:
+            cache_controller.cache_stats['collaborative_writes'] += 1
+
+    def _store_in_neighbor_rsu_cache(self, neighbor: Dict, content_id: str, size_mb: float,
+                                     content_meta: Dict, cache_controller: Optional[Any]):
+        """尝试将内容推送到邻近RSU"""
+        if size_mb <= 0.0:
+            return
+        cache = neighbor.setdefault('cache', {})
+        if content_id in cache:
+            return
+        capacity = neighbor.get('cache_capacity', 1000.0)
+        available = self._calculate_available_cache_capacity(cache, capacity)
+        cache_snapshot = dict(cache)
+        should_store = available >= size_mb
+        evictions: List[str] = []
+        reason = 'RSU_push_neighbor'
+        if cache_controller is not None:
+            should_store, reason, evictions = cache_controller.should_cache_content(
+                content_id, size_mb, available, cache_snapshot, capacity
+            )
+        if not should_store:
+            return
+        for cid in evictions:
+            removed = cache.pop(cid, None)
+            if removed:
+                available += float(removed.get('size', 0.0) or 0.0)
+                if cache_controller:
+                    cache_controller.cache_stats['evicted_items'] += 1
+        if available < size_mb:
+            return
+        cache[content_id] = {
+            'size': size_mb,
+            'timestamp': self.current_time,
+            'reason': reason,
+            'source': content_meta.get('source', 'rsu_hit')
+        }
+        if cache_controller:
+            cache_controller.cache_stats['collaborative_writes'] += 1
+
+    def _propagate_cache_after_hit(self, content_id: str, rsu_node: Dict, agents_actions: Optional[Dict]):
+        """RSU命中后向车辆和邻近RSU推送内容"""
+        cache_meta = rsu_node.get('cache', {}).get(content_id)
+        if not cache_meta:
+            return
+        size_mb = float(cache_meta.get('size', 0.0) or self._get_realistic_content_size(content_id))
+        cache_controller = None
+        if agents_actions:
+            cache_controller = agents_actions.get('cache_controller')
+
+        # 推送到覆盖范围内的车辆
+        coverage = rsu_node.get('coverage_radius', 300.0)
+        for vehicle in self.vehicles:
+            distance = self.calculate_distance(vehicle.get('position', np.zeros(2)), rsu_node['position'])
+            if distance <= coverage * 0.8:
+                self._store_in_vehicle_cache(vehicle, content_id, size_mb, cache_controller)
+
+        # 推送到邻近RSU
+        for neighbor in self.rsus:
+            if neighbor is rsu_node:
+                continue
+            distance = self.calculate_distance(neighbor['position'], rsu_node['position'])
+            if distance <= coverage * 1.2:
+                self._store_in_neighbor_rsu_cache(neighbor, content_id, size_mb, cache_meta, cache_controller)
+
+    def _dispatch_task(self, vehicle: Dict, task: Dict, actions: Dict, step_summary: Dict):
+        """根据动作分配任务"""
+        cache_controller = None
+        if isinstance(actions, dict):
+            cache_controller = actions.get('cache_controller')
+        if cache_controller is None:
+            cache_controller = getattr(self, 'adaptive_cache_controller', None)
+
+        content_id = task.get('content_id')
+        vehicle_cache = vehicle.setdefault('device_cache', {})
+        if content_id and content_id in vehicle_cache:
+            vehicle_cache[content_id]['timestamp'] = self.current_time
+            local_delay = 0.02
+            local_energy = 0.0
+            self.stats['processed_tasks'] += 1
+            self.stats['completed_tasks'] += 1
+            self.stats['total_delay'] += local_delay
+            self.stats['total_energy'] += local_energy
+            self.stats['cache_hits'] += 1
+            self.stats['local_cache_hits'] = self.stats.get('local_cache_hits', 0) + 1
+            vehicle['energy_consumed'] = vehicle.get('energy_consumed', 0.0) + local_energy
+            step_summary['local_cache_hits'] = step_summary.get('local_cache_hits', 0) + 1
+            if cache_controller is not None:
+                cache_controller.record_cache_result(content_id, True)
+                cache_controller.update_content_heat(content_id)
+            return
+
+        rsu_available = len(self.rsus) > 0
+        uav_available = len(self.uavs) > 0
+        target = self._choose_offload_target(actions, rsu_available, uav_available)
+
+        assigned = False
+        if target == 'rsu' and rsu_available:
+            assigned = self._assign_to_rsu(vehicle, task, actions, step_summary)
+        elif target == 'uav' and uav_available:
+            assigned = self._assign_to_uav(vehicle, task, actions, step_summary)
+
+        if not assigned:
+            self._handle_local_processing(vehicle, task, step_summary)
+
+    def _assign_to_rsu(self, vehicle: Dict, task: Dict, actions: Dict, step_summary: Dict) -> bool:
+        """分配至RSU"""
+        if not self.rsus:
+            return False
+
+        vehicle_pos = np.array(vehicle.get('position', [0.0, 0.0]))
+        distances = []
+        in_range_mask = []
+        for rsu in self.rsus:
+            dist = self.calculate_distance(vehicle_pos, rsu['position'])
+            distances.append(dist)
+            in_range_mask.append(1.0 if dist <= rsu.get('coverage_radius', 300.0) else 0.0)
+
+        accessible = np.array(in_range_mask, dtype=float)
+        if accessible.sum() == 0:
+            # 没有覆盖的RSU
+            return False
+
+        probs = np.ones(len(self.rsus), dtype=float)
+        rsu_pref = actions.get('rsu_selection_probs')
+        if isinstance(rsu_pref, (list, tuple, np.ndarray)) and len(rsu_pref) == len(self.rsus):
+            probs = np.array([max(0.0, float(v)) for v in rsu_pref], dtype=float)
+
+        weights = probs * accessible
+        if weights.sum() <= 0:
+            weights = accessible
+
+        weights = weights / weights.sum()
+        rsu_idx = int(np.random.choice(np.arange(len(self.rsus)), p=weights))
+        distance = distances[rsu_idx]
+        node = self.rsus[rsu_idx]
+        success = self._handle_remote_assignment(vehicle, task, node, 'RSU', rsu_idx, distance, actions, step_summary)
+        if success:
+            step_summary['remote_tasks'] += 1
+        return success
+
+    def _assign_to_uav(self, vehicle: Dict, task: Dict, actions: Dict, step_summary: Dict) -> bool:
+        """分配至UAV"""
+        if not self.uavs:
+            return False
+
+        vehicle_pos = np.array(vehicle.get('position', [0.0, 0.0]))
+        distances = []
+        in_range_mask = []
+        for uav in self.uavs:
+            dist = self.calculate_distance(vehicle_pos, uav['position'])
+            distances.append(dist)
+            in_range_mask.append(1.0 if dist <= uav.get('coverage_radius', 350.0) else 0.0)
+
+        accessible = np.array(in_range_mask, dtype=float)
+        if accessible.sum() == 0:
+            return False
+
+        probs = np.ones(len(self.uavs), dtype=float)
+        uav_pref = actions.get('uav_selection_probs')
+        if isinstance(uav_pref, (list, tuple, np.ndarray)) and len(uav_pref) == len(self.uavs):
+            probs = np.array([max(0.0, float(v)) for v in uav_pref], dtype=float)
+
+        weights = probs * accessible
+        if weights.sum() <= 0:
+            weights = accessible
+
+        weights = weights / weights.sum()
+        uav_idx = int(np.random.choice(np.arange(len(self.uavs)), p=weights))
+        distance = distances[uav_idx]
+        node = self.uavs[uav_idx]
+        success = self._handle_remote_assignment(vehicle, task, node, 'UAV', uav_idx, distance, actions, step_summary)
+        if success:
+            step_summary['remote_tasks'] += 1
+        return success
+
+    def _handle_remote_assignment(
+        self,
+        vehicle: Dict,
+        task: Dict,
+        node: Dict,
+        node_type: str,
+        node_idx: int,
+        distance: float,
+        actions: Dict,
+        step_summary: Dict
+    ) -> bool:
+        """执行远程卸载：缓存判定、建立队列并记录统计"""
+        actions = actions or {}
+        cache_hit = False
+
+        if node_type == 'RSU':
+            cache_hit = self.check_cache_hit_adaptive(task['content_id'], node, actions, node_type='RSU')
+        else:
+            cache_hit = self.check_cache_hit_adaptive(task['content_id'], node, actions, node_type='UAV')
+
+        if cache_hit:
+            # 缓存命中：快速完成
+            delay = max(0.02, 0.2 * self.time_slot)
+            power = 18.0 if node_type == 'RSU' else 12.0
+            energy = power * delay * 0.1
+            self.stats['processed_tasks'] += 1
+            self.stats['completed_tasks'] += 1
+            self.stats['total_delay'] += delay
+            self.stats['total_energy'] += energy
+            node['energy_consumed'] = node.get('energy_consumed', 0.0) + energy
+            return True
+
+        upload_delay, upload_energy = self._estimate_transmission(task.get('data_size_bytes', 1e6), distance, node_type.lower())
+        self.stats['total_delay'] += upload_delay
+        self.stats['energy_uplink'] += upload_energy
+        self.stats['total_energy'] += upload_energy
+        vehicle['energy_consumed'] = vehicle.get('energy_consumed', 0.0) + upload_energy
+
+        work_units = self._estimate_remote_work_units(task, node_type)
+        task_entry = {
+            'id': task['id'],
+            'vehicle_id': task['vehicle_id'],
+            'arrival_time': self.current_time + upload_delay,
+            'deadline': task['deadline'],
+            'data_size': task.get('data_size', 1.0),
+            'data_size_bytes': task.get('data_size_bytes', 1e6),
+            'content_id': task.get('content_id'),
+            'computation_requirement': task.get('computation_requirement', 1500.0),
+            'work_remaining': work_units,
+            'queued_at': self.current_time,
+            'node_type': node_type,
+            'node_idx': node_idx,
+            'upload_delay': upload_delay,
+            'priority': task.get('priority', 0.5)
+        }
+
+        queue = node.setdefault('computation_queue', [])
+        queue.append(task_entry)
+        self._append_active_task(task_entry)
+        return True
+
+    def _handle_local_processing(self, vehicle: Dict, task: Dict, step_summary: Dict):
+        """本地处理任务"""
+        processing_delay, energy = self._estimate_local_processing(task, vehicle)
+        self.stats['processed_tasks'] += 1
+        self.stats['completed_tasks'] += 1
+        self.stats['total_delay'] += processing_delay
+        self.stats['total_energy'] += energy
+        step_summary['local_tasks'] += 1
+
     
     def check_adaptive_migration(self, agents_actions: Dict = None):
         """🎯 多维度智能迁移检查 (阈值触发+负载差触发+跟随迁移)"""
@@ -657,28 +1094,50 @@ class CompleteSystemSimulator:
         
         # RSU状态收集
         for i, rsu in enumerate(self.rsus):
-            queue_len = len(rsu.get('computation_queue', []))
+            queue = rsu.get('computation_queue', [])
+            queue_len = len(queue)
+            cache_capacity = rsu.get('cache_capacity', 1000.0)
+            available_cache = self._calculate_available_cache_capacity(rsu.get('cache', {}), cache_capacity)
+            storage_load = 0.0 if cache_capacity <= 0 else 1.0 - (available_cache / max(1.0, cache_capacity))
+            total_data = sum(task.get('data_size', 1.0) for task in queue)
+            bandwidth_capacity = rsu.get('bandwidth_capacity', 50.0)
+            bandwidth_load = float(np.clip(total_data / max(1.0, bandwidth_capacity), 0.0, 0.99))
+            cpu_load = float(np.clip(queue_len / 25.0, 0.0, 0.99))
+
             all_node_states[f'rsu_{i}'] = {
-                'cpu_load': min(0.85, queue_len * 0.15),  # 🔧 用户要求：降低CPU负载上限到85%
-                'bandwidth_load': np.random.uniform(0.3, 0.9),  # 模拟带宽使用率
-                'storage_load': np.random.uniform(0.2, 0.8),    # 模拟存储使用率
+                'cpu_load': cpu_load,
+                'bandwidth_load': bandwidth_load,
+                'storage_load': float(np.clip(storage_load, 0.0, 0.99)),
                 'load_factor': self._calculate_enhanced_load_factor(rsu, 'RSU'),
                 'battery_level': 1.0,
                 'node_type': 'RSU',
-                'queue_length': queue_len
+                'queue_length': queue_len,
+                'cache_capacity': cache_capacity,
+                'cache_available': available_cache
             }
-        
+
         # UAV状态收集
         for i, uav in enumerate(self.uavs):
-            queue_len = len(uav.get('computation_queue', []))
+            queue = uav.get('computation_queue', [])
+            queue_len = len(queue)
+            cache_capacity = uav.get('cache_capacity', 200.0)
+            available_cache = self._calculate_available_cache_capacity(uav.get('cache', {}), cache_capacity)
+            storage_load = 0.0 if cache_capacity <= 0 else 1.0 - (available_cache / max(1.0, cache_capacity))
+            total_data = sum(task.get('data_size', 1.0) for task in queue)
+            bandwidth_capacity = uav.get('bandwidth_capacity', 15.0)
+            bandwidth_load = float(np.clip(total_data / max(1.0, bandwidth_capacity), 0.0, 0.99))
+            cpu_load = float(np.clip(queue_len / 12.0, 0.0, 0.99))
+
             all_node_states[f'uav_{i}'] = {
-                'cpu_load': min(0.85, queue_len * 0.2),  # 🔧 用户要求：UAV CPU负载上限也降到85%
-                'bandwidth_load': np.random.uniform(0.4, 0.9),  # UAV带宽压力更大
-                'storage_load': np.random.uniform(0.1, 0.5),    # UAV存储较少
+                'cpu_load': cpu_load,
+                'bandwidth_load': bandwidth_load,
+                'storage_load': float(np.clip(storage_load, 0.0, 0.99)),
                 'load_factor': self._calculate_enhanced_load_factor(uav, 'UAV'),
                 'battery_level': uav.get('battery_level', 1.0),
                 'node_type': 'UAV',
-                'queue_length': queue_len
+                'queue_length': queue_len,
+                'cache_capacity': cache_capacity,
+                'cache_available': available_cache
             }
         
         # 🏢 RSU迁移检查 (阈值+负载差触发)
@@ -699,10 +1158,10 @@ class CompleteSystemSimulator:
                 print(f"🎯 {node_id} 触发迁移: {reason} (紧急度:{urgency:.3f})")
                 
                 # 执行RSU间迁移
-                success = self.execute_rsu_migration(i, urgency)
-                if success:
+                result = self.execute_rsu_migration(i, urgency)
+                if result.get('success'):
                     self.stats['migrations_successful'] = self.stats.get('migrations_successful', 0) + 1
-                    migration_controller.record_migration_result(True, cost=10.0, delay_saved=0.5)
+                    migration_controller.record_migration_result(True, cost=result.get('cost', 0.0), delay_saved=result.get('delay_saved', 0.0))
                 else:
                     migration_controller.record_migration_result(False)
         
@@ -724,10 +1183,10 @@ class CompleteSystemSimulator:
                 print(f"🎯 {node_id} 触发迁移: {reason} (紧急度:{urgency:.3f})")
                 
                 # UAV迁移到RSU
-                success = self.execute_uav_migration(i, urgency)
-                if success:
+                result = self.execute_uav_migration(i, urgency)
+                if result.get('success'):
                     self.stats['migrations_successful'] = self.stats.get('migrations_successful', 0) + 1
-                    migration_controller.record_migration_result(True, cost=20.0, delay_saved=1.0)
+                    migration_controller.record_migration_result(True, cost=result.get('cost', 0.0), delay_saved=result.get('delay_saved', 0.0))
                 else:
                     migration_controller.record_migration_result(False)
         
@@ -885,1352 +1344,180 @@ class CompleteSystemSimulator:
         if handover_count > 0:
             print(f"🚗 本时隙执行了 {handover_count} 次车辆跟随迁移")
     
-    def execute_rsu_migration(self, source_rsu_idx: int, urgency: float) -> bool:
-        """🔌 RSU间任务迁移 - 基于有线回传网络"""
+    def run_simulation_step(self, step: int, actions: Optional[Dict] = None) -> Dict[str, Any]:
+        """执行单个仿真步，返回截至当前的累计统计数据"""
+        actions = actions or {}
+
+        advance_simulation_time()
+        self.current_step += 1
+        self.current_time = get_simulation_time()
+
+        step_summary = {
+            'generated_tasks': 0,
+            'local_tasks': 0,
+            'remote_tasks': 0,
+            'local_cache_hits': 0
+        }
+
+        # 1. 更新车辆位置
+        self._update_vehicle_positions()
+
+        # 2. 生成任务并分配
+        for vehicle in self.vehicles:
+            arrivals = self._sample_arrivals()
+            if arrivals <= 0:
+                continue
+
+            vehicle_id = vehicle['id']
+            for _ in range(arrivals):
+                task = self.generate_task(vehicle_id)
+                step_summary['generated_tasks'] += 1
+                self.stats['total_tasks'] += 1
+                self.stats['generated_data_bytes'] += float(task.get('data_size_bytes', 0.0))
+                self._dispatch_task(vehicle, task, actions, step_summary)
+
+        # 3. 智能迁移策略
+        if actions:
+            self.check_adaptive_migration(actions)
+
+        # 4. 处理队列中的任务
+        self._process_node_queues()
+
+        # 5. 检查超时并清理
+        self._handle_deadlines()
+        self._cleanup_active_tasks()
+
+        # 汇总信息
+        step_summary.update({
+            'current_time': self.current_time,
+            'rsu_queue_lengths': [len(rsu.get('computation_queue', [])) for rsu in self.rsus],
+            'uav_queue_lengths': [len(uav.get('computation_queue', [])) for uav in self.uavs],
+            'active_tasks': len(self.active_tasks)
+        })
+
+        cumulative_stats = dict(self.stats)
+        cumulative_stats.update(step_summary)
+        return cumulative_stats
+    
+    def execute_rsu_migration(self, source_rsu_idx: int, urgency: float) -> Dict[str, float]:
+        """Execute RSU-to-RSU migration and return cost/delay metrics."""
         source_rsu = self.rsus[source_rsu_idx]
         source_queue = source_rsu.get('computation_queue', [])
-        
         if not source_queue:
-            print(f"⚠️ RSU_{source_rsu_idx} 队列为空，无法迁移")
-            return False
-        
-        # 🎯 智能目标RSU选择：排除源RSU，综合考虑队列长度和负载
+            return {'success': False, 'cost': 0.0, 'delay_saved': 0.0}
+
         candidates = []
-        for i in range(len(self.rsus)):
-            if i != source_rsu_idx:  # 排除源RSU
-                rsu = self.rsus[i]
-                queue_len = len(rsu.get('computation_queue', []))
-                cpu_load = min(0.85, queue_len * 0.15)  # 🔧 用户要求：降低到85%
-                
-                # 综合评分：队列长度 + 负载权重
-                score = queue_len + cpu_load * 10  # 负载权重更高
-                candidates.append((i, queue_len, cpu_load, score))
-        
+        for i, rsu in enumerate(self.rsus):
+            if i == source_rsu_idx:
+                continue
+            queue_len = len(rsu.get('computation_queue', []))
+            cpu_load = min(0.99, queue_len / 25.0)
+            score = queue_len + cpu_load * 10.0
+            candidates.append((i, queue_len, cpu_load, score))
+
         if not candidates:
-            print(f"⚠️ RSU_{source_rsu_idx} 找不到合适的迁移目标")
-            return False
-        
-        # 选择评分最低的RSU作为目标
+            return {'success': False, 'cost': 0.0, 'delay_saved': 0.0}
+
         target_idx, target_queue_len, target_cpu_load, _ = min(candidates, key=lambda x: x[3])
         source_queue_len = len(source_queue)
-        
-        # 🎯 优化：更积极的迁移策略，注重全局负载优化而非局部成功率
         queue_diff = target_queue_len - source_queue_len
-        
-        # 🔧 基于系统整体状况动态调整迁移条件
+
         all_queue_lens = [len(rsu.get('computation_queue', [])) for rsu in self.rsus]
-        system_avg_queue = np.mean(all_queue_lens)
         system_queue_variance = np.var(all_queue_lens)
-        
-        # 如果系统不均衡程度高，允许更积极的迁移
-        if system_queue_variance > 50:  # 高方差表示不均衡
-            migration_tolerance = 8  # 允许更大的队列差异
+        if system_queue_variance > 50:
+            migration_tolerance = 8
         elif system_queue_variance > 20:
             migration_tolerance = 5
         else:
             migration_tolerance = 3
-        
         if queue_diff > migration_tolerance:
-            print(f"⚠️ RSU_{source_rsu_idx}→RSU_{target_idx} 差异过大，暂缓迁移 (差异:{queue_diff} > 动态阈值:{migration_tolerance})")
-            return False
-        
-        # 🎯 鼓励积极的负载均衡尝试
-        if queue_diff > 0:
-            print(f"🎯 RSU_{source_rsu_idx}→RSU_{target_idx} 积极负载均衡 (源:{source_queue_len} → 目标:{target_queue_len}, 系统方差:{system_queue_variance:.1f})")
-        else:
-            print(f"⚖️ RSU_{source_rsu_idx}→RSU_{target_idx} 标准迁移 (负载优化)")
-        
-        # 🔥 确保至少迁移1个任务
-        migration_ratio = max(0.1, min(0.5, urgency))  # 最少10%，最多50%
-        tasks_to_migrate = max(1, int(len(source_queue) * migration_ratio))
-        tasks_to_migrate = min(tasks_to_migrate, len(source_queue))
-        
-        if tasks_to_migrate > 0:
-            target_rsu = self.rsus[target_idx]
-            if 'computation_queue' not in target_rsu:
-                target_rsu['computation_queue'] = []
-            
-            # 🔌 计算有线传输成本
-            source_rsu_id = source_rsu['id']
-            target_rsu_id = target_rsu['id']
-            
-            # 估算迁移数据大小 (任务元数据 + 中间结果)
-            avg_task_size = 2.0  # MB per task (metadata + partial results)
-            total_data_size = tasks_to_migrate * avg_task_size
-            
-            try:
-                from utils.wired_backhaul_model import calculate_rsu_to_rsu_delay, calculate_rsu_to_rsu_energy
-                
-                # 计算有线传输延迟和能耗
-                wired_delay = calculate_rsu_to_rsu_delay(total_data_size, source_rsu_id, target_rsu_id)
-                wired_energy = calculate_rsu_to_rsu_energy(total_data_size, source_rsu_id, target_rsu_id, wired_delay)
-                
-                # 执行迁移
-                migrated_tasks = source_queue[:tasks_to_migrate]
-                source_rsu['computation_queue'] = source_queue[tasks_to_migrate:]
-                target_rsu['computation_queue'].extend(migrated_tasks)
-                
-                # 记录有线传输成本
-                self.stats['rsu_migration_delay'] = self.stats.get('rsu_migration_delay', 0.0) + wired_delay
-                self.stats['rsu_migration_energy'] = self.stats.get('rsu_migration_energy', 0.0) + wired_energy
-                self.stats['rsu_migration_data'] = self.stats.get('rsu_migration_data', 0.0) + total_data_size
-                
-                print(f"🔌 RSU迁移 {source_rsu_id}→{target_rsu_id}: {tasks_to_migrate}个任务, 有线传输{total_data_size:.1f}MB, 延迟{wired_delay*1000:.2f}ms")
-                
-                return True
-                
-            except Exception as e:
-                print(f"⚠️ 有线传输计算失败，使用简化迁移: {e}")
-                # 回退到简单迁移
-                migrated_tasks = source_queue[:tasks_to_migrate]
-                source_rsu['computation_queue'] = source_queue[tasks_to_migrate:]
-                target_rsu['computation_queue'].extend(migrated_tasks)
-                return True
-        
-        return False
-    
-    def execute_uav_migration(self, source_uav_idx: int, urgency: float) -> bool:
-        """🚁 UAV到RSU的任务迁移 - 无线到有线网络"""
-        source_uav = self.uavs[source_uav_idx]
-        source_queue = source_uav.get('computation_queue', [])
-        
-        if not source_queue:
-            print(f"⚠️ UAV_{source_uav_idx} 队列为空，无法迁移")
-            return False
-        
-        # 🎯 智能目标RSU选择：综合考虑队列、负载和距离
-        candidates = []
-        uav_position = source_uav['position']
-        
-        for i, rsu in enumerate(self.rsus):
-            queue_len = len(rsu.get('computation_queue', []))
-            cpu_load = min(0.85, queue_len * 0.15)  # 🔧 用户要求：统一85%上限
-            
-            # 计算UAV到RSU的距离
-            distance = self.calculate_distance(uav_position, rsu['position'])
-            
-            # 综合评分：队列 + 负载 + 距离权重
-            score = queue_len + cpu_load * 10 + distance * 0.01
-            candidates.append((i, queue_len, cpu_load, distance, score))
-        
-        if not candidates:
-            return False
-        
-        # 选择综合评分最低的RSU
-        target_idx, target_queue_len, target_cpu_load, distance, _ = min(candidates, key=lambda x: x[4])
-        source_queue_len = len(source_queue)
-        
-        # 🎯 优化：更积极的UAV迁移策略，基于全局负载优化
-        all_rsu_queues = [len(rsu.get('computation_queue', [])) for rsu in self.rsus]
-        system_avg_queue = np.mean(all_rsu_queues)
-        system_queue_variance = np.var(all_rsu_queues)
-        
-        # 🔧 动态调整接受条件：系统越不均衡，越积极迁移
-        if system_queue_variance > 100:  # 严重不均衡
-            max_acceptable_queue = int(system_avg_queue + 10)  # 允许向更忙的RSU迁移
-            risk_tolerance = "高风险容忍"
-        elif system_queue_variance > 30:  # 中等不均衡  
-            max_acceptable_queue = int(system_avg_queue + 6)
-            risk_tolerance = "中等风险"
-        else:  # 相对均衡
-            max_acceptable_queue = int(system_avg_queue + 3)
-            risk_tolerance = "低风险"
-        
-        # 🎯 基于全局优化需要决定是否迁移
-        should_migrate_for_balance = target_queue_len < max_acceptable_queue
-        
-        if not should_migrate_for_balance:
-            # 🔧 即使目标较忙，也考虑探索性迁移（10%概率）
-            if np.random.random() < 0.1 and system_queue_variance > 50:
-                print(f"🎲 UAV_{source_uav_idx}→RSU_{target_idx} 探索性迁移尝试 (目标:{target_queue_len}, 系统方差:{system_queue_variance:.1f})")
-                return self._execute_risky_uav_migration(source_uav_idx, target_idx, source_queue)
-            else:
-                print(f"⏸️ UAV_{source_uav_idx}→RSU_{target_idx} 暂缓迁移 (目标:{target_queue_len} > {risk_tolerance}限制:{max_acceptable_queue})")
-                return False
-        
-        print(f"🎯 UAV_{source_uav_idx}→RSU_{target_idx} 积极迁移 (目标:{target_queue_len}, 系统平均:{system_avg_queue:.1f}, {risk_tolerance})")
-        
-        return self._execute_standard_uav_migration(source_uav_idx, target_idx, source_queue)
-    
-    def _execute_risky_uav_migration(self, source_uav_idx: int, target_idx: int, source_queue: List) -> bool:
-        """
-        🎯 执行有风险的探索性迁移
-        这种迁移可能失败，但有助于探索更好的负载分布
-        """
-        # 降低成功率，但仍然尝试
-        base_success_rate = 0.6  # 探索性迁移60%基础成功率
-        
-        # 基于系统状态调整成功率
-        system_load_factor = np.mean([len(rsu.get('computation_queue', [])) for rsu in self.rsus]) / 25.0
-        if system_load_factor > 1.0:  # 系统过载时探索性迁移更重要
-            adjusted_success_rate = min(0.8, base_success_rate + 0.2)
-        else:
-            adjusted_success_rate = base_success_rate
-        
-        # 尝试迁移
-        if np.random.random() < adjusted_success_rate:
-            return self._execute_standard_uav_migration(source_uav_idx, target_idx, source_queue)
-        else:
-            print(f"❌ UAV_{source_uav_idx}→RSU_{target_idx} 探索性迁移失败 (成功率:{adjusted_success_rate:.1%})")
-            return False
-    
-    def _execute_standard_uav_migration(self, source_uav_idx: int, target_idx: int, source_queue: List) -> bool:
-        """执行标准UAV迁移"""
-        source_uav = self.uavs[source_uav_idx]
+            return {'success': False, 'cost': 0.0, 'delay_saved': 0.0}
+
+        migration_ratio = max(0.1, min(0.5, urgency))
+        tasks_to_migrate = max(1, int(source_queue_len * migration_ratio))
+        tasks_to_migrate = min(tasks_to_migrate, source_queue_len)
+        if tasks_to_migrate <= 0:
+            return {'success': False, 'cost': 0.0, 'delay_saved': 0.0}
+
         target_rsu = self.rsus[target_idx]
-        
         if 'computation_queue' not in target_rsu:
             target_rsu['computation_queue'] = []
-        
-        # 🔧 计算迁移任务数 - 更积极的迁移比例
-        tasks_to_migrate = max(1, len(source_queue) // 2)  # 迁移一半任务，更积极
-        tasks_to_migrate = min(tasks_to_migrate, len(source_queue))
-        
-        # 🎯 基于实际系统状态计算成功率，而非固定值
-        distance = self.calculate_distance(source_uav['position'], target_rsu['position'])
-        target_load_factor = len(target_rsu.get('computation_queue', [])) / 25.0
-        
-        # 🔧 更realistic的成功率计算
-        base_success_rate = 0.75  # 75%基础成功率
-        
-        # 距离影响
-        distance_penalty = min(0.3, distance / 1000.0)  # 距离每1km降低成功率
-        
-        # 目标负载影响
-        load_penalty = min(0.2, target_load_factor * 0.3)  # 目标负载影响
-        
-        # 🎯 系统紧急程度加成 - 系统越不均衡，越要积极尝试
-        all_queues = [len(rsu.get('computation_queue', [])) for rsu in self.rsus]
-        system_variance = np.var(all_queues)
-        urgency_bonus = min(0.2, system_variance / 100.0)  # 不均衡时提高成功意愿
-        
-        actual_success_rate = base_success_rate - distance_penalty - load_penalty + urgency_bonus
-        actual_success_rate = max(0.4, min(0.9, actual_success_rate))  # 限制在40-90%
-        
-        # 🎲 执行迁移尝试
-        migration_successful = np.random.random() < actual_success_rate
-        
-        if migration_successful:
-            # 执行迁移
-            target_rsu['computation_queue'].extend(source_queue[:tasks_to_migrate])
-            source_uav['computation_queue'] = source_queue[tasks_to_migrate:]
-            
-            # 计算传输延迟和能耗
-            wireless_delay = distance / 300000000  # 光速传播
-            
-            # 记录统计
-            self.stats['uav_migration_count'] = self.stats.get('uav_migration_count', 0) + 1
-            self.stats['uav_migration_distance'] = self.stats.get('uav_migration_distance', 0.0) + distance
-            
-            print(f"✅ UAV迁移 UAV_{source_uav_idx}→RSU_{target_idx}: {tasks_to_migrate}个任务, 距离{distance:.1f}m, 成功率{actual_success_rate:.1%}")
-            return True
-        else:
-            print(f"❌ UAV迁移 UAV_{source_uav_idx}→RSU_{target_idx}: 迁移失败, 成功率{actual_success_rate:.1%}, 原因:网络条件不佳")
-            return False
-    
-    def _execute_central_rsu_scheduling(self):
-        """🏢 执行中央RSU全局调度 - 基于有线回传网络"""
+
+        source_rsu_id = source_rsu['id']
+        target_rsu_id = target_rsu['id']
+        avg_task_size = 2.0
+        total_data_size = tasks_to_migrate * avg_task_size
+
+        migrated_tasks = source_queue[:tasks_to_migrate]
+        source_rsu['computation_queue'] = source_queue[tasks_to_migrate:]
+        target_rsu['computation_queue'].extend(migrated_tasks)
+
+        delay_saved = max(0.0, (source_queue_len - target_queue_len) * self.time_slot)
+        migration_cost = 0.0
         try:
-            # 🔌 模拟有线网络信息收集延迟
-            info_collection_start = self.current_time
-            
-            # 为RSU添加必要的状态信息
-            central_rsu_id = f"RSU_{2 if self.num_rsus > 2 else 0}"
-            print(f"🔍 {central_rsu_id}通过有线网络收集RSU负载信息...")
-            
-            total_collection_delay = 0.0
-            total_collection_energy = 0.0
-            
-            for i, rsu in enumerate(self.rsus):
-                rsu_id = rsu['id']
-                
-                # 🔧 修复：中央RSU也参与负载收集和任务处理
-                # 计算信息收集的有线传输成本（只有非中央RSU才需要传输）
-                if rsu_id != central_rsu_id:
-                    info_size_mb = 0.1  # 100KB的状态信息
-                    try:
-                        from utils.wired_backhaul_model import calculate_rsu_to_rsu_delay, calculate_rsu_to_rsu_energy
-                        collection_delay = calculate_rsu_to_rsu_delay(info_size_mb, rsu_id, central_rsu_id)
-                        # 安全夹持：10Gbps 级别回传的单条控制消息应为 < 20ms
-                        collection_delay = float(max(0.0001, min(collection_delay, 0.02)))
-                        collection_energy = calculate_rsu_to_rsu_energy(info_size_mb, rsu_id, central_rsu_id, collection_delay)
-                    except Exception:
-                        # 回退到简化模型（5ms、0.1J）
-                        collection_delay = 0.005
-                        collection_energy = 0.1
-                    total_collection_delay += collection_delay
-                    total_collection_energy += collection_energy
-                
-                # 🔧 修复：基于真实计算能力的动态负载计算
-                queue_len = len(rsu.get('computation_queue', []))
-                cpu_freq = rsu.get('cpu_frequency', 8e9)  # Hz
-                
-                # 使用对数缓和函数，避免队列过长时负载饱和
-                # 负载模型：CPU越快，相同队列的负载越低
-                if queue_len == 0:
-                    queue_load = 0.0
-                else:
-                    # 基准：8GHz CPU，队列50个任务 → 50%负载
-                    # 使用对数函数：load = k * log(1 + queue/base) 
-                    cpu_factor = 8e9 / cpu_freq  # CPU越快，factor越小
-                    base_queue = 50.0
-                    k = 0.5 / np.log(1 + 1.0)  # 归一化系数
-                    queue_load = k * np.log(1 + (queue_len * cpu_factor) / base_queue)
-                
-                # 基础系统负载 + 队列负载
-                base_load = 0.05  # 5%基础开销
-                cpu_usage = base_load + queue_load
-                
-                # 合理上限（避免100%）
-                rsu['cpu_usage'] = float(np.clip(cpu_usage, 0.0, 0.98))
-                if 'cache_hit_rate' not in rsu:
-                    rsu['cache_hit_rate'] = np.random.uniform(0.3, 0.8)
-                if 'avg_response_time' not in rsu:
-                    rsu['avg_response_time'] = rsu['cpu_usage'] * 100 + 50
-                if 'task_completion_rate' not in rsu:
-                    rsu['task_completion_rate'] = max(0.1, 1.0 - rsu['cpu_usage'])
-            
-            # 收集负载信息
-            rsu_loads = self.central_scheduler.collect_all_rsu_loads(self.rsus)
-            
-            # 📈 生成全局调度决策
-            estimated_tasks = max(1, int(self.task_arrival_rate * self.time_slot * 3))
-            scheduling_decisions = self.central_scheduler.global_load_balance_scheduling(estimated_tasks)
-            
-            # 🚀 执行智能迁移协调
-            migration_commands = self.central_scheduler.intelligent_migration_coordination(0.7)
-            
-            # 🔌 计算调度指令分发的有线传输成本
-            if len(scheduling_decisions) > 0:
-                command_size_mb = 0.05  # 50KB的调度指令
-                total_command_delay = 0.0
-                total_command_energy = 0.0
-                
-                for rsu_id in scheduling_decisions.keys():
-                    if rsu_id != central_rsu_id:
-                        try:
-                            from utils.wired_backhaul_model import calculate_rsu_to_rsu_delay, calculate_rsu_to_rsu_energy
-                            cmd_delay = calculate_rsu_to_rsu_delay(command_size_mb, central_rsu_id, rsu_id)
-                            cmd_delay = float(max(0.0001, min(cmd_delay, 0.02)))
-                            cmd_energy = calculate_rsu_to_rsu_energy(command_size_mb, central_rsu_id, rsu_id, cmd_delay)
-                        except Exception:
-                            cmd_delay = 0.002
-                            cmd_energy = 0.05
-                        total_command_delay += cmd_delay
-                        total_command_energy += cmd_energy
-            
-            # 📊 显示调度状态
-            if len(rsu_loads) > 0:
-                max_load_rsu = max(rsu_loads.items(), key=lambda x: x[1].cpu_usage)
-                min_load_rsu = min(rsu_loads.items(), key=lambda x: x[1].cpu_usage)
-                
-                print(f"🏢 中央调度报告: 管理{len(rsu_loads)}个RSU")
-                print(f"   📊 最高负载: {max_load_rsu[0]} (负载:{max_load_rsu[1].cpu_usage:.1%}, 队列:{max_load_rsu[1].queue_length})")
-                print(f"   📊 最低负载: {min_load_rsu[0]} (负载:{min_load_rsu[1].cpu_usage:.1%}, 队列:{min_load_rsu[1].queue_length})")
-                print(f"   🎯 调度决策: {len(scheduling_decisions)}个, 迁移指令: {len(migration_commands)}个")
-                print(f"   🔌 有线网络: 信息收集{total_collection_delay*1000:.1f}ms, 指令分发{total_command_delay*1000:.1f}ms")
-                
-                # 更新统计
-                if not hasattr(self.stats, 'central_scheduling_calls'):
-                    self.stats['central_scheduling_calls'] = 0
-                self.stats['central_scheduling_calls'] += 1
-                
-                # 记录有线网络开销
-                self.stats['backhaul_collection_delay'] = self.stats.get('backhaul_collection_delay', 0.0) + total_collection_delay
-                self.stats['backhaul_command_delay'] = self.stats.get('backhaul_command_delay', 0.0) + total_command_delay
-                self.stats['backhaul_total_energy'] = self.stats.get('backhaul_total_energy', 0.0) + total_collection_energy + total_command_energy
-                
-        except Exception as e:
-            print(f"⚠️ 中央调度执行异常: {e}")
-    
-    def get_central_scheduling_report(self) -> Dict:
-        """📋 获取中央调度完整报告"""
-        if not hasattr(self, 'central_scheduler') or not self.central_scheduler:
-            return {'status': 'not_available', 'message': '中央调度器未启用'}
-        
-        try:
-            # 获取全局状态
-            status = self.central_scheduler.get_global_scheduling_status()
-            
-            # 添加RSU详细信息
-            rsu_details = {}
-            for rsu in self.rsus:
-                rsu_id = rsu['id']
-                rsu_details[rsu_id] = {
-                    'position': rsu['position'].tolist(),
-                    'queue_length': len(rsu.get('computation_queue', [])),
-                    'cpu_usage': rsu.get('cpu_usage', 0.0),
-                    'cache_usage': len(rsu.get('cache', {})) / rsu.get('cache_capacity', 100),
-                    'energy_consumed': rsu.get('energy_consumed', 0.0)
-                }
-            
-            report = {
-                'central_scheduler_status': status,
-                'rsu_details': rsu_details,
-                'scheduling_calls': self.stats.get('central_scheduling_calls', 0),
-                'timestamp': getattr(self, 'current_time', 0.0)
-            }
-            
-            return report
-            
-        except Exception as e:
-            return {'status': 'error', 'message': f'报告生成失败: {e}'}
-    
-    def calculate_transmission_delay(self, data_size_bytes: float, distance: float, tx_node_type: str = 'vehicle') -> float:
-        """计算传输时延 - 基于SINR的完整3GPP模型
-        参数要求: data_size_bytes 为字节数
-        """
-        # 获取3GPP参数
-        if self.sys_config is not None:
-            # 发射功率 (dBm)
-            if tx_node_type == 'rsu':
-                tx_power_dbm = getattr(self.sys_config.communication, 'rsu_tx_power', 46.0)
-            elif tx_node_type == 'uav':
-                tx_power_dbm = getattr(self.sys_config.communication, 'uav_tx_power', 30.0)
-            else:  # vehicle
-                tx_power_dbm = getattr(self.sys_config.communication, 'vehicle_tx_power', 23.0)
-            
-            # 系统参数
-            bandwidth_hz = getattr(self.sys_config.communication, 'total_bandwidth', 20e6)
-            noise_figure_db = getattr(self.sys_config.communication, 'noise_figure', 9.0)
-            thermal_noise_dbm_hz = getattr(self.sys_config.communication, 'thermal_noise_density', -174.0)
-        else:
-            # 回退默认值
-            tx_power_dbm = 30.0
-            bandwidth_hz = 20e6
-            noise_figure_db = 9.0
-            thermal_noise_dbm_hz = -174.0
-        
-        # 路径损耗计算 (Free Space + 简化衰减)
-        d_m = max(float(distance), 1.0)
-        carrier_freq_hz = getattr(self.sys_config.communication, 'carrier_frequency', 2.4e9) if self.sys_config else 2.4e9
-        path_loss_db = 32.45 + 20 * np.log10(d_m/1000) + 20 * np.log10(carrier_freq_hz/1e9)
-        
-        # 接收信号功率 (dBm)
-        rx_signal_dbm = tx_power_dbm - path_loss_db
-        
-        # 热噪声功率 (dBm)
-        noise_power_dbm = thermal_noise_dbm_hz + 10 * np.log10(bandwidth_hz) + noise_figure_db
-        
-        # 干扰功率计算 (简化：假设附近有其他发射源)
-        interference_power_dbm = self._calculate_interference_power(distance, tx_node_type)
-        
-        # 总噪声+干扰功率 (线性域相加，转回dB)
-        noise_linear = 10**(noise_power_dbm/10)
-        interference_linear = 10**(interference_power_dbm/10)
-        total_noise_interference_dbm = 10 * np.log10(noise_linear + interference_linear)
-        
-        # SINR计算 (dB)
-        sinr_db = rx_signal_dbm - total_noise_interference_dbm
-        
-        # Shannon容量计算
-        if sinr_db > -10:  # SINR > -10dB才能通信
-            sinr_linear = 10**(sinr_db/10)
-            capacity_bps = bandwidth_hz * np.log2(1 + sinr_linear)
-            bits = float(data_size_bytes) * 8.0
-            delay = bits / capacity_bps if capacity_bps > 0 else float('inf')
-        else:
-            delay = float('inf')  # SINR太低，无法传输
-        
-        return max(delay, 0.001)  # 最小1ms
-    
-    def _calculate_interference_power(self, distance: float, tx_node_type: str) -> float:
-        """计算干扰功率 - 简化3GPP干扰模型"""
-        # 干扰源：假设附近有2-3个同类型发射源
-        num_interferers = 2 if tx_node_type == 'vehicle' else 1  # 车辆密度高，干扰源多
-        
-        # 干扰源平均距离（比期望信号源远）- 数值稳定
-        base_distance = max(distance, 10.0)  # 最小10米
-        avg_interferer_distance = base_distance * np.random.uniform(1.5, 3.0)
-        
-        # 干扰源发射功率（与期望源相同类型）
-        if self.sys_config is not None:
-            if tx_node_type == 'rsu':
-                interferer_tx_power_dbm = getattr(self.sys_config.communication, 'rsu_tx_power', 46.0)
-            elif tx_node_type == 'uav':
-                interferer_tx_power_dbm = getattr(self.sys_config.communication, 'uav_tx_power', 30.0)
-            else:
-                interferer_tx_power_dbm = getattr(self.sys_config.communication, 'vehicle_tx_power', 23.0)
-        else:
-            interferer_tx_power_dbm = 30.0
-        
-        # 干扰源路径损耗 - 数值稳定
-        carrier_freq_hz = getattr(self.sys_config.communication, 'carrier_frequency', 2.4e9) if self.sys_config else 2.4e9
-        interferer_path_loss = 32.45 + 20 * np.log10(max(avg_interferer_distance/1000, 0.001)) + 20 * np.log10(carrier_freq_hz/1e9)
-        
-        # 单个干扰源接收功率
-        single_interferer_rx_dbm = interferer_tx_power_dbm - interferer_path_loss
-        
-        # 多个干扰源功率叠加 (线性域)
-        if single_interferer_rx_dbm > -120:  # 干扰源不能太弱
-            single_interferer_linear = 10**(single_interferer_rx_dbm/10)
-            total_interference_linear = num_interferers * single_interferer_linear
-            total_interference_dbm = 10 * np.log10(total_interference_linear)
-        else:
-            total_interference_dbm = -120.0  # 最小干扰功率
-        
-        return total_interference_dbm
-    
-    def calculate_computation_delay(self, computation_req: float, node: Dict, data_size_bytes: float = None, compute_density_cycles_per_bit: float = None, cpu_freq: float = None) -> float:
-        """计算计算时延（统一为 cycles / CPU_freq + 排队等待）"""
-        # 计算需求统一：cycles = data_size_bits * density；若未给出，退回computation_req/MIPS
-        if self.sys_config is not None and data_size_bytes is not None:
-            bits = float(data_size_bytes) * 8.0
-            density = compute_density_cycles_per_bit if compute_density_cycles_per_bit is not None else float(getattr(self.sys_config.task, 'task_compute_density', 500))
-            total_cycles = bits * density
-            # CPU频率
-            if cpu_freq is None:
-                cpu_freq = float(getattr(self.sys_config.compute, 'rsu_default_freq', 12e9))
-            exec_time = total_cycles / max(cpu_freq, 1.0)
-        else:
-            # 兼容旧路径：computation_req 单位 MIPS，capacity 1000 MIPS
-            computation_capacity = self.config['computation_capacity']
-            exec_time = computation_req / computation_capacity
-        # 排队等待
-        queue_length = len(node.get('computation_queue', []))
-        queue_delay = queue_length * 0.01
-        return queue_delay + float(exec_time)
-    
-    def calculate_energy_consumption(self, task: Dict, processing_node: Dict, 
-                                   transmission_distance: float, node_type: str = 'Vehicle') -> float:
-        """计算能耗 - 统一使用system_config功率参数与dBm→W转换"""
-        
-        def dbm_to_watts(dbm_value):
-            """dBm转换为瓦特"""
-            return 10**((dbm_value - 30) / 10)
-        
-        # 传输能耗 - 统一按上行(车辆→边缘)计算发射端为车辆
-        if self.sys_config is not None:
-            tx_power_dbm_vehicle = getattr(self.sys_config.communication, 'vehicle_tx_power', 23.0)
-            transmission_power_w = dbm_to_watts(tx_power_dbm_vehicle)
-        else:
-            transmission_power_w = self.config['transmission_power']  # 回退
-        transmission_time = self.calculate_transmission_delay(
-            task.get('data_size_bytes', task.get('data_size', 1.0)*1e6),
-            transmission_distance,
-            'vehicle'
-        )
-        transmission_energy = transmission_power_w * transmission_time
-        
-        # 计算能耗 - 使用CPU频率与kappa参数
-        if self.sys_config is not None:
-            # 根据节点类型选择CPU频率和功率模型（使用配置文件的实际值）
-            if processing_node in self.rsus:
-                cpu_freq = float(getattr(self.sys_config.compute, 'rsu_default_freq', 12e9))
-                kappa = float(getattr(self.sys_config.compute, 'rsu_kappa', 2.8e-31))
-                static_power = float(getattr(self.sys_config.compute, 'rsu_static_power', 25.0))
-            elif processing_node in self.uavs:
-                cpu_freq = float(getattr(self.sys_config.compute, 'uav_default_freq', 1.0e9))
-                kappa = float(getattr(self.sys_config.compute, 'uav_kappa3', 8.89e-31))
-                static_power = float(getattr(self.sys_config.compute, 'uav_static_power', 2.5))
-            else:  # vehicle
-                cpu_freq = float(getattr(self.sys_config.compute, 'vehicle_default_freq', 2.5e9))
-                kappa = float(getattr(self.sys_config.compute, 'vehicle_kappa1', 5.12e-31))
-                static_power = float(getattr(self.sys_config.compute, 'vehicle_static_power', 8.0))
-            
-            # 🔧 修复：计算时间 - 使用任务特定计算密度，强制合理化参数
-            task_compute_density = min(task.get('compute_density', 100), 150)  # 强制最大150 cycles/bit
-            data_bytes = task.get('data_size_bytes', task.get('data_size', 1.0)*1e6)
-            # 强制限制单任务数据大小，避免过大任务
-            data_bytes = min(data_bytes, 1e6)  # 强制最大1MB
-            
-            computation_time = self.calculate_computation_delay(
-                task['computation_requirement'], processing_node,
-                data_size_bytes=data_bytes,
-                compute_density_cycles_per_bit=task_compute_density,
-                cpu_freq=cpu_freq
-            )
-            computation_time = float(np.clip(computation_time, 0.0, 2.0))  # 限制最大2秒
-            
-            # 动态功率模型：根据节点类型使用正确公式
-            if processing_node in self.uavs:
-                # UAV使用 f^2 公式（论文式28）
-                dynamic_power = kappa * (cpu_freq ** 2)
-            else:
-                # Vehicle和RSU使用 f^3 公式（论文式7,22）
-                dynamic_power = kappa * (cpu_freq ** 3)
-            
-            # 📊 调试输出异常能耗计算
-            total_power = dynamic_power + static_power
-            computation_energy = total_power * computation_time
-            
-            # 详细调试大能耗任务
-            if computation_energy > 50.0:  # 超过50J的任务
-                task_size_mb = data_bytes / 1e6
-                print(f"⚠️ 高能耗任务{task['id']}: {node_type}, {task_size_mb:.2f}MB, 密度{task_compute_density}")
-                print(f"    freq={cpu_freq/1e9:.1f}GHz, power={total_power:.1f}W, time={computation_time:.3f}s → {computation_energy:.1f}J")
-        else:
-            # 回退旧模型
-            computation_power = self.config['computation_power']
-            computation_time = self.calculate_computation_delay(task['computation_requirement'], processing_node)
-            computation_time = float(np.clip(computation_time, 0.0, 5.0))
-            computation_energy = computation_power * computation_time
-        
-        total_energy = transmission_energy + computation_energy
-        
-        # 组件能耗累计到stats（分项）
-        # 初始化分项键
-        self.stats['energy_vehicle_transmit'] = self.stats.get('energy_vehicle_transmit', 0.0)
-        self.stats['energy_vehicle_compute'] = self.stats.get('energy_vehicle_compute', 0.0)
-        self.stats['energy_edge_compute'] = self.stats.get('energy_edge_compute', 0.0)
-        self.stats['energy_uav_compute'] = self.stats.get('energy_uav_compute', 0.0)
-        
-        # 上行发射统一归车辆
-        if transmission_energy > 0:
-            self.stats['energy_vehicle_transmit'] += transmission_energy
-        
-        # 计算能耗按处理节点归属
-        if node_type == 'Vehicle':
-            self.stats['energy_vehicle_compute'] += computation_energy
-        elif node_type == 'RSU':
-            self.stats['energy_edge_compute'] += computation_energy
-        elif node_type == 'UAV':
-            self.stats['energy_uav_compute'] += computation_energy
-            # 注意：UAV悬停能耗在simulate_time_slot中统一计算，此处不重复
-        
-        # 数值修正：仅处理无限值和NaN
-        if not np.isfinite(total_energy):
-            total_energy = 100.0  # 仅修正无效值，不限制合理的高值
-        
-        return total_energy
-    
-    def process_task(self, task: Dict, agents_actions: Dict = None) -> Dict:
-        """处理单个任务（单时隙下可直接完成，否则转入在制任务池）"""
-        vehicle = next(v for v in self.vehicles if v['id'] == task['vehicle_id'])
-        
-        # 📋 四级分类+智能卸载融合策略（两步：确定候选集→智能选择）
-        if agents_actions is None:
-            # 第一步：根据论文四级分类确定候选节点集合
-            nearest_rsu = self.find_nearest_rsu(vehicle['position'])
-            nearest_uav = self.find_nearest_uav(vehicle['position'])
-            
-            task_type = task.get('task_type', 2)
-            deadline = task.get('deadline', float('inf'))
-            current_time = getattr(self, 'current_time', 0.0)
-            remaining_time = deadline - current_time
-            priority = task.get('priority', 0.5)
-            
-            # 📝 构建候选集合（严格按论文分类）
-            candidate_set = []
-            
-            if task_type == 1:  # 极度延迟敏感型：候选集 = {本地}
-                candidate_set = [vehicle]
-                
-            elif task_type == 2:  # 延迟敏感型：候选集 = {本地, 近距离低延迟RSU}
-                candidate_set = [vehicle]  # 本地始终在候选集
-                if nearest_rsu is not None:
-                    distance = self.calculate_distance(vehicle['position'], nearest_rsu['position'])
-                    if distance <= 350:  # 近距离RSU才进入候选集
-                        candidate_set.append(nearest_rsu)
-                        
-            elif task_type == 3:  # 中度延迟容忍型：候选集 = {本地, 可达RSU, 近距离能力足够UAV}
-                candidate_set = [vehicle]
-                if nearest_rsu is not None:
-                    candidate_set.append(nearest_rsu)  # 可达RSU进入候选集
-                if nearest_uav is not None:
-                    uav_distance = self.calculate_distance(vehicle['position'], nearest_uav['position'])
-                    if uav_distance <= 400:  # 近距离UAV才进入候选集
-                        candidate_set.append(nearest_uav)
-                        
-            else:  # task_type == 4：延迟容忍型：候选集 = {所有节点}
-                candidate_set = [vehicle]
-                if nearest_rsu is not None:
-                    candidate_set.append(nearest_rsu)
-                if nearest_uav is not None:
-                    candidate_set.append(nearest_uav)
-            
-            # 第二步：在候选集内应用智能卸载策略（负载感知+时延优化）
-            best_node = None
-            best_score = float('inf')
-            
-            for node in candidate_set:
-                if node == vehicle:
-                    # 本地处理评分：工作负载 + 能力惩罚
-                    local_workload = len(getattr(vehicle, 'tasks', []))
-                    # 高优先级任务本地处理惩罚更小（保证完成）
-                    local_penalty = 6 if priority < 0.8 else 3
-                    score = local_workload + local_penalty
-                    node_type_eval = 'Vehicle'
-                    
-                elif node in self.rsus:
-                    # RSU评分：队列负载 + 距离因子（融合智能卸载逻辑）
-                    rsu_queue_len = len(node.get('computation_queue', []))
-                    distance = self.calculate_distance(vehicle['position'], node['position'])
-                    
-                    # 智能卸载核心逻辑：队列<10优先，距离越近越好
-                    # 🔧 优化：统一队列标准，与配置一致
-                    if rsu_queue_len < 15:  # 低负载RSU，优先选择(与过载阈值一致)
-                        score = rsu_queue_len + (distance / 200.0)  # 距离权重较小
-                    else:  # 高负载RSU，增加惩罚
-                        score = rsu_queue_len * 1.5 + (distance / 100.0)
-                    
-                    node_type_eval = 'RSU'
-                    
-                elif node in self.uavs:
-                    # UAV评分：队列负载 + 距离因子 + 能力差异（融合智能卸载逻辑）
-                    uav_queue_len = len(node.get('computation_queue', []))
-                    distance = self.calculate_distance(vehicle['position'], node['position'])
-                    
-                    # 智能卸载核心逻辑：队列<5时UAV可选，否则惩罚
-                    if uav_queue_len < 5:  # 低负载UAV
-                        score = uav_queue_len + (distance / 250.0) + 1.5  # UAV能力稍弱
-                    else:  # 高负载UAV，大幅惩罚
-                        score = uav_queue_len * 2 + (distance / 150.0) + 3
-                    
-                    node_type_eval = 'UAV'
-                else:
-                    continue
-                
-                # 选择评分最低的节点
-                if score < best_score:
-                    best_score = score
-                    best_node = node
-                    node_type = node_type_eval
-            
-            processing_node = best_node if best_node is not None else vehicle
-            node_type = node_type if best_node is not None else 'Vehicle'
-            
-            # 🚨 防丢失最终检查：deadline紧急+高优先级→强制本地保证
-            if priority > 0.8 and remaining_time < 0.8:
-                processing_node = vehicle
-                node_type = 'Vehicle'
-                print(f"🚨 任务{task['id']}（类型{task_type}，优先级{priority:.2f}）deadline紧急，强制本地保证")
-        else:
-            # 使用智能体的卸载偏好选择节点（本地/RSU/UAV），并在同类中进一步按概率选择具体节点
-            aa = (agents_actions or {})
-            pref = aa.get('vehicle_offload_pref', {})
-            
-            # 🔧 修复：预先计算最近节点，避免UnboundLocalError
-            nearest_rsu = self.find_nearest_rsu(vehicle['position'])
-            nearest_uav = self.find_nearest_uav(vehicle['position'])
-            p_local = float(pref.get('local', 0.34))
-            p_rsu = float(pref.get('rsu', 0.33))
-            p_uav = float(pref.get('uav', 0.33))
-            
-            # 🔧 修复：确保概率归一化
-            prob_sum = p_local + p_rsu + p_uav
-            if prob_sum <= 0:
-                p_local, p_rsu, p_uav = 0.34, 0.33, 0.33
-                prob_sum = 1.0
-            p_local /= prob_sum
-            p_rsu /= prob_sum
-            p_uav /= prob_sum
-            
-            # 大类选择
-            choice = np.random.choice(['Vehicle', 'RSU', 'UAV'], p=[p_local, p_rsu, p_uav])
-            if choice == 'RSU' and self.rsus:
-                # 若给出rsu_selection_probs则按其分布选择，否则选择最近RSU
-                rsu_probs = aa.get('rsu_selection_probs')
-                if isinstance(rsu_probs, list) and len(rsu_probs) == len(self.rsus):
-                    # 🔧 修复：RSU概率归一化
-                    rsu_probs = np.array(rsu_probs)
-                    rsu_prob_sum = np.sum(rsu_probs)
-                    if rsu_prob_sum > 0:
-                        rsu_probs = rsu_probs / rsu_prob_sum
-                    else:
-                        rsu_probs = np.ones(len(self.rsus)) / len(self.rsus)
-                    idx = np.random.choice(range(len(self.rsus)), p=rsu_probs)
-                    processing_node = self.rsus[idx]
-                else:
-                    processing_node = nearest_rsu or vehicle
-                node_type = 'RSU' if processing_node in self.rsus else 'Vehicle'
-            elif choice == 'UAV' and self.uavs:
-                uav_probs = aa.get('uav_selection_probs')
-                if isinstance(uav_probs, list) and len(uav_probs) == len(self.uavs):
-                    # 🔧 修复：UAV概率归一化
-                    uav_probs = np.array(uav_probs)
-                    uav_prob_sum = np.sum(uav_probs)
-                    if uav_prob_sum > 0:
-                        uav_probs = uav_probs / uav_prob_sum
-                    else:
-                        uav_probs = np.ones(len(self.uavs)) / len(self.uavs)
-                    idx = np.random.choice(range(len(self.uavs)), p=uav_probs)
-                    processing_node = self.uavs[idx]
-                else:
-                    processing_node = nearest_uav or vehicle
-                node_type = 'UAV' if processing_node in self.uavs else 'Vehicle'
-            else:
-                processing_node = vehicle
-                node_type = 'Vehicle'
-        
-        # 🤖 检查缓存命中（支持智能体控制）
-        cache_hit = self.check_cache_hit_adaptive(task['content_id'], processing_node, agents_actions)
-        
-        # 计算距离
-        if node_type == 'Vehicle':
-            distance = 0  # 本地处理
-        else:
-            distance = self.calculate_distance(vehicle['position'], processing_node['position'])
-        
-        # 计算时延（传入发射节点类型以正确计算SINR）
-        tx_type = 'vehicle' if node_type == 'Vehicle' else node_type.lower()
-        if cache_hit:
-            total_delay = self.calculate_transmission_delay(task['data_size'], distance, tx_type)
-            compute_time_needed = 0.0
-        else:
-            transmission_delay = self.calculate_transmission_delay(task['data_size'], distance, tx_type)
-            # 统一：cycles/CPU_freq 路径；根据节点类型取频率
-            cpu_freq = None
-            if self.sys_config is not None:
-                if processing_node in self.rsus:
-                    cpu_freq = float(getattr(self.sys_config.compute, 'rsu_default_freq', 12e9))
-                elif processing_node in self.uavs:
-                    cpu_freq = float(getattr(self.sys_config.compute, 'uav_default_freq', 1.0e9))
-                else:
-                    cpu_freq = float(getattr(self.sys_config.compute, 'vehicle_default_freq', 2.5e9))
-            # 🔧 修复：使用任务特定的计算密度
-            task_compute_density = task.get('compute_density', 
-                float(getattr(self.sys_config.task, 'task_compute_density', 400)) if self.sys_config is not None else 400)
-            
-            computation_delay = self.calculate_computation_delay(
-                task['computation_requirement'], processing_node,
-                data_size_bytes=task['data_size']*1e6 if task.get('data_size', 1.0) < 100 else task['data_size'],
-                compute_density_cycles_per_bit=task_compute_density,
-                cpu_freq=cpu_freq
-            )
-            total_delay = transmission_delay + computation_delay
-            compute_time_needed = computation_delay
-        
-        # 🔧 修复：放宽时延阈值，避免过度截断
-        if not np.isfinite(total_delay):
-            total_delay = 1.0  # 仅修正无效值
-        elif total_delay > 15.0:  # 放宽阈值从10s到15s
-            total_delay = min(total_delay, 15.0)  # 软截断，而非硬设为1.0s
-        
-        # 计算能耗（传入节点类型）
-        energy_consumption = self.calculate_energy_consumption(task, processing_node, distance, node_type)
-        
-        # 检查是否满足截止时间
-        completion_time = task['arrival_time'] + total_delay
-        
-        if completion_time <= task['deadline']:
-            # 🔧 修复：只要能在deadline内完成就算成功，不强制要求单时隙完成
-            if total_delay <= self.time_slot:
-                # 单时隙内完成
-                self.stats['completed_tasks'] += 1
-                self.stats['total_delay'] += total_delay
-                # 注意：总能耗在calculate_final_statistics中重新计算所有组件之和
-                
-                # 更新节点能耗
-                processing_node['energy_consumed'] += energy_consumption
-                
-                # 更新缓存（简化）
-                if not cache_hit and 'cache' in processing_node:
-                    if len(processing_node['cache']) < processing_node.get('cache_capacity', 100):
-                        processing_node['cache'][task['content_id']] = True
-                
-                result = {
-                    'task_id': task['id'],
-                    'status': 'completed',
-                    'delay': total_delay,
-                    'energy': energy_consumption,
-                    'processing_node': processing_node['id'],
-                    'cache_hit': cache_hit
-                }
-            else:
-                # 跨时隙完成：进入节点队列进行处理
-                node_idx = None
-                if node_type == 'RSU':
-                    node_idx = self.rsus.index(processing_node) if processing_node in self.rsus else None
-                elif node_type == 'UAV':
-                    node_idx = self.uavs.index(processing_node) if processing_node in self.uavs else None
-                
-                work_remaining = max(0.0, compute_time_needed - self.time_slot) if not cache_hit else 0.0
-                
-                # 🔧 修复：RSU/UAV任务进入节点队列，加入队列长度控制防止过载
-                if node_type in ['RSU', 'UAV']:
-                    if 'computation_queue' not in processing_node:
-                        processing_node['computation_queue'] = []
-                    
-                    # 🚀 队列长度控制：如果队列过长，选择其他节点
-                    max_queue_length = 15 if node_type == 'RSU' else 10
-                    current_queue_len = len(processing_node['computation_queue'])
-                    
-                    if current_queue_len >= max_queue_length:
-                        # 寻找负载更轻的替代节点
-                        alternate_node = self._find_least_loaded_node(node_type, processing_node)
-                        if alternate_node is not None:
-                            processing_node = alternate_node
-                            print(f"🔄 队列过载，任务{task['id']}转移到{processing_node['id']}")
-                    
-                    queue_task = {
-                        'id': task['id'],
-                        'vehicle_id': task['vehicle_id'],
-                        'arrival_time': task['arrival_time'],
-                        'deadline': task['deadline'],
-                        'data_size': task['data_size'],
-                        'computation_requirement': task['computation_requirement'],
-                        'content_id': task['content_id'],
-                        'compute_time_needed': compute_time_needed,
-                        'work_remaining': work_remaining,
-                        'cache_hit': cache_hit,
-                        'queued_at': self.current_time,
-                        'expected_completion_time': completion_time,
-                        'priority': task.get('priority', 0.5)  # 添加优先级
-                    }
-                    processing_node['computation_queue'].append(queue_task)
-                    
-                    # 🚀 队列优先级排序：紧急任务优先
-                    processing_node['computation_queue'].sort(
-                        key=lambda t: (t.get('deadline', float('inf')), -t.get('priority', 0.5))
-                    )
-                    
-                    print(f"📋 任务 {task['id']} 进入 {processing_node['id']} 队列，当前队列长度: {len(processing_node['computation_queue'])}")
-                else:
-                    # Vehicle本地任务仍使用active_tasks
-                    self.active_tasks.append({
-                        'id': task['id'],
-                        'vehicle_id': task['vehicle_id'],
-                        'arrival_time': task['arrival_time'],
-                        'deadline': task['deadline'],
-                        'work_remaining': work_remaining,
-                        'node_type': node_type,
-                        'node_idx': node_idx,
-                        'content_id': task['content_id'],
-                        'expected_completion_time': completion_time
-                    })
-                
-                result = {
-                    'task_id': task['id'],
-                    'status': 'in_progress',
-                    'delay': 0.0,  # 跨时隙任务delay在完成时计算
-                    'energy': energy_consumption,
-                    'processing_node': processing_node['id'] if node_idx is not None else None,
-                    'cache_hit': cache_hit
-                }
-        else:
-            # 即使全力处理也无法在deadline内完成，直接丢弃
-            self.stats['dropped_tasks'] += 1
-            # 累计丢失数据量（bytes）
-            self.stats['dropped_data_bytes'] = self.stats.get('dropped_data_bytes', 0.0) + float(task.get('data_size_bytes', task.get('data_size', 1.0)*1e6))
-            result = {
-                'task_id': task['id'],
-                'status': 'dropped',
-                'delay': float('inf'),
-                'energy': 0,
-                'processing_node': None,
-                'cache_hit': False
-            }
-        
-        return result
-    
-    def _signal_is_green(self, x_pos: float, t: float) -> bool:
-        # 根据所在路口计算是否为绿灯（主干道通行）
-        for key, isect in self.intersections.items():
-            if abs(x_pos - isect['x']) < 5.0:
-                T = isect['cycle_T']
-                g = isect['green_ratio']
-                phase = (t + isect['phase_offset']) % T
-                return phase < g * T  # 前 g*T 秒为绿灯
-        return True  # 非路口默认通行
+            from utils.wired_backhaul_model import calculate_rsu_to_rsu_delay, calculate_rsu_to_rsu_energy
+            wired_delay = calculate_rsu_to_rsu_delay(total_data_size, source_rsu_id, target_rsu_id)
+            wired_energy = calculate_rsu_to_rsu_energy(total_data_size, source_rsu_id, target_rsu_id, wired_delay)
+            self.stats['rsu_migration_delay'] = self.stats.get('rsu_migration_delay', 0.0) + wired_delay
+            self.stats['rsu_migration_energy'] = self.stats.get('rsu_migration_energy', 0.0) + wired_energy
+            self.stats['rsu_migration_data'] = self.stats.get('rsu_migration_data', 0.0) + total_data_size
+            migration_cost = wired_energy + wired_delay * 1000.0
+        except Exception:
+            migration_cost = total_data_size * 0.2
 
-    def update_mobility(self):
-        """更新移动性 - 道路+信号控制"""
-        # 车辆沿主干道行驶，仅 x 方向运动，路口处受信号灯控制
-        for vehicle in self.vehicles:
-            x, y = vehicle['position']
-            v = vehicle['velocity']
-            dir_sign = 1.0 if vehicle['direction'] == 0.0 else -1.0
+        return {'success': True, 'cost': migration_cost, 'delay_saved': delay_saved}
+    def execute_uav_migration(self, source_uav_idx: int, urgency: float) -> Dict[str, float]:
+        """Execute UAV-to-RSU migration and return cost/delay metrics."""
+        source_uav = self.uavs[source_uav_idx]
+        source_queue = source_uav.get('computation_queue', [])
+        if not source_queue:
+            return {'success': False, 'cost': 0.0, 'delay_saved': 0.0}
 
-            # 预估下一位置并检测是否需要在路口停等
-            next_x = x + dir_sign * v * self.time_slot
-            need_stop = False
-            # 路口检测窗口
-            for isect in self.intersections.values():
-                # 靠近路口 10m 内，若是红灯则停在路口前 5m
-                approaching = (dir_sign > 0 and x < isect['x'] and next_x >= isect['x'] - 5.0) or \
-                             (dir_sign < 0 and x > isect['x'] and next_x <= isect['x'] + 5.0)
-                if approaching and (not self._signal_is_green(isect['x'], getattr(self, 'current_time', 0.0))):
-                    # 红灯：将next_x夹到路口前5m处
-                    next_x = isect['x'] - 5.0 if dir_sign > 0 else isect['x'] + 5.0
-                    need_stop = True
-                    break
+        uav_position = source_uav['position']
+        candidates = []
+        for i, rsu in enumerate(self.rsus):
+            queue_len = len(rsu.get('computation_queue', []))
+            distance = self.calculate_distance(uav_position, rsu['position'])
+            cpu_load = min(0.99, queue_len / 25.0)
+            score = distance * 0.01 + queue_len + cpu_load * 10.0
+            candidates.append((i, queue_len, cpu_load, distance, score))
 
-            # 位置更新（保持在道路带宽范围内）
-            vehicle['position'][0] = float(np.clip(next_x, 0.0, 1000.0))
-            # 轻微回正到车道中心，模拟车道保持
-            lane_error = (vehicle['lane_bias'])
-            vehicle['position'][1] = float(np.clip(self.road_y + 0.8 * lane_error, 480.0, 520.0))
+        if not candidates:
+            return {'success': False, 'cost': 0.0, 'delay_saved': 0.0}
 
-            # 路端 U-turn：到边界调头
-            if vehicle['position'][0] >= 995.0:
-                vehicle['direction'] = np.pi
-            elif vehicle['position'][0] <= 5.0:
-                vehicle['direction'] = 0.0
+        target_idx, target_queue_len, target_cpu_load, distance, _ = min(candidates, key=lambda x: x[4])
+        target_rsu = self.rsus[target_idx]
+        if 'computation_queue' not in target_rsu:
+            target_rsu['computation_queue'] = []
 
-            # 在绿灯通过时，随机小概率换道/轻微扰动速度
-            if not need_stop and np.random.rand() < 0.1:
-                vehicle['lane_bias'] = float(np.clip(vehicle['lane_bias'] + np.random.uniform(-0.5, 0.5), -6.0, 6.0))
-                vehicle['velocity'] = float(np.clip(v + np.random.uniform(-1.0, 1.0), 10.0, 25.0))
+        source_queue_len = len(source_queue)
+        migration_ratio = max(0.2, min(0.6, urgency + 0.1))
+        tasks_to_migrate = max(1, int(source_queue_len * migration_ratio))
+        tasks_to_migrate = min(tasks_to_migrate, source_queue_len)
+        if tasks_to_migrate <= 0:
+            return {'success': False, 'cost': 0.0, 'delay_saved': 0.0}
 
-        # UAV固定悬停
-        for uav in self.uavs:
-            uav['position'][2] = 120.0
-    
-    def simulate_time_slot(self, agents_actions: Dict = None) -> List[Dict]:
-        """仿真一个时隙"""
-        results = []
-        
-        # 更新移动性
-        self.update_mobility()
-        
-        # 🏢 中央RSU全局负载收集与调度 (每10步执行一次)
-        if hasattr(self, 'central_scheduler') and self.central_scheduler:
-            if not hasattr(self, '_central_schedule_counter'):
-                self._central_schedule_counter = 0
-            self._central_schedule_counter += 1
-            
-            if self._central_schedule_counter % 10 == 0:  # 每10步收集一次负载信息
-                self._execute_central_rsu_scheduling()
+        base_success_rate = 0.75
+        distance_penalty = min(0.35, distance / 1200.0)
+        load_penalty = min(0.25, target_queue_len / 40.0)
+        urgency_bonus = min(0.2, urgency)
+        actual_success_rate = np.clip(base_success_rate - distance_penalty - load_penalty + urgency_bonus, 0.35, 0.95)
+        if np.random.random() > actual_success_rate:
+            return {'success': False, 'cost': 0.0, 'delay_saved': 0.0}
 
-        # 🤖 检查智能体控制的自适应迁移
-        self.check_adaptive_migration(agents_actions)
+        migrated_tasks = source_queue[:tasks_to_migrate]
+        source_uav['computation_queue'] = source_queue[tasks_to_migrate:]
+        target_rsu['computation_queue'].extend(migrated_tasks)
 
-        # 🔧 关键修复：处理RSU和UAV队列中的任务
-        self._process_node_queues()
-        
-        # 📊 UAV悬停能耗（每时隙固定消耗）
-        if self.sys_config is not None:
-            hover_power = float(getattr(self.sys_config.compute, 'uav_hover_power', 25.0))
-        else:
-            hover_power = 25.0
-        
-        # UAV悬停能耗：每个UAV每时隙独立计算，避免重复计算  
-        # 修正：25W * 0.2s * 2UAV = 10J/步，100步 = 1000J
-        if not hasattr(self, '_uav_hover_calculated'):
-            self._uav_hover_calculated = set()
-        
-        for i, uav in enumerate(self.uavs):
-            step_key = f"step_{getattr(self, 'current_time', 0.0)}_{i}"
-            if step_key not in self._uav_hover_calculated:
-                hover_energy_single = hover_power * self.time_slot  # 每UAV每时隙5J
-                self.stats['energy_uav_hover'] = self.stats.get('energy_uav_hover', 0.0) + hover_energy_single
-                self._uav_hover_calculated.add(step_key)
+        total_data_size = sum(task.get('data_size', 1.0) for task in migrated_tasks) or (tasks_to_migrate * 1.0)
+        # Estimate wireless transfer characteristics
+        wireless_rate = 12.0  # MB/s
+        wireless_delay = (total_data_size / wireless_rate)
+        wireless_energy = total_data_size * 0.15 + distance * 0.01
+        delay_saved = max(0.0, (source_queue_len - target_queue_len) * self.time_slot)
 
-        # 先推进在制任务（车辆跟随 + 过载到空闲），并按概率使用智能体偏好
-        advanced_tasks = []
-        for t in list(self.active_tasks):
-            # 找到车辆位置与最近RSU/UAV
-            vehicle = next(v for v in self.vehicles if v['id'] == t['vehicle_id'])
-            nearest_rsu = self.find_nearest_rsu(vehicle['position'])
-            nearest_uav = self.find_nearest_uav(vehicle['position'])
-            # 车辆跟随迁移：若绑定RSU且与最近RSU不同，按一定概率切换，避免频繁抖动
-            if t['node_type'] == 'RSU' and nearest_rsu is not None:
-                current_node = self.rsus[t['node_idx']] if t['node_idx'] is not None else None
-                if current_node is None or current_node is not nearest_rsu:
-                    # 使用温和门限：仅当距离差显著或队列差显著时切换
-                    from config import config
-                    should_switch = True
-                    if current_node is not None:
-                        d_cur = self.calculate_distance(vehicle['position'], current_node['position'])
-                        d_new = self.calculate_distance(vehicle['position'], nearest_rsu['position'])
-                        q_cur = len(current_node.get('computation_queue', []))
-                        q_new = len(nearest_rsu.get('computation_queue', []))
-                        should_switch = ((d_cur - d_new) > config.migration.follow_handover_distance) or ((q_cur - q_new) > config.migration.queue_switch_diff)
-                    if should_switch:
-                        t['node_idx'] = self.rsus.index(nearest_rsu)
-            # 过载到空闲：若当前绑定为RSU且队列过长，则切到队列更短的RSU
-            if t['node_type'] == 'RSU' and t['node_idx'] is not None:
-                q_len = len(self.rsus[t['node_idx']].get('computation_queue', []))
-                from config import config
-                if q_len > config.migration.rsu_queue_overload_len:
-                    # 找最短队列RSU
-                    best_idx = min(range(len(self.rsus)), key=lambda i: len(self.rsus[i].get('computation_queue', [])))
-                    t['node_idx'] = best_idx
-            # 执行一时隙的工作推进（小幅随机性，模拟服务速率波动）
-            from config import config
-            j = config.migration.service_jitter_ratio
-            service = np.random.uniform(1.0 - j, 1.0 + j) * self.time_slot
-            t['work_remaining'] = max(0.0, t['work_remaining'] - service)
-            # 完成/超时判断
-            current_time = getattr(self, 'current_time', 0.0)
-            if t['work_remaining'] <= 0.0:
-                # 🔧 修复：跨时隙任务完成，正确计算统计
-                self.stats['completed_tasks'] += 1
-                
-                # 计算实际总时延（修复：使用预期完成时间或当前时间差）
-                if 'expected_completion_time' in t:
-                    actual_delay = t['expected_completion_time'] - t['arrival_time']
-                else:
-                    actual_delay = current_time - t['arrival_time']
-                
-                # 修复时延范围，避免异常值
-                actual_delay = max(0.001, min(actual_delay, 30.0))
-                self.stats['total_delay'] += actual_delay
-                
-                # 累计能耗（改进估算：基于实际处理时间与节点类型）
-                if t.get('node_type') == 'RSU':
-                    processing_power = 50.0  # W，RSU功率较高
-                elif t.get('node_type') == 'UAV':
-                    processing_power = 20.0  # W，UAV功率中等
-                else:
-                    processing_power = 5.0   # W，车辆功率较低
-                
-                processing_energy = processing_power * actual_delay
-                self.stats['total_energy'] += processing_energy
-                
-                print(f"✅ 跨时隙任务 {t['id']} 完成: 时延{actual_delay:.3f}s, 节点{t.get('node_type', 'Unknown')}")
-            elif current_time >= t['deadline']:
-                # 超时丢弃
-                self.stats['dropped_tasks'] += 1
-                # 累计丢失数据量（bytes）
-                self.stats['dropped_data_bytes'] = self.stats.get('dropped_data_bytes', 0.0) + float(t.get('data_size_bytes', t.get('data_size', 1.0)*1e6))
-                print(f"❌ 任务 {t['id']} 超时丢弃: 超时{current_time - t['deadline']:.3f}s")
-            else:
-                # 继续处理
-                advanced_tasks.append(t)
-        self.active_tasks = advanced_tasks
-        
-        # 为每个车辆生成任务 - 优化任务生成逻辑（读取system_config到达率）
-        for vehicle in self.vehicles:
-            # 使用更稳定的任务生成策略
-            # 基础概率 + 随机扰动，确保大部分时间步都有任务
-            base_rate = (getattr(self, 'task_arrival_rate', self.config['task_arrival_rate'])) * self.time_slot
-            # 增加最小任务生成概率，避免连续多个时间步无任务
-            adjusted_rate = max(base_rate, 0.1)  # 至少10%的概率生成任务
-            
-            if np.random.random() < adjusted_rate:
-                task = self.generate_task(vehicle['id'])
-                result = self.process_task(task, agents_actions)
-                results.append(result)
-        
-        # 如果所有车辆都没有生成任务，强制为一个随机车辆生成任务
-        # 这确保训练过程中始终有数据流
-        if not results and len(self.vehicles) > 0:
-            random_vehicle = np.random.choice(self.vehicles)
-            task = self.generate_task(random_vehicle['id'])
-            result = self.process_task(task, agents_actions)
-            results.append(result)
-        
-        # 集成迁移：在处理完任务后调用迁移一步
-        if self.migration_manager is not None:
-            # 简化节点状态与位置适配
-            class _Pos:
-                def __init__(self, x, y, z=0.0):
-                    self.x, self.y, self.z = x, y, z
-                def distance_to(self, other):
-                    oz = getattr(other, 'z', 0.0)
-                    return float(np.linalg.norm(np.array([self.x, self.y, self.z]) - np.array([other.x, other.y, oz])))
-            class _State:
-                def __init__(self, load_factor=0.0, cpu_frequency=1.0, battery_level=1.0):
-                    self.load_factor = load_factor
-                    self.cpu_frequency = cpu_frequency
-                    self.battery_level = battery_level
-            node_states, node_positions = {}, {}
-            # RSU
-            for i, rsu in enumerate(self.rsus):
-                q_len = len(rsu.get('computation_queue', []))
-                node_states[f"rsu_{i}"] = _State(load_factor=min(0.99, q_len/10.0), cpu_frequency=self.config['computation_capacity'])
-                node_positions[f"rsu_{i}"] = _Pos(rsu['position'][0], rsu['position'][1], 0.0)
-            # UAV
-            for i, uav in enumerate(self.uavs):
-                q_len = len(uav.get('computation_queue', []))
-                node_states[f"uav_{i}"] = _State(load_factor=min(0.99, q_len/10.0), cpu_frequency=self.config['computation_capacity'], battery_level=1.0)
-                node_positions[f"uav_{i}"] = _Pos(uav['position'][0], uav['position'][1], uav['position'][2])
-            self._last_migration_step_stats = self.migration_manager.step(node_states, node_positions)
-        else:
-            self._last_migration_step_stats = {'migrations_planned': 0, 'migrations_executed': 0, 'migrations_successful': 0}
-        return results
-    
-    def run_simulation(self, num_time_slots: int = 1000, agents_actions: Dict = None) -> Dict:
-        """运行完整仿真"""
-        print(f"🚀 开始仿真 {num_time_slots} 个时隙...")
-        
-        # 重置统计
-        self.stats = {
-            'total_tasks': 0,
-            'completed_tasks': 0,
-            'dropped_tasks': 0,
-            'generated_data_bytes': 0.0,  # 累计生成数据量(bytes)
-            'dropped_data_bytes': 0.0,    # 累计丢失数据量(bytes)
-            'total_delay': 0.0,
-            'total_energy': 0.0,
-            'cache_hits': 0,
-            'cache_misses': 0
-        }
-        
-        all_results = []
-        
-        for time_slot in range(num_time_slots):
-            self.current_time = time_slot * self.time_slot
-            
-            # 仿真当前时隙
-            slot_results = self.simulate_time_slot(agents_actions)
-            all_results.extend(slot_results)
-            
-            # 进度显示
-            if (time_slot + 1) % 100 == 0:
-                progress = (time_slot + 1) / num_time_slots * 100
-                print(f"仿真进度: {progress:.1f}%")
-        
-        # 计算最终统计
-        final_stats = self.calculate_final_statistics()
-        
-        print("✅ 仿真完成")
-        return {
-            'statistics': final_stats,
-            'detailed_results': all_results,
-            'system_state': {
-                'vehicles': self.vehicles,
-                'rsus': self.rsus,
-                'uavs': self.uavs
-            }
-        }
-    
-    def calculate_final_statistics(self) -> Dict:
-        """计算最终统计结果"""
-        total_tasks = self.stats['total_tasks']
-        completed_tasks = self.stats['completed_tasks']
-        
-        if total_tasks == 0:
-            return {
-                'total_tasks': 0,
-                'completed_tasks': 0,
-                'dropped_tasks': 0,
-                'completion_rate': 0.0,
-                'drop_rate': 0.0,
-                'avg_delay': 0.0,
-                'total_energy': 0.0,
-                'cache_hit_rate': 0.0
-            }
-        
-        completion_rate = completed_tasks / total_tasks
-        drop_rate = self.stats['dropped_tasks'] / total_tasks
-        avg_delay = self.stats['total_delay'] / max(completed_tasks, 1)
-        
-        total_cache_requests = self.stats['cache_hits'] + self.stats['cache_misses']
-        cache_hit_rate = self.stats['cache_hits'] / max(total_cache_requests, 1)
-        
-        # 🔧 重新计算总能耗为所有组件之和
-        total_energy_corrected = (
-            self.stats.get('energy_vehicle_transmit', 0.0) +
-            self.stats.get('energy_vehicle_compute', 0.0) +
-            self.stats.get('energy_edge_compute', 0.0) +
-            self.stats.get('energy_uav_compute', 0.0) +
-            self.stats.get('energy_uav_hover', 0.0) +
-            self.stats.get('energy_downlink', 0.0)
-        )
-        
-        return {
-            'total_tasks': total_tasks,
-            'completed_tasks': completed_tasks,
-            'dropped_tasks': self.stats['dropped_tasks'],
-            'completion_rate': completion_rate,
-            'drop_rate': drop_rate,
-            'avg_delay': avg_delay,
-            'total_energy': total_energy_corrected,
-            'energy_breakdown': {
-                'vehicle_transmit': self.stats.get('energy_vehicle_transmit', 0.0),
-                'vehicle_compute': self.stats.get('energy_vehicle_compute', 0.0),
-                'edge_compute': self.stats.get('energy_edge_compute', 0.0),
-                'uav_compute': self.stats.get('energy_uav_compute', 0.0),
-                'uav_hover': self.stats.get('energy_uav_hover', 0.0),
-                'downlink': self.stats.get('energy_downlink', 0.0)
-            },
-            'cache_hit_rate': cache_hit_rate
-        }
-    
-    def get_system_state(self) -> Dict:
-        """获取系统状态"""
-        return {
-            'vehicles': len(self.vehicles),
-            'rsus': len(self.rsus),
-            'uavs': len(self.uavs),
-            'current_time': getattr(self, 'current_time', 0),
-            'statistics': self.stats
-        }
-    
-    def reset(self):
-        """重置仿真器"""
-        self.initialize_components()
-        self.stats = {
-            'total_tasks': 0,
-            'completed_tasks': 0,
-            'dropped_tasks': 0,
-            'generated_data_bytes': 0.0,  # 累计生成数据量(bytes)
-            'dropped_data_bytes': 0.0,    # 累计丢失数据量(bytes)
-            'total_delay': 0.0,
-            'total_energy': 0.0,
-            'cache_hits': 0,
-            'cache_misses': 0
-        }
-        self.current_time = 0
-        # 🔧 修复：重置统一时间管理器
-        reset_simulation_time()
-    
-    def run_simulation_step(self, step: int, agents_actions: Dict = None) -> Dict:
-        """运行单个仿真步骤"""
-        # 🔧 修复：统一时间管理
-        self.current_time = step * self.time_slot
-        advance_simulation_time()  # 推进统一仿真时间
-        
-        # 运行一个时隙的仿真
-        results = self.simulate_time_slot(agents_actions)
-        
-        # 🔧 修复：计算步骤统计，包含跨时隙任务完成情况
-        completed_results = [r for r in results if r['status'] == 'completed']
-        dropped_results = [r for r in results if r['status'] == 'dropped']
-        in_progress_results = [r for r in results if r['status'] == 'in_progress']
-        
-        # 获取本步总任务数和完成数（包含跨时隙完成）
-        total_tasks_this_step = self.stats['total_tasks']  # 累计总任务数
-        completed_tasks_this_step = self.stats['completed_tasks']  # 累计完成数（含跨时隙）
-        dropped_tasks_this_step = self.stats['dropped_tasks']  # 累计丢弃数
-        
-        # 计算本步新生成的任务数量
-        new_tasks_generated = len(results)
-        
-        step_stats = {
-            # 🔧 修复：使用累计统计而非单步结果
-            'generated_tasks': new_tasks_generated,  # 本步生成的任务数
-            'processed_tasks': completed_tasks_this_step,  # 累计完成任务数（含跨时隙）
-            'dropped_tasks': dropped_tasks_this_step,  # 累计丢弃任务数
-            'total_delay': self.stats.get('total_delay', 0.0),  # 累计总时延
-            'total_energy': self.stats.get('total_energy', 0.0),  # 累计总能耗
-            'generated_data_bytes': self.stats.get('generated_data_bytes', 0.0),  # 累计生成数据量
-            'dropped_data_bytes': self.stats.get('dropped_data_bytes', 0.0),      # 累计丢失数据量
-            'cache_hits': sum(1 for r in results if r.get('cache_hit', False)),  # 本步缓存命中
-            'cache_misses': sum(1 for r in results if not r.get('cache_hit', False)),  # 本步缓存未命中
-            # 🔧 修复关键问题：迁移统计从self.stats获取，确保数据一致性
-            'migrations_planned': self.stats.get('migrations_executed', 0),  # 使用执行次数作为计划次数
-            'migrations_executed': self.stats.get('migrations_executed', 0),  # 从self.stats获取
-            'migrations_successful': self.stats.get('migrations_successful', 0),  # 从self.stats获取
-            
-            # 保持原有字段以兼容其他代码
-            'tasks_generated': new_tasks_generated,
-            'tasks_completed': completed_tasks_this_step,  # 累计完成数
-            'tasks_dropped': dropped_tasks_this_step,
-            'avg_delay': (self.stats['total_delay'] / max(1, completed_tasks_this_step)) if completed_tasks_this_step > 0 else 0.0,
-            
-            # 调试信息
-            'active_tasks_count': len(self.active_tasks),
-            'single_slot_completed': len(completed_results),
-            'cross_slot_in_progress': len(in_progress_results)
-        }
-        
-        return step_stats
+        self.stats['uav_migration_distance'] = self.stats.get('uav_migration_distance', 0.0) + distance
+        self.stats['uav_migration_count'] = self.stats.get('uav_migration_count', 0) + 1
 
-def test_simulator():
-    """测试仿真器"""
-    print("🧪 测试完整系统仿真器...")
-    
-    # 创建仿真器
-    simulator = CompleteSystemSimulator()
-    
-    # 运行短期仿真
-    results = simulator.run_simulation(num_time_slots=100)
-    
-    # 显示结果
-    stats = results['statistics']
-    print("\n📊 仿真结果:")
-    print(f"  总任务数: {stats['total_tasks']}")
-    print(f"  完成任务数: {stats['completed_tasks']}")
-    print(f"  完成率: {stats['completion_rate']:.2%}")
-    print(f"  平均时延: {stats['avg_delay']:.3f}s")
-    print(f"  总能耗: {stats['total_energy']:.1f}J")
-    print(f"  缓存命中率: {stats['cache_hit_rate']:.2%}")
-    
-    print("✅ 仿真器测试完成")
-
-if __name__ == "__main__":
-    test_simulator()
+        migration_cost = wireless_energy + wireless_delay * 800.0
+        return {'success': True, 'cost': migration_cost, 'delay_saved': delay_saved}

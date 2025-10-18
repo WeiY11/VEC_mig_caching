@@ -5,7 +5,20 @@
 from .evaluation import (
     ExperimentResult, BaselineAlgorithms, PerformanceMetrics, ExperimentRunner
 )
+from .hierarchical_td3_workflow import (
+    get_default_multitask_scenarios,
+    run_hierarchical_multitask_training,
+    distill_hierarchical_policy,
+    DistillationConfig,
+)
 
 __all__ = [
-    'ExperimentResult', 'BaselineAlgorithms', 'PerformanceMetrics', 'ExperimentRunner'
+    'ExperimentResult',
+    'BaselineAlgorithms',
+    'PerformanceMetrics',
+    'ExperimentRunner',
+    'get_default_multitask_scenarios',
+    'run_hierarchical_multitask_training',
+    'distill_hierarchical_policy',
+    'DistillationConfig',
 ]

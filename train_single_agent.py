@@ -279,6 +279,12 @@ class SingleAgentTrainingEnvironment:
             'data_loss_ratio_bytes': [],
             'task_completion_rate': [],
             'cache_hit_rate': [],
+            'cache_utilization': [],
+            'cache_evictions': [],
+            'cache_collaborative_writes': [],
+            'local_cache_hits': [],
+            'migration_avg_cost': [],
+            'migration_avg_delay_saved': [],
             'migration_success_rate': [],
             'episode_steps': []  # 🔧 新增：记录每个episode的实际步数
         }
@@ -408,7 +414,7 @@ class SingleAgentTrainingEnvironment:
             rsu_state = np.array([
                 np.clip(rsu['position'][0] / 1000, 0.0, 1.0),  # 位置x
                 np.clip(rsu['position'][1] / 1000, 0.0, 1.0),  # 位置y
-                np.clip(len(rsu.get('cache', {})) / max(1, rsu.get('cache_capacity', 100)), 0.0, 1.0),  # 缓存利用率
+                self._calculate_correct_cache_utilization(rsu.get('cache', {}), rsu.get('cache_capacity', 1000.0)),  # 缓存利用率
                 np.clip(len(rsu.get('computation_queue', [])) / 20.0, 0.0, 1.0),  # 队列利用率（扩大范围到20）
                 np.clip(rsu.get('energy_consumed', 0) / 1000.0, 0.0, 1.0)  # 能耗
             ])
@@ -421,7 +427,7 @@ class SingleAgentTrainingEnvironment:
                 np.clip(uav['position'][0] / 1000, 0.0, 1.0),  # 位置x
                 np.clip(uav['position'][1] / 1000, 0.0, 1.0),  # 位置y
                 np.clip(uav['position'][2] / 200, 0.0, 1.0),   # 位置z（高度）
-                np.clip(len(uav.get('cache', {})) / max(1, uav.get('cache_capacity', 100)), 0.0, 1.0),  # 缓存利用率
+                self._calculate_correct_cache_utilization(uav.get('cache', {}), uav.get('cache_capacity', 200.0)),  # 缓存利用率
                 np.clip(uav.get('energy_consumed', 0) / 1000.0, 0.0, 1.0)  # 能耗
             ])
             node_states[f'uav_{i}'] = uav_state
@@ -483,6 +489,7 @@ class SingleAgentTrainingEnvironment:
         cache_misses = int(safe_get('cache_misses', 0))
         cache_requests = max(1, cache_hits + cache_misses)
         cache_hit_rate = cache_hits / cache_requests
+        local_cache_hits = int(safe_get('local_cache_hits', 0))
         
         # 🔧 修复：安全计算平均延迟 - 使用累计统计
         total_delay = safe_get('total_delay', 0.0)
@@ -564,12 +571,18 @@ class SingleAgentTrainingEnvironment:
             'data_loss_ratio_bytes': data_loss_ratio_bytes,
             'task_completion_rate': completion_rate,
             'cache_hit_rate': cache_hit_rate,
+            'local_cache_hits': local_cache_hits,
             'migration_success_rate': migration_success_rate,
             'dropped_tasks': episode_dropped,
             # 🤖 新增自适应控制指标
             'adaptive_cache_effectiveness': cache_metrics.get('effectiveness', 0.0),
             'adaptive_migration_effectiveness': migration_metrics.get('effectiveness', 0.0),
+            'migration_avg_cost': migration_metrics.get('avg_cost', 0.0),
+            'migration_avg_delay_saved': migration_metrics.get('avg_delay_saved', 0.0),
             'cache_utilization': cache_metrics.get('utilization', 0.0),
+            'cache_evictions': cache_metrics.get('evicted_items', 0),
+            'cache_collaborative_writes': cache_metrics.get('collaborative_writes', 0),
+            'local_cache_hits': step_stats.get('local_cache_hits', 0),
             'adaptive_cache_params': cache_metrics.get('agent_params', {}),
             'adaptive_migration_params': migration_metrics.get('agent_params', {})
         }
@@ -766,7 +779,7 @@ class SingleAgentTrainingEnvironment:
         """将算法动作字典转换为仿真器可消费的简单控制信号。
         🤖 扩展支持18维动作空间：
         - vehicle_agent 前11维 → 原有任务分配和节点选择
-        - vehicle_agent 后7维 → 缓存迁移参数控制
+        - vehicle_agent 后8维 → 缓存迁移参数控制
         """
         if not isinstance(actions_dict, dict):
             return None
@@ -813,16 +826,16 @@ class SingleAgentTrainingEnvironment:
             if isinstance(vehicle_action, (list, tuple, np.ndarray)):
                 vehicle_action_array = np.array(vehicle_action, dtype=np.float32)
                 control_start = 3 + num_rsus + num_uavs
-                control_end = control_start + 7
+                control_end = control_start + 8
                 if vehicle_action_array.size >= control_end:
                     cache_migration_actions = vehicle_action_array[control_start:control_end]
                 elif vehicle_action_array.size > control_start:
                     # 若长度不足7维，做安全补零
-                    cache_migration_actions = np.zeros(7, dtype=np.float32)
+                    cache_migration_actions = np.zeros(8, dtype=np.float32)
                     available = vehicle_action_array[control_start:]
-                    cache_migration_actions[:available.size] = available
+                    cache_migration_actions[:min(available.size, 8)] = available[:8]
                 else:
-                    cache_migration_actions = np.zeros(7, dtype=np.float32)
+                    cache_migration_actions = np.zeros(8, dtype=np.float32)
 
                 cache_migration_actions = np.clip(cache_migration_actions, -1.0, 1.0)
 
@@ -1058,7 +1071,13 @@ def train_single_algorithm(algorithm: str, num_episodes: Optional[int] = None, e
             'data_loss_ratio_bytes': 'data_loss_ratio_bytes',
             'task_completion_rate': 'task_completion_rate',
             'cache_hit_rate': 'cache_hit_rate', 
-            'migration_success_rate': 'migration_success_rate'
+            'cache_utilization': 'cache_utilization',
+            'cache_evictions': 'cache_evictions',
+            'cache_collaborative_writes': 'cache_collaborative_writes',
+            'local_cache_hits': 'local_cache_hits',
+            'migration_success_rate': 'migration_success_rate',
+            'migration_avg_cost': 'migration_avg_cost',
+            'migration_avg_delay_saved': 'migration_avg_delay_saved'
         }
         
         for system_key, episode_key in metric_mapping.items():

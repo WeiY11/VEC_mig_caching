@@ -36,6 +36,8 @@ class UnifiedRewardCalculator:
         self.weight_delay = config.rl.reward_weight_delay      # 默认 2.0
         self.weight_energy = config.rl.reward_weight_energy    # 默认 1.2
         self.penalty_dropped = config.rl.reward_penalty_dropped # 默认 0.02
+        self.weight_cache = getattr(config.rl, 'reward_weight_cache', 0.0)
+        self.weight_migration = getattr(config.rl, 'reward_weight_migration', 0.0)
         
         # 🎯 核心设计：归一化因子（确保时延和能耗在相同数量级）
         # 目标：delay=0.2s 和 energy=600J 归一化后贡献相当
@@ -60,6 +62,8 @@ class UnifiedRewardCalculator:
         print(f"   归一化: Delay/{self.delay_normalizer:.1f}, Energy/{self.energy_normalizer:.0f}")
         print(f"   奖励范围: {self.reward_clip_range}")
         print(f"   优化目标: 最小化 {self.weight_delay}*Delay + {self.weight_energy}*Energy")
+        if self.weight_cache > 0 or self.weight_migration > 0:
+            print(f"   拓展权重: Cache={self.weight_cache:.2f}, Migration={self.weight_migration:.2f}")
 
     def calculate_reward(self, 
                         system_metrics: Dict,
@@ -128,10 +132,33 @@ class UnifiedRewardCalculator:
                 energy_threshold_penalty = (total_energy - 3000) / 1500.0
         
         # 6️⃣ 总成本
-        total_cost = (base_cost + 
-                     dropped_penalty + 
-                     delay_threshold_penalty + 
-                     energy_threshold_penalty)
+        cache_penalty = 0.0
+        if self.weight_cache > 0:
+            cache_hit_rate = safe_float(system_metrics.get('cache_hit_rate'), 0.0)
+            cache_evictions = safe_int(system_metrics.get('cache_evictions', 0))
+            cache_collab = safe_int(system_metrics.get('cache_collaborative_writes', 0))
+            local_cache_hits = safe_int(system_metrics.get('local_cache_hits', 0))
+            cache_penalty = max(0.0, 1.0 - min(1.0, cache_hit_rate))
+            cache_penalty += 0.0005 * cache_evictions
+            cache_penalty -= min(0.3, (cache_collab * 0.00005) + (local_cache_hits * 0.0001))
+            cache_penalty = max(-0.3, cache_penalty)
+
+        migration_penalty = 0.0
+        if self.weight_migration > 0:
+            migration_success = safe_float(system_metrics.get('migration_success_rate'), 0.0)
+            migration_avg_cost = safe_float(system_metrics.get('migration_avg_cost', 0.0))
+            migration_delay_saved = safe_float(system_metrics.get('migration_avg_delay_saved', 0.0))
+            migration_penalty = max(0.0, 1.0 - min(1.0, migration_success))
+            migration_penalty += 0.0001 * migration_avg_cost
+            migration_penalty -= min(0.2, migration_delay_saved * 0.05)
+            migration_penalty = max(-0.3, migration_penalty)
+
+        total_cost = (base_cost +
+                     dropped_penalty +
+                     delay_threshold_penalty +
+                     energy_threshold_penalty +
+                     self.weight_cache * cache_penalty +
+                     self.weight_migration * migration_penalty)
         
         # 7️⃣ SAC专用：正向激励机制（最大熵框架需要明确"好"的信号）
         bonus = 0.0

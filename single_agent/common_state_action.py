@@ -30,8 +30,8 @@ class UnifiedStateActionSpace:
         返回:
             total_action_dim
         """
-        # 3(任务分配) + num_rsus(RSU选择) + num_uavs(UAV选择) + 7(控制参数)
-        return 3 + num_rsus + num_uavs + 7
+        # 3(任务分配) + num_rsus(RSU选择) + num_uavs(UAV选择) + 8(缓存/迁移控制参数)
+        return 3 + num_rsus + num_uavs + 8
     
     @staticmethod
     def build_global_state(node_states: Dict, system_metrics: Dict, 
@@ -186,8 +186,8 @@ class UnifiedStateActionSpace:
         uav_selection = action[idx:idx+num_uavs]
         idx += num_uavs
         
-        # 4. 控制参数（7维）
-        control_params = action[idx:idx+7]
+        # 4. 控制参数（8维）
+        control_params = action[idx:idx+8]
         
         # 构建vehicle_agent的完整动作
         actions['vehicle_agent'] = np.concatenate([

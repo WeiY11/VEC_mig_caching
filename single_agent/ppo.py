@@ -439,7 +439,7 @@ class PPOEnvironment:
         print(f"PPO环境初始化完成（优化版v2.0）")
         print(f"网络拓扑: {num_vehicles}辆车 + {num_rsus}个RSU + {num_uavs}个UAV")
         print(f"状态维度: {self.state_dim} = 局部{self.local_state_dim} + 全局{self.global_state_dim}")
-        print(f"动作维度: {self.action_dim} (动态适配: 3+{num_rsus}+{num_uavs}+7)")
+        print(f"动作维度: {self.action_dim} (动态适配: 3+{num_rsus}+{num_uavs}+8)")
         print(f"网络容量: hidden_dim={self.config.hidden_dim}")
         print(f"优化特性: 统一状态空间, 动态拓扑适配, 全局状态")
         print(f"Actor学习率: {self.config.actor_lr}")
@@ -461,28 +461,11 @@ class PPOEnvironment:
         )
     
     def decompose_action(self, action: np.ndarray) -> Dict[str, np.ndarray]:
-        """
-        将全局动作分解为各节点动作
-        🔧 修复：更新支持18维动作空间，与TD3/DDPG保持一致：
-        - vehicle_agent: 18维 (11维原有 + 7维缓存迁移控制)
-        """
-        actions = {}
-        
-        # 确保action长度足够
-        if len(action) < 18:
-            action = np.pad(action, (0, 18-len(action)), mode='constant')
-        
-        # 🔧 vehicle_agent 获得所有18维动作
-        # 前11维：任务分配(3) + RSU选择(6) + UAV选择(2)
-        # 后7维：缓存控制(4) + 迁移控制(3)
-        actions['vehicle_agent'] = action[:18]
-        
-        # 🔧 关键修复：从vehicle_agent中提取RSU和UAV选择
-        # 训练框架需要从rsu_agent和uav_agent获取选择概率
-        actions['rsu_agent'] = action[3:9]   # RSU选择（6维）
-        actions['uav_agent'] = action[9:11]  # UAV选择（2维）
-        
-        return actions
+        """将全局动作分解为各节点动作"""
+        from single_agent.common_state_action import UnifiedStateActionSpace
+        if not isinstance(action, np.ndarray):
+            action = np.array(action, dtype=np.float32)
+        return UnifiedStateActionSpace.decompose_action(action, self.num_rsus, self.num_uavs, self.action_dim)
     
     def get_actions(self, state: np.ndarray, training: bool = True):
         """获取动作"""
