@@ -300,7 +300,15 @@ class SingleAgentTrainingEnvironment:
             'task_type_drop_rate_1': [],
             'task_type_drop_rate_2': [],
             'task_type_drop_rate_3': [],
-            'task_type_drop_rate_4': []
+            'task_type_drop_rate_4': [],
+            'task_type_queue_share_ep_1': [],
+            'task_type_queue_share_ep_2': [],
+            'task_type_queue_share_ep_3': [],
+            'task_type_queue_share_ep_4': [],
+            'rsu_hotspot_mean': [],
+            'rsu_hotspot_peak': [],
+            'rsu_hotspot_mean_series': [],
+            'rsu_hotspot_peak_series': []
         }
         
         # 性能追踪器
@@ -468,6 +476,11 @@ class SingleAgentTrainingEnvironment:
             self.episode_metrics[f'task_type_queue_share_{idx+1}'].append(queue_val)
             self.episode_metrics[f'task_type_deadline_norm_{idx+1}'].append(deadline_val)
             self.episode_metrics[f'task_type_drop_rate_{idx+1}'].append(drop_val)
+
+        hotspot_mean = float(system_metrics.get('rsu_hotspot_mean', 0.0))
+        hotspot_peak = float(system_metrics.get('rsu_hotspot_peak', 0.0))
+        self.episode_metrics['rsu_hotspot_mean_series'].append(hotspot_mean)
+        self.episode_metrics['rsu_hotspot_peak_series'].append(hotspot_peak)
         
         # 判断是否结束
         done = False  # 单智能体环境通常不会提前结束
@@ -610,6 +623,12 @@ class SingleAgentTrainingEnvironment:
         deadline_remaining = _normalize_vector('task_type_deadline_remaining')
         queue_counts = _normalize_vector('task_type_queue_counts', clip=False)
         active_counts = _normalize_vector('task_type_active_counts', clip=False)
+        hotspot_list = _normalize_vector(
+            'rsu_hotspot_intensity',
+            length=getattr(self.simulator, 'num_rsus', 0) or 4
+        )
+        rsu_hotspot_mean = float(np.mean(hotspot_list)) if hotspot_list else 0.0
+        rsu_hotspot_peak = float(np.max(hotspot_list)) if hotspot_list else 0.0
 
         task_generation_stats = step_stats.get('task_generation')
         gen_by_type = task_generation_stats.get('by_type', {}) if isinstance(task_generation_stats, dict) else {}
@@ -679,7 +698,10 @@ class SingleAgentTrainingEnvironment:
             'task_type_queue_counts': queue_counts,
             'task_type_active_counts': active_counts,
             'task_type_drop_rate': drop_rate,
-            'task_type_generated_share': generated_share
+            'task_type_generated_share': generated_share,
+            'rsu_hotspot_intensity_list': hotspot_list,
+            'rsu_hotspot_mean': rsu_hotspot_mean,
+            'rsu_hotspot_peak': rsu_hotspot_peak
         }
     
     def run_episode(self, episode: int, max_steps: Optional[int] = None) -> Dict:
@@ -1174,7 +1196,9 @@ def train_single_algorithm(algorithm: str, num_episodes: Optional[int] = None, e
             'local_cache_hits': 'local_cache_hits',
             'migration_success_rate': 'migration_success_rate',
             'migration_avg_cost': 'migration_avg_cost',
-            'migration_avg_delay_saved': 'migration_avg_delay_saved'
+            'migration_avg_delay_saved': 'migration_avg_delay_saved',
+            'rsu_hotspot_mean': 'rsu_hotspot_mean',
+            'rsu_hotspot_peak': 'rsu_hotspot_peak'
         }
         
         for system_key, episode_key in metric_mapping.items():
@@ -1182,6 +1206,12 @@ def train_single_algorithm(algorithm: str, num_episodes: Optional[int] = None, e
                 training_env.episode_metrics[episode_key].append(system_metrics[system_key])
                 # print(f"✅ 记录指标 {episode_key}: {system_metrics[system_key]:.3f}")  # 调试信息（减少输出）
         
+        queue_distribution_ep = system_metrics.get('task_type_queue_distribution')
+        if isinstance(queue_distribution_ep, (list, tuple)):
+            for idx, value in enumerate(queue_distribution_ep):
+                key = f'task_type_queue_share_ep_{idx+1}'
+                if key in training_env.episode_metrics:
+                    training_env.episode_metrics[key].append(float(value))
         # 🌐 更新实时可视化
         if visualizer:
             vis_metrics = {

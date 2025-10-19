@@ -10,6 +10,7 @@ import random
 from typing import Dict, List, Tuple, Any, Optional
 import json
 from datetime import datetime
+from dataclasses import asdict
 # 🔧 修复：导入统一时间管理器
 from utils.unified_time_manager import get_simulation_time, advance_simulation_time, reset_simulation_time
 # 🔧 修复：导入realistic内容生成器
@@ -58,6 +59,7 @@ class CompleteSystemSimulator:
         self.task_counter = 0
         self.current_step = 0
         self.current_time = 0.0
+        self._latest_hotspot_map: Dict[str, float] = {}
         
         # 初始化组件
         self.initialize_components()
@@ -281,6 +283,179 @@ class CompleteSystemSimulator:
             uav.setdefault('cache', {})
             uav['computation_queue'] = []
             uav['energy_consumed'] = 0.0
+
+    def get_central_scheduling_report(self) -> Dict[str, Any]:
+        """
+        获取中央调度器的综合报告。
+
+        Returns:
+            Dict[str, Any]: 调度器状态与关键指标。
+        """
+        if not hasattr(self, 'central_scheduler') or self.central_scheduler is None:
+            return {
+                'status': 'not_available',
+                'message': 'Central scheduler not initialized.'
+            }
+
+        if not getattr(self, 'rsus', None):
+            return {
+                'status': 'not_available',
+                'message': 'RSU topology unavailable.'
+            }
+
+        scheduler = self.central_scheduler
+
+        try:
+            vehicles = getattr(self, 'vehicles', [])
+            rsu_snapshots: List[Dict[str, Any]] = []
+
+            for rsu in self.rsus:
+                rsu_id = rsu.get('id', 'RSU')
+                position_raw = rsu.get('position', np.zeros(2))
+                position = position_raw if isinstance(position_raw, np.ndarray) else np.array(position_raw, dtype=float)
+
+                queue = list(rsu.get('computation_queue', []))
+                queue_length = len(queue)
+
+                cpu_usage_raw = rsu.get('cpu_usage')
+                if cpu_usage_raw is None:
+                    nominal_capacity = float(self.config.get('rsu_work_capacity', 2.5))
+                    cpu_usage = min(0.95, queue_length / max(1.0, nominal_capacity * 10.0))
+                else:
+                    cpu_usage = float(cpu_usage_raw)
+
+                cpu_frequency = float(rsu.get('cpu_frequency', 8e9))
+
+                cache_entries = rsu.get('cache', {})
+                cache_bytes = 0.0
+                cached_content = cache_entries if isinstance(cache_entries, dict) else {}
+
+                if isinstance(cache_entries, dict):
+                    for meta in cache_entries.values():
+                        if isinstance(meta, dict) and 'size' in meta:
+                            cache_bytes += float(meta.get('size', 0.0))
+                        elif isinstance(meta, (int, float)):
+                            cache_bytes += float(meta)
+                        else:
+                            cache_bytes += 1.0
+                elif isinstance(cache_entries, list):
+                    cache_bytes = float(len(cache_entries))
+
+                cache_capacity_bytes = float(rsu.get('cache_capacity_bytes', self.config.get('cache_capacity', 100) * 1e6))
+                cache_usage = 0.0 if cache_capacity_bytes <= 0 else min(1.0, cache_bytes / cache_capacity_bytes)
+
+                cache_hit_rate = rsu.get('cache_hit_rate')
+                if cache_hit_rate is None:
+                    hits = float(self.stats.get('cache_hits', 0.0))
+                    misses = float(self.stats.get('cache_misses', 0.0))
+                    total_reqs = hits + misses
+                    cache_hit_rate = hits / total_reqs if total_reqs > 0 else 0.0
+                cache_hit_rate = float(cache_hit_rate)
+
+                coverage_radius = float(rsu.get('coverage_radius', 300.0))
+                coverage_vehicles = 0
+
+                for vehicle in vehicles:
+                    vehicle_pos = vehicle.get('position')
+                    if vehicle_pos is None:
+                        continue
+
+                    if not isinstance(vehicle_pos, np.ndarray):
+                        vehicle_pos = np.array(vehicle_pos, dtype=float)
+
+                    if self.calculate_distance(vehicle_pos, position) <= coverage_radius:
+                        coverage_vehicles += 1
+
+                served_raw = rsu.get('served_vehicles')
+                if isinstance(served_raw, list):
+                    served_vehicles = len(served_raw)
+                elif isinstance(served_raw, (int, float)):
+                    served_vehicles = int(served_raw)
+                else:
+                    served_vehicles = max(queue_length, coverage_vehicles // 2)
+
+                bandwidth_usage = rsu.get('bandwidth_usage')
+                if bandwidth_usage is None:
+                    bandwidth_usage = min(1.0, queue_length / 25.0)
+                bandwidth_usage = float(bandwidth_usage)
+
+                avg_response_time = float(rsu.get('avg_response_time', 0.0))
+                task_completion_rate = float(rsu.get('task_completion_rate', 0.0))
+                energy_consumption = float(rsu.get('energy_consumed', 0.0))
+
+                rsu_snapshots.append({
+                    'id': rsu_id,
+                    'position': position,
+                    'computation_queue': queue,
+                    'queue_length': queue_length,
+                    'cpu_usage': cpu_usage,
+                    'cpu_frequency': cpu_frequency,
+                    'cache_usage': cache_usage,
+                    'cache_hit_rate': cache_hit_rate,
+                    'cached_content': cached_content,
+                    'served_vehicles': served_vehicles,
+                    'coverage_vehicles': coverage_vehicles,
+                    'network_bandwidth_usage': bandwidth_usage,
+                    'avg_response_time': avg_response_time,
+                    'task_completion_rate': task_completion_rate,
+                    'energy_consumption': energy_consumption
+                })
+
+            if not rsu_snapshots:
+                return {
+                    'status': 'not_available',
+                    'message': 'No RSU telemetry collected.'
+                }
+
+            scheduler.collect_all_rsu_loads(rsu_snapshots)
+
+            if self.current_step > 0:
+                avg_incoming = max(1, int(self.stats.get('total_tasks', 0) / self.current_step))
+            else:
+                avg_incoming = max(1, self.stats.get('total_tasks', 1))
+
+            scheduling_decisions = scheduler.global_load_balance_scheduling(incoming_task_count=avg_incoming)
+            migration_recs = scheduler.intelligent_migration_coordination()
+            scheduler_status = scheduler.get_global_scheduling_status()
+
+            migration_summaries: List[Dict[str, Any]] = []
+            for rec in migration_recs:
+                simplified = dict(rec)
+                for key, value in list(simplified.items()):
+                    if isinstance(value, np.ndarray):
+                        simplified[key] = value.tolist()
+                migration_summaries.append(simplified)
+
+            rsu_details = {
+                snapshot['id']: {
+                    'cpu_usage': snapshot['cpu_usage'],
+                    'queue_length': snapshot['queue_length'],
+                    'cache_usage': snapshot['cache_usage'],
+                    'cache_hit_rate': snapshot['cache_hit_rate'],
+                    'served_vehicles': snapshot['served_vehicles'],
+                    'coverage_vehicles': snapshot['coverage_vehicles']
+                }
+                for snapshot in rsu_snapshots
+            }
+
+            serialized_decisions = {
+                rsu_id: asdict(decision)
+                for rsu_id, decision in scheduling_decisions.items()
+            }
+
+            return {
+                'status': 'ok',
+                'scheduling_calls': scheduler.global_metrics.get('scheduling_decisions_count', 0),
+                'central_scheduler_status': scheduler_status,
+                'scheduling_decisions': serialized_decisions,
+                'rsu_details': rsu_details,
+                'migration_recommendations': migration_summaries
+            }
+        except Exception as exc:
+            return {
+                'status': 'error',
+                'message': str(exc)
+            }
     
     def _get_realistic_content_size(self, content_id: str) -> float:
         """
@@ -769,12 +944,19 @@ class CompleteSystemSimulator:
             else:
                 deadline_features.append(0.0)
 
+        hotspot_map = getattr(self, "_latest_hotspot_map", {})
+        rsu_hotspots = [
+            float(np.clip(hotspot_map.get(f'RSU_{idx}', 0.0), 0.0, 1.0))
+            for idx in range(getattr(self, 'num_rsus', 0))
+        ]
+
         return {
             "task_type_queue_distribution": _normalize(queue_counts, queue_total),
             "task_type_active_distribution": _normalize(active_counts, active_total),
             "task_type_deadline_remaining": deadline_features,
             "task_type_queue_counts": [float(c) for c in queue_counts],
             "task_type_active_counts": [float(c) for c in active_counts],
+            "rsu_hotspot_intensity": rsu_hotspots,
         }
     
     def _calculate_correct_cache_utilization(self, cache: Dict, cache_capacity_mb: float) -> float:
@@ -1274,6 +1456,7 @@ class CompleteSystemSimulator:
                 hotspot_map = collaborative_system.get_hotspot_intensity()
             except Exception:
                 hotspot_map = {}
+        self._latest_hotspot_map = hotspot_map
         
         # 🔍 收集所有节点状态用于邻居比较
         all_node_states = {}

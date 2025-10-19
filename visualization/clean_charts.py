@@ -10,6 +10,7 @@ import seaborn as sns
 from typing import Dict, List, Optional
 from datetime import datetime
 import warnings
+import os
 
 # 禁用matplotlib警告
 warnings.filterwarnings('ignore', category=UserWarning, module='matplotlib')
@@ -287,6 +288,68 @@ class ModernVisualizer:
         
         print(f"📊 {algorithm} Training Overview with Core Metrics Saved: {save_path}")
     
+    def plot_task_hotspot_dynamics(self, training_env, algorithm: str, save_path: str):
+        """绘制任务类型占比与RSU热点强度的协同变化。"""
+        queue_keys = [
+            'task_type_queue_share_ep_1',
+            'task_type_queue_share_ep_2',
+            'task_type_queue_share_ep_3',
+            'task_type_queue_share_ep_4',
+        ]
+        queue_data = []
+        for key in queue_keys:
+            data = training_env.episode_metrics.get(key, [])
+            if not data:
+                queue_data = []
+                break
+            queue_data.append(np.array(data, dtype=float))
+
+        hotspot_mean = np.array(training_env.episode_metrics.get('rsu_hotspot_mean', []), dtype=float)
+        hotspot_peak = np.array(training_env.episode_metrics.get('rsu_hotspot_peak', []), dtype=float)
+
+        if not queue_data or hotspot_mean.size == 0 or hotspot_peak.size == 0:
+            print("⚠️ 缺少任务类型或热点数据，跳过热点分析图生成")
+            return
+
+        series_lengths = [len(arr) for arr in queue_data] + [hotspot_mean.size, hotspot_peak.size]
+        length = min(series_lengths)
+        if length <= 0:
+            print("⚠️ 有效数据长度为 0，跳过热点分析图生成")
+            return
+
+        queue_data = [arr[:length] for arr in queue_data]
+        hotspot_mean = hotspot_mean[:length]
+        hotspot_peak = hotspot_peak[:length]
+        episodes = np.arange(1, length + 1)
+
+        fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(14, 9), sharex=True)
+        fig.suptitle(f'{algorithm} Task-Type & RSU Hotspot Dynamics', fontsize=15, fontweight='bold', y=0.96)
+
+        palette = sns.color_palette("RdYlBu", 4)
+        labels = ['Type-1 超敏', 'Type-2 敏感', 'Type-3 中容忍', 'Type-4 宽松']
+
+        ax1.stackplot(episodes, *queue_data, labels=labels, colors=palette, alpha=0.85)
+        ax1.set_ylabel('任务占比')
+        ax1.set_ylim(0, 1.02)
+        ax1.legend(loc='upper right', frameon=False)
+        self._apply_modern_style(ax1, '任务类型队列占比（每轮平均）')
+
+        ax2.plot(episodes, hotspot_peak, color=COLORS['warning'], linewidth=2.5, label='RSU 热点峰值')
+        ax2.plot(episodes, hotspot_mean, color=COLORS['primary'], linewidth=2.5, label='RSU 热点均值', alpha=0.8)
+        ax2.fill_between(episodes, hotspot_mean, hotspot_peak, color=COLORS['primary'], alpha=0.1)
+        ax2.axhline(0.7, color=COLORS['secondary'], linestyle='--', alpha=0.6, label='热点警戒线 0.7')
+        ax2.set_ylabel('热点强度 (0-1)')
+        ax2.set_xlabel('Episode')
+        ax2.set_ylim(0, 1.05)
+        ax2.legend(loc='upper right', frameon=False)
+        self._apply_modern_style(ax2, 'RSU 热点强度（峰值 vs 均值）')
+
+        plt.tight_layout()
+        plt.subplots_adjust(top=0.92)
+        plt.savefig(save_path, dpi=300, bbox_inches='tight', facecolor='white', edgecolor='none')
+        plt.close()
+        print(f"\U0001f4ca Hotspot-Traffic Dynamics Chart Saved: {save_path}")
+
     def plot_performance_summary(self, results_dict: Dict, save_path: str):
         """绘制性能对比总结 - 算法间对比"""
         
@@ -457,6 +520,9 @@ _visualizer = ModernVisualizer()
 def create_training_chart(training_env, algorithm: str, save_path: str):
     """创建训练图表 - 统一入口"""
     _visualizer.plot_training_overview(training_env, algorithm, save_path)
+    base, ext = os.path.splitext(save_path)
+    hotspot_path = f"{base}_hotspot{ext or '.png'}"
+    _visualizer.plot_task_hotspot_dynamics(training_env, algorithm, hotspot_path)
 
 def create_comparison_chart(results_dict: Dict, save_path: str):
     """创建对比图表 - 统一入口"""
