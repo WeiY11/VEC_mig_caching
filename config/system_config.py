@@ -4,7 +4,29 @@
 """
 
 import os
-from typing import Dict, Any
+import random
+from collections import defaultdict
+from dataclasses import dataclass
+from typing import Dict, Any, Tuple, List
+
+
+@dataclass(frozen=True)
+class TaskProfileSpec:
+    """描述单类任务的数据范围与计算密度"""
+    task_type: int
+    data_range: Tuple[float, float]
+    compute_density: float
+
+
+@dataclass(frozen=True)
+class TaskScenarioSpec:
+    """应用场景及其对应的任务类型与额外参数"""
+    name: str
+    min_deadline: float
+    max_deadline: float
+    task_type: int
+    relax_factor: float
+    weight: float
 
 class ExperimentConfig:
     """实验配置类"""
@@ -83,15 +105,7 @@ class TaskConfig:
         # 🔧 重新设计：任务参数 - 分层设计不同复杂度任务
         self.data_size_range = (0.5e6/8, 15e6/8)  # 0.5-15 Mbits = 0.0625-1.875 MB
         self.task_data_size_range = self.data_size_range  # 兼容性别名
-        
-        # 任务类型特化参数
-        self.task_type_specs = {
-            1: {'data_range': (0.5e6/8, 3e6/8),   'compute_density': 300},  # 极敏感：小数据,低密度
-            2: {'data_range': (2e6/8, 8e6/8),     'compute_density': 400},  # 敏感：中数据,中密度  
-            3: {'data_range': (5e6/8, 12e6/8),    'compute_density': 500},  # 中容忍：大数据,中高密度
-            4: {'data_range': (8e6/8, 15e6/8),    'compute_density': 600}   # 容忍：最大数据,高密度
-        }
-        
+
         # 计算周期配置 (自动计算，确保一致性)
         self.compute_cycles_range = (1e8, 1e10)  # cycles
         
@@ -107,6 +121,38 @@ class TaskConfig:
             'sensitive': 10,             # τ₂ = 10 时隙 = 2.0s (Vehicle处理)
             'moderately_tolerant': 25,   # τ₃ = 25 时隙 = 5.0s (UAV/复杂任务)
         }
+
+        # Deadline 放松参数
+        self.deadline_relax_default = 1.2
+        self.deadline_relax_fallback = 1.3
+
+        # 任务类型特化参数（Dataclass形式）
+        self.task_profiles: Dict[int, TaskProfileSpec] = {
+            1: TaskProfileSpec(1, (0.5e6/8, 3e6/8), 300),
+            2: TaskProfileSpec(2, (2e6/8, 8e6/8), 400),
+            3: TaskProfileSpec(3, (5e6/8, 12e6/8), 500),
+            4: TaskProfileSpec(4, (8e6/8, 15e6/8), 600),
+        }
+        # 兼容旧字段格式
+        self.task_type_specs = {
+            k: {'data_range': v.data_range, 'compute_density': v.compute_density}
+            for k, v in self.task_profiles.items()
+        }
+
+        # 场景定义
+        self.scenarios: List[TaskScenarioSpec] = [
+            TaskScenarioSpec('emergency_brake', 0.2, 0.6, 1, 1.6, 0.08),
+            TaskScenarioSpec('collision_avoid', 0.3, 0.6, 1, 1.6, 0.07),
+            TaskScenarioSpec('navigation', 0.9, 1.9, 2, 1.35, 0.25),
+            TaskScenarioSpec('traffic_signal', 1.1, 2.0, 2, 1.35, 0.15),
+            TaskScenarioSpec('video_process', 2.2, 4.8, 3, 1.25, 0.20),
+            TaskScenarioSpec('image_recognition', 2.5, 4.9, 3, 1.25, 0.15),
+            TaskScenarioSpec('data_analysis', 5.5, 12.0, 4, 1.15, 0.08),
+            TaskScenarioSpec('ml_training', 8.0, 18.0, 4, 1.15, 0.02),
+        ]
+        self._scenario_weights = [scenario.weight for scenario in self.scenarios]
+        self._scenario_lookup = {scenario.name: scenario for scenario in self.scenarios}
+        self.type_priority_weights = self._compute_type_priority_weights()
     
     def get_task_type(self, max_delay_slots: int) -> int:
         """
@@ -127,6 +173,74 @@ class TaskConfig:
             return 3  # MODERATELY_DELAY_TOLERANT
         else:
             return 4  # DELAY_TOLERANT
+
+    def sample_scenario(self) -> TaskScenarioSpec:
+        """按预设权重随机选择一个任务场景。"""
+        return random.choices(self.scenarios, weights=self._scenario_weights, k=1)[0]
+
+    def get_profile(self, task_type: int) -> TaskProfileSpec:
+        """获取任务类型对应的数据范围与计算密度配置。"""
+        return self.task_profiles.get(
+            task_type,
+            TaskProfileSpec(task_type, self.data_size_range, self.task_compute_density)
+        )
+
+    def get_relax_factor(self, task_type: int) -> float:
+        """根据任务类型返回默认的deadline放松系数。"""
+        for scenario in self.scenarios:
+            if scenario.task_type == task_type:
+                return scenario.relax_factor
+        return self.deadline_relax_default
+
+    def _compute_type_priority_weights(self) -> Dict[int, float]:
+        """根据场景权重汇总任务类型重要性，用于协同优化权重。"""
+        totals = defaultdict(float)
+        for scenario in self.scenarios:
+            totals[scenario.task_type] += scenario.weight
+
+        # 确保每个任务类型至少具备基线权重
+        for task_type in self.task_profiles.keys():
+            totals.setdefault(task_type, 1.0)
+
+        values = list(totals.values())
+        mean_val = sum(values) / len(values) if values else 1.0
+        if mean_val <= 0:
+            mean_val = 1.0
+
+        priority_weights = {
+            task_type: float(max(0.1, totals[task_type] / mean_val))
+            for task_type in self.task_profiles.keys()
+        }
+        return priority_weights
+
+    def get_priority_weight(self, task_type: int) -> float:
+        """返回指定任务类型的优先级权重。"""
+        return float(self.type_priority_weights.get(task_type, 1.0))
+
+
+class ServiceConfig:
+    """服务能力配置：控制节点每个时隙可处理的任务数量与工作量"""
+
+    def __init__(self):
+        # RSU 服务能力
+        self.rsu_base_service = 4
+        self.rsu_max_service = 9
+        self.rsu_work_capacity = 2.5  # 相当于每个时隙的工作单位
+        self.rsu_queue_boost_divisor = 5.0
+
+        # UAV 服务能力
+        self.uav_base_service = 3
+        self.uav_max_service = 6
+        self.uav_work_capacity = 1.7
+        self.uav_queue_boost_divisor = 4.0
+
+
+class StatsConfig:
+    """统计与监控配置"""
+
+    def __init__(self):
+        self.drop_log_interval = 200
+        self.task_report_interval = 100
 
 class ComputeConfig:
     """计算配置类"""
@@ -323,6 +437,8 @@ class SystemConfig:
         self.communication = CommunicationConfig()
         self.migration = MigrationConfig()
         self.cache = CacheConfig()
+        self.service = ServiceConfig()
+        self.stats = StatsConfig()
         
         # 实验配置
         self.experiment = ExperimentConfig()

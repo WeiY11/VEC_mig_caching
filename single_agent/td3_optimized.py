@@ -131,7 +131,7 @@ class VECStateSpace:
         self.vehicle_state_dim = 5  # 位置x,y + 速度x,y + 队列利用率
         self.rsu_state_dim = 4      # CPU利用率 + 队列利用率 + 缓存利用率 + 能耗
         self.uav_state_dim = 4      # CPU利用率 + 队列利用率 + 电池电量 + 能耗
-        self.global_state_dim = 8   # 全局系统指标
+        self.global_state_dim = 16  # 全局系统指标（基础8维 + 任务类型8维）
         
         self.total_dim = (
             self.num_vehicles * self.vehicle_state_dim +  # 12 * 5 = 60
@@ -202,6 +202,18 @@ class VECStateSpace:
             system_metrics.get('network_utilization', 0.5),
             system_metrics.get('load_balance_index', 0.5),
         ]
+        def _extract_metric(key: str) -> List[float]:
+            values = system_metrics.get(key, [])
+            if isinstance(values, np.ndarray):
+                values = values.tolist()
+            elif not isinstance(values, (list, tuple)):
+                values = []
+            values = [float(np.clip(v, 0.0, 1.0)) for v in values[:4]]
+            if len(values) < 4:
+                values.extend([0.0] * (4 - len(values)))
+            return values
+        global_state.extend(_extract_metric('task_type_queue_distribution'))
+        global_state.extend(_extract_metric('task_type_deadline_remaining'))
         state_components.extend(global_state)
         
         # 转换为numpy数组并检查NaN值

@@ -367,7 +367,8 @@ class AdaptiveMigrationController:
         bandwidth_load = current_state.get('bandwidth_load', 0.0)
         storage_load = current_state.get('storage_load', 0.0)
         battery_level = current_state.get('battery_level', 1.0)
-
+        hotspot_intensity = float(np.clip(current_state.get('hotspot_intensity', 0.0), 0.0, 1.0))
+        
         urgency_score = 0.0
         migration_reason = ""
 
@@ -380,6 +381,23 @@ class AdaptiveMigrationController:
             # 🔧 激活DRL控制：使用agent_params中的动态阈值
             cpu_threshold = self.agent_params.get('cpu_overload_threshold', 0.85)
             bw_threshold = self.agent_params.get('bandwidth_overload_threshold', 0.85)
+            load_diff_threshold = self.agent_params.get('load_diff_threshold', 0.20)
+
+            if hotspot_intensity > 0.0:
+                cpu_threshold = max(
+                    self.param_bounds['cpu_overload_threshold'][0],
+                    cpu_threshold - 0.1 * hotspot_intensity
+                )
+                bw_threshold = max(
+                    self.param_bounds['bandwidth_overload_threshold'][0],
+                    bw_threshold - 0.05 * hotspot_intensity
+                )
+                load_diff_threshold = max(
+                    self.param_bounds['load_diff_threshold'][0],
+                    load_diff_threshold - 0.05 * hotspot_intensity
+                )
+                if not migration_reason:
+                    migration_reason = "热门内容预热"
 
             if cpu_load > cpu_threshold:  # DRL可调整的CPU阈值（70-95%）
                 resource_overload = True
@@ -400,8 +418,6 @@ class AdaptiveMigrationController:
             max_load_diff = 0.0
 
             # 🔧 激活DRL控制：使用动态负载差阈值
-            load_diff_threshold = self.agent_params.get('load_diff_threshold', 0.20)
-
             if neighbor_states:
                 current_avg_load = (cpu_load + bandwidth_load + storage_load) / 3
                 for neighbor_id, neighbor_state in neighbor_states.items():
@@ -423,7 +439,8 @@ class AdaptiveMigrationController:
                 # 使用实际触发阈值计算紧急度
                 resource_urgency = max(cpu_load - cpu_threshold, bandwidth_load - bw_threshold, 0.0)
                 urgency_score += resource_urgency * 2.0  # 资源过载权重高
-                migration_reason = f"资源过载({','.join(overload_resources)})"
+                overload_reason = f"资源过载({','.join(overload_resources)})"
+                migration_reason = overload_reason if not migration_reason else f"{migration_reason} + {overload_reason}"
 
             if load_diff_trigger:
                 diff_urgency = max_load_diff - load_diff_threshold

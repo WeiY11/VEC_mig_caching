@@ -281,12 +281,26 @@ class SingleAgentTrainingEnvironment:
             'cache_hit_rate': [],
             'cache_utilization': [],
             'cache_evictions': [],
+            'cache_eviction_rate': [],
+            'cache_requests': [],
             'cache_collaborative_writes': [],
             'local_cache_hits': [],
             'migration_avg_cost': [],
             'migration_avg_delay_saved': [],
             'migration_success_rate': [],
-            'episode_steps': []  # 🔧 新增：记录每个episode的实际步数
+            'episode_steps': [],  # 🔧 新增：记录每个episode的实际步数
+            'task_type_queue_share_1': [],
+            'task_type_queue_share_2': [],
+            'task_type_queue_share_3': [],
+            'task_type_queue_share_4': [],
+            'task_type_deadline_norm_1': [],
+            'task_type_deadline_norm_2': [],
+            'task_type_deadline_norm_3': [],
+            'task_type_deadline_norm_4': [],
+            'task_type_drop_rate_1': [],
+            'task_type_drop_rate_2': [],
+            'task_type_drop_rate_3': [],
+            'task_type_drop_rate_4': []
         }
         
         # 性能追踪器
@@ -444,6 +458,17 @@ class SingleAgentTrainingEnvironment:
         
         reward = self.agent_env.calculate_reward(system_metrics, cache_metrics, migration_metrics)
         
+        task_type_queue = system_metrics.get('task_type_queue_distribution', [])
+        task_type_deadline = system_metrics.get('task_type_deadline_remaining', [])
+        task_type_drop = system_metrics.get('task_type_drop_rate', [])
+        for idx in range(4):
+            queue_val = float(task_type_queue[idx]) if idx < len(task_type_queue) else 0.0
+            deadline_val = float(task_type_deadline[idx]) if idx < len(task_type_deadline) else 0.0
+            drop_val = float(task_type_drop[idx]) if idx < len(task_type_drop) else 0.0
+            self.episode_metrics[f'task_type_queue_share_{idx+1}'].append(queue_val)
+            self.episode_metrics[f'task_type_deadline_norm_{idx+1}'].append(deadline_val)
+            self.episode_metrics[f'task_type_drop_rate_{idx+1}'].append(drop_val)
+        
         # 判断是否结束
         done = False  # 单智能体环境通常不会提前结束
         
@@ -501,6 +526,13 @@ class SingleAgentTrainingEnvironment:
         
         # 🔧 修复能耗计算：使用真实累积能耗并转换为本episode增量
         current_total_energy = safe_get('total_energy', 0.0)
+
+        # 自适应控制器统计（用于奖励与指标归一化）
+        cache_metrics = self.adaptive_cache_controller.get_cache_metrics()
+        migration_metrics = self.adaptive_migration_controller.get_migration_metrics()
+        cache_total_requests = int(cache_metrics.get('total_requests', 0) or 0)
+        cache_total_evictions = int(cache_metrics.get('evicted_items', 0) or 0)
+        cache_total_collab = int(cache_metrics.get('collaborative_writes', 0) or 0)
         
         # 初始化本episode各项统计基线
         if not hasattr(self, '_episode_energy_base_initialized'):
@@ -509,6 +541,9 @@ class SingleAgentTrainingEnvironment:
             self._episode_dropped_base = total_dropped
             self._episode_generated_bytes_base = current_generated_bytes
             self._episode_dropped_bytes_base = current_dropped_bytes
+            self._episode_cache_requests_base = cache_total_requests
+            self._episode_cache_evictions_base = cache_total_evictions
+            self._episode_cache_collab_base = cache_total_collab
             self._episode_energy_base_initialized = True
         
         # 计算本episode增量能耗（防止负值与异常）
@@ -535,11 +570,63 @@ class SingleAgentTrainingEnvironment:
         # 🔧 调试迁移统计
         if migrations_executed > 0:
             print(f"🔍 迁移统计: 执行{migrations_executed}次, 成功{migrations_successful}次, 成功率{migration_success_rate:.1%}")
-        
-        # 🤖 获取自适应控制器指标
-        cache_metrics = self.adaptive_cache_controller.get_cache_metrics()
-        migration_metrics = self.adaptive_migration_controller.get_migration_metrics()
-        
+
+        episode_cache_requests = max(
+            0,
+            cache_total_requests - getattr(self, '_episode_cache_requests_base', 0)
+        )
+        episode_cache_evictions = max(
+            0,
+            cache_total_evictions - getattr(self, '_episode_cache_evictions_base', 0)
+        )
+        episode_cache_collab = max(
+            0,
+            cache_total_collab - getattr(self, '_episode_cache_collab_base', 0)
+        )
+        cache_eviction_rate = (
+            episode_cache_evictions / episode_cache_requests
+            if episode_cache_requests > 0 else 0.0
+        )
+
+        def _normalize_vector(key: str, length: int = 4, clip: bool = True) -> List[float]:
+            raw = step_stats.get(key)
+            if isinstance(raw, np.ndarray):
+                values = raw.tolist()
+            elif isinstance(raw, (list, tuple)):
+                values = list(raw)
+            else:
+                values = []
+            values = [float(v) for v in values[:length]]
+            if len(values) < length:
+                values.extend([0.0] * (length - len(values)))
+            if clip:
+                values = [float(np.clip(v, 0.0, 1.0)) for v in values]
+            else:
+                values = [float(max(0.0, v)) for v in values]
+            return values
+
+        queue_distribution = _normalize_vector('task_type_queue_distribution')
+        active_distribution = _normalize_vector('task_type_active_distribution')
+        deadline_remaining = _normalize_vector('task_type_deadline_remaining')
+        queue_counts = _normalize_vector('task_type_queue_counts', clip=False)
+        active_counts = _normalize_vector('task_type_active_counts', clip=False)
+
+        task_generation_stats = step_stats.get('task_generation')
+        gen_by_type = task_generation_stats.get('by_type', {}) if isinstance(task_generation_stats, dict) else {}
+        drop_stats = step_stats.get('drop_stats')
+        drop_by_type = drop_stats.get('by_type', {}) if isinstance(drop_stats, dict) else {}
+
+        total_generated_by_type = sum(float(gen_by_type.get(t, 0.0)) for t in range(1, 5))
+        generated_share: List[float] = []
+        drop_rate: List[float] = []
+        for task_type in range(1, 5):
+            generated = float(gen_by_type.get(task_type, 0.0))
+            dropped = float(drop_by_type.get(task_type, 0.0))
+            drop_rate.append(float(np.clip(dropped / generated, 0.0, 1.0)) if generated > 0.0 else 0.0)
+            generated_share.append(
+                float(np.clip(generated / total_generated_by_type, 0.0, 1.0)) if total_generated_by_type > 0.0 else 0.0
+            )
+
         # 🔍 调试日志：能耗与迁移敏感区间
         current_episode = getattr(self, '_current_episode', 0)
         if current_episode > 0 and (current_episode % 50 == 0 or avg_delay > 0.2 or migration_success_rate < 0.9):
@@ -580,11 +667,19 @@ class SingleAgentTrainingEnvironment:
             'migration_avg_cost': migration_metrics.get('avg_cost', 0.0),
             'migration_avg_delay_saved': migration_metrics.get('avg_delay_saved', 0.0),
             'cache_utilization': cache_metrics.get('utilization', 0.0),
-            'cache_evictions': cache_metrics.get('evicted_items', 0),
-            'cache_collaborative_writes': cache_metrics.get('collaborative_writes', 0),
-            'local_cache_hits': step_stats.get('local_cache_hits', 0),
+            'cache_evictions': episode_cache_evictions,
+            'cache_eviction_rate': cache_eviction_rate,
+            'cache_requests': episode_cache_requests,
+            'cache_collaborative_writes': episode_cache_collab,
             'adaptive_cache_params': cache_metrics.get('agent_params', {}),
-            'adaptive_migration_params': migration_metrics.get('agent_params', {})
+            'adaptive_migration_params': migration_metrics.get('agent_params', {}),
+            'task_type_queue_distribution': queue_distribution,
+            'task_type_active_distribution': active_distribution,
+            'task_type_deadline_remaining': deadline_remaining,
+            'task_type_queue_counts': queue_counts,
+            'task_type_active_counts': active_counts,
+            'task_type_drop_rate': drop_rate,
+            'task_type_generated_share': generated_share
         }
     
     def run_episode(self, episode: int, max_steps: Optional[int] = None) -> Dict:
@@ -1073,6 +1168,8 @@ def train_single_algorithm(algorithm: str, num_episodes: Optional[int] = None, e
             'cache_hit_rate': 'cache_hit_rate', 
             'cache_utilization': 'cache_utilization',
             'cache_evictions': 'cache_evictions',
+            'cache_eviction_rate': 'cache_eviction_rate',
+            'cache_requests': 'cache_requests',
             'cache_collaborative_writes': 'cache_collaborative_writes',
             'local_cache_hits': 'local_cache_hits',
             'migration_success_rate': 'migration_success_rate',
@@ -1325,7 +1422,7 @@ def evaluate_single_model(algorithm: str, training_env: SingleAgentTrainingEnvir
             next_state, reward, done, info = training_env.step(action, state, actions_dict)
             
             # 安全处理奖励和指标
-            safe_reward = safe_value(reward, -1.0, 100.0)
+            safe_reward = safe_value(reward, -10.0, 120.0)
             episode_reward += safe_reward
             
             system_metrics = info['system_metrics']
@@ -1343,7 +1440,7 @@ def evaluate_single_model(algorithm: str, training_env: SingleAgentTrainingEnvir
         
         # 安全计算平均值
         steps = max(1, steps)  # 防止除零
-        eval_rewards.append(safe_value(episode_reward / steps, -10.0, 10.0))
+        eval_rewards.append(safe_value(episode_reward / steps, -20.0, 80.0))
         eval_delays.append(safe_value(episode_delay / steps, 0.0, 10.0))
         eval_completions.append(safe_value(episode_completion / steps, 0.0, 1.0))
     
@@ -1351,7 +1448,7 @@ def evaluate_single_model(algorithm: str, training_env: SingleAgentTrainingEnvir
     if len(eval_rewards) == 0:
         return {'avg_reward': -1.0, 'avg_delay': 1.0, 'completion_rate': 0.0}
     
-    avg_reward = safe_value(float(np.mean(eval_rewards)), -10.0, 10.0)
+    avg_reward = safe_value(float(np.mean(eval_rewards)), -20.0, 80.0)
     avg_delay = safe_value(float(np.mean(eval_delays)), 0.0, 10.0)
     avg_completion = safe_value(float(np.mean(eval_completions)), 0.0, 1.0)
     

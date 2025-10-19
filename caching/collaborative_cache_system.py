@@ -488,6 +488,43 @@ class CollaborativeCacheSystem:
             'unique_contents': len(set().union(*self.cache_directory.values())) if self.cache_directory else 0
         }
     
+    def get_hotspot_intensity(self, top_k: int = 10) -> Dict[str, float]:
+        """
+        返回每个RSU的热点强度，用于迁移控制器提前预留资源。
+        强度范围：[0, 1]，越接近1表示近期热门内容更多地集中在该RSU。
+        """
+        intensities: Dict[str, float] = {node_id: 0.0 for node_id in self.cache_managers.keys()}
+        if not self.heat_strategy:
+            return intensities
+
+        heat_items = sorted(
+            self.heat_strategy.historical_heat.items(),
+            key=lambda item: item[1],
+            reverse=True
+        )
+        if top_k > 0:
+            heat_items = heat_items[:top_k]
+
+        if not heat_items:
+            return intensities
+
+        for content_id, heat in heat_items:
+            holders = self.cache_directory.get(content_id)
+            if not holders:
+                continue
+            share = heat / max(1, len(holders))
+            for rsu_id in holders:
+                intensities[rsu_id] += share
+
+        max_intensity = max(intensities.values()) if intensities else 0.0
+        if max_intensity <= 0:
+            return intensities
+
+        return {
+            rsu_id: float(np.clip(value / max_intensity, 0.0, 1.0))
+            for rsu_id, value in intensities.items()
+        }
+    
     def periodic_maintenance(self):
         """
         定期维护任务

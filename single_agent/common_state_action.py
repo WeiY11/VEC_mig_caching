@@ -17,8 +17,10 @@ class UnifiedStateActionSpace:
         返回:
             (local_state_dim, global_state_dim, total_state_dim)
         """
+        base_global_dim = 8
+        task_type_feature_dim = 8  # 4个任务类型队列占比 + 4个归一化截止期裕度
         local_state_dim = num_vehicles * 5 + num_rsus * 5 + num_uavs * 5
-        global_state_dim = 8
+        global_state_dim = base_global_dim + task_type_feature_dim
         total_state_dim = local_state_dim + global_state_dim
         return local_state_dim, global_state_dim, total_state_dim
     
@@ -37,7 +39,7 @@ class UnifiedStateActionSpace:
     def build_global_state(node_states: Dict, system_metrics: Dict, 
                           num_vehicles: int, num_rsus: int) -> np.ndarray:
         """
-        构建全局系统状态（8维）
+        构建全局系统状态（16维：基础8维 + 任务类型8维）
         
         参数:
             node_states: 节点状态字典
@@ -68,8 +70,8 @@ class UnifiedStateActionSpace:
         avg_energy = system_metrics.get('total_energy_consumption', 0.0) / max(1, num_vehicles + num_rsus + 2)
         cache_hit_rate = system_metrics.get('cache_hit_rate', 0.0)
         
-        # 构建全局状态向量
-        global_state = np.array([
+        # 构建全局状态基础向量
+        base_features = [
             np.clip(avg_queue, 0.0, 1.0),           # 平均队列占用率
             np.clip(congestion_ratio, 0.0, 1.0),    # 拥塞节点比例
             np.clip(completion_rate, 0.0, 1.0),     # 任务完成率
@@ -78,7 +80,22 @@ class UnifiedStateActionSpace:
             0.0,  # episode进度（保留位）
             np.clip(len([q for q in all_queues if q > 0]) / max(1, len(all_queues)), 0.0, 1.0),  # 活跃节点比例
             np.clip(sum(all_queues) / max(1, len(all_queues)), 0.0, 1.0)  # 网络总负载
-        ], dtype=np.float32)
+        ]
+        
+        def _to_fixed_length(values, length=4):
+            if isinstance(values, np.ndarray):
+                values = values.tolist()
+            elif not isinstance(values, (list, tuple)):
+                values = []
+            values = [float(v) for v in values[:length]]
+            if len(values) < length:
+                values.extend([0.0] * (length - len(values)))
+            return [float(np.clip(v, 0.0, 1.0)) for v in values]
+        
+        queue_distribution = _to_fixed_length(system_metrics.get('task_type_queue_distribution'))
+        deadline_remaining = _to_fixed_length(system_metrics.get('task_type_deadline_remaining'))
+        
+        global_state = np.array(base_features + queue_distribution + deadline_remaining, dtype=np.float32)
         
         return global_state
     

@@ -161,6 +161,7 @@ class HierarchicalTD3Agent(TD3Agent):
         state_dim: int,
         action_dim: int,
         config: Optional[HierarchicalTD3Config],
+        num_vehicles: int,
         num_rsus: int,
         num_uavs: int,
     ):
@@ -171,6 +172,9 @@ class HierarchicalTD3Agent(TD3Agent):
             state_dim,
             action_dim,
             self.hier_config,
+            num_vehicles=num_vehicles,
+            num_rsus=num_rsus,
+            num_uavs=num_uavs,
             actor_cls=HierarchicalTD3Actor,
             actor_kwargs={
                 "num_rsus": num_rsus,
@@ -196,6 +200,7 @@ class TD3HierarchicalEnvironment(TD3LatencyEnergyEnvironment):
             self.state_dim,
             self.action_dim,
             self.config,
+            self.num_vehicles,
             num_rsus,
             num_uavs,
         )

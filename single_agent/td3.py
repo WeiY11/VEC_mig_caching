@@ -23,10 +23,11 @@ import torch.optim as optim
 import numpy as np
 import random
 from collections import deque
-from typing import Dict, List, Tuple, Optional, Union
+from typing import Dict, List, Tuple, Optional, Union, Any
 from dataclasses import dataclass
 
 from config import config
+from .common_state_action import UnifiedStateActionSpace
 
 
 @dataclass
@@ -36,6 +37,7 @@ class TD3Config:
     hidden_dim: int = 512  # 🔧 统一使用512，确保所有车辆数配置都有充足容量  
     actor_lr: float = 1e-4  # 🔧 提高Actor学习率，增强策略更新力度
     critic_lr: float = 8e-5  # 🔧 适度提高Critic学习率，追踪更精确
+    graph_embed_dim: int = 128  # 🔧 图编码器输出维度
     
     # 训练参数
     batch_size: int = 256
@@ -111,39 +113,172 @@ class TD3Config:
     warmup_steps: int = 1000
 
 
+class GraphFeatureExtractor(nn.Module):
+    """
+    轻量图特征编码器：将车辆/RSU/UAV状态映射为增强的全局表示。
+    通过注意力汇聚获得整体上下文，为策略输出提供结构信息。
+    """
+
+    def __init__(
+        self,
+        num_vehicles: int,
+        num_rsus: int,
+        num_uavs: int,
+        node_feature_dim: int = 5,
+        global_feature_dim: int = 8,
+        embed_dim: int = 128,
+    ):
+        super().__init__()
+        self.num_vehicles = num_vehicles
+        self.num_rsus = num_rsus
+        self.num_uavs = num_uavs
+        self.node_feature_dim = node_feature_dim
+        self.global_feature_dim = global_feature_dim
+
+        self.node_encoder = nn.Sequential(
+            nn.Linear(node_feature_dim, embed_dim),
+            nn.ReLU(),
+            nn.Linear(embed_dim, embed_dim),
+            nn.ReLU(),
+        )
+        self.attn_proj = nn.Linear(embed_dim, 1)
+        self.group_proj = nn.ModuleDict(
+            {
+                "vehicles": nn.Linear(embed_dim, embed_dim),
+                "rsus": nn.Linear(embed_dim, embed_dim),
+                "uavs": nn.Linear(embed_dim, embed_dim),
+            }
+        )
+        # attention 汇聚 + 三个群组均值 + 原始全局特征
+        self.output_dim = embed_dim * 4 + global_feature_dim
+
+    def forward(self, state: torch.Tensor) -> torch.Tensor:
+        batch = state.size(0)
+        total_nodes = self.num_vehicles + self.num_rsus + self.num_uavs
+        dynamic_len = total_nodes * self.node_feature_dim
+        if dynamic_len > state.size(1):
+            raise ValueError("状态向量长度不足以拆解节点特征")
+
+        dynamic_segment = state[:, :dynamic_len]
+        global_segment = state[:, -self.global_feature_dim :]
+
+        offset = 0
+
+        def slice_group(count: int) -> torch.Tensor:
+            nonlocal offset
+            if count == 0:
+                return torch.zeros(batch, 0, self.node_feature_dim, device=state.device)
+            chunk = dynamic_segment[:, offset : offset + count * self.node_feature_dim]
+            offset += count * self.node_feature_dim
+            return chunk.view(batch, count, self.node_feature_dim)
+
+        vehicle_feats = slice_group(self.num_vehicles)
+        rsu_feats = slice_group(self.num_rsus)
+        uav_feats = slice_group(self.num_uavs)
+
+        all_nodes = torch.cat([vehicle_feats, rsu_feats, uav_feats], dim=1)
+        if all_nodes.numel() == 0:
+            zeros = torch.zeros(batch, self.output_dim - self.global_feature_dim, device=state.device)
+            return torch.cat([zeros, global_segment], dim=1)
+
+        encoded = self.node_encoder(all_nodes)  # [B, N, E]
+        attn_logits = self.attn_proj(encoded).squeeze(-1)
+        attn_weights = torch.softmax(attn_logits, dim=1)
+        attention_embed = torch.sum(attn_weights.unsqueeze(-1) * encoded, dim=1)
+
+        def group_pool(feats: torch.Tensor, proj_layer: nn.Linear) -> torch.Tensor:
+            if feats.size(1) == 0:
+                return torch.zeros(batch, proj_layer.out_features, device=state.device)
+            encoded_group = self.node_encoder(feats)
+            pooled = encoded_group.mean(dim=1)
+            return proj_layer(pooled)
+
+        vehicle_embed = group_pool(vehicle_feats, self.group_proj["vehicles"])
+        rsu_embed = group_pool(rsu_feats, self.group_proj["rsus"])
+        uav_embed = group_pool(uav_feats, self.group_proj["uavs"])
+
+        fused = torch.cat(
+            [vehicle_embed, rsu_embed, uav_embed, attention_embed, global_segment], dim=1
+        )
+        return fused
+
+
 class TD3Actor(nn.Module):
-    """TD3 Actor网络 - 确定性策略网络"""
-    
-    def __init__(self, state_dim: int, action_dim: int, hidden_dim: int = 256, max_action: float = 1.0):
-        super(TD3Actor, self).__init__()
-        
+    """多头结构的 TD3 Actor，同步输出卸载策略与缓存/迁移参数。"""
+
+    def __init__(
+        self,
+        state_dim: int,
+        offload_dim: int,
+        cache_dim: int,
+        hidden_dim: int,
+        num_vehicles: int,
+        num_rsus: int,
+        num_uavs: int,
+        global_dim: int = 8,
+        graph_embed_dim: int = 128,
+        max_action: float = 1.0,
+    ):
+        super().__init__()
         self.max_action = max_action
-        
-        self.network = nn.Sequential(
-            nn.Linear(state_dim, hidden_dim),
+        self.offload_dim = offload_dim
+        self.cache_dim = cache_dim
+
+        self.encoder = GraphFeatureExtractor(
+            num_vehicles=num_vehicles,
+            num_rsus=num_rsus,
+            num_uavs=num_uavs,
+            node_feature_dim=5,
+            global_feature_dim=global_dim,
+            embed_dim=graph_embed_dim,
+        )
+
+        fused_dim = self.encoder.output_dim
+        self.shared = nn.Sequential(
+            nn.Linear(fused_dim, hidden_dim),
             nn.ReLU(),
             nn.Linear(hidden_dim, hidden_dim),
             nn.ReLU(),
-            nn.Linear(hidden_dim, action_dim),
-            nn.Tanh()
         )
-        
-        self._init_weights()
-    
-    def _init_weights(self):
-        """初始化网络权重"""
-        for layer in self.network:
+
+        head_hidden = max(hidden_dim // 2, 64)
+        self.offload_head = nn.Sequential(
+            nn.Linear(hidden_dim, head_hidden),
+            nn.ReLU(),
+            nn.Linear(head_hidden, offload_dim),
+        )
+        self.cache_head = nn.Sequential(
+            nn.Linear(hidden_dim, head_hidden),
+            nn.ReLU(),
+            nn.Linear(head_hidden, cache_dim),
+        )
+
+        self._init_weights(self.shared)
+        self._init_weights(self.offload_head)
+        self._init_weights(self.cache_head)
+
+        self._last_offload = None
+        self._last_cache = None
+
+    @staticmethod
+    def _init_weights(module: nn.Module):
+        for layer in module:
             if isinstance(layer, nn.Linear):
                 nn.init.xavier_uniform_(layer.weight)
                 nn.init.constant_(layer.bias, 0.0)
-        
-        # 最后一层使用较小的权重初始化
-        nn.init.uniform_(self.network[-2].weight, -3e-3, 3e-3)
-        nn.init.uniform_(self.network[-2].bias, -3e-3, 3e-3)
-    
+
     def forward(self, state: torch.Tensor) -> torch.Tensor:
-        """前向传播"""
-        return self.max_action * self.network(state)
+        fused = self.encoder(state)
+        shared_feat = self.shared(fused)
+
+        offload_raw = torch.tanh(self.offload_head(shared_feat))
+        cache_raw = torch.tanh(self.cache_head(shared_feat))
+
+        self._last_offload = offload_raw
+        self._last_cache = cache_raw
+
+        combined = torch.cat([offload_raw, cache_raw], dim=1)
+        return self.max_action * combined
 
 
 class TD3Critic(nn.Module):
@@ -265,23 +400,62 @@ class TD3ReplayBuffer:
 class TD3Agent:
     """TD3智能体"""
     
-    def __init__(self, state_dim: int, action_dim: int, config: TD3Config):
+    def __init__(self,
+                 state_dim: int,
+                 action_dim: int,
+                 config: TD3Config,
+                 num_vehicles: Optional[int] = None,
+                 num_rsus: Optional[int] = None,
+                 num_uavs: Optional[int] = None,
+                 global_dim: int = 8,
+                 actor_cls: Optional[Any] = None,
+                 actor_kwargs: Optional[Dict[str, Any]] = None):
         self.state_dim = state_dim
         self.action_dim = action_dim
         self.config = config
+        if num_vehicles is None:
+            num_vehicles = 12
+        if num_rsus is None:
+            num_rsus = 4
+        if num_uavs is None:
+            num_uavs = 2
+        self.num_vehicles = num_vehicles
+        self.num_rsus = num_rsus
+        self.num_uavs = num_uavs
+        self.global_dim = global_dim
         
         # 性能优化 - 使用优化的批次大小
         self.optimized_batch_size = OPTIMIZED_BATCH_SIZES.get('TD3', config.batch_size)
         self.config.batch_size = self.optimized_batch_size
         
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        
+
+        offload_dim = 3 + num_rsus + num_uavs
+        cache_dim = action_dim - offload_dim
+        if cache_dim <= 0:
+            raise ValueError("动作维度不足以拆出缓存/迁移控制参数")
+
+        actor_cls = actor_cls or TD3Actor
+        base_actor_kwargs = {
+            "state_dim": state_dim,
+            "offload_dim": offload_dim,
+            "cache_dim": cache_dim,
+            "hidden_dim": config.hidden_dim,
+            "num_vehicles": num_vehicles,
+            "num_rsus": num_rsus,
+            "num_uavs": num_uavs,
+            "global_dim": global_dim,
+            "graph_embed_dim": config.graph_embed_dim,
+        }
+        if actor_kwargs:
+            base_actor_kwargs.update(actor_kwargs)
+
         # 创建网络
-        self.actor = TD3Actor(state_dim, action_dim, config.hidden_dim).to(self.device)
+        self.actor = actor_cls(**dict(base_actor_kwargs)).to(self.device)
         self.critic = TD3Critic(state_dim, action_dim, config.hidden_dim).to(self.device)
         
         # 目标网络
-        self.target_actor = TD3Actor(state_dim, action_dim, config.hidden_dim).to(self.device)
+        self.target_actor = actor_cls(**dict(base_actor_kwargs)).to(self.device)
         self.target_critic = TD3Critic(state_dim, action_dim, config.hidden_dim).to(self.device)
         
         # 初始化目标网络
@@ -506,18 +680,25 @@ class TD3Environment:
         self.num_rsus = num_rsus
         self.num_uavs = num_uavs
         
-        # 🔧 优化后的状态维度：所有节点统一为5维 + 全局状态8维
-        # 车辆状态: N×5维 + RSU状态: M×5维 + UAV状态: K×5维 + 全局: 8维
-        self.local_state_dim = num_vehicles * 5 + num_rsus * 5 + num_uavs * 5
-        self.global_state_dim = 8
-        self.state_dim = self.local_state_dim + self.global_state_dim
+        # 🔧 优化后的状态维度：所有节点统一为5维 + 全局状态16维（包含任务类型扩展）
+        # 车辆状态: N×5维 + RSU状态: M×5维 + UAV状态: K×5维 + 全局: 16维
+        self.local_state_dim, self.global_state_dim, self.state_dim = \
+            UnifiedStateActionSpace.calculate_state_dim(num_vehicles, num_rsus, num_uavs)
         
         # 🔧 优化后的动作空间：动态适配网络拓扑
         # 3(任务分配) + num_rsus(RSU选择) + num_uavs(UAV选择) + 8(控制参数)
         self.action_dim = 3 + num_rsus + num_uavs + 8
         
         # 创建智能体
-        self.agent = TD3Agent(self.state_dim, self.action_dim, self.config)
+        self.agent = TD3Agent(
+            state_dim=self.state_dim,
+            action_dim=self.action_dim,
+            config=self.config,
+            num_vehicles=self.num_vehicles,
+            num_rsus=self.num_rsus,
+            num_uavs=self.num_uavs,
+            global_dim=self.global_state_dim
+        )
         
         # 训练统计
         self.episode_count = 0
@@ -569,7 +750,7 @@ class TD3Environment:
             else:
                 state_components.extend([0.5, 0.5, 0.5, 0.0, 0.0])
         
-        # ========== 2. 全局系统状态 (8维) ==========
+        # ========== 2. 全局系统状态 (基础8维 + 任务类型8维) ==========
         global_state = self._build_global_state(node_states, system_metrics)
         state_components.extend(global_state)
         
@@ -588,43 +769,13 @@ class TD3Environment:
         return state_vector
     
     def _build_global_state(self, node_states: Dict, system_metrics: Dict) -> np.ndarray:
-        """
-        构建全局系统状态（8维）
-        提供系统级别的整体信息，辅助智能体进行全局协调决策
-        """
-        # 收集所有节点的队列信息（从局部状态中提取）
-        all_queues = []
-        for i in range(self.num_vehicles):
-            v_state = node_states.get(f'vehicle_{i}')
-            if v_state is not None and len(v_state) > 3:
-                all_queues.append(v_state[3])  # 队列维度
-        for i in range(self.num_rsus):
-            r_state = node_states.get(f'rsu_{i}')
-            if r_state is not None and len(r_state) > 3:
-                all_queues.append(r_state[3])
-        
-        # 计算全局指标
-        avg_queue = np.mean(all_queues) if all_queues else 0.0
-        congestion_ratio = len([q for q in all_queues if q > 0.5]) / max(1, len(all_queues))
-        
-        # 从system_metrics获取系统级指标
-        completion_rate = system_metrics.get('task_completion_rate', 0.5)
-        avg_energy = system_metrics.get('total_energy_consumption', 0.0) / max(1, self.num_vehicles + self.num_rsus + self.num_uavs)
-        cache_hit_rate = system_metrics.get('cache_hit_rate', 0.0)
-        
-        # 构建全局状态向量
-        global_state = np.array([
-            np.clip(avg_queue, 0.0, 1.0),           # 平均队列占用率
-            np.clip(congestion_ratio, 0.0, 1.0),    # 拥塞节点比例
-            np.clip(completion_rate, 0.0, 1.0),     # 任务完成率
-            np.clip(avg_energy / 1000.0, 0.0, 1.0), # 平均能耗
-            np.clip(cache_hit_rate, 0.0, 1.0),      # 缓存命中率
-            0.0,  # episode进度（需要从外部传入）
-            np.clip(len([q for q in all_queues if q > 0]) / max(1, len(all_queues)), 0.0, 1.0),  # 活跃节点比例
-            np.clip(sum(all_queues) / max(1, len(all_queues)), 0.0, 1.0)  # 网络总负载
-        ], dtype=np.float32)
-        
-        return global_state
+        """构建包含任务类型统计的全局状态向量。"""
+        return UnifiedStateActionSpace.build_global_state(
+            node_states,
+            system_metrics,
+            self.num_vehicles,
+            self.num_rsus
+        )
     
     def decompose_action(self, action: np.ndarray) -> Dict[str, np.ndarray]:
         """

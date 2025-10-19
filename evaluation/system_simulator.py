@@ -48,6 +48,10 @@ class CompleteSystemSimulator:
             self.time_slot = self.config.get('time_slot', 0.2)  # 🚀 高负载默认时隙
             self.task_arrival_rate = self.config.get('task_arrival_rate', 2.5)  # 🚀 高负载默认到达率
         
+        self.task_config = getattr(self.sys_config, 'task', None) if self.sys_config is not None else None
+        self.service_config = getattr(self.sys_config, 'service', None) if self.sys_config is not None else None
+        self.stats_config = getattr(self.sys_config, 'stats', None) if self.sys_config is not None else None
+        
         # 性能统计与运行态
         self.stats = self._fresh_stats_dict()
         self.active_tasks: List[Dict] = []  # 每项: {id, vehicle_id, arrival_time, deadline, work_remaining, node_type, node_idx}
@@ -73,6 +77,15 @@ class CompleteSystemSimulator:
             'bandwidth': 20,  # MHz
             'transmission_power': 0.1,  # W
             'computation_power': 1.0,  # W
+            'rsu_base_service': 4,
+            'rsu_max_service': 9,
+            'rsu_work_capacity': 2.5,
+            'uav_base_service': 3,
+            'uav_max_service': 6,
+            'uav_work_capacity': 1.7,
+            'drop_log_interval': 200,
+            'task_report_interval': 100,
+            'task_compute_density': 400,
         }
     
     def initialize_components(self):
@@ -230,7 +243,15 @@ class CompleteSystemSimulator:
             'rsu_migration_energy': 0.0,
             'rsu_migration_data': 0.0,
             'uav_migration_distance': 0.0,
-            'uav_migration_count': 0
+            'uav_migration_count': 0,
+            'task_generation': {'total': 0, 'by_type': {}, 'by_scenario': {}},
+            'drop_stats': {
+                'total': 0,
+                'wait_time_sum': 0.0,
+                'queue_sum': 0,
+                'by_type': {},
+                'by_scenario': {}
+            }
         }
 
     def _reset_runtime_states(self):
@@ -241,6 +262,7 @@ class CompleteSystemSimulator:
         self.task_counter = 0
         self.stats = self._fresh_stats_dict()
         self.active_tasks = []
+        self._last_app_name = 'unknown'
 
         # 重置车辆/节点状态
         for vehicle in self.vehicles:
@@ -310,115 +332,99 @@ class CompleteSystemSimulator:
             return 'general'
     
     def generate_task(self, vehicle_id: str) -> Dict:
-        """生成计算任务 - 使用分层任务类型设计"""
+        """生成计算任务 - 使用配置驱动的任务场景定义"""
         self.task_counter += 1
-        
-        # 🔧 修复：按论文正确分类 - 先生成应用特定deadline，再基于延迟容忍度分类
-        if self.sys_config is not None:
-            # 第一步：根据论文阈值严格设计应用场景deadline需求
-            # τ₁=0.8s, τ₂=2.0s, τ₃=5.0s
-            app_scenarios = [
-                ('emergency_brake', 0.2, 0.6),      # 紧急制动：≤τ₁ (类型1)
-                ('collision_avoid', 0.3, 0.6),      # 避障：≤τ₁ (类型1)
-                ('navigation', 0.9, 1.9),           # 实时导航：(τ₁,τ₂] (类型2)  
-                ('traffic_signal', 1.1, 2.0),       # 交通信号：(τ₁,τ₂] (类型2)
-                ('video_process', 2.2, 4.8),        # 视频处理：(τ₂,τ₃] (类型3)
-                ('image_recognition', 2.5, 4.9),    # 图像识别：(τ₂,τ₃] (类型3)
-                ('data_analysis', 5.5, 12.0),       # 数据分析：>τ₃ (类型4)
-                ('ml_training', 8.0, 18.0),         # 机器学习：>τ₃ (类型4)
-            ]
-            
-            # 按概率选择应用场景（现实分布：紧急少，容忍多）
-            scenario_weights = [0.08, 0.07, 0.25, 0.15, 0.20, 0.15, 0.08, 0.02]
-            selected_scenario = np.random.choice(len(app_scenarios), p=scenario_weights)
-            app_name, min_deadline, max_deadline = app_scenarios[selected_scenario]
-            
-            # 从应用特定范围生成deadline
-            deadline_duration = np.random.uniform(min_deadline, max_deadline)
-            
-            # 第二步：根据deadline计算时隙数并分类（论文正确方法）
-            time_slot = getattr(self.sys_config.network, 'time_slot_duration', 0.2)
-            max_delay_slots = int(deadline_duration / time_slot)
-            
-            # 使用论文分类方法
-            task_type = self.sys_config.task.get_task_type(max_delay_slots)
-            
-            # 第三步：根据确定的任务类型获取对应参数
-            task_specs = getattr(self.sys_config.task, 'task_type_specs', {})
-            if task_type in task_specs:
-                spec = task_specs[task_type]
-                data_range = spec['data_range']
-                compute_density = spec['compute_density']
-            else:
-                # 回退到通用参数
-                data_range = getattr(self.sys_config.task, 'data_size_range', (0.5e6/8, 15e6/8))
-                compute_density = float(getattr(self.sys_config.task, 'task_compute_density', 400))
-            
-            # 数据大小：从类型特定范围采样
-            data_size_bytes = np.random.uniform(data_range[0], data_range[1])
-            data_size_mb = data_size_bytes / 1e6
-            
-            # 计算需求：基于数据大小和类型特定计算密度
-            total_bits = data_size_bytes * 8
-            computation_cycles = total_bits * compute_density
-            computation_mips = computation_cycles / 1e6
+
+        task_cfg = getattr(self.sys_config, 'task', None) if self.sys_config is not None else None
+        time_slot = getattr(self.sys_config.network, 'time_slot_duration', self.time_slot) if self.sys_config is not None else self.time_slot
+
+        scenario_name = 'fallback'
+        relax_factor_applied = self.config.get('deadline_relax_fallback', 1.3)
+        task_type = 3
+
+        if task_cfg is not None:
+            scenario = task_cfg.sample_scenario()
+            scenario_name = scenario.name
+            relax_factor_applied = scenario.relax_factor or task_cfg.deadline_relax_default
+
+            deadline_duration = np.random.uniform(scenario.min_deadline, scenario.max_deadline)
+            deadline_duration *= relax_factor_applied
+            max_delay_slots = max(1, int(deadline_duration / max(time_slot, 1e-6)))
+            task_type = scenario.task_type or task_cfg.get_task_type(max_delay_slots)
+
+            profile = task_cfg.get_profile(task_type)
+            data_min, data_max = profile.data_range
+            data_size_bytes = float(np.random.uniform(data_min, data_max))
+            compute_density = profile.compute_density
         else:
-            # 回退默认值
-            task_type = np.random.randint(1, 5)
-            data_size_mb = np.random.exponential(0.5)  # 更小的默认数据
+            deadline_duration = np.random.uniform(0.5, 3.0) * relax_factor_applied
+            task_type = int(np.random.randint(1, 5))
+            data_size_mb = np.random.exponential(0.5)
             data_size_bytes = data_size_mb * 1e6
-            computation_mips = np.random.exponential(80)  # 降低默认计算需求
-            deadline_duration = np.random.uniform(0.5, 3.0)
-            compute_density = 400  # 设置默认密度
-        
-        # 🚀 任务复杂度控制 - 避免过高能耗
-        high_load_mode = self.config.get('high_load_mode', False)
-        if high_load_mode:
-            complexity_multiplier = self.config.get('task_complexity_multiplier', 1.5)  # 降低倍数
-            
-            # 温和增强计算需求
-            computation_mips *= complexity_multiplier
-            
-            # 限制数据大小在合理范围
-            data_size_mb = min(data_size_mb * 1.1, 2.0)  # 最大2MB
+            compute_density = self.config.get('task_compute_density', 400)
+            max_delay_slots = max(1, int(deadline_duration / max(self.config.get('time_slot', self.time_slot), 0.1)))
+
+        # 任务复杂度控制
+        data_size_mb = data_size_bytes / 1e6
+        effective_density = compute_density
+        complexity_multiplier = 1.0
+
+        if self.config.get('high_load_mode', False):
+            complexity_multiplier = self.config.get('task_complexity_multiplier', 1.5)
+            data_size_mb = min(data_size_mb * 1.1, 2.0)
             data_size_bytes = data_size_mb * 1e6
-            
-            # 温和增强计算密度
-            compute_density = min(compute_density * 1.05, 200)  # 最大200 cycles/bit
-        
+            effective_density = min(effective_density * 1.05, 200)
+
+        total_bits = data_size_bytes * 8
+        computation_cycles = total_bits * effective_density
+        computation_mips = (computation_cycles / 1e6) * complexity_multiplier
+
         task = {
             'id': f'task_{self.task_counter}',
             'vehicle_id': vehicle_id,
             'arrival_time': self.current_time,
-            'data_size': data_size_mb,  # 🚀 高负载增强数据大小
-            'data_size_bytes': data_size_bytes,  # 🚀 高负载增强数据字节
-            'computation_requirement': computation_mips,  # 🚀 高负载增强计算需求
+            'data_size': data_size_mb,
+            'data_size_bytes': data_size_bytes,
+            'computation_requirement': computation_mips,
             'deadline': self.current_time + deadline_duration,
             'content_id': f'content_{np.random.randint(0, 100)}',
             'priority': np.random.uniform(0.1, 1.0),
-            'task_type': task_type,  # 🔧 新增：任务类型标识
-            'app_scenario': app_name,  # 🔧 新增：应用场景
-            'compute_density': compute_density,  # 🚀 高负载增强计算密度
-            'complexity_multiplier': self.config.get('task_complexity_multiplier', 1.0),  # 🚀 复杂度标记
-            'max_delay_slots': max_delay_slots  # 🔧 新增：时隙数（用于验证分类）
+            'task_type': task_type,
+            'app_scenario': scenario_name,
+            'app_name': scenario_name,
+            'compute_density': effective_density,
+            'complexity_multiplier': complexity_multiplier,
+            'max_delay_slots': max_delay_slots,
+            'deadline_relax_factor': relax_factor_applied
         }
-        
-        # 📊 任务分类统计监控（每100个任务输出分类分布）
-        if self.task_counter % 100 == 0 and self.task_counter > 0:
-            # 统计最近100个任务的分类分布
-            if not hasattr(self, 'task_type_stats'):
-                self.task_type_stats = {1: 0, 2: 0, 3: 0, 4: 0}
-            self.task_type_stats[task_type] = self.task_type_stats.get(task_type, 0) + 1
-            
-            total_classified = sum(self.task_type_stats.values())
-            if total_classified > 0:
-                type1_pct = self.task_type_stats[1] / total_classified * 100
-                type2_pct = self.task_type_stats[2] / total_classified * 100
-                type3_pct = self.task_type_stats[3] / total_classified * 100
-                type4_pct = self.task_type_stats[4] / total_classified * 100
-                print(f"📊 任务分类统计({self.task_counter}): 类型1={type1_pct:.1f}%, 类型2={type2_pct:.1f}%, 类型3={type3_pct:.1f}%, 类型4={type4_pct:.1f}%")
-                print(f"   当前任务: {app_name}, {deadline_duration:.2f}s → 类型{task_type}, 数据{data_size_mb:.2f}MB")
-        
+
+        self._last_app_name = scenario_name
+
+        # 📊 任务统计收集
+        gen_stats = self.stats.setdefault('task_generation', {'total': 0, 'by_type': {}, 'by_scenario': {}})
+        gen_stats['total'] += 1
+        by_type = gen_stats.setdefault('by_type', {})
+        by_type[task_type] = by_type.get(task_type, 0) + 1
+        by_scenario = gen_stats.setdefault('by_scenario', {})
+        by_scenario[scenario_name] = by_scenario.get(scenario_name, 0) + 1
+
+        report_interval = self.stats_config.task_report_interval if getattr(self, 'stats_config', None) else self.config.get('task_report_interval', 100)
+        report_interval = max(1, int(report_interval))
+        if gen_stats['total'] % report_interval == 0:
+            total_classified = sum(by_type.values()) or 1
+            type1_pct = by_type.get(1, 0) / total_classified * 100
+            type2_pct = by_type.get(2, 0) / total_classified * 100
+            type3_pct = by_type.get(3, 0) / total_classified * 100
+            type4_pct = by_type.get(4, 0) / total_classified * 100
+            print(
+                f"📊 任务分类统计({gen_stats['total']}): "
+                f"类型1={type1_pct:.1f}%, 类型2={type2_pct:.1f}%, 类型3={type3_pct:.1f}%, 类型4={type4_pct:.1f}%"
+            )
+            print(
+                f"   当前任务: {scenario_name}, {deadline_duration:.2f}s → "
+                f"类型{task_type}, 数据{data_size_mb:.2f}MB"
+            )
+
         return task
     
     def calculate_distance(self, pos1: np.ndarray, pos2: np.ndarray) -> float:
@@ -460,11 +466,41 @@ class CompleteSystemSimulator:
     def _process_single_node_queue(self, node: Dict, node_type: str):
         "处理单个节点的计算队列"
         queue = node.get('computation_queue', []) or []
-        if not queue:
+        queue_len = len(queue)
+        if queue_len == 0:
             return
 
-        max_tasks_per_slot = 3 if node_type == 'RSU' else 2
-        tasks_to_process = min(len(queue), max_tasks_per_slot)
+        if node_type == 'RSU':
+            if self.service_config:
+                base_capacity = self.service_config.rsu_base_service
+                max_service = self.service_config.rsu_max_service
+                boost_divisor = self.service_config.rsu_queue_boost_divisor
+            else:
+                base_capacity = int(self.config.get('rsu_base_service', 4))
+                max_service = int(self.config.get('rsu_max_service', 9))
+                boost_divisor = 5.0
+        elif node_type == 'UAV':
+            if self.service_config:
+                base_capacity = self.service_config.uav_base_service
+                max_service = self.service_config.uav_max_service
+                boost_divisor = self.service_config.uav_queue_boost_divisor
+            else:
+                base_capacity = int(self.config.get('uav_base_service', 3))
+                max_service = int(self.config.get('uav_max_service', 6))
+                boost_divisor = 4.0
+        else:
+            base_capacity = 2
+            max_service = 4
+            boost_divisor = 5.0
+
+        dynamic_boost = 0
+        if queue_len > base_capacity:
+            dynamic_boost = int(np.ceil((queue_len - base_capacity) / boost_divisor))
+
+        max_tasks_per_slot = min(queue_len, base_capacity + dynamic_boost)
+        max_tasks_per_slot = min(max_tasks_per_slot, max_service)
+        max_tasks_per_slot = max(max_tasks_per_slot, min(queue_len, base_capacity))
+        tasks_to_process = max_tasks_per_slot
 
         new_queue: List[Dict] = []
         current_time = getattr(self, 'current_time', 0.0)
@@ -480,11 +516,17 @@ class CompleteSystemSimulator:
 
             remaining_work = float(task.get('work_remaining', 0.5))
             if node_type == 'RSU':
-                work_capacity = self.time_slot * 2.0
+                if self.service_config:
+                    work_capacity = self.time_slot * self.service_config.rsu_work_capacity
+                else:
+                    work_capacity = self.time_slot * self.config.get('rsu_work_capacity', 2.5)
             elif node_type == 'UAV':
-                work_capacity = self.time_slot * 1.5
+                if self.service_config:
+                    work_capacity = self.time_slot * self.service_config.uav_work_capacity
+                else:
+                    work_capacity = self.time_slot * self.config.get('uav_work_capacity', 1.7)
             else:
-                work_capacity = self.time_slot
+                work_capacity = self.time_slot * 1.2
 
             remaining_work -= work_capacity
             task['work_remaining'] = max(0.0, remaining_work)
@@ -671,6 +713,70 @@ class CompleteSystemSimulator:
         # 🔧 不限制在1.0，允许显示真实过载程度
         return max(0.0, load_factor)
     
+    def _summarize_task_types(self) -> Dict[str, Any]:
+        """Aggregate per-task-type queues, active counts, and deadline slack."""
+        num_types = 4
+        queue_counts = np.zeros(num_types, dtype=float)
+        active_counts = np.zeros(num_types, dtype=float)
+        deadline_sums = np.zeros(num_types, dtype=float)
+        deadline_counts = np.zeros(num_types, dtype=float)
+
+        current_time = getattr(self, "current_time", 0.0)
+
+        def _record(entry: Dict[str, Any]) -> Optional[int]:
+            task_type = int(entry.get("task_type", 0) or 0) - 1
+            if 0 <= task_type < num_types:
+                remaining = max(0.0, entry.get("deadline", current_time) - current_time)
+                deadline_sums[task_type] += remaining
+                deadline_counts[task_type] += 1.0
+                return task_type
+            return None
+
+        for node in list(self.rsus) + list(self.uavs):
+            for task in node.get("computation_queue", []):
+                idx = _record(task)
+                if idx is not None:
+                    queue_counts[idx] += 1.0
+
+        for task in self.active_tasks:
+            idx = _record(task)
+            if idx is not None:
+                active_counts[idx] += 1.0
+
+        if self.task_config is not None and hasattr(self.task_config, "deadline_range"):
+            deadline_upper = float(getattr(self.task_config, "deadline_range", (1.0, 10.0))[1])
+        else:
+            fallback_range = self.config.get("deadline_range", (1.0, 10.0))
+            if isinstance(fallback_range, (list, tuple)) and len(fallback_range) >= 2:
+                deadline_upper = float(fallback_range[1])
+            else:
+                deadline_upper = float(self.config.get("deadline_range_max", 10.0))
+        deadline_upper = max(deadline_upper, 1.0)
+
+        queue_total = float(queue_counts.sum())
+        active_total = float(active_counts.sum())
+
+        def _normalize(counts: np.ndarray, total: float) -> List[float]:
+            if total <= 0.0:
+                return [0.0] * num_types
+            return [float(np.clip(val / total, 0.0, 1.0)) for val in counts]
+
+        deadline_features = []
+        for idx in range(num_types):
+            if deadline_counts[idx] > 0.0:
+                avg_remaining = deadline_sums[idx] / deadline_counts[idx]
+                deadline_features.append(float(np.clip(avg_remaining / deadline_upper, 0.0, 1.0)))
+            else:
+                deadline_features.append(0.0)
+
+        return {
+            "task_type_queue_distribution": _normalize(queue_counts, queue_total),
+            "task_type_active_distribution": _normalize(active_counts, active_total),
+            "task_type_deadline_remaining": deadline_features,
+            "task_type_queue_counts": [float(c) for c in queue_counts],
+            "task_type_active_counts": [float(c) for c in active_counts],
+        }
+    
     def _calculate_correct_cache_utilization(self, cache: Dict, cache_capacity_mb: float) -> float:
         """
         🔧 计算正确的缓存利用率
@@ -697,16 +803,56 @@ class CompleteSystemSimulator:
             if position is None or len(position) < 2:
                 continue
 
-            direction = vehicle.get('direction', 0.0)
-            speed = float(vehicle.get('velocity', 15.0))
-            dx = np.cos(direction) * speed * self.time_slot
-            dy = np.sin(direction) * speed * self.time_slot
+            # === 1) 更新速度（缓慢加减速 + 交叉口减速） ===
+            base_speed = float(vehicle.get('velocity', 15.0))
+            accel_state = vehicle.setdefault('speed_accel', 0.0)
+            accel_state = 0.7 * accel_state + np.random.uniform(-0.4, 0.4)
 
-            # 道路长度取 1000m，超界循环
+            # 在接近路口时降低速度，避免高速冲过交叉口
+            for intersection in self.intersections.values():
+                dist_to_signal = abs(position[0] - intersection['x'])
+                if dist_to_signal < 40.0:
+                    accel_state = min(accel_state, -0.8)
+                    break
+
+            new_speed = np.clip(base_speed + accel_state, 5.0, 32.0)
+            vehicle['speed_accel'] = accel_state
+            vehicle['velocity'] = new_speed
+
+            # === 2) 方向保持，同时允许轻微抖动 ===
+            direction = vehicle.get('direction', 0.0)
+            heading_jitter = vehicle.setdefault('heading_jitter', 0.0)
+            heading_jitter = 0.6 * heading_jitter + np.random.uniform(-0.01, 0.01)
+            direction = (direction + heading_jitter) % (2 * np.pi)
+            vehicle['direction'] = direction
+            vehicle['heading_jitter'] = heading_jitter
+
+            dx = np.cos(direction) * new_speed * self.time_slot
+            dy = np.sin(direction) * new_speed * self.time_slot
+
+            # === 3) 侧向漂移（模拟轻微换道） ===
+            lane_bias = vehicle.get('lane_bias', position[1] - self.road_y)
+            lane_switch_timer = vehicle.setdefault('lane_switch_timer', np.random.randint(80, 160))
+            lane_switch_timer -= 1
+            if lane_switch_timer <= 0 and np.random.rand() < 0.1:
+                lane_bias = np.clip(lane_bias + np.random.choice([-1.0, 1.0]) * np.random.uniform(0.5, 1.5),
+                                    -6.0, 6.0)
+                lane_switch_timer = np.random.randint(120, 220)
+            vehicle['lane_switch_timer'] = lane_switch_timer
+            vehicle['lane_bias'] = lane_bias
+
+            lateral_state = vehicle.setdefault('lateral_state', 0.0)
+            lateral_state = 0.5 * lateral_state + np.random.uniform(-0.25, 0.25)
+            vehicle['lateral_state'] = np.clip(lateral_state, -2.0, 2.0)
+
+            # === 4) 应用位置更新（x 环路，y 受 lane_bias 与漂移影响） ===
             new_x = (position[0] + dx) % 1000.0
-            new_y = float(self.road_y + vehicle.get('lane_bias', 0.0)) + dy * 0.05  # 微小扰动
+            baseline_lane_y = float(self.road_y + lane_bias)
+            new_y = baseline_lane_y + vehicle['lateral_state']
+            new_y = np.clip(new_y, self.road_y - 6.5, self.road_y + 6.5)
+
             vehicle['position'][0] = new_x
-            vehicle['position'][1] = np.clip(new_y, self.road_y - 6.0, self.road_y + 6.0)
+            vehicle['position'][1] = new_y
 
     def _sample_arrivals(self) -> int:
         """按泊松过程采样每车每时隙的任务到达数"""
@@ -798,12 +944,41 @@ class CompleteSystemSimulator:
                     continue
 
                 remaining = []
+                drop_stats = self.stats.setdefault('drop_stats', {
+                    'total': 0,
+                    'wait_time_sum': 0.0,
+                    'queue_sum': 0,
+                    'by_type': {},
+                    'by_scenario': {}
+                })
+                by_type = drop_stats.setdefault('by_type', {})
+                by_scenario = drop_stats.setdefault('by_scenario', {})
+                log_interval = self.stats_config.drop_log_interval if getattr(self, 'stats_config', None) else self.config.get('drop_log_interval', 200)
+                log_interval = max(1, int(log_interval))
                 for task in queue:
                     if self.current_time > task.get('deadline', float('inf')):
                         task['dropped'] = True
                         self.stats['dropped_tasks'] += 1
                         self.stats['dropped_data_bytes'] += float(task.get('data_size_bytes', 0.0))
-                else:
+
+                        drop_stats['total'] += 1
+                        wait_time = max(0.0, self.current_time - task.get('queued_at', task.get('arrival_time', self.current_time)))
+                        drop_stats['wait_time_sum'] += wait_time
+                        drop_stats['queue_sum'] += len(queue)
+                        task_type = task.get('task_type', 'unknown')
+                        by_type[task_type] = by_type.get(task_type, 0) + 1
+                        scenario_name = task.get('app_scenario', 'unknown')
+                        by_scenario[scenario_name] = by_scenario.get(scenario_name, 0) + 1
+
+                        if drop_stats['total'] % log_interval == 0:
+                            avg_wait = drop_stats['wait_time_sum'] / max(1, drop_stats['total'])
+                            avg_queue = drop_stats['queue_sum'] / max(1, drop_stats['total'])
+                            print(
+                                f"⚠️ Dropped tasks: {drop_stats['total']} "
+                                f"(avg wait {avg_wait:.2f}s, avg queue {avg_queue:.1f}) "
+                                f"latest type {task_type}, scenario {scenario_name}"
+                            )
+                        continue
                     remaining.append(task)
                 node['computation_queue'] = remaining
 
@@ -1064,7 +1239,10 @@ class CompleteSystemSimulator:
             'node_type': node_type,
             'node_idx': node_idx,
             'upload_delay': upload_delay,
-            'priority': task.get('priority', 0.5)
+            'priority': task.get('priority', 0.5),
+            'task_type': task.get('task_type'),
+            'app_scenario': task.get('app_scenario'),
+            'deadline_relax_factor': task.get('deadline_relax_factor', 1.0)
         }
 
         queue = node.setdefault('computation_queue', [])
@@ -1088,6 +1266,14 @@ class CompleteSystemSimulator:
             return
         
         migration_controller = agents_actions['migration_controller']
+        
+        hotspot_map: Dict[str, float] = {}
+        collaborative_system = getattr(self, 'collaborative_cache', None)
+        if collaborative_system is not None and hasattr(collaborative_system, 'get_hotspot_intensity'):
+            try:
+                hotspot_map = collaborative_system.get_hotspot_intensity()
+            except Exception:
+                hotspot_map = {}
         
         # 🔍 收集所有节点状态用于邻居比较
         all_node_states = {}
@@ -1113,7 +1299,8 @@ class CompleteSystemSimulator:
                 'node_type': 'RSU',
                 'queue_length': queue_len,
                 'cache_capacity': cache_capacity,
-                'cache_available': available_cache
+                'cache_available': available_cache,
+                'hotspot_intensity': float(np.clip(hotspot_map.get(f'RSU_{i}', 0.0), 0.0, 1.0))
             }
 
         # UAV状态收集
@@ -1137,7 +1324,8 @@ class CompleteSystemSimulator:
                 'node_type': 'UAV',
                 'queue_length': queue_len,
                 'cache_capacity': cache_capacity,
-                'cache_available': available_cache
+                'cache_available': available_cache,
+                'hotspot_intensity': 0.0
             }
         
         # 🏢 RSU迁移检查 (阈值+负载差触发)
@@ -1282,6 +1470,7 @@ class CompleteSystemSimulator:
                     # 必须满足：1) 找到新节点, 2) 新节点不同, 3) 新节点明显更优
                     current_queue = len(current_node.get('computation_queue', []))
                     current_score = distance_to_current * 1.0 + current_queue * 30
+                    origin_queue_before = current_queue
                     
                     should_migrate = (
                         best_new_node is not None and 
@@ -1290,21 +1479,29 @@ class CompleteSystemSimulator:
                     )
                     
                     if should_migrate:
+                        origin_node_type = task['node_type']
+                        origin_node_idx = task.get('node_idx')
+                        
                         # 从原节点移除任务
-                        if task['node_type'] == 'RSU':
-                            old_queue = self.rsus[task['node_idx']].get('computation_queue', [])
-                            self.rsus[task['node_idx']]['computation_queue'] = [
-                                t for t in old_queue if t.get('id') != task['id']
-                            ]
-                        elif task['node_type'] == 'UAV':
-                            old_queue = self.uavs[task['node_idx']].get('computation_queue', [])
-                            self.uavs[task['node_idx']]['computation_queue'] = [
-                                t for t in old_queue if t.get('id') != task['id']
-                            ]
+                        if origin_node_type == 'RSU':
+                            old_queue = self.rsus[origin_node_idx].get('computation_queue', [])
+                            updated_queue = [t for t in old_queue if t.get('id') != task['id']]
+                            self.rsus[origin_node_idx]['computation_queue'] = updated_queue
+                            current_node = self.rsus[origin_node_idx]
+                            origin_queue_after = len(updated_queue)
+                        elif origin_node_type == 'UAV':
+                            old_queue = self.uavs[origin_node_idx].get('computation_queue', [])
+                            updated_queue = [t for t in old_queue if t.get('id') != task['id']]
+                            self.uavs[origin_node_idx]['computation_queue'] = updated_queue
+                            current_node = self.uavs[origin_node_idx]
+                            origin_queue_after = len(updated_queue)
+                        else:
+                            origin_queue_after = origin_queue_before
                         
                         # 添加到新节点
                         if 'computation_queue' not in best_new_node:
                             best_new_node['computation_queue'] = []
+                        target_queue_before = len(best_new_node['computation_queue'])
                         
                         # 创建新任务项
                         migrated_task = {
@@ -1319,22 +1516,36 @@ class CompleteSystemSimulator:
                             'work_remaining': task.get('work_remaining', 0.5),
                             'cache_hit': task.get('cache_hit', False),
                             'queued_at': self.current_time,
-                            'migrated_from': f"{task['node_type']}_{task.get('node_idx')}"
+                            'migrated_from': f"{task['node_type']}_{task.get('node_idx')}",
+                            'task_type': task.get('task_type'),
+                            'app_scenario': task.get('app_scenario'),
+                            'deadline_relax_factor': task.get('deadline_relax_factor', 1.0)
                         }
                         best_new_node['computation_queue'].append(migrated_task)
+                        target_queue_after = len(best_new_node['computation_queue'])
                         
                         # 更新任务信息
                         task['node_type'] = best_node_type
                         task['node_idx'] = best_node_idx
                         
                         handover_count += 1
+                        migration_label = handover_count
                         
                         # 🔧 增强日志：显示触发原因和迁移收益
-                        print(f"🚗 车辆跟随迁移: {task['vehicle_id']} 从 {task['node_type']}_{task.get('node_idx')} → {best_node_type}_{best_node_idx}")
+                        print(
+                            f"🚗 车辆跟随迁移[{migration_label}]: 车辆 {task['vehicle_id']} 任务 {task['id']} "
+                            f"从 {origin_node_type}_{origin_node_idx} → {best_node_type}_{best_node_idx}"
+                        )
                         print(f"   触发原因: 距离{distance_to_current:.1f}m > 阈值{trigger_threshold:.1f}m (车速{vehicle_speed:.1f}m/s)")
                         print(f"   迁移收益: 当前评分{current_score:.1f} → 新评分{best_distance:.1f} (改善{(1-best_distance/current_score)*100:.1f}%)")
+                        print(
+                            f"   队列趋势: {origin_node_type}_{origin_node_idx}: {origin_queue_before} → {origin_queue_after}, "
+                            f"{best_node_type}_{best_node_idx}: {target_queue_before} → {target_queue_after}"
+                        )
                         
                         # 记录跟随迁移统计
+                        self.stats['migrations_executed'] = self.stats.get('migrations_executed', 0) + 1
+                        self.stats['migrations_successful'] = self.stats.get('migrations_successful', 0) + 1
                         self.stats['handover_migrations'] = self.stats.get('handover_migrations', 0) + 1
                         migration_controller.record_migration_result(True, cost=5.0, delay_saved=0.3)
                 
@@ -1394,6 +1605,8 @@ class CompleteSystemSimulator:
             'uav_queue_lengths': [len(uav.get('computation_queue', [])) for uav in self.uavs],
             'active_tasks': len(self.active_tasks)
         })
+
+        step_summary.update(self._summarize_task_types())
 
         cumulative_stats = dict(self.stats)
         cumulative_stats.update(step_summary)

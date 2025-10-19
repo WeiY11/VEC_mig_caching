@@ -12,7 +12,7 @@
 """
 
 import numpy as np
-from typing import Dict, Optional
+from typing import Dict, Optional, List
 from config import config
 
 
@@ -38,6 +38,18 @@ class UnifiedRewardCalculator:
         self.penalty_dropped = config.rl.reward_penalty_dropped # 默认 0.02
         self.weight_cache = getattr(config.rl, 'reward_weight_cache', 0.0)
         self.weight_migration = getattr(config.rl, 'reward_weight_migration', 0.0)
+        priority_weights = getattr(config, 'task', None)
+        if priority_weights is not None:
+            priority_weights = getattr(priority_weights, 'type_priority_weights', None)
+        if isinstance(priority_weights, dict) and priority_weights:
+            total_priority = sum(float(v) for v in priority_weights.values()) or 1.0
+            self.task_priority_weights = {
+                int(task_type): float(value) / total_priority
+                for task_type, value in priority_weights.items()
+            }
+        else:
+            # 均匀权重作为回退
+            self.task_priority_weights = {1: 0.25, 2: 0.25, 3: 0.25, 4: 0.25}
         
         # 🎯 核心设计：归一化因子（确保时延和能耗在相同数量级）
         # 目标：delay=0.2s 和 energy=600J 归一化后贡献相当
@@ -55,7 +67,7 @@ class UnifiedRewardCalculator:
             self.reward_clip_range = (-15.0, 3.0)
         else:
             # 通用版本：纯成本最小化
-            self.reward_clip_range = (-25.0, -0.01)
+            self.reward_clip_range = (-80.0, -0.005)
         
         print(f"[OK] 统一奖励计算器初始化 ({self.algorithm})")
         print(f"   核心权重: Delay={self.weight_delay:.1f}, Energy={self.weight_energy:.1f}")
@@ -98,6 +110,22 @@ class UnifiedRewardCalculator:
                 return max(0, int(value))
             except (TypeError, ValueError):
                 return default
+
+        def to_float_list(source) -> List[float]:
+            """将系统指标中的列表/数组安全转换为浮点列表。"""
+            if isinstance(source, np.ndarray):
+                values = source.tolist()
+            elif isinstance(source, (list, tuple)):
+                values = list(source)
+            else:
+                return []
+            cleaned = []
+            for item in values:
+                try:
+                    cleaned.append(float(item))
+                except (TypeError, ValueError):
+                    cleaned.append(0.0)
+            return cleaned
         
         avg_delay = safe_float(system_metrics.get('avg_task_delay'), 0.0)
         total_energy = safe_float(system_metrics.get('total_energy_consumption'), 0.0)
@@ -135,13 +163,30 @@ class UnifiedRewardCalculator:
         cache_penalty = 0.0
         if self.weight_cache > 0:
             cache_hit_rate = safe_float(system_metrics.get('cache_hit_rate'), 0.0)
-            cache_evictions = safe_int(system_metrics.get('cache_evictions', 0))
-            cache_collab = safe_int(system_metrics.get('cache_collaborative_writes', 0))
-            local_cache_hits = safe_int(system_metrics.get('local_cache_hits', 0))
+            cache_requests = safe_float(system_metrics.get('cache_requests', 0.0), 0.0)
+            cache_evictions = safe_float(system_metrics.get('cache_evictions', 0.0), 0.0)
+            cache_eviction_rate = system_metrics.get('cache_eviction_rate')
+            if cache_eviction_rate is None:
+                if cache_requests > 0:
+                    cache_eviction_rate = min(1.0, cache_evictions / max(1.0, cache_requests))
+                else:
+                    cache_eviction_rate = 0.0
+            else:
+                try:
+                    cache_eviction_rate = max(0.0, min(1.0, float(cache_eviction_rate)))
+                except (TypeError, ValueError):
+                    cache_eviction_rate = 0.0
+
             cache_penalty = max(0.0, 1.0 - min(1.0, cache_hit_rate))
-            cache_penalty += 0.0005 * cache_evictions
-            cache_penalty -= min(0.3, (cache_collab * 0.00005) + (local_cache_hits * 0.0001))
-            cache_penalty = max(-0.3, cache_penalty)
+            cache_penalty += min(0.6, cache_eviction_rate)
+
+            mitigation = 0.0
+            if cache_requests > 0:
+                collaborative_ratio = safe_float(system_metrics.get('cache_collaborative_writes', 0.0)) / max(1.0, cache_requests)
+                local_hit_ratio = safe_float(system_metrics.get('local_cache_hits', 0.0)) / max(1.0, cache_requests)
+                mitigation = min(0.4, 0.25 * collaborative_ratio + 0.5 * local_hit_ratio)
+
+            cache_penalty = min(1.4, max(-0.4, cache_penalty - mitigation))
 
         migration_penalty = 0.0
         if self.weight_migration > 0:
@@ -153,12 +198,40 @@ class UnifiedRewardCalculator:
             migration_penalty -= min(0.2, migration_delay_saved * 0.05)
             migration_penalty = max(-0.3, migration_penalty)
 
+        drop_rates = [np.clip(v, 0.0, 1.0) for v in to_float_list(system_metrics.get('task_type_drop_rate'))]
+        queue_distribution = [np.clip(v, 0.0, 1.0) for v in to_float_list(system_metrics.get('task_type_queue_distribution'))]
+        generated_share = [np.clip(v, 0.0, 1.0) for v in to_float_list(system_metrics.get('task_type_generated_share'))]
+
+        total_priority = sum(self.task_priority_weights.values()) or 1.0
+        weighted_drop = 0.0
+        weighted_queue = 0.0
+        weighted_presence = 0.0
+        for idx in range(4):
+            weight = self.task_priority_weights.get(idx + 1, 1.0)
+            if idx < len(drop_rates):
+                weighted_drop += weight * drop_rates[idx]
+            if idx < len(queue_distribution):
+                weighted_queue += weight * queue_distribution[idx]
+            if idx < len(generated_share):
+                weighted_presence += weight * generated_share[idx]
+
+        weighted_drop /= total_priority
+        weighted_queue /= total_priority
+        weighted_presence /= total_priority
+
+        # 根据高优先级任务的压力调整缓存/迁移惩罚
+        cache_penalty *= (1.0 + np.clip(weighted_queue + 0.5 * weighted_presence, 0.0, 2.0))
+        migration_penalty *= (1.0 + np.clip(weighted_drop + 0.5 * weighted_presence, 0.0, 2.0))
+
+        priority_pressure = np.clip(weighted_drop * 1.2 + weighted_queue * 0.6 + weighted_presence * 0.3, 0.0, 1.8)
+
         total_cost = (base_cost +
                      dropped_penalty +
                      delay_threshold_penalty +
                      energy_threshold_penalty +
                      self.weight_cache * cache_penalty +
                      self.weight_migration * migration_penalty)
+        total_cost *= (1.0 + priority_pressure)
         
         # 7️⃣ SAC专用：正向激励机制（最大熵框架需要明确"好"的信号）
         bonus = 0.0
