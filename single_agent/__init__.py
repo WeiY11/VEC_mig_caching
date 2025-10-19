@@ -10,6 +10,7 @@ from .ddpg import DDPGEnvironment, DDPGAgent, DDPGActor, DDPGCritic, DDPGReplayB
 from .td3 import TD3Environment, TD3Agent, TD3Actor, TD3Critic, TD3ReplayBuffer
 from .td3_latency_energy import TD3LatencyEnergyEnvironment
 from .td3_hierarchical import TD3HierarchicalEnvironment, HierarchicalTD3Config
+from .td3_hybrid_fusion import CAMTD3Environment
 
 # DQN算法
 from .dqn import DQNEnvironment, DQNAgent, DQNNetwork, DQNReplayBuffer

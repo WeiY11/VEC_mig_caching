@@ -1,0 +1,165 @@
+{
+  "scenario": {
+    "num_vehicles": 12,
+    "num_rsus": 4,
+    "num_uavs": 2,
+    "max_steps_per_episode": 200,
+    "use_enhanced_cache": true,
+    "bandwidth": 18,
+    "computation_capacity": 900,
+    "coverage_radius": 320,
+    "thermal_noise_density": -174.0,
+    "noise_figure": 9.0
+  },
+  "defaults": {
+    "episodes": {
+      "drl": 220,
+      "heuristic": 160,
+      "meta": 200
+    },
+    "seeds": [
+      42,
+      2025,
+      3407
+    ],
+    "metrics": [
+      "avg_reward",
+      "avg_delay",
+      "avg_energy",
+      "avg_completion_rate",
+      "cache_hit_rate",
+      "migration_success_rate",
+      "training_time_hours"
+    ]
+  },
+  "algorithms": [
+    {
+      "name": "CAM-TD3",
+      "label": "CAM-TD3",
+      "category": "drl",
+      "episodes": 220
+    },
+    {
+      "name": "TD3_Xuance",
+      "label": "TD3-xuance",
+      "category": "drl",
+      "episodes": 200
+    },
+    {
+      "name": "Random",
+      "label": "Random",
+      "category": "heuristic",
+      "episodes": 150
+    },
+    {
+      "name": "RoundRobin",
+      "label": "RoundRobin",
+      "category": "heuristic",
+      "episodes": 150
+    },
+    {
+      "name": "LocalOnly",
+      "label": "LocalOnly",
+      "category": "heuristic",
+      "episodes": 150
+    },
+    {
+      "name": "RSUOnly",
+      "label": "RSUOnly",
+      "category": "heuristic",
+      "episodes": 150
+    },
+    {
+      "name": "SimulatedAnnealing",
+      "label": "SimulatedAnnealing",
+      "category": "meta",
+      "episodes": 180
+    }
+  ],
+  "sweeps": [
+    {
+      "name": "vehicle_scaling",
+      "label": "Vehicle Count",
+      "parameter": "num_vehicles",
+      "unit": "vehicles",
+      "values": [
+        8,
+        12,
+        16,
+        20,
+        24
+      ],
+      "metrics": [
+        "avg_reward",
+        "avg_delay",
+        "avg_completion_rate"
+      ]
+    },
+    {
+      "name": "bandwidth_levels",
+      "label": "Spectrum Bandwidth",
+      "parameter": "bandwidth",
+      "unit": "MHz",
+      "values": [
+        12,
+        18,
+        24,
+        30
+      ],
+      "metrics": [
+        "avg_delay",
+        "avg_energy",
+        "avg_completion_rate"
+      ]
+    },
+    {
+      "name": "coverage_radius_levels",
+      "label": "Coverage Radius",
+      "parameter": "coverage_radius",
+      "unit": "m",
+      "values": [
+        250,
+        300,
+        350,
+        400
+      ],
+      "metrics": [
+        "avg_reward",
+        "avg_delay",
+        "avg_completion_rate"
+      ]
+    },
+    {
+      "name": "noise_density_levels",
+      "label": "Thermal Noise Density",
+      "parameter": "thermal_noise_density",
+      "unit": "dBm/Hz",
+      "values": [
+        -176.0,
+        -174.0,
+        -172.0
+      ],
+      "metrics": [
+        "avg_delay",
+        "avg_energy"
+      ]
+    },
+    {
+      "name": "rsu_density",
+      "label": "RSU Count",
+      "parameter": "num_rsus",
+      "unit": "nodes",
+      "values": [
+        3,
+        4,
+        5,
+        6
+      ],
+      "metrics": [
+        "avg_reward",
+        "avg_delay",
+        "avg_completion_rate"
+      ]
+    }
+  ]
+}

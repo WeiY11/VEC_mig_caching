@@ -13,7 +13,7 @@
 """
 
 import numpy as np
-from typing import Dict, Optional, Any
+from typing import Dict, Optional, Any, Tuple
 
 
 class BaselineAlgorithm:
@@ -300,18 +300,186 @@ class NearestNodeBaseline(BaselineAlgorithm):
         return action
 
 
+class LocalOnlyBaseline(BaselineAlgorithm):
+    """Always execute on local (vehicle) resources."""
+
+    def __init__(self):
+        super().__init__("LocalOnly")
+
+    def select_action(self, state: np.ndarray) -> np.ndarray:
+        action = np.zeros(16)
+        action[0:3] = [0.9, -0.9, -0.9]
+        action[3:7] = -0.9
+        action[7:9] = -0.9
+        action[9:16] = 0.0
+        self.step_count += 1
+        return action
+
+
+class RSUOnlyBaseline(BaselineAlgorithm):
+    """Always offload to the least-loaded RSU."""
+
+    def __init__(self):
+        super().__init__("RSUOnly")
+
+    def select_action(self, state: np.ndarray) -> np.ndarray:
+        action = np.zeros(16)
+        num_vehicles = 12
+        if self.env and hasattr(self.env, 'simulator'):
+            num_vehicles = len(self.env.simulator.vehicles)
+
+        _, rsu_loads, _ = self._extract_loads_from_state(state, num_vehicles)
+        best_rsu_idx = int(np.argmin(rsu_loads)) if len(rsu_loads) > 0 else 0
+
+        action[0:3] = [-0.9, 0.9, -0.9]
+        for i in range(4):
+            action[3 + i] = 0.9 if i == best_rsu_idx else -0.9
+        action[7:9] = -0.9
+        action[9:16] = 0.0
+        self.step_count += 1
+        return action
+
+
+class SimulatedAnnealingBaseline(BaselineAlgorithm):
+    """Simulated annealing based baseline with lightweight neighbour search."""
+
+    def __init__(self):
+        super().__init__("SimulatedAnnealing")
+        self.initial_temperature = 1.0
+        self.cooling_rate = 0.92
+        self.min_temperature = 0.05
+        self.temperature = self.initial_temperature
+        self.current_solution = None  # (target, rsu_idx, uav_idx)
+
+    def reset(self):
+        super().reset()
+        self.temperature = self.initial_temperature
+        self.current_solution = None
+
+    def select_action(self, state: np.ndarray) -> np.ndarray:
+        num_vehicles = 12
+        num_rsus = 4
+        num_uavs = 2
+        if self.env and hasattr(self.env, 'simulator'):
+            num_vehicles = len(self.env.simulator.vehicles)
+            num_rsus = len(self.env.simulator.rsus)
+            num_uavs = len(self.env.simulator.uavs)
+
+        metrics = self._extract_metrics(state, num_vehicles, num_rsus, num_uavs)
+
+        if self.current_solution is None:
+            self.current_solution = self._initial_solution(metrics, num_rsus, num_uavs)
+
+        candidate = self._generate_neighbor(self.current_solution, num_rsus, num_uavs)
+        current_cost = self._evaluate_solution(self.current_solution, metrics)
+        candidate_cost = self._evaluate_solution(candidate, metrics)
+
+        if candidate_cost < current_cost:
+            self.current_solution = candidate
+        else:
+            acceptance = np.exp((current_cost - candidate_cost) / max(self.temperature, 1e-6))
+            if np.random.rand() < acceptance:
+                self.current_solution = candidate
+
+        self.temperature = max(self.min_temperature, self.temperature * self.cooling_rate)
+        self.step_count += 1
+        return self._solution_to_action(self.current_solution, num_rsus, num_uavs)
+
+    def _extract_metrics(self, state: np.ndarray, num_vehicles: int, num_rsus: int, num_uavs: int) -> Dict[str, np.ndarray]:
+        vehicle_slice = state[:num_vehicles * 5].reshape(num_vehicles, 5) if num_vehicles > 0 else np.zeros((0, 5))
+        rsu_offset = num_vehicles * 5
+        rsu_slice = state[rsu_offset:rsu_offset + num_rsus * 5].reshape(num_rsus, 5) if num_rsus > 0 else np.zeros((0, 5))
+        uav_offset = rsu_offset + num_rsus * 5
+        uav_slice = state[uav_offset:uav_offset + num_uavs * 5].reshape(num_uavs, 5) if num_uavs > 0 else np.zeros((0, 5))
+
+        vehicle_queue = vehicle_slice[:, 3] if vehicle_slice.size else np.array([0.5])
+        vehicle_energy = vehicle_slice[:, 4] if vehicle_slice.size else np.array([0.5])
+
+        rsu_queue = rsu_slice[:, 3] if rsu_slice.size else np.full(num_rsus, 0.5)
+        rsu_cache = rsu_slice[:, 2] if rsu_slice.size else np.full(num_rsus, 0.5)
+
+        uav_cache = uav_slice[:, 3] if uav_slice.size else np.full(num_uavs, 0.5)
+        uav_energy = uav_slice[:, 4] if uav_slice.size else np.full(num_uavs, 0.5)
+
+        return {
+            'vehicle_queue': float(np.mean(vehicle_queue)),
+            'vehicle_energy': float(np.mean(vehicle_energy)),
+            'rsu_queue': rsu_queue,
+            'rsu_cache': rsu_cache,
+            'uav_cache': uav_cache,
+            'uav_energy': uav_energy,
+        }
+
+    def _initial_solution(self, metrics: Dict[str, np.ndarray], num_rsus: int, num_uavs: int):
+        scores = [
+            self._evaluate_solution((0, -1, -1), metrics),
+            self._evaluate_solution((1, 0 if num_rsus > 0 else -1, -1), metrics),
+            self._evaluate_solution((2, -1, 0 if num_uavs > 0 else -1), metrics),
+        ]
+        best_target = int(np.argmin(scores))
+        rsu_idx = 0 if best_target == 1 and num_rsus > 0 else -1
+        uav_idx = 0 if best_target == 2 and num_uavs > 0 else -1
+        return (best_target, rsu_idx, uav_idx)
+
+    def _generate_neighbor(self, solution, num_rsus: int, num_uavs: int):
+        target, rsu_idx, uav_idx = solution
+        move = np.random.choice(['target', 'rsu', 'uav'])
+        if move == 'target':
+            target = np.random.randint(0, 3)
+            if target != 1:
+                rsu_idx = -1
+            if target != 2:
+                uav_idx = -1
+        elif move == 'rsu' and num_rsus > 0:
+            rsu_idx = np.random.randint(0, num_rsus)
+            target = 1
+            uav_idx = -1
+        elif move == 'uav' and num_uavs > 0:
+            uav_idx = np.random.randint(0, num_uavs)
+            target = 2
+            rsu_idx = -1
+        return (target, rsu_idx, uav_idx)
+
+    def _evaluate_solution(self, solution, metrics: Dict[str, np.ndarray]) -> float:
+        target, rsu_idx, uav_idx = solution
+        if target == 0:
+            return metrics['vehicle_queue'] * 1.2 + metrics['vehicle_energy'] * 0.8
+        if target == 1 and 0 <= rsu_idx < metrics['rsu_queue'].shape[0]:
+            return metrics['rsu_queue'][rsu_idx] * 1.4 + (1.0 - metrics['rsu_cache'][rsu_idx]) * 0.6
+        if target == 2 and 0 <= uav_idx < metrics['uav_cache'].shape[0]:
+            return metrics['uav_energy'][uav_idx] * 1.0 + (1.0 - metrics['uav_cache'][uav_idx]) * 0.8
+        return 1.0
+
+    def _solution_to_action(self, solution, num_rsus: int, num_uavs: int) -> np.ndarray:
+        target, rsu_idx, uav_idx = solution
+        action = np.zeros(16)
+
+        if target == 0:
+            action[0:3] = [0.9, -0.9, -0.9]
+        elif target == 1:
+            action[0:3] = [-0.9, 0.9, -0.9]
+        else:
+            action[0:3] = [-0.9, -0.9, 0.9]
+
+        for i in range(num_rsus):
+            action[3 + i] = 0.9 if target == 1 and i == rsu_idx else -0.9
+        for i in range(num_uavs):
+            action[7 + i] = 0.9 if target == 2 and i == uav_idx else -0.9
+
+        action[9:16] = 0.0
+        return action
 def create_baseline_algorithm(algorithm_name: str) -> BaselineAlgorithm:
     """
-    创建Baseline算法实例
-    
+    Factory helper that creates a baseline strategy instance by name.
+
     Args:
-        algorithm_name: 算法名称
-        
+        algorithm_name: Strategy identifier (case insensitive).
+
     Returns:
-        Baseline算法实例
+        BaselineAlgorithm: matching strategy instance.
     """
     algorithm_name_upper = algorithm_name.upper()
-    
+
     if algorithm_name_upper == 'RANDOM':
         return RandomBaseline()
     elif algorithm_name_upper == 'GREEDY':
@@ -322,6 +490,12 @@ def create_baseline_algorithm(algorithm_name: str) -> BaselineAlgorithm:
         return LocalFirstBaseline()
     elif algorithm_name_upper == 'NEARESTNODE':
         return NearestNodeBaseline()
+    elif algorithm_name_upper in {'LOCALONLY', 'LOCAL_ONLY', 'PURE_LOCAL'}:
+        return LocalOnlyBaseline()
+    elif algorithm_name_upper in {'RSUONLY', 'RSU_ONLY', 'BASESTATION'}:
+        return RSUOnlyBaseline()
+    elif algorithm_name_upper in {'SIMULATEDANNEALING', 'SIM_ANNEALING', 'SA'}:
+        return SimulatedAnnealingBaseline()
     else:
         raise ValueError(f"不支持的Baseline算法: {algorithm_name}")
 

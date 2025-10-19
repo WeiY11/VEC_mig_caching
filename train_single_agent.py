@@ -90,6 +90,7 @@ from utils.adaptive_control import AdaptiveCacheController, AdaptiveMigrationCon
 # 导入各种单智能体算法
 from single_agent.ddpg import DDPGEnvironment
 from single_agent.td3 import TD3Environment
+from single_agent.td3_hybrid_fusion import CAMTD3Environment
 from single_agent.td3_latency_energy import TD3LatencyEnergyEnvironment
 from single_agent.dqn import DQNEnvironment
 from single_agent.ppo import PPOEnvironment
@@ -148,9 +149,12 @@ def _build_scenario_config() -> Dict[str, Any]:
         "simulation_time": 1000,
         "computation_capacity": 800,
         "bandwidth": 15,
+        "coverage_radius": 300,
         "cache_capacity": 80,
         "transmission_power": 0.15,
         "computation_power": 1.2,
+        "thermal_noise_density": -174.0,
+        "noise_figure": 9.0,
         "high_load_mode": True,
         "task_complexity_multiplier": 1.5,
         "rsu_load_divisor": 4.0,
@@ -209,6 +213,9 @@ class SingleAgentTrainingEnvironment:
             "TD3LATENCY": "TD3_LATENCY_ENERGY",
             "TD3_LATENCY": "TD3_LATENCY_ENERGY",
             "TD3_LATENCY_ENERGY": "TD3_LATENCY_ENERGY",
+            "CAMTD3": "CAM_TD3",
+            "CAM_TD3": "CAM_TD3",
+            "HYBRID_EDGE-TD3": "CAM_TD3",
         }
         alias_key = normalized_algorithm.replace('_', '')
         self.algorithm = alias_map.get(normalized_algorithm, alias_map.get(alias_key, normalized_algorithm))
@@ -260,6 +267,8 @@ class SingleAgentTrainingEnvironment:
             self.agent_env = TD3Environment(num_vehicles, num_rsus, num_uavs)
         elif self.algorithm == "TD3_LATENCY_ENERGY":
             self.agent_env = TD3LatencyEnergyEnvironment(num_vehicles, num_rsus, num_uavs)
+        elif self.algorithm == "CAM_TD3":
+            self.agent_env = CAMTD3Environment(num_vehicles, num_rsus, num_uavs)
         elif self.algorithm == "DQN":
             self.agent_env = DQNEnvironment(num_vehicles, num_rsus, num_uavs)
         elif self.algorithm == "PPO":
