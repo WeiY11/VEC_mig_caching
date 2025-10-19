@@ -743,18 +743,26 @@ def main():
                 self.name = "TD3-NoMig"  # TD3 without Migration
                 
             def select_action(self, state: np.ndarray) -> np.ndarray:
-                """使用TD3但禁用迁移"""
+                """使用TD3但禁用迁移（修复版）"""
                 # 先适配状态维度（使用父类的方法）
                 adapted_state = self._adapt_state_dimension(state)
                 
                 # 获取TD3的原始动作
                 action = self.td3_agent.select_action(adapted_state, training=False)
                 
-                # 修改迁移相关的控制参数
-                # action[9:16] 是控制参数，其中包含迁移阈值等
-                # 将迁移概率设置为-5（经过sigmoid后接近0）
-                action[10] = -5.0  # 迁移阈值设为极低值，禁用迁移
-                action[11] = -5.0  # 迁移率设为极低值
+                # 🔧 修复：正确的迁移参数位置
+                # action[9:16] 是控制参数（7维）
+                # 根据map_agent_actions_to_params:
+                #   - action[9:13]: 缓存参数（4维）
+                #   - action[13:16]: 迁移参数（3维）
+                #     * action[13]: cpu/bandwidth_overload_threshold
+                #     * action[14]: uav_battery_threshold
+                #     * action[15]: load_diff_threshold
+                
+                # 设置极高阈值，确保永不触发迁移
+                action[13] = 1.0   # CPU/带宽过载阈值 → 95%（最高，永不触发）
+                action[14] = -1.0  # UAV电池阈值 → 15%（最低，几乎不触发）
+                action[15] = 1.0   # 负载差阈值 → 40%（最高，需要极大差异）
                 
                 return action
         
