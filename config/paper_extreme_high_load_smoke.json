@@ -1,0 +1,52 @@
+{
+  "scenario": {
+    "num_vehicles": 12,
+    "num_rsus": 4,
+    "num_uavs": 2,
+    "max_steps_per_episode": 50,
+    "use_enhanced_cache": true,
+    "bandwidth": 18,
+    "computation_capacity": 900,
+    "coverage_radius": 320,
+    "thermal_noise_density": -174.0,
+    "noise_figure": 9.0,
+    "task_arrival_rate": 3.5,
+    "task_size_mean": 800000.0,
+    "task_size_std": 320000.0
+  },
+  "defaults": {
+    "episodes": {
+      "drl": 5,
+      "meta": 3
+    },
+    "seeds": [
+      42
+    ],
+    "metrics": [
+      "avg_reward",
+      "avg_delay",
+      "avg_energy",
+      "avg_completion_rate",
+      "data_loss_ratio_bytes",
+      "training_time_hours"
+    ]
+  },
+  "algorithms": [
+    {
+      "name": "TD3",
+      "label": "TD3-smoke",
+      "category": "drl",
+      "episodes": 5
+    },
+    {
+      "name": "SimulatedAnnealing",
+      "label": "SA-smoke",
+      "category": "meta",
+      "episodes": 3,
+      "params": {
+        "initial_temperature": 1.0,
+        "cooling_rate": 0.9
+      }
+    }
+  ]
+}

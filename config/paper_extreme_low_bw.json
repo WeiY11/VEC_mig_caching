@@ -1,0 +1,76 @@
+{
+  "scenario": {
+    "num_vehicles": 12,
+    "num_rsus": 4,
+    "num_uavs": 2,
+    "max_steps_per_episode": 200,
+    "use_enhanced_cache": true,
+    "bandwidth": 12,
+    "computation_capacity": 900,
+    "coverage_radius": 280,
+    "thermal_noise_density": -174.0,
+    "noise_figure": 9.0
+  },
+  "defaults": {
+    "episodes": {
+      "drl": 220,
+      "heuristic": 160
+    },
+    "seeds": [
+      42,
+      2025,
+      3407
+    ],
+    "metrics": [
+      "avg_reward",
+      "avg_delay",
+      "avg_energy",
+      "avg_completion_rate",
+      "data_loss_ratio_bytes",
+      "training_time_hours"
+    ]
+  },
+  "algorithms": [
+    {
+      "name": "CAM-TD3",
+      "label": "CAM-TD3",
+      "category": "drl",
+      "episodes": 220
+    },
+    {
+      "name": "TD3",
+      "label": "TD3",
+      "category": "drl",
+      "episodes": 220
+    },
+    {
+      "name": "RoundRobin",
+      "label": "RoundRobin",
+      "category": "heuristic",
+      "episodes": 160
+    },
+    {
+      "name": "RSUOnly",
+      "label": "RSUOnly",
+      "category": "heuristic",
+      "episodes": 160
+    }
+  ],
+  "sweeps": [
+    {
+      "name": "vehicle_scaling_low_bandwidth",
+      "label": "Vehicle Count (Low BW)",
+      "parameter": "num_vehicles",
+      "unit": "vehicles",
+      "values": [
+        20
+      ],
+      "metrics": [
+        "avg_delay",
+        "avg_energy",
+        "avg_completion_rate",
+        "data_loss_ratio_bytes"
+      ]
+    }
+  ]
+}

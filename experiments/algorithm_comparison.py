@@ -36,12 +36,27 @@ from train_single_agent import SingleAgentTrainingEnvironment, train_single_algo
 try:
     from baseline_comparison.improved_baseline_algorithms import create_baseline_algorithm
 except ImportError:  # pragma: no cover - fallback to legacy baselines
-    from baseline_comparison.baseline_algorithms import create_baseline_algorithm  # type: ignore
+    try:
+        from baseline_comparison.baseline_algorithms import create_baseline_algorithm  # type: ignore
+    except ImportError:  # pragma: no cover - final fallback within this repository
+        from experiments.fallback_baselines import create_baseline_algorithm  # type: ignore
 
 try:
     from baseline_comparison.individual_runners.metaheuristic import GABaseline, PSOBaseline
+    FALLBACK_SIMULATED_ANNEALING = None
 except ImportError:  # pragma: no cover - metaheuristics optional
     GABaseline = PSOBaseline = None  # type: ignore
+    try:
+        from experiments.fallback_baselines import SimulatedAnnealingPolicy as FALLBACK_SIMULATED_ANNEALING  # type: ignore
+    except ImportError:  # pragma: no cover - fallback unavailable
+        FALLBACK_SIMULATED_ANNEALING = None
+
+try:
+    from baseline_comparison.individual_runners.drl.run_td3_xuance import run_td3_xuance  # type: ignore
+    HAS_TD3_XUANCE = True
+except ImportError:  # pragma: no cover - optional dependency
+    run_td3_xuance = None  # type: ignore
+    HAS_TD3_XUANCE = False
 
 
 # ----------------------------------------------------------------------------------------------------------------------
@@ -347,10 +362,12 @@ class AlgorithmComparisonRunner:
 
     def _run_drl_algorithm(self, spec: AlgorithmSpec, episodes: int, seed: int) -> Dict[str, Any]:
         name_upper = spec.name.upper()
-        if name_upper == "TD3_XUANCE":
+        disable_migration_flag = bool((spec.params or {}).get("disable_migration", False))
+        base_algorithm_override = (spec.params or {}).get("base_algorithm") if spec.params else None
+        train_algorithm_name = base_algorithm_override or spec.name
+        fallback_used: Optional[str] = None
+        if name_upper == "TD3_XUANCE" and HAS_TD3_XUANCE:
             with self._scenario_context(seed) as overrides:
-                from baseline_comparison.individual_runners.drl.run_td3_xuance import run_td3_xuance
-
                 num_vehicles = overrides.get("num_vehicles", self.scenario.num_vehicles)
                 max_steps = (
                     overrides.get("max_steps_per_episode")
@@ -368,20 +385,43 @@ class AlgorithmComparisonRunner:
                 )
 
                 start_time = time.time()
-                result = run_td3_xuance(args)
+                result = run_td3_xuance(args)  # type: ignore[misc]
                 wall_time_hours = (time.time() - start_time) / 3600.0
 
             summary = self._summarise_xuance_output(result, episodes)
+            summary.setdefault("training_time_hours", wall_time_hours)
+        elif name_upper == "TD3_XUANCE":
+            fallback_algorithm = spec.params.get("fallback_algorithm") if spec.params else None
+            fallback_algorithm = fallback_algorithm or "TD3"
+            print(
+                "[WARN] TD3_Xuance implementation is unavailable; "
+                f"falling back to {fallback_algorithm} for reproducibility."
+            )
+            fallback_used = fallback_algorithm
+            with self._scenario_context(seed) as overrides:
+                start_time = time.time()
+                result = train_single_algorithm(
+                    fallback_algorithm,
+                    num_episodes=episodes,
+                    silent_mode=True,
+                    override_scenario=overrides,
+                    use_enhanced_cache=self.scenario.use_enhanced_cache,
+                    disable_migration=disable_migration_flag,
+                )
+                wall_time_hours = (time.time() - start_time) / 3600.0
+
+            summary = self._summarise_training_output(result, episodes)
             summary.setdefault("training_time_hours", wall_time_hours)
         else:
             with self._scenario_context(seed) as overrides:
                 start_time = time.time()
                 result = train_single_algorithm(
-                    spec.name,
+                    train_algorithm_name,
                     num_episodes=episodes,
                     silent_mode=True,
                     override_scenario=overrides,
                     use_enhanced_cache=self.scenario.use_enhanced_cache,
+                    disable_migration=disable_migration_flag,
                 )
                 wall_time_hours = (time.time() - start_time) / 3600.0
 
@@ -396,15 +436,25 @@ class AlgorithmComparisonRunner:
             "window_size": summary.get("window_size"),
             "summary": summary,
         }
+        if fallback_used:
+            record["fallback_algorithm"] = fallback_used
         record_path = self._dump_run_record(spec, seed, record)
         record["local_record_path"] = str(record_path)
         return record
 
     def _run_baseline_algorithm(self, spec: AlgorithmSpec, episodes: int, seed: int) -> Dict[str, Any]:
         def factory() -> Any:
-            if spec.params:
-                print(f"[INFO] Baseline parameters for {spec.name}: {spec.params}")
-            return create_baseline_algorithm(spec.name)
+            params = dict(spec.params)
+            if params:
+                print(f"[INFO] Baseline parameters for {spec.name}: {params}")
+            if getattr(create_baseline_algorithm, "__module__", "").startswith("experiments.fallback_baselines"):
+                params.setdefault("seed", seed)
+            try:
+                return create_baseline_algorithm(spec.name, **params)
+            except TypeError:
+                if params:
+                    print(f"[WARN] Baseline factory for {spec.name} ignored parameters (signature mismatch).")
+                return create_baseline_algorithm(spec.name)
 
         return self._run_baseline_family(spec, episodes, seed, factory)
 
@@ -416,6 +466,14 @@ class AlgorithmComparisonRunner:
             "pso": PSOBaseline,
             "particle_swarm": PSOBaseline,
         }
+        if FALLBACK_SIMULATED_ANNEALING is not None:
+            meta_map.update(
+                {
+                    "simulatedannealing": FALLBACK_SIMULATED_ANNEALING,
+                    "simulated_annealing": FALLBACK_SIMULATED_ANNEALING,
+                    "sa": FALLBACK_SIMULATED_ANNEALING,
+                }
+            )
         key = spec.name.lower()
         if key not in meta_map:
             raise ValueError(f"Meta-heuristic '{spec.name}' is not available.")
@@ -425,7 +483,10 @@ class AlgorithmComparisonRunner:
             raise RuntimeError("Meta-heuristic modules are not installed.")
 
         def factory() -> Any:
-            return cls(**spec.params)
+            kwargs = dict(spec.params)
+            if FALLBACK_SIMULATED_ANNEALING is not None and cls is FALLBACK_SIMULATED_ANNEALING:
+                kwargs.setdefault("seed", seed)
+            return cls(**kwargs)
 
         return self._run_baseline_family(spec, episodes, seed, factory)
 

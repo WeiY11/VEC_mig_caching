@@ -204,7 +204,7 @@ class SingleAgentTrainingEnvironment:
     """单智能体训练环境基类"""
     
     def __init__(self, algorithm: str, override_scenario: Optional[Dict[str, Any]] = None, 
-                 use_enhanced_cache: bool = False):
+                 use_enhanced_cache: bool = False, disable_migration: bool = False):
         self.input_algorithm = algorithm
         normalized_algorithm = algorithm.upper().replace('-', '_')
         alias_map = {
@@ -227,6 +227,8 @@ class SingleAgentTrainingEnvironment:
         
         # 选择仿真器类型
         self.use_enhanced_cache = use_enhanced_cache and ENHANCED_CACHE_AVAILABLE
+        env_disable_migration = os.environ.get("DISABLE_MIGRATION", "").strip() == "1"
+        self.disable_migration = disable_migration or env_disable_migration
         if self.use_enhanced_cache:
             print("🚀 [Training] Using Enhanced Cache System (Default) with:")
             print("   - Hierarchical L1/L2 caching (3GB + 7GB)")
@@ -239,7 +241,10 @@ class SingleAgentTrainingEnvironment:
         # 🤖 初始化自适应控制组件
         self.adaptive_cache_controller = AdaptiveCacheController()
         self.adaptive_migration_controller = AdaptiveMigrationController()
-        print(f"🤖 已启用自适应缓存和迁移控制功能")
+        if self.disable_migration:
+            print("🤖 自适应缓存已启用；迁移控制已禁用（DISABLE_MIGRATION 模式）")
+        else:
+            print(f"🤖 已启用自适应缓存和迁移控制功能")
         
         # 从仿真器获取实际网络拓扑参数
         num_vehicles = len(self.simulator.vehicles)
@@ -970,15 +975,20 @@ class SingleAgentTrainingEnvironment:
 
                 # 更新自适应控制器参数
                 self.adaptive_cache_controller.update_agent_params(cache_params)
-                self.adaptive_migration_controller.update_agent_params(migration_params)
+                if not self.disable_migration:
+                    self.adaptive_migration_controller.update_agent_params(migration_params)
 
-                # 将自适应参数传递给仿真器
-                sim_actions.update({
+                # ������Ӧ�������ݸ�������
+                payload = {
                     'adaptive_cache_params': cache_params,
-                    'adaptive_migration_params': migration_params,
                     'cache_controller': self.adaptive_cache_controller,
-                    'migration_controller': self.adaptive_migration_controller
-                })
+                }
+                if not self.disable_migration:
+                    payload.update({
+                        'adaptive_migration_params': migration_params,
+                        'migration_controller': self.adaptive_migration_controller
+                    })
+                sim_actions.update(payload)
             
             return sim_actions
         except Exception as e:
@@ -1085,7 +1095,7 @@ class SingleAgentTrainingEnvironment:
 def train_single_algorithm(algorithm: str, num_episodes: Optional[int] = None, eval_interval: Optional[int] = None, 
                           save_interval: Optional[int] = None, enable_realtime_vis: bool = False, 
                           vis_port: int = 5000, silent_mode: bool = False, override_scenario: Optional[Dict[str, Any]] = None,
-                          use_enhanced_cache: bool = False) -> Dict:
+                          use_enhanced_cache: bool = False, disable_migration: bool = False) -> Dict:
     """训练单个算法
     
     Args:
@@ -1131,7 +1141,8 @@ def train_single_algorithm(algorithm: str, num_episodes: Optional[int] = None, e
     
     # 创建训练环境（应用额外场景覆盖）
     training_env = SingleAgentTrainingEnvironment(algorithm, override_scenario=override_scenario, 
-                                                  use_enhanced_cache=use_enhanced_cache)
+                                                  use_enhanced_cache=use_enhanced_cache, 
+                                                  disable_migration=disable_migration)
     canonical_algorithm = training_env.algorithm
     if canonical_algorithm != algorithm:
         print(f"⚙️  规范化算法标识: {canonical_algorithm}")

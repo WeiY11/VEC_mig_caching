@@ -1,0 +1,102 @@
+{
+  "scenario": {
+    "num_vehicles": 12,
+    "num_rsus": 4,
+    "num_uavs": 2,
+    "max_steps_per_episode": 200,
+    "use_enhanced_cache": true,
+    "bandwidth": 18,
+    "computation_capacity": 900,
+    "coverage_radius": 320,
+    "thermal_noise_density": -174.0,
+    "noise_figure": 9.0,
+    "task_arrival_rate": 3.5,
+    "task_size_mean": 1120000.0,
+    "task_size_std": 520000.0
+  },
+  "defaults": {
+    "episodes": {
+      "drl": 220,
+      "meta": 200
+    },
+    "seeds": [
+      42
+    ],
+    "metrics": [
+      "avg_reward",
+      "avg_delay",
+      "avg_energy",
+      "avg_completion_rate",
+      "data_loss_ratio_bytes",
+      "training_time_hours"
+    ]
+  },
+  "algorithms": [
+    {
+      "name": "CAM-TD3",
+      "label": "TJCTM",
+      "category": "drl",
+      "episodes": 220
+    },
+    {
+      "name": "TD3",
+      "label": "TD3",
+      "category": "drl",
+      "episodes": 220
+    },
+    {
+      "name": "TD3_NoMig",
+      "label": "TD3-NoMig",
+      "category": "drl",
+      "episodes": 220,
+      "params": {
+        "disable_migration": true,
+        "base_algorithm": "TD3"
+      }
+    },
+    {
+      "name": "TD3_Xuance",
+      "label": "TD3-xuance",
+      "category": "drl",
+      "episodes": 200
+    },
+    {
+      "name": "RoundRobin",
+      "label": "RoundRobin",
+      "category": "heuristic",
+      "episodes": 160
+    },
+    {
+      "name": "RSUOnly",
+      "label": "RSUOnly",
+      "category": "heuristic",
+      "episodes": 160
+    },
+    {
+      "name": "SimulatedAnnealing",
+      "label": "SimulatedAnnealing",
+      "category": "meta",
+      "episodes": 180
+    }
+  ],
+  "sweeps": [
+    {
+      "name": "vehicle_scaling_high_load",
+      "label": "Vehicle Count (High Load)",
+      "parameter": "num_vehicles",
+      "unit": "vehicles",
+      "values": [
+        8,
+        12,
+        16,
+        20
+      ],
+      "metrics": [
+        "avg_delay",
+        "avg_energy",
+        "avg_completion_rate",
+        "data_loss_ratio_bytes"
+      ]
+    }
+  ]
+}
