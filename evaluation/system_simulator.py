@@ -500,7 +500,7 @@ class CompleteSystemSimulator:
             compute_density = self.config.get('task_compute_density', 400)
             max_delay_slots = max(1, int(deadline_duration / max(self.config.get('time_slot', self.time_slot), 0.1)))
 
-        # 浠诲姟澶嶆潅搴︽帶鍒?
+        # 任务复杂度控制
         data_size_mb = data_size_bytes / 1e6
         effective_density = compute_density
         complexity_multiplier = 1.0
@@ -553,27 +553,74 @@ class CompleteSystemSimulator:
             type3_pct = by_type.get(3, 0) / total_classified * 100
             type4_pct = by_type.get(4, 0) / total_classified * 100
             print(
-                f"馃搳 浠诲姟鍒嗙被缁熻({gen_stats['total']}): "
-                f"绫诲瀷1={type1_pct:.1f}%, 绫诲瀷2={type2_pct:.1f}%, 绫诲瀷3={type3_pct:.1f}%, 绫诲瀷4={type4_pct:.1f}%"
+                f"📊 任务分类统计({gen_stats['total']}): "
+                f"类型1={type1_pct:.1f}%, 类型2={type2_pct:.1f}%, 类型3={type3_pct:.1f}%, 类型4={type4_pct:.1f}%"
             )
             print(
-                f"   褰撳墠浠诲姟: {scenario_name}, {deadline_duration:.2f}s 鈫?"
-                f"绫诲瀷{task_type}, 鏁版嵁{data_size_mb:.2f}MB"
+                f"   当前任务: {scenario_name}, {deadline_duration:.2f}s → "
+                f"类型{task_type}, 数据{data_size_mb:.2f}MB"
             )
 
         return task
     
     def calculate_distance(self, pos1: np.ndarray, pos2: np.ndarray) -> float:
-        """璁＄畻涓ょ偣闂磋窛绂?"""
+        """
+        计算两点之间的欧几里得距离（支持2D和3D坐标自动转换）
+        Calculate Euclidean distance between two points (supports automatic 2D/3D conversion)
+        
+        该方法能够智能处理2D和3D坐标的混合情况：
+        - 如果其中一个点是2D，另一个是3D，自动将2D点扩展为3D（z=0）
+        - 然后使用NumPy的线性代数模块计算欧几里得距离
+        
+        This method intelligently handles mixed 2D/3D coordinates:
+        - If one point is 2D and the other is 3D, automatically extends 2D to 3D (z=0)
+        - Then uses NumPy's linear algebra module to calculate Euclidean distance
+        
+        参数 Args:
+            pos1: 第一个点的坐标数组 (可以是2D或3D) | Coordinate array of first point (can be 2D or 3D)
+            pos2: 第二个点的坐标数组 (可以是2D或3D) | Coordinate array of second point (can be 2D or 3D)
+            
+        返回 Returns:
+            float: 两点之间的距离（米） | Distance between two points (meters)
+        """
+        # 处理维度不匹配的情况：将2D坐标扩展为3D
+        # Handle dimension mismatch: extend 2D coordinates to 3D
         if len(pos1) == 3 and len(pos2) == 2:
-            pos2 = np.append(pos2, 0)  # 2D杞?D
+            pos2 = np.append(pos2, 0)  # 2D转3D，z坐标设为0 | 2D to 3D, set z=0
         elif len(pos1) == 2 and len(pos2) == 3:
             pos1 = np.append(pos1, 0)
         
+        # 使用NumPy计算L2范数（欧几里得距离）
+        # Use NumPy to calculate L2 norm (Euclidean distance)
         return np.linalg.norm(pos1 - pos2)
     
+    
     def _find_least_loaded_node(self, node_type: str, exclude_node: Dict = None) -> Dict:
-        """瀵绘壘璐熻浇鏈€杞荤殑鑺傜偣"""
+        """
+        寻找负载最轻的节点（用于任务分配和迁移决策）
+        Find the least loaded node (for task assignment and migration decisions)
+        
+        该方法根据队列长度来衡量节点负载，选择最空闲的节点：
+        - 支持RSU和UAV两种节点类型
+        - 可以排除特定节点（如当前已过载节点）
+        - 通过比较computation_queue长度找到最佳候选
+        - 用于负载均衡和智能任务调度
+        
+        This method measures node load by queue length and selects the most idle node:
+        - Supports both RSU and UAV node types
+        - Can exclude specific nodes (e.g., currently overloaded node)
+        - Finds best candidate by comparing computation_queue length
+        - Used for load balancing and intelligent task scheduling
+        
+        参数 Args:
+            node_type: 节点类型 'RSU' 或 'UAV' | Node type 'RSU' or 'UAV'
+            exclude_node: 需要排除的节点（可选） | Node to exclude (optional)
+            
+        返回 Returns:
+            Dict: 负载最轻的节点字典，如果没有候选返回None | Least loaded node dict, or None if no candidates
+        """
+        # 根据节点类型筛选候选节点，排除指定节点
+        # Filter candidates by node type, excluding specified node
         if node_type == 'RSU':
             candidates = [rsu for rsu in self.rsus if rsu != exclude_node]
         elif node_type == 'UAV':
@@ -584,8 +631,10 @@ class CompleteSystemSimulator:
         if not candidates:
             return None
         
-        # 找到队列长度最短的节点
-        # Find the node with the shortest queue
+        # 找到队列长度最短的节点（负载最轻）
+        # Find the node with the shortest queue (least loaded)
+        # 使用min函数配合lambda表达式，按computation_queue长度排序
+        # Use min function with lambda to sort by computation_queue length
         best_node = min(candidates, key=lambda n: len(n.get('computation_queue', [])))
         return best_node
     
@@ -724,34 +773,74 @@ class CompleteSystemSimulator:
 
         node['computation_queue'] = new_queue
 
+
     def find_nearest_rsu(self, vehicle_pos: np.ndarray) -> Dict:
-        """鎵惧埌鏈€杩戠殑RSU"""
-        min_distance = float('inf')
+        """
+        找到最近的RSU（路侧单元）并检查是否在覆盖范围内
+        Find the nearest RSU (Road Side Unit) and check if within coverage
+        
+        该方法用于任务卸载时为车辆选择最优的RSU：
+        - 遍历所有RSU，计算与车辆的距离
+        - 只考虑覆盖范围内的RSU（distance <= coverage_radius）
+        - 返回距离最近的RSU
+        - 如果没有RSU在覆盖范围内，返回None
+        
+        This method selects the optimal RSU for vehicle task offloading:
+        - Iterates through all RSUs, calculates distance to vehicle
+        - Only considers RSUs within coverage (distance <= coverage_radius)
+        - Returns the nearest RSU
+        - Returns None if no RSU is within coverage
+        
+        参数 Args:
+            vehicle_pos: 车辆位置坐标（2D或3D NumPy数组） | Vehicle position coordinates (2D or 3D NumPy array)
+            
+        返回 Returns:
+            Dict: 最近的RSU节点字典，如果没有可用RSU返回None | Nearest RSU node dict, or None if no available RSU
+        """
+        min_distance = float('inf')  # 初始化为无穷大 | Initialize to infinity
         nearest_rsu = None
         
+        # 遍历所有RSU，寻找距离最近且在覆盖范围内的
+        # Iterate through all RSUs to find nearest one within coverage
         for rsu in self.rsus:
             distance = self.calculate_distance(vehicle_pos, rsu['position'])
+            # 检查是否在覆盖范围内且距离更近
+            # Check if within coverage and closer
             if distance < min_distance and distance <= rsu['coverage_radius']:
                 min_distance = distance
                 nearest_rsu = rsu
         
         return nearest_rsu
     
+    
     def find_nearest_uav(self, vehicle_pos: np.ndarray) -> Dict:
         """
-        找到最近的UAV
+        找到最近的UAV（无人机）节点（不考虑覆盖范围限制）
+        Find the nearest UAV (Unmanned Aerial Vehicle) node (without coverage constraint)
         
-        Args:
-            vehicle_pos: 车辆位置向量
+        该方法与find_nearest_rsu类似，但有关键区别：
+        - UAV通常用于动态覆盖和灵活部署
+        - 不检查覆盖范围限制（UAV可以快速移动到需要的位置）
+        - 返回距离最近的UAV，即使当前不在标准覆盖范围内
+        - 用于需要UAV支援或动态调度的场景
+        
+        This method is similar to find_nearest_rsu but with key differences:
+        - UAVs are used for dynamic coverage and flexible deployment
+        - Does not check coverage range (UAVs can quickly move to needed positions)
+        - Returns nearest UAV even if not currently within standard coverage
+        - Used for scenarios requiring UAV support or dynamic scheduling
+        
+        参数 Args:
+            vehicle_pos: 车辆位置向量（2D或3D） | Vehicle position vector (2D or 3D)
             
-        Returns:
-            最近的UAV节点字典，如果没有找到返回None
-            
-        Find the nearest UAV to a vehicle position.
+        返回 Returns:
+            Dict: 最近的UAV节点字典，如果没有UAV返回None | Nearest UAV node dict, or None if no UAVs exist
         """
-        min_distance = float('inf')
+        min_distance = float('inf')  # 初始化最小距离为无穷大 | Initialize min distance to infinity
         nearest_uav = None
         
+        # 遍历所有UAV，找到距离最近的
+        # Iterate through all UAVs to find the nearest one
         for uav in self.uavs:
             distance = self.calculate_distance(vehicle_pos, uav['position'])
             if distance < min_distance:
@@ -825,17 +914,21 @@ class CompleteSystemSimulator:
             if agents_actions and 'cache_controller' in agents_actions:
                 cache_controller = agents_actions['cache_controller']
                 
-                # 鏇存柊鍐呭鐑害
+                # 更新内容热度
+                # Update content heat
                 cache_controller.update_content_heat(content_id)
                 cache_controller.record_cache_result(content_id, was_hit=False)
                 
-                # 馃敡 淇锛氫娇鐢╮ealistic鍐呭澶у皬鍜屾纭閲忚绠?
+                # 🔑 修复：使用realistic内容大小和正确容量计算
+                # Fix: Use realistic content size and correct capacity calculation
                 data_size = self._get_realistic_content_size(content_id)
                 capacity_limit = node.get('cache_capacity', 1000.0 if node_type == 'RSU' else 200.0)
                 available_capacity = self._calculate_available_cache_capacity(
                     node.get('cache', {}), capacity_limit
                 )
                 
+                # 调用智能控制器判断是否缓存
+                # Call intelligent controller to decide whether to cache
                 should_cache, reason, evictions = cache_controller.should_cache_content(
                     content_id,
                     data_size,
@@ -844,11 +937,15 @@ class CompleteSystemSimulator:
                     capacity_limit
                 )
                 
+                # 如果决定缓存，执行淘汰和写入操作
+                # If decided to cache, perform eviction and write operations
                 if should_cache:
                     if 'cache' not in node:
                         node['cache'] = {}
                     cache_dict = node['cache']
                     reclaimed = 0.0
+                    # 执行淘汰操作，回收空间
+                    # Perform eviction to reclaim space
                     for evict_id in evictions:
                         removed = cache_dict.pop(evict_id, None)
                         if removed:
@@ -858,16 +955,21 @@ class CompleteSystemSimulator:
                         available_capacity += reclaimed
                     if available_capacity < data_size:
                         return cache_hit
+                    # 写入新内容到缓存
+                    # Write new content to cache
                     cache_dict[content_id] = {
                         'size': data_size,
                         'timestamp': self.current_time,
                         'reason': reason,
                         'content_type': self._infer_content_type(content_id)
                     }
+                    # 统计协同缓存写入
+                    # Count collaborative cache writes
                     if 'Collaborative cache' in reason:
                         cache_controller.cache_stats['collaborative_writes'] += 1
         
-        # 璁板綍缂撳瓨鎺у埗鍣ㄧ粺璁?
+        # 记录缓存控制器统计（缓存命中情况）
+        # Record cache controller statistics (cache hit case)
         if agents_actions and 'cache_controller' in agents_actions and cache_hit:
             cache_controller = agents_actions['cache_controller'] 
             cache_controller.record_cache_result(content_id, was_hit=True)
@@ -983,7 +1085,7 @@ class CompleteSystemSimulator:
             if isinstance(item, dict) and 'size' in item:
                 total_used_mb += float(item.get('size', 0.0))
             else:
-                total_used_mb += 1.0  # 鍏煎鏃ф牸寮?
+                total_used_mb += 1.0  # 兼容旧格式
         
         utilization = total_used_mb / cache_capacity_mb
         return min(1.0, max(0.0, utilization))
@@ -1026,7 +1128,7 @@ class CompleteSystemSimulator:
             vehicle['speed_accel'] = accel_state
             vehicle['velocity'] = new_speed
 
-            # === 2) 鏂瑰悜淇濇寔锛屽悓鏃跺厑璁歌交寰姈鍔?===
+            # === 2) 方向保持，同时允许轻微扰动 ===
             direction = vehicle.get('direction', 0.0)
             heading_jitter = vehicle.setdefault('heading_jitter', 0.0)
             heading_jitter = 0.6 * heading_jitter + np.random.uniform(-0.01, 0.01)
@@ -1052,7 +1154,7 @@ class CompleteSystemSimulator:
             lateral_state = 0.5 * lateral_state + np.random.uniform(-0.25, 0.25)
             vehicle['lateral_state'] = np.clip(lateral_state, -2.0, 2.0)
 
-            # === 4) 搴旂敤浣嶇疆鏇存柊锛坸 鐜矾锛寉 鍙?lane_bias 涓庢紓绉诲奖鍝嶏級 ===
+            # === 4) 应用位置更新（x 环路，y 叠加 lane_bias 与漂移影响） ===
             new_x = (position[0] + dx) % 1000.0
             baseline_lane_y = float(self.road_y + lane_bias)
             new_y = baseline_lane_y + vehicle['lateral_state']
@@ -1090,7 +1192,7 @@ class CompleteSystemSimulator:
         return str(np.random.choice(target_labels, p=probs))
 
     def _estimate_remote_work_units(self, task: Dict, node_type: str) -> float:
-        """浼拌杩滅▼鑺傜偣鐨勫伐浣滈噺鍗曚綅锛堜緵闃熷垪璋冨害浣跨敤锛?"""
+        """估计远程节点的工作量单位（供队列调度使用）"""
         requirement = float(task.get('computation_requirement', 1500.0))
         base_divisor = 1200.0 if node_type == 'RSU' else 1600.0
         work_units = requirement / base_divisor
@@ -1580,10 +1682,10 @@ class CompleteSystemSimulator:
             node_id = f'rsu_{i}'
             current_state = all_node_states[node_id]
             
-            # 鏇存柊璐熻浇鍘嗗彶
+            # 更新负载历史
             migration_controller.update_node_load(node_id, current_state['load_factor'])
             
-            # 馃幆 澶氱淮搴﹁縼绉昏Е鍙戞鏌?
+            # 🔄 多维度迁移触发检查
             should_migrate, reason, urgency = migration_controller.should_trigger_migration(
                 node_id, current_state, all_node_states
             )
@@ -1605,10 +1707,10 @@ class CompleteSystemSimulator:
             node_id = f'uav_{i}'
             current_state = all_node_states[node_id]
             
-            # 鏇存柊璐熻浇鍘嗗彶
+            # 更新负载历史
             migration_controller.update_node_load(node_id, current_state['load_factor'], current_state['battery_level'])
             
-            # 馃幆 澶氱淮搴﹁縼绉昏Е鍙戞鏌?
+            # 🔄 多维度迁移触发检查
             should_migrate, reason, urgency = migration_controller.should_trigger_migration(
                 node_id, current_state, all_node_states
             )
