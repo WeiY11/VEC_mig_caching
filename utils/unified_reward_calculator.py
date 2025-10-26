@@ -1,364 +1,392 @@
-﻿#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
+#!/usr/bin/env python3
 """
-缁熶竴濂栧姳璁＄畻鍣?(Unified Reward Calculator)
-閫傜敤浜庢墍鏈夊崟鏅鸿兘浣揇RL绠楁硶锛圖DPG, TD3, DQN, PPO, SAC锛?
+统一奖励计算器，供所有单智能体强化学习算法使用。
 
-璁捐鍘熷垯锛?
-1. 鏍稿績浼樺寲鐩爣锛氭椂寤?+ 鑳借€楀弻鐩爣鍔犳潈鍜?
-2. 杈呭姪绾︽潫锛氶€氳繃涓㈠純浠诲姟鎯╃綒淇濊瘉瀹屾垚鐜?
-3. 鎴愭湰鏈€灏忓寲锛氬鍔变弗鏍间负璐熷€硷紙鎴愭湰锛?
-4. 绠楁硶閫傞厤锛歋AC淇濈暀杞诲井璋冩暣浠ラ€傚簲鏈€澶х喌妗嗘灦
+核心理念是成本最小化：更低的延迟和更低的能耗会带来更高（更少负值）的奖励。
+某些算法（如SAC）期望正向奖励，因此我们为这种情况保留了一个小的可选奖励。
+
+Unified reward calculator used by all single-agent RL algorithms.
+The philosophy is cost-minimisation: lower latency and lower energy
+lead to higher (less negative) rewards. Some algorithms (SAC) expect
+positive rewards, so we keep a small optional bonus for that case.
 """
+
+from __future__ import annotations
+
+from typing import Dict, Optional, List
 
 import numpy as np
-from typing import Dict, Optional, List
+
 from config import config
 
 
 class UnifiedRewardCalculator:
     """
-    缁熶竴濂栧姳璁＄畻鍣?- 鎵€鏈夌畻娉曞叡浜牳蹇冮€昏緫
+    可复用的奖励计算器，用于单智能体训练器。
+    
+    该类实现了统一的奖励计算逻辑，支持不同算法（如SAC、TD3等）的特定需求。
+    采用成本最小化方法：延迟越低、能耗越低、任务丢弃越少，奖励越高。
+    
+    Reusable reward calculator for the single-agent trainers.
     """
 
-    def __init__(self, algorithm: str = "general"):
+    def __init__(self, algorithm: str = "general") -> None:
         """
-        鍒濆鍖栫粺涓€濂栧姳璁＄畻鍣?
+        初始化统一奖励计算器。
         
         Args:
-            algorithm: 绠楁硶绫诲瀷 ("general", "sac")
-                - "general": 閫氱敤鐗堟湰锛圖DPG, TD3, DQN, PPO锛?
-                - "sac": SAC涓撶敤鐗堟湰锛堣€冭檻鏈€澶х喌鐗规€э級
+            algorithm: 算法名称，用于特定算法的调整（如"SAC"、"TD3"等）
+                      不同算法可能有不同的归一化因子和奖励范围
         """
         self.algorithm = algorithm.upper()
-        
-        # 浠庨厤缃姞杞芥牳蹇冩潈閲?
-        self.weight_delay = config.rl.reward_weight_delay      # 榛樿 2.0
-        self.weight_energy = config.rl.reward_weight_energy    # 榛樿 1.2
-        self.penalty_dropped = config.rl.reward_penalty_dropped # 榛樿 0.02
-        self.weight_cache = getattr(config.rl, 'reward_weight_cache', 0.0)
-        self.weight_migration = getattr(config.rl, 'reward_weight_migration', 0.0)
-        priority_weights = getattr(config, 'task', None)
-        if priority_weights is not None:
-            priority_weights = getattr(priority_weights, 'type_priority_weights', None)
+
+        # 从配置中获取核心权重参数
+        # Core weights taken from configuration.
+        self.weight_delay = float(config.rl.reward_weight_delay)  # 延迟权重
+        self.weight_energy = float(config.rl.reward_weight_energy)  # 能耗权重
+        self.penalty_dropped = float(config.rl.reward_penalty_dropped)  # 任务丢弃惩罚
+        self.weight_cache = float(getattr(config.rl, "reward_weight_cache", 0.0))  # 缓存权重
+        self.weight_migration = float(getattr(config.rl, "reward_weight_migration", 0.0))  # 迁移权重
+
+        # 归一化任务优先级权重（如果存在）
+        # Normalise priority weights if they exist.
+        priority_weights = getattr(config, "task", None)
+        priority_weights = getattr(priority_weights, "type_priority_weights", None)
         if isinstance(priority_weights, dict) and priority_weights:
-            total_priority = sum(float(v) for v in priority_weights.values()) or 1.0
+            # 计算权重总和并归一化
+            total = sum(float(v) for v in priority_weights.values()) or 1.0
             self.task_priority_weights = {
-                int(task_type): float(value) / total_priority
+                int(task_type): float(value) / total
                 for task_type, value in priority_weights.items()
             }
         else:
-            # 鍧囧寑鏉冮噸浣滀负鍥為€€
+            # 默认所有任务类型权重相等
             self.task_priority_weights = {1: 0.25, 2: 0.25, 3: 0.25, 4: 0.25}
-        
-        # 馃幆 鏍稿績璁捐锛氬綊涓€鍖栧洜瀛愶紙纭繚鏃跺欢鍜岃兘鑰楀湪鐩稿悓鏁伴噺绾э級
-        # 鐩爣锛歞elay=0.2s 鍜?energy=600J 褰掍竴鍖栧悗璐＄尞鐩稿綋
-        self.delay_normalizer = 0.2      # 0.2s 鈫?0.2
-        self.energy_normalizer = 1000.0   # 馃敡 璋冩暣锛氱獊鍑鸿兘鑰楀弽棣?
-        
-        # 馃敡 SAC涓撶敤璋冩暣锛氭洿婵€杩涚殑褰掍竴鍖栦互骞宠　鎺㈢储
-        if self.algorithm == "SAC":
-            self.delay_normalizer = 0.25      # 0.2s 鈫?0.67锛堟洿鏁忔劅锛?
-            self.energy_normalizer = 1200.0  # 1000J 鈫?0.67锛堟洿鏁忔劅锛?
-        
-        # 濂栧姳鑼冨洿闄愬埗
-        if self.algorithm == "SAC":
-            # SAC鍏佽灏忓箙姝ｅ€煎鍔憋紙鏈€澶х喌闇€瑕佹槑纭縺鍔憋級
-            self.reward_clip_range = (-15.0, 3.0)
-        else:
-            # 閫氱敤鐗堟湰锛氱函鎴愭湰鏈€灏忓寲
-            self.reward_clip_range = (-80.0, -0.005)
-        
-        print(f"[OK] 缁熶竴濂栧姳璁＄畻鍣ㄥ垵濮嬪寲 ({self.algorithm})")
-        print(f"   鏍稿績鏉冮噸: Delay={self.weight_delay:.2f}, Energy={self.weight_energy:.2f}")
-        print(f"   褰掍竴鍖? Delay/{self.delay_normalizer:.2f}, Energy/{self.energy_normalizer:.0f}")
-        print(f"   濂栧姳鑼冨洿: {self.reward_clip_range}")
-        print(f"   浼樺寲鐩爣: 鏈€灏忓寲 {self.weight_delay}*Delay + {self.weight_energy}*Energy")
-        if self.weight_cache > 0 or self.weight_migration > 0:
-            print(f"   鎷撳睍鏉冮噸: Cache={self.weight_cache:.2f}, Migration={self.weight_migration:.2f}")
 
-    def calculate_reward(self, 
-                        system_metrics: Dict,
-                        cache_metrics: Optional[Dict] = None,
-                        migration_metrics: Optional[Dict] = None) -> float:
+        # 归一化因子（200毫秒时隙，约1000焦耳典型能耗）
+        # Normalisation factors (200 ms slot, ~1000 J typical energy).
+        self.delay_normalizer = 0.2  # 延迟归一化因子（秒）
+        self.energy_normalizer = 1000.0  # 能耗归一化因子（焦耳）
+        
+        # SAC算法使用不同的归一化参数
+        if self.algorithm == "SAC":
+            self.delay_normalizer = 0.25
+            self.energy_normalizer = 1200.0
+
+        # 设置奖励裁剪范围，防止奖励值过大或过小
+        if self.algorithm == "SAC":
+            self.reward_clip_range = (-15.0, 3.0)  # SAC期望较小的奖励范围
+        else:
+            self.reward_clip_range = (-80.0, -0.005)  # 其他算法使用负值范围
+
+        print(f"[OK] Unified reward calculator ({self.algorithm})")
+        print(
+            f"   Core weights: delay={self.weight_delay:.2f}, "
+            f"energy={self.weight_energy:.2f}, drop={self.penalty_dropped:.3f}"
+        )
+        print(
+            f"   Normalisation: delay/{self.delay_normalizer:.2f}, "
+            f"energy/{self.energy_normalizer:.0f}"
+        )
+
+    # ------------------------------------------------------------------ #
+    # 辅助方法 / Helpers
+
+    @staticmethod
+    def _safe_float(value: Optional[float], default: float = 0.0) -> float:
         """
-        璁＄畻缁熶竴濂栧姳锛堟敮鎸佺紦瀛樺拰杩佺Щ鎸囨爣锛屼絾涓嶅奖鍝嶆牳蹇冨鍔憋級
+        安全地将值转换为浮点数。
         
         Args:
-            system_metrics: 绯荤粺鎬ц兘鎸囨爣
-            cache_metrics: 缂撳瓨鎸囨爣锛堝彲閫夛紝鐢ㄤ簬鏈潵鎵╁睍锛?
-            migration_metrics: 杩佺Щ鎸囨爣锛堝彲閫夛紝鐢ㄤ簬鏈潵鎵╁睍锛?
-        
+            value: 待转换的值
+            default: 转换失败时的默认值
+            
         Returns:
-            reward: 鏍囬噺濂栧姳鍊?
+            转换后的浮点数或默认值
         """
-        # 1锔忊儯 鎻愬彇鏍稿績鎸囨爣锛堝畨鍏ㄥ鐞哊one鍊硷級
-        def safe_float(value, default=0.0):
-            """瀹夊叏杞崲涓篺loat锛屽鐞哊one鍜屽紓甯稿€?""
-            if value is None:
-                return default
-            try:
-                return max(0.0, float(value))
-            except (TypeError, ValueError):
-                return default
-        
-        def safe_int(value, default=0):
-            """瀹夊叏杞崲涓篿nt锛屽鐞哊one鍜屽紓甯稿€?""
-            if value is None:
-                return default
-            try:
-                return max(0, int(value))
-            except (TypeError, ValueError):
-                return default
+        if value is None:
+            return default
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return default
 
-        def to_float_list(source) -> List[float]:
-            """灏嗙郴缁熸寚鏍囦腑鐨勫垪琛?鏁扮粍瀹夊叏杞崲涓烘诞鐐瑰垪琛ㄣ€?""
-            if isinstance(source, np.ndarray):
-                values = source.tolist()
-            elif isinstance(source, (list, tuple)):
-                values = list(source)
-            else:
-                return []
-            cleaned = []
-            for item in values:
-                try:
-                    cleaned.append(float(item))
-                except (TypeError, ValueError):
-                    cleaned.append(0.0)
-            return cleaned
+    @staticmethod
+    def _safe_int(value: Optional[int], default: int = 0) -> int:
+        """
+        安全地将值转换为整数。
         
-        avg_delay = safe_float(system_metrics.get('avg_task_delay'), 0.0)
-        total_energy = safe_float(system_metrics.get('total_energy_consumption'), 0.0)
-        dropped_tasks = safe_int(system_metrics.get('dropped_tasks'), 0)
+        Args:
+            value: 待转换的值
+            default: 转换失败时的默认值
+            
+        Returns:
+            转换后的整数或默认值
+        """
+        if value is None:
+            return default
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return default
+
+    @staticmethod
+    def _to_float_list(source) -> List[float]:
+        """
+        将输入转换为浮点数列表。
         
-        # 2锔忊儯 褰掍竴鍖?
-        norm_delay = avg_delay / self.delay_normalizer
-        norm_energy = total_energy / self.energy_normalizer
+        支持numpy数组、列表、元组等多种输入类型。
+        如果某个元素无法转换，则使用0.0作为默认值。
         
-        # 3锔忊儯 璁＄畻鍩虹鎴愭湰锛堝弻鐩爣鍔犳潈鍜岋級
-        base_cost = (self.weight_delay * norm_delay + 
-                     self.weight_energy * norm_energy)
-        
-        # 4锔忊儯 涓㈠純浠诲姟鎯╃綒锛堜繚璇佸畬鎴愮巼绾︽潫锛?
-        dropped_penalty = self.penalty_dropped * dropped_tasks
-        
-        # 5锔忊儯 鑷€傚簲闃堝€兼儵缃氾紙闃叉鏋佺鎯呭喌锛?
-        delay_threshold_penalty = 0.0
-        energy_threshold_penalty = 0.0
-        
-        if self.algorithm == "SAC":
-            # SAC锛氭洿婵€杩涚殑闃堝€兼儵缃?
-            if avg_delay > 0.25:
-                delay_threshold_penalty = (avg_delay - 0.25) * 8.0
-            if total_energy > 2000:
-                energy_threshold_penalty = (total_energy - 2000) / 1000.0
+        Args:
+            source: 待转换的数据源
+            
+        Returns:
+            浮点数列表
+        """
+        if isinstance(source, np.ndarray):
+            iterable = source.tolist()
+        elif isinstance(source, (list, tuple)):
+            iterable = list(source)
         else:
-            # 閫氱敤绠楁硶锛氭俯鍜岀殑闃堝€兼儵缃?
-            if avg_delay > 0.30:
-                delay_threshold_penalty = (avg_delay - 0.30) * 5.0
-            if total_energy > 3000:
-                energy_threshold_penalty = (total_energy - 3000) / 1500.0
+            return []
+        result: List[float] = []
+        for item in iterable:
+            try:
+                result.append(float(item))
+            except (TypeError, ValueError):
+                result.append(0.0)
+        return result
+
+    # ------------------------------------------------------------------ #
+    # 公共API / Public API
+
+    def calculate_reward(
+        self,
+        system_metrics: Dict,
+        cache_metrics: Optional[Dict] = None,
+        migration_metrics: Optional[Dict] = None,
+    ) -> float:
+        """
+        为强化学习智能体计算标量奖励。
         
-        # 6锔忊儯 鎬绘垚鏈?
-        cache_penalty = 0.0
-        if self.weight_cache > 0:
-            cache_hit_rate = safe_float(system_metrics.get('cache_hit_rate'), 0.0)
-            cache_requests = safe_float(system_metrics.get('cache_requests', 0.0), 0.0)
-            cache_evictions = safe_float(system_metrics.get('cache_evictions', 0.0), 0.0)
-            cache_eviction_rate = system_metrics.get('cache_eviction_rate')
-            if cache_eviction_rate is None:
-                if cache_requests > 0:
-                    cache_eviction_rate = min(1.0, cache_evictions / max(1.0, cache_requests))
-                else:
-                    cache_eviction_rate = 0.0
-            else:
-                try:
-                    cache_eviction_rate = max(0.0, min(1.0, float(cache_eviction_rate)))
-                except (TypeError, ValueError):
-                    cache_eviction_rate = 0.0
-
-            cache_penalty = max(0.0, 1.0 - min(1.0, cache_hit_rate))
-            cache_penalty += min(0.6, cache_eviction_rate)
-
-            mitigation = 0.0
-            if cache_requests > 0:
-                collaborative_ratio = safe_float(system_metrics.get('cache_collaborative_writes', 0.0)) / max(1.0, cache_requests)
-                local_hit_ratio = safe_float(system_metrics.get('local_cache_hits', 0.0)) / max(1.0, cache_requests)
-                mitigation = min(0.4, 0.25 * collaborative_ratio + 0.5 * local_hit_ratio)
-
-            cache_penalty = min(1.4, max(-0.4, cache_penalty - mitigation))
-
-        migration_penalty = 0.0
-        if self.weight_migration > 0:
-            migration_success = safe_float(system_metrics.get('migration_success_rate'), 0.0)
-            migration_avg_cost = safe_float(system_metrics.get('migration_avg_cost', 0.0))
-            migration_delay_saved = safe_float(system_metrics.get('migration_avg_delay_saved', 0.0))
-            migration_penalty = max(0.0, 1.0 - min(1.0, migration_success))
-            migration_penalty += 0.0001 * migration_avg_cost
-            migration_penalty -= min(0.2, migration_delay_saved * 0.05)
-            migration_penalty = max(-0.3, migration_penalty)
-
-        drop_rates = [np.clip(v, 0.0, 1.0) for v in to_float_list(system_metrics.get('task_type_drop_rate'))]
-        queue_distribution = [np.clip(v, 0.0, 1.0) for v in to_float_list(system_metrics.get('task_type_queue_distribution'))]
-        generated_share = [np.clip(v, 0.0, 1.0) for v in to_float_list(system_metrics.get('task_type_generated_share'))]
-
-        total_priority = sum(self.task_priority_weights.values()) or 1.0
-        weighted_drop = 0.0
-        weighted_queue = 0.0
-        weighted_presence = 0.0
-        for idx in range(4):
-            weight = self.task_priority_weights.get(idx + 1, 1.0)
-            if idx < len(drop_rates):
-                weighted_drop += weight * drop_rates[idx]
-            if idx < len(queue_distribution):
-                weighted_queue += weight * queue_distribution[idx]
-            if idx < len(generated_share):
-                weighted_presence += weight * generated_share[idx]
-
-        weighted_drop /= total_priority
-        weighted_queue /= total_priority
-        weighted_presence /= total_priority
-
-        # 鏍规嵁楂樹紭鍏堢骇浠诲姟鐨勫帇鍔涜皟鏁寸紦瀛?杩佺Щ鎯╃綒
-        cache_penalty *= (1.0 + np.clip(weighted_queue + 0.5 * weighted_presence, 0.0, 2.0))
-        migration_penalty *= (1.0 + np.clip(weighted_drop + 0.5 * weighted_presence, 0.0, 2.0))
-
-        priority_pressure = np.clip(weighted_drop * 1.2 + weighted_queue * 0.6 + weighted_presence * 0.3, 0.0, 1.8)
-
-        total_cost = (base_cost +
-                     dropped_penalty +
-                     delay_threshold_penalty +
-                     energy_threshold_penalty +
-                     self.weight_cache * cache_penalty +
-                     self.weight_migration * migration_penalty)
-        total_cost *= (1.0 + priority_pressure)
+        奖励计算基于系统性能指标，采用成本最小化原则：
+        - 延迟越低，奖励越高
+        - 能耗越低，奖励越高
+        - 任务丢弃越少，奖励越高
+        - 可选：缓存命中率越高，奖励越高
+        - 可选：迁移成本越低，奖励越高
         
-        # 7锔忊儯 SAC涓撶敤锛氭鍚戞縺鍔辨満鍒讹紙鏈€澶х喌妗嗘灦闇€瑕佹槑纭?濂?鐨勪俊鍙凤級
+        Args:
+            system_metrics: 系统性能指标字典，包含：
+                - avg_task_delay: 平均任务延迟（秒）
+                - total_energy_consumption: 总能耗（焦耳）
+                - dropped_tasks: 丢弃的任务数量
+                - task_completion_rate: 任务完成率
+            cache_metrics: 可选的缓存指标字典
+                - miss_rate: 缓存未命中率
+            migration_metrics: 可选的迁移指标字典
+                - migration_cost: 迁移成本
+                
+        Returns:
+            标量奖励值，范围由reward_clip_range定义
+        """
+
+        # 从系统指标中提取关键性能数据，确保非负值
+        avg_delay = max(0.0, self._safe_float(system_metrics.get("avg_task_delay")))
+        total_energy = max(
+            0.0, self._safe_float(system_metrics.get("total_energy_consumption"))
+        )
+        dropped_tasks = max(0, self._safe_int(system_metrics.get("dropped_tasks")))
+        completion_rate = max(
+            0.0, self._safe_float(system_metrics.get("task_completion_rate"))
+        )
+
+        # 归一化核心成本指标
+        # Normalised core costs.
+        norm_delay = avg_delay / max(1e-9, self.delay_normalizer)
+        norm_energy = total_energy / max(1e-9, self.energy_normalizer)
+
+        # 计算总成本：延迟成本 + 能耗成本 + 任务丢弃惩罚
+        total_cost = self.weight_delay * norm_delay + self.weight_energy * norm_energy
+        total_cost += self.penalty_dropped * dropped_tasks
+
+        # 可选的缓存和迁移惩罚
+        # Optional cache/migration penalties.
+        if cache_metrics and self.weight_cache:
+            miss_rate = self._safe_float(cache_metrics.get("miss_rate"), 0.0)
+            total_cost += self.weight_cache * miss_rate
+
+        if migration_metrics and self.weight_migration:
+            migration_cost = self._safe_float(migration_metrics.get("migration_cost"), 0.0)
+            total_cost += self.weight_migration * migration_cost
+
+        # 当延迟/能耗超过配置的软限制时，添加温和的惩罚
+        # Add gentle penalties when latency/energy exceed configured soft limits.
+        latency_target = self._safe_float(getattr(config.rl, "latency_target", 0.0), 0.0)
+        latency_tolerance = self._safe_float(
+            getattr(config.rl, "latency_upper_tolerance", latency_target), latency_target
+        )
+        if latency_tolerance > 0 and avg_delay > latency_tolerance:
+            # 超出容忍范围的延迟会产生额外惩罚
+            total_cost += self.weight_delay * (avg_delay - latency_tolerance) / latency_tolerance
+
+        energy_target = self._safe_float(getattr(config.rl, "energy_target", 0.0), 0.0)
+        energy_tolerance = self._safe_float(
+            getattr(config.rl, "energy_upper_tolerance", energy_target), energy_target
+        )
+        if energy_tolerance > 0 and total_energy > energy_tolerance:
+            # 超出容忍范围的能耗会产生额外惩罚
+            total_cost += self.weight_energy * (total_energy - energy_tolerance) / energy_tolerance
+
+        # SAC期望正向奖励 -> 允许小的奖励加成
+        # SAC expects positive reward -> allow small bonus.
         bonus = 0.0
         if self.algorithm == "SAC":
-            completion_rate = safe_float(system_metrics.get('task_completion_rate'), 0.0)
-            
-            # 寤惰繜浼樼濂栧姳
-            if avg_delay < 0.20:
-                bonus += (0.20 - avg_delay) * 3.0
-            
-            # 瀹屾垚鐜囦紭绉€濂栧姳
+            # 延迟低于归一化阈值时给予奖励
+            if avg_delay < self.delay_normalizer:
+                bonus += (self.delay_normalizer - avg_delay) * 3.0
+            # 任务完成率高于95%时给予额外奖励
             if completion_rate > 0.95:
                 bonus += (completion_rate - 0.95) * 15.0
-        
-        # 8锔忊儯 鏈€缁堝鍔?
-        if self.algorithm == "SAC":
-            reward = bonus - total_cost  # SAC: bonus鍙兘涓烘
+            reward = bonus - total_cost
         else:
-            reward = -total_cost  # 閫氱敤: 绾礋鍊兼垚鏈?
-        
-        # 9锔忊儯 瑁佸壀鍒板悎鐞嗚寖鍥?
-        clipped_reward = np.clip(reward, *self.reward_clip_range)
-        
-        return clipped_reward
-    
+            # 其他算法使用负成本作为奖励
+            reward = -total_cost
+
+        # 裁剪奖励值到指定范围，防止梯度爆炸或消失
+        reward = float(np.clip(reward, *self.reward_clip_range))
+        return reward
+
     def get_reward_breakdown(self, system_metrics: Dict) -> str:
-        """鑾峰彇濂栧姳鍒嗚В鐨勫彲璇绘姤鍛?""
-        def safe_float(value, default=0.0):
-            if value is None:
-                return default
-            try:
-                return max(0.0, float(value))
-            except (TypeError, ValueError):
-                return default
-        
-        def safe_int(value, default=0):
-            if value is None:
-                return default
-            try:
-                return max(0, int(value))
-            except (TypeError, ValueError):
-                return default
-        
-        avg_delay = safe_float(system_metrics.get('avg_task_delay'), 0.0)
-        total_energy = safe_float(system_metrics.get('total_energy_consumption'), 0.0)
-        dropped_tasks = safe_int(system_metrics.get('dropped_tasks'), 0)
-        completion_rate = safe_float(system_metrics.get('task_completion_rate'), 0.0)
-        
-        reward = self.calculate_reward(system_metrics)
-        
-        breakdown = f"""
-濂栧姳鍒嗚В鎶ュ憡 ({self.algorithm}):
-鈹溾攢鈹€ 鎬诲鍔? {reward:.3f}
-鈹溾攢鈹€ 鏍稿績鎸囨爣:
-鈹?  鈹溾攢鈹€ 鏃跺欢: {avg_delay:.3f}s (褰掍竴鍖? {avg_delay/self.delay_normalizer:.3f})
-鈹?  鈹溾攢鈹€ 鑳借€? {total_energy:.2f}J (褰掍竴鍖? {total_energy/self.energy_normalizer:.3f})
-鈹?  鈹斺攢鈹€ 瀹屾垚鐜? {completion_rate:.1%}
-鈹溾攢鈹€ 鎴愭湰璐＄尞:
-鈹?  鈹溾攢鈹€ 鏃跺欢鎴愭湰: {self.weight_delay * avg_delay/self.delay_normalizer:.3f}
-鈹?  鈹溾攢鈹€ 鑳借€楁垚鏈? {self.weight_energy * total_energy/self.energy_normalizer:.3f}
-鈹?  鈹斺攢鈹€ 涓㈠純鎯╃綒: {self.penalty_dropped * dropped_tasks:.3f} ({dropped_tasks}涓换鍔?
-鈹斺攢鈹€ 浼樺寲鏂瑰悜: {'鏈€澶у寲濂栧姳锛堝惈bonus锛? if self.algorithm == 'SAC' else '鏈€灏忓寲鎴愭湰'}
         """
+        获取奖励组成的人类可读分解报告。
         
-        return breakdown.strip()
+        用于调试和分析，显示奖励的各个组成部分及其贡献。
+        
+        Args:
+            system_metrics: 系统性能指标字典
+            
+        Returns:
+            格式化的多行字符串，包含奖励详细分解
+        """
+        avg_delay = self._safe_float(system_metrics.get("avg_task_delay"), 0.0)
+        total_energy = self._safe_float(system_metrics.get("total_energy_consumption"), 0.0)
+        dropped_tasks = self._safe_int(system_metrics.get("dropped_tasks"), 0)
+        completion_rate = self._safe_float(system_metrics.get("task_completion_rate"), 0.0)
+
+        reward = self.calculate_reward(system_metrics)
+        lines = [
+            f"Reward report ({self.algorithm}):",
+            f"  total reward        : {reward:.3f}",
+            f"  latency             : {avg_delay:.3f}s (norm {avg_delay / max(1e-9, self.delay_normalizer):.3f})",
+            f"  energy              : {total_energy:.2f}J (norm {total_energy / max(1e-9, self.energy_normalizer):.3f})",
+            f"  completion rate     : {completion_rate:.1%}",
+            f"  dropped tasks       : {dropped_tasks}",
+            f"  core cost estimate  : {self.weight_delay * avg_delay / max(1e-9, self.delay_normalizer) + self.weight_energy * total_energy / max(1e-9, self.energy_normalizer):.3f}",
+        ]
+        return "\n".join(lines)
 
 
-# ==================== 鍏ㄥ眬瀹炰緥鍜屼究鎹锋帴鍙?====================
+# ---------------------------------------------------------------------- #
+# 便捷的单例对象，在整个项目中使用
+# Convenience singletons used across the project.
 
-# 閫氱敤鐗堟湰锛圖DPG, TD3, DQN, PPO锛?
 _general_reward_calculator = UnifiedRewardCalculator(algorithm="general")
-
-# SAC涓撶敤鐗堟湰
 _sac_reward_calculator = UnifiedRewardCalculator(algorithm="sac")
 
 
-def calculate_unified_reward(system_metrics: Dict,
-                             cache_metrics: Optional[Dict] = None,
-                             migration_metrics: Optional[Dict] = None,
-                             algorithm: str = "general") -> float:
+def calculate_unified_reward(
+    system_metrics: Dict,
+    cache_metrics: Optional[Dict] = None,
+    migration_metrics: Optional[Dict] = None,
+    algorithm: str = "general",
+) -> float:
     """
-    缁熶竴濂栧姳璁＄畻鎺ュ彛锛堟墍鏈夌畻娉曡皟鐢級
+    统一奖励计算的便捷函数。
+    
+    根据指定算法选择相应的奖励计算器，计算并返回奖励值。
     
     Args:
-        system_metrics: 绯荤粺鎬ц兘鎸囨爣
-        cache_metrics: 缂撳瓨鎸囨爣锛堝彲閫夛級
-        migration_metrics: 杩佺Щ鎸囨爣锛堝彲閫夛級
-        algorithm: 绠楁硶绫诲瀷 ("general" 鎴?"sac")
-    
+        system_metrics: 系统性能指标
+        cache_metrics: 可选的缓存指标
+        migration_metrics: 可选的迁移指标
+        algorithm: 算法名称（"SAC"或"general"）
+        
     Returns:
-        reward: 鏍囬噺濂栧姳鍊?
+        计算得到的奖励值
     """
-    if algorithm.upper() == "SAC":
-        calculator = _sac_reward_calculator
-    else:
-        calculator = _general_reward_calculator
-    
+    calculator = _sac_reward_calculator if algorithm.upper() == "SAC" else _general_reward_calculator
     return calculator.calculate_reward(system_metrics, cache_metrics, migration_metrics)
 
 
 def get_reward_breakdown(system_metrics: Dict, algorithm: str = "general") -> str:
-    """鑾峰彇濂栧姳鍒嗚В鎶ュ憡"""
-    if algorithm.upper() == "SAC":
-        calculator = _sac_reward_calculator
-    else:
-        calculator = _general_reward_calculator
+    """
+    获取奖励分解报告的便捷函数。
     
+    Args:
+        system_metrics: 系统性能指标
+        algorithm: 算法名称（"SAC"或"general"）
+        
+    Returns:
+        格式化的奖励分解报告字符串
+    """
+    calculator = _sac_reward_calculator if algorithm.upper() == "SAC" else _general_reward_calculator
     return calculator.get_reward_breakdown(system_metrics)
 
 
-# ==================== 鍚戝悗鍏煎鎺ュ彛 ====================
+# ---------------------------------------------------------------------- #
+# 向后兼容的辅助函数名称
+# Backwards-compatible helper names.
 
-def calculate_enhanced_reward(system_metrics: Dict,
-                             cache_metrics: Optional[Dict] = None,
-                             migration_metrics: Optional[Dict] = None) -> float:
-    """鍚戝悗鍏煎鎺ュ彛锛堜緵鐜版湁浠ｇ爜璋冪敤锛?""
+def calculate_enhanced_reward(
+    system_metrics: Dict,
+    cache_metrics: Optional[Dict] = None,
+    migration_metrics: Optional[Dict] = None,
+) -> float:
+    """
+    增强奖励计算（向后兼容）。
+    
+    这是calculate_unified_reward的别名，使用"general"算法。
+    保留此函数以确保与旧代码的兼容性。
+    
+    Args:
+        system_metrics: 系统性能指标
+        cache_metrics: 可选的缓存指标
+        migration_metrics: 可选的迁移指标
+        
+    Returns:
+        计算得到的奖励值
+    """
     return calculate_unified_reward(system_metrics, cache_metrics, migration_metrics, "general")
 
 
 def calculate_sac_reward(system_metrics: Dict) -> float:
-    """SAC涓撶敤鎺ュ彛锛堝悜鍚庡吋瀹癸級"""
+    """
+    SAC算法专用奖励计算（向后兼容）。
+    
+    为SAC算法提供正向奖励空间的便捷函数。
+    
+    Args:
+        system_metrics: 系统性能指标
+        
+    Returns:
+        计算得到的奖励值（可能为正值）
+    """
     return calculate_unified_reward(system_metrics, algorithm="sac")
 
 
 def calculate_simple_reward(system_metrics: Dict) -> float:
-    """绠€鍖栨帴鍙ｏ紙鍚戝悗鍏煎锛?""
+    """
+    简单奖励计算（向后兼容）。
+    
+    这是calculate_unified_reward的简化版本，使用"general"算法。
+    
+    Args:
+        system_metrics: 系统性能指标
+        
+    Returns:
+        计算得到的奖励值
+    """
     return calculate_unified_reward(system_metrics, algorithm="general")
-
-
 

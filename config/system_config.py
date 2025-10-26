@@ -1,7 +1,6 @@
-﻿#!/usr/bin/env python3
-"""
-绯荤粺閰嶇疆
-"""
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""System configuration."""
 
 import os
 import random
@@ -12,7 +11,7 @@ from typing import Dict, Any, Tuple, List
 
 @dataclass(frozen=True)
 class TaskProfileSpec:
-    """鎻忚堪鍗曠被浠诲姟鐨勬暟鎹寖鍥淬€佽绠楀瘑搴﹀強寤惰繜灞炴€?""
+    """Data ranges, compute density, and latency weighting for a task type."""
     task_type: int
     data_range: Tuple[float, float]
     compute_density: float
@@ -22,7 +21,7 @@ class TaskProfileSpec:
 
 @dataclass(frozen=True)
 class TaskScenarioSpec:
-    """搴旂敤鍦烘櫙鍙婂叾瀵瑰簲鐨勪换鍔＄被鍨嬩笌棰濆鍙傛暟"""
+    """Scenario definition with task type mapping and extra parameters."""
     name: str
     min_deadline: float
     max_deadline: float
@@ -31,7 +30,7 @@ class TaskScenarioSpec:
     weight: float
 
 class ExperimentConfig:
-    """瀹為獙閰嶇疆绫?""
+    """Experiment configuration settings."""
     
     def __init__(self):
         self.num_episodes = 1000
@@ -45,7 +44,7 @@ class ExperimentConfig:
         self.timestamp_format = "%Y%m%d_%H%M%S"
 
 class RLConfig:
-    """寮哄寲瀛︿範閰嶇疆绫?""
+    """Reinforcement learning hyper-parameters."""
     
     def __init__(self):
         self.num_agents = 3
@@ -71,7 +70,8 @@ class RLConfig:
         
         # 馃幆 鏍稿績濂栧姳鏉冮噸锛堢粺涓€濂栧姳鍑芥暟锛?
         # Objective = 蠅_T 脳 鏃跺欢 + 蠅_E 脳 鑳借€?
-        self.reward_weight_delay = 2.0     # 蠅_T: 鏃跺欢鏉冮噸锛堢洰鏍団増0.4s锛?        self.reward_weight_energy = 1.2    # 蠅_E: 鑳借€楁潈閲?
+        self.reward_weight_delay = 2.0  # Delay weight (target approx 0.4s)
+        self.reward_weight_energy = 1.2  # Energy weight
         self.reward_penalty_dropped = 0.02 # 杞诲井鎯╃綒锛堜繚璇佸畬鎴愮巼绾︽潫锛?
         
         # 鉂?宸插純鐢ㄥ弬鏁帮紙淇濈暀浠ュ吋瀹规棫浠ｇ爜锛?
@@ -81,24 +81,28 @@ class RLConfig:
         self.reward_weight_migration = 0.2   # 杩佺Щ鏀剁泭 / 鎴愭湰鏉冮噸
 
         # 馃幆 寤舵椂-鑳借€椾紭鍖栫洰鏍囬槇鍊硷紙渚涚畻娉曞姩鎬佽皟鏁达級
-        self.latency_target = 0.40          # 鐩爣骞冲潎寤舵椂锛堢锛?        self.latency_upper_tolerance = 0.80 # 瓒呰繃姝ゅ€艰Е鍙戝己鍖栨儵缃?        self.energy_target = 1200.0         # 鐩爣鑳借€楋紙鐒﹁€筹級
-        self.energy_upper_tolerance = 1800.0# 瓒呰繃姝ゅ€艰Е鍙戝己鍖栨儵缃?
+        self.latency_target = 0.40  # Target average latency (seconds)
+        self.latency_upper_tolerance = 0.80  # Upper latency tolerance before penalty
+        self.energy_target = 1200.0  # Target energy consumption (joules)
+        self.energy_upper_tolerance = 1800.0  # Upper energy tolerance before penalty
 class QueueConfig:
-    """闃熷垪閰嶇疆绫?""
+    """Queue configuration."""
     
     def __init__(self):
         # 涓?鈥?涓椂闅欏悓姝ワ細鐢熷懡鍛ㄦ湡鏍煎彇4
         self.max_lifetime = 4
         self.max_queue_size = 100
         self.priority_levels = 4
-        # 鑰佸寲鍥犲瓙閫傞厤鐭椂闅欙紙姣忔鏄捐憲琛板噺锛?        self.aging_factor = 0.25
+        # Aging factor tuned for short slots (strong decay each step)
+        self.aging_factor = 0.25
 
 class TaskConfig:
-    """浠诲姟閰嶇疆绫?""
+    """Task generation configuration."""
     
     def __init__(self):
         self.num_priority_levels = 4
-        self.task_compute_density = 120  # cycles/bit锛屼綔涓虹己鐪佸€?        self.arrival_rate = 2.5   # tasks/second - 馃殌 12杞﹁締鏋侀珮璐熻浇浼樺寲
+        self.task_compute_density = 120  # cycles per bit as default
+        self.arrival_rate = 2.5   # tasks per second (high-load 12-vehicle scenario)
         
         # 馃敡 閲嶆柊璁捐锛氫换鍔″弬鏁?- 鍒嗗眰璁捐涓嶅悓澶嶆潅搴︿换鍔?
         self.data_size_range = (0.5e6/8, 15e6/8)  # 0.5-15 Mbits = 0.0625-1.875 MB
@@ -119,7 +123,8 @@ class TaskConfig:
             'moderately_tolerant': 3,    # 蟿鈧?= 3 涓椂闅?= 0.6s
         }
 
-        # 寤惰繜鎴愭湰鏉冮噸锛堝弬鑰冭鏂囪〃IV锛?        self.latency_cost_weights = {
+        # Latency cost weights (aligned with Table IV in the reference paper)
+        self.latency_cost_weights = {
             1: 1.0,
             2: 0.4,
             3: 0.4,
@@ -130,13 +135,15 @@ class TaskConfig:
         self.deadline_relax_default = 1.0
         self.deadline_relax_fallback = 1.0
 
-        # 浠诲姟绫诲瀷鐗瑰寲鍙傛暟锛圖ataclass褰㈠紡锛?        self.task_profiles: Dict[int, TaskProfileSpec] = {
+        # Task-type specific parameters (stored as dataclasses)
+        self.task_profiles: Dict[int, TaskProfileSpec] = {
             1: TaskProfileSpec(1, (0.5e6/8, 2e6/8), 60, 1, 1.0),
             2: TaskProfileSpec(2, (1.5e6/8, 5e6/8), 90, 2, 0.4),
             3: TaskProfileSpec(3, (4e6/8, 9e6/8), 120, 3, 0.4),
             4: TaskProfileSpec(4, (7e6/8, 15e6/8), 150, 4, 0.4),
         }
-        # 鍏煎鏃у瓧娈垫牸寮?        self.task_type_specs = {
+        # Backwards-compatible dictionary view for legacy code
+        self.task_type_specs = {
             k: {
                 'data_range': v.data_range,
                 'compute_density': v.compute_density,
@@ -182,25 +189,33 @@ class TaskConfig:
             return 4  # DELAY_TOLERANT
 
     def sample_scenario(self) -> TaskScenarioSpec:
-        """鎸夐璁炬潈閲嶉殢鏈洪€夋嫨涓€涓换鍔″満鏅€?""
+        """Select a task scenario using the configured weights."""
         return random.choices(self.scenarios, weights=self._scenario_weights, k=1)[0]
 
     def get_profile(self, task_type: int) -> TaskProfileSpec:
-        """鑾峰彇浠诲姟绫诲瀷瀵瑰簲鐨勬暟鎹寖鍥翠笌璁＄畻瀵嗗害閰嶇疆銆?""
-        return self.task_profiles.get(
+        """Return the profile configuration for the given task type."""
+        if task_type in self.task_profiles:
+            return self.task_profiles[task_type]
+
+        default_slots = int(self.delay_thresholds.get('moderately_tolerant', 3))
+        latency_weight = float(self.latency_cost_weights.get(task_type, 1.0))
+        return TaskProfileSpec(
             task_type,
-            TaskProfileSpec(task_type, self.data_size_range, self.task_compute_density)
+            self.data_size_range,
+            self.task_compute_density,
+            default_slots,
+            latency_weight,
         )
 
     def get_relax_factor(self, task_type: int) -> float:
-        """鏍规嵁浠诲姟绫诲瀷杩斿洖榛樿鐨刣eadline鏀炬澗绯绘暟銆?""
+        """Return the default deadline relaxation factor for a task type."""
         for scenario in self.scenarios:
             if scenario.task_type == task_type:
                 return scenario.relax_factor
         return self.deadline_relax_default
 
     def _compute_type_priority_weights(self) -> Dict[int, float]:
-        """鏍规嵁鍦烘櫙鏉冮噸姹囨€讳换鍔＄被鍨嬮噸瑕佹€э紝鐢ㄤ簬鍗忓悓浼樺寲鏉冮噸銆?""
+        """Aggregate scenario weights to derive per-task priority weights."""
         totals = defaultdict(float)
         for scenario in self.scenarios:
             profile = self.task_profiles.get(scenario.task_type)
@@ -226,16 +241,16 @@ class TaskConfig:
         return priority_weights
 
     def get_latency_cost_weight(self, task_type: int) -> float:
-        """杩斿洖浠诲姟绫诲瀷鐨勫欢杩熸垚鏈潈閲?""
+        """Return the latency cost weight for the given task type."""
         return float(self.latency_cost_weights.get(task_type, 1.0))
 
     def get_priority_weight(self, task_type: int) -> float:
-        """杩斿洖鎸囧畾浠诲姟绫诲瀷鐨勪紭鍏堢骇鏉冮噸銆?""
+        """Return the cached priority weight for the given task type."""
         return float(self.type_priority_weights.get(task_type, 1.0))
 
 
 class ServiceConfig:
-    """鏈嶅姟鑳藉姏閰嶇疆锛氭帶鍒惰妭鐐规瘡涓椂闅欏彲澶勭悊鐨勪换鍔℃暟閲忎笌宸ヤ綔閲?""
+    """Service capacity settings for RSU and UAV nodes."""
 
     def __init__(self):
         # RSU 鏈嶅姟鑳藉姏
@@ -252,14 +267,15 @@ class ServiceConfig:
 
 
 class StatsConfig:
-    """缁熻涓庣洃鎺ч厤缃?""
+    """Statistics and monitoring configuration."""
 
     def __init__(self):
         self.drop_log_interval = 200
-        # 鏇寸煭鐢熷懡鍛ㄦ湡涓嬫彁楂樿娴嬬矑搴?        self.task_report_interval = 50
+        # Shorter lifetimes require finer observation granularity
+        self.task_report_interval = 50
 
 class ComputeConfig:
-    """璁＄畻閰嶇疆绫?""
+    """Compute resource configuration."""
     
     def __init__(self):
         self.parallel_efficiency = 0.8
@@ -305,7 +321,7 @@ class ComputeConfig:
         self.uav_hover_power = 50.0  # W
 
 class NetworkConfig:
-    """缃戠粶閰嶇疆绫?""
+    """Network configuration."""
     
     def __init__(self):
         self.time_slot_duration = 0.2  # seconds - 浼樺寲涓烘洿鍚堢悊鐨勬椂闅欓暱搴?
@@ -332,7 +348,7 @@ class NetworkConfig:
         self.connection_timeout = 30  # seconds
 
 class CommunicationConfig:
-    """3GPP鏍囧噯閫氫俊閰嶇疆绫?""
+    """3GPP communication configuration."""
     
     def __init__(self):
         # 3GPP鏍囧噯鍙戝皠鍔熺巼
@@ -369,7 +385,7 @@ class CommunicationConfig:
         self.coding_rate = 0.5
 
 class MigrationConfig:
-    """杩佺Щ閰嶇疆绫?""
+    """Migration configuration."""
     
     def __init__(self):
         self.migration_bandwidth = 100e6  # bps
@@ -404,7 +420,7 @@ class MigrationConfig:
         self.cooldown_period = 1.0  # 1绉掑喎鍗存湡锛屽疄鐜版瘡绉掓渶澶氫竴娆¤縼绉?
 
 class CacheConfig:
-    """缂撳瓨閰嶇疆绫?""
+    """Cache configuration."""
     
     def __init__(self):
         # 缂撳瓨瀹归噺閰嶇疆
@@ -423,7 +439,7 @@ class CacheConfig:
         self.request_history_size = 100
 
 class SystemConfig:
-    """绯荤粺閰嶇疆绫?""
+    """System configuration container."""
     
     def __init__(self):
         # 鍩烘湰绯荤粺閰嶇疆
@@ -463,7 +479,7 @@ class SystemConfig:
         self.rl = RLConfig()
         
     def get_config_dict(self) -> Dict[str, Any]:
-        """鑾峰彇閰嶇疆瀛楀吀"""
+        """Return a dictionary with selected system configuration values."""
         return {
             'device': self.device,
             'num_threads': self.num_threads,
@@ -479,7 +495,7 @@ class SystemConfig:
         }
     
     def update_config(self, **kwargs):
-        """鏇存柊閰嶇疆"""
+        """Update configuration attributes from keyword arguments."""
         for key, value in kwargs.items():
             if hasattr(self, key):
                 setattr(self, key, value)

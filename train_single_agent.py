@@ -22,7 +22,7 @@ python train_single_agent.py --algorithm TD3-LE --episodes 200  # 延时-能耗�
 python train_single_agent.py --compare --episodes 200  # 比较所有算法
 🚀 增强缓存模式 (默认启用 - 分层L1/L2 + 自适应热度策略 + RSU协作):
 python train_single_agent.py --algorithm TD3 --episodes 1600 --num-vehicles 8
-python train_single_agent.py --algorithm TD3 --episodes 1600 --num-vehicles 12
+python train_single_agent.py --algorithm TD3 --episodes 800 --num-vehicles 12
 python train_single_agent.py --algorithm TD3 --episodes 1600 --num-vehicles 16
 python train_single_agent.py --algorithm TD3 --episodes 1600 --num-vehicles 20
 python train_single_agent.py --algorithm TD3 --episodes 1600 --num-vehicles 24
@@ -41,6 +41,28 @@ python experiments/run_td3_vehicle_sweep.py --vehicles 8 12 16 20 24 --episodes 
 🐍 生成学术图表:
 python generate_academic_charts.py results/single_agent/td3/training_results_20251007_220900.json
 
+
+train_single_agent.py (主入口)
+    ↓
+├─ 解析参数: --algorithm TD3, --episodes 800, --num-vehicles 12
+├─ 加载配置: config/
+├─ 初始化环境: TD3Environment (single_agent/td3.py)
+│   ├─ 创建仿真器: CompleteSystemSimulator (evaluation/system_simulator.py)
+│   ├─ 初始化拓扑: FixedTopologyOptimizer
+│   ├─ 设置车辆数: 12辆
+│   └─ 创建控制器: AdaptiveCacheController, AdaptiveMigrationController
+├─ 训练循环 (800轮):
+│   ├─ 重置环境 → system_simulator.initialize_components()
+│   ├─ 每一步:
+│   │   ├─ TD3选择动作
+│   │   ├─ 环境执行: system_simulator.run_simulation_step()
+│   │   ├─ 计算奖励: unified_reward_calculator.calculate_reward()
+│   │   └─ TD3学习更新
+│   └─ 评估性能
+└─ 保存结果:
+    ├─ 模型: results/single_agent/td3/models/
+    ├─ 训练数据: results/single_agent/td3/training_results_*.json
+    └─ 图表: results/single_agent/td3/training_chart_*.png
 """ 
 import os
 import sys
@@ -1843,3 +1865,449 @@ def main():
 
 if __name__ == "__main__":
     main()
+    
+"""
+
+🔄 完整执行流程（分5个阶段）
+📌 阶段1: 系统初始化 (train_single_agent.py: main函数)
+1.1 参数解析与配置
+├─ 解析命令行参数
+│  ├─ algorithm = "TD3"
+│  ├─ episodes = 800  
+│  ├─ num_vehicles = 12
+│  └─ enhanced_cache = True (默认)
+│
+├─ 设置随机种子
+│  └─ 从config或环境变量读取种子
+│
+└─ 构建场景配置 override_scenario
+   └─ {'num_vehicles': 12, 'override_topology': True}
+   
+1.2 创建训练环境 (SingleAgentTrainingEnvironment)
+环境初始化流程:
+├─ 1) 选择仿真器类型
+│  ├─ use_enhanced_cache=True
+│  └─ simulator = EnhancedSystemSimulator(scenario_config)
+│
+├─ 2) 初始化仿真器组件 (system_simulator.py)
+│  ├─ 车辆初始化: 12辆车
+│  │  ├─ 位置: 随机分布在道路上
+│  │  ├─ 速度: 30-50 km/h
+│  │  └─ 缓存: L1(200MB) + L2(300MB)
+│  │
+│  ├─ RSU部署: 4个路侧单元 (固定拓扑)
+│  │  ├─ 位置: 等间距分布
+│  │  ├─ 覆盖半径: 150m
+│  │  ├─ 缓存容量: 1000MB
+│  │  └─ 计算能力: 50 GHz
+│  │
+│  └─ UAV部署: 2个无人机
+│     ├─ 位置: 动态巡航
+│     ├─ 高度: 100m
+│     ├─ 缓存容量: 200MB
+│     └─ 计算能力: 20 GHz
+│
+├─ 3) 初始化自适应控制器
+│  ├─ AdaptiveCacheController (智能缓存控制)
+│  │  ├─ 分层L1/L2缓存策略
+│  │  ├─ 热度追踪 (HeatBasedStrategy)
+│  │  └─ RSU协作缓存
+│  │
+│  └─ AdaptiveMigrationController (迁移决策控制)
+│     ├─ 负载历史追踪
+│     ├─ 多维触发条件
+│     └─ 成本效益分析
+│
+└─ 4) 拓扑优化 (FixedTopologyOptimizer)
+   ├─ 根据车辆数优化超参数
+   ├─ num_vehicles=12 → hidden_dim=512
+   ├─ actor_lr=1e-4, critic_lr=8e-5
+   └─ batch_size=256
+   
+1.3 创建TD3智能体 (TD3Environment)
+TD3算法初始化:
+├─ 网络结构
+│  ├─ Actor网络 (策略网络)
+│  │  ├─ 输入: state_dim = 车辆(12×5) + RSU(4×5) + UAV(2×5) + 全局(16) = 106维
+│  │  ├─ 隐藏层: 512 → 512 → 256
+│  │  └─ 输出: action_dim = 3(任务分配) + 4(RSU选择) + 2(UAV选择) + 8(控制参数) = 17维
+│  │
+│  ├─ Twin Critic网络 (价值网络×2)
+│  │  ├─ Critic1: 评估状态-动作价值
+│  │  ├─ Critic2: 减少过估计偏差
+│  │  └─ 输入: state(106维) + action(17维) → 输出: Q值
+│  │
+│  └─ Target网络 (目标网络)
+│     ├─ Target Actor: 生成目标动作
+│     ├─ Target Critic1 & Critic2: 计算目标Q值
+│     └─ 软更新参数: τ=0.005
+│
+├─ 经验回放缓冲区
+│  ├─ 容量: 100,000条经验
+│  ├─ 批次大小: 256
+│  └─ 优先级经验回放 (PER)
+│     ├─ α=0.6 (优先级指数)
+│     └─ β=0.4→1.0 (重要性采样)
+│
+└─ TD3特有机制
+   ├─ 策略延迟更新: policy_delay=2 (每2步更新Actor)
+   ├─ 目标策略平滑: target_noise=0.05
+   ├─ 探索噪声: exploration_noise=0.2 (指数衰减)
+   └─ 梯度裁剪: gradient_clip=0.7
+   
+📌 阶段2: Episode循环 (训练800个episode)
+2.1 Episode重置
+每个Episode开始时:
+├─ 1) 重置仿真器 (system_simulator.py: initialize_components)
+│  ├─ 清空所有队列
+│  ├─ 重置车辆位置和速度
+│  ├─ 清空缓存内容
+│  ├─ 重置统计数据
+│  └─ 重新生成内容库 (1000个内容)
+│
+├─ 2) 构建初始状态
+│  ├─ 车辆状态 (12×5维)
+│  │  ├─ 位置(x,y): 归一化到[0,1]
+│  │  ├─ 速度: 归一化到[0,1]
+│  │  ├─ 任务队列长度: 归一化
+│  │  └─ 能耗: 归一化
+│  │
+│  ├─ RSU状态 (4×5维)
+│  │  ├─ 位置(x,y)
+│  │  ├─ 缓存利用率
+│  │  ├─ 队列负载
+│  │  └─ 能耗
+│  │
+│  ├─ UAV状态 (2×5维)
+│  │  ├─ 位置(x,y,z)
+│  │  ├─ 缓存利用率
+│  │  └─ 能耗
+│  │
+│  └─ 全局状态 (16维)
+│     ├─ 平均队列长度
+│     ├─ 平均缓存利用率
+│     ├─ 系统负载
+│     ├─ 任务类型分布 (4维)
+│     ├─ 任务类型队列占比 (4维)
+│     └─ 任务类型截止期 (4维)
+│
+└─ 3) 重置控制器状态
+   ├─ 缓存控制器: 清空热度追踪
+   └─ 迁移控制器: 清空负载历史
+
+2.2 时间步循环 (每个Episode约200-300步)
+每个时间步的执行流程:
+
+┌─────────────────────────────────────────────────────┐
+│  步骤1: TD3选择动作 (td3.py: select_action)        │
+├─────────────────────────────────────────────────────┤
+│  输入: state (106维向量)                            │
+│  │                                                   │
+│  ├─ 前向传播通过Actor网络                          │
+│  │  └─ 输出原始动作: action_raw (17维)             │
+│  │                                                   │
+│  ├─ 添加探索噪声 (高斯噪声)                        │
+│  │  ├─ noise = N(0, exploration_noise)              │
+│  │  └─ action = action_raw + noise                  │
+│  │                                                   │
+│  ├─ 动作裁剪到[-1, 1]                              │
+│  │                                                   │
+│  └─ 动作分解 (decompose_action)                    │
+│     ├─ 任务分配偏好 [0:3]                          │
+│     │  └─ softmax([local, rsu, uav])               │
+│     ├─ RSU选择权重 [3:7]                           │
+│     │  └─ softmax(4个RSU的权重)                    │
+│     ├─ UAV选择权重 [7:9]                           │
+│     │  └─ softmax(2个UAV的权重)                    │
+│     └─ 控制参数 [9:17]                             │
+│        ├─ 缓存控制 (4维)                           │
+│        │  ├─ 热度阈值调整                          │
+│        │  ├─ 淘汰策略权重                          │
+│        │  ├─ 协作强度                              │
+│        │  └─ L1/L2比例                             │
+│        └─ 迁移控制 (4维)                           │
+│           ├─ 负载阈值                              │
+│           ├─ 成本敏感度                            │
+│           ├─ 延迟权重                              │
+│           └─ 能耗权重                              │
+└─────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────┐
+│  步骤2: 映射动作到自适应控制器                     │
+├─────────────────────────────────────────────────────┤
+│  (train_single_agent.py: _build_simulator_actions)  │
+│  │                                                   │
+│  ├─ 解析控制参数 (后8维动作)                       │
+│  │                                                   │
+│  ├─ 调用 map_agent_actions_to_params()             │
+│  │  ├─ 将[-1,1]范围映射到具体参数范围             │
+│  │  └─ 分离缓存参数和迁移参数                     │
+│  │                                                   │
+│  ├─ 更新 AdaptiveCacheController                   │
+│  │  ├─ heat_threshold = action[0] * 50 + 50        │
+│  │  ├─ eviction_strategy_weight = sigmoid(action[1])│
+│  │  ├─ collaboration_strength = action[2] * 0.5 + 0.5│
+│  │  └─ l1_l2_ratio = action[3] * 0.3 + 0.4         │
+│  │                                                   │
+│  └─ 更新 AdaptiveMigrationController               │
+│     ├─ load_threshold = action[4] * 0.3 + 0.6      │
+│     ├─ cost_sensitivity = action[5] * 0.5 + 0.5    │
+│     ├─ delay_weight = action[6] * 0.4 + 0.4        │
+│     └─ energy_weight = action[7] * 0.4 + 0.4       │
+└─────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────┐
+│  步骤3: 仿真器执行一步                              │
+├─────────────────────────────────────────────────────┤
+│  (system_simulator.py: run_simulation_step)         │
+│  │                                                   │
+│  ├─ 3.1 更新车辆位置                               │
+│  │  ├─ 根据速度和方向移动                         │
+│  │  ├─ 处理路口转向                               │
+│  │  └─ 添加随机扰动                               │
+│  │                                                   │
+│  ├─ 3.2 生成任务                                   │
+│  │  ├─ 泊松过程采样 (λ=车辆数×任务率)            │
+│  │  ├─ 为每辆车生成任务                           │
+│  │  │  ├─ 任务类型 (1-4): 根据场景分布           │
+│  │  │  ├─ 数据大小: 0.5-2.0 MB                    │
+│  │  │  ├─ 计算需求: 500-3000 CPU周期              │
+│  │  │  └─ 截止期: 0.5-3.0秒                       │
+│  │  └─ 添加到车辆任务队列                         │
+│  │                                                   │
+│  ├─ 3.3 任务分配与调度                             │
+│  │  ├─ 对每个任务决策卸载目标                     │
+│  │  │  ├─ 本地处理 (概率: local_pref)             │
+│  │  │  ├─ RSU卸载 (概率: rsu_pref)                │
+│  │  │  │  └─ 根据RSU选择权重选择具体RSU          │
+│  │  │  └─ UAV卸载 (概率: uav_pref)                │
+│  │  │     └─ 根据UAV选择权重选择具体UAV          │
+│  │  │                                              │
+│  │  ├─ 缓存命中检查                               │
+│  │  │  └─ check_cache_hit_adaptive()              │
+│  │  │     ├─ 检查内容是否在节点缓存中            │
+│  │  │     ├─ 命中: 减少传输时延                  │
+│  │  │     └─ 未命中: 智能缓存决策                │
+│  │  │        ├─ 调用缓存控制器.should_cache_content│
+│  │  │        ├─ 基于热度决定是否缓存             │
+│  │  │        └─ 执行淘汰和协作缓存               │
+│  │  │                                              │
+│  │  └─ 任务传输与入队                             │
+│  │     ├─ 计算上行传输时延和能耗                 │
+│  │     ├─ 将任务加入节点计算队列                 │
+│  │     └─ 记录任务元数据                         │
+│  │                                                   │
+│  ├─ 3.4 处理计算队列                               │
+│  │  └─ _process_node_queues()                      │
+│  │     ├─ 遍历所有RSU和UAV                        │
+│  │     ├─ 对每个节点:                             │
+│  │     │  ├─ 获取队列长度                         │
+│  │     │  ├─ 动态调整处理能力                     │
+│  │     │  │  └─ capacity = base + boost(队列长度) │
+│  │     │  ├─ 处理任务工作量                       │
+│  │     │  │  └─ work_remaining -= capacity        │
+│  │     │  ├─ 完成的任务:                          │
+│  │     │  │  ├─ 计算下行传输                      │
+│  │     │  │  ├─ 更新统计(延迟、能耗)             │
+│  │     │  │  └─ 标记完成                          │
+│  │     │  └─ 处理超期任务                         │
+│  │     └─ 更新节点状态                             │
+│  │                                                   │
+│  ├─ 3.5 自适应迁移检查                             │
+│  │  └─ check_adaptive_migration()                  │
+│  │     ├─ 计算所有节点负载因子                    │
+│  │     │  └─ load = 0.8×队列负载 + 0.2×缓存利用率│
+│  │     ├─ 更新迁移控制器负载历史                  │
+│  │     ├─ 判断是否触发迁移                        │
+│  │     │  ├─ 负载超阈值                           │
+│  │     │  ├─ 持续时间足够                         │
+│  │     │  └─ 成本效益分析通过                     │
+│  │     └─ 执行迁移                                │
+│  │        ├─ RSU→RSU (有线迁移)                  │
+│  │        │  ├─ 选择目标RSU (负载最轻)           │
+│  │        │  ├─ 计算迁移成本                      │
+│  │        │  ├─ 传输任务                          │
+│  │        │  └─ 更新统计                          │
+│  │        └─ UAV→RSU (无线迁移)                  │
+│  │           └─ 类似流程                          │
+│  │                                                   │
+│  ├─ 3.6 更新统计指标                               │
+│  │  ├─ 累计完成任务数                             │
+│  │  ├─ 累计延迟                                   │
+│  │  ├─ 累计能耗                                   │
+│  │  ├─ 缓存命中率                                 │
+│  │  ├─ 迁移成功率                                 │
+│  │  └─ 任务类型分布统计                           │
+│  │                                                   │
+│  └─ 返回 step_stats (本步统计数据)                │
+└─────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────┐
+│  步骤4: 计算奖励和下一状态                         │
+├─────────────────────────────────────────────────────┤
+│  (train_single_agent.py: step 方法)                 │
+│  │                                                   │
+│  ├─ 4.1 提取系统指标                               │
+│  │  ├─ 平均延迟: avg_delay (秒)                   │
+│  │  ├─ 总能耗: total_energy (焦耳)                │
+│  │  ├─ 任务完成率: completion_rate                │
+│  │  ├─ 缓存命中率: cache_hit_rate                 │
+│  │  ├─ 数据丢失率: data_loss_ratio                │
+│  │  └─ 迁移成功率: migration_success_rate         │
+│  │                                                   │
+│  ├─ 4.2 调用统一奖励计算器                         │
+│  │  └─ unified_reward_calculator.calculate_reward()│
+│  │     │                                            │
+│  │     ├─ 延迟惩罚: -α × log(avg_delay + ε)       │
+│  │     │  └─ α=15.0, 强调低延迟                  │
+│  │     │                                            │
+│  │     ├─ 能耗惩罚: -β × log(total_energy + ε)    │
+│  │     │  └─ β=0.01, 平衡能效                    │
+│  │     │                                            │
+│  │     ├─ 完成率奖励: +γ × completion_rate        │
+│  │     │  └─ γ=200.0, 鼓励任务完成               │
+│  │     │                                            │
+│  │     ├─ 缓存命中奖励: +δ × cache_hit_rate       │
+│  │     │  └─ δ=10.0, 鼓励高命中率                │
+│  │     │                                            │
+│  │     ├─ 数据丢失惩罚: -ε × data_loss_ratio      │
+│  │     │  └─ ε=50.0, 避免丢包                    │
+│  │     │                                            │
+│  │     └─ 迁移成功奖励: +ζ × migration_success    │
+│  │        └─ ζ=5.0, 鼓励有效迁移                 │
+│  │                                                   │
+│  │     最终奖励 = Σ(各项奖励/惩罚)                │
+│  │                                                   │
+│  ├─ 4.3 构建下一状态向量 (106维)                   │
+│  │  └─ 与初始状态相同的结构                       │
+│  │                                                   │
+│  └─ 4.4 判断Episode是否结束                        │
+│     ├─ 达到最大步数 (200-300步)                   │
+│     ├─ 系统崩溃 (所有节点过载)                     │
+│     └─ 完成率过低 (<20%)                          │
+└─────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────┐
+│  步骤5: TD3学习更新 (td3.py: update)               │
+├─────────────────────────────────────────────────────┤
+│  │                                                   │
+│  ├─ 5.1 存储经验到回放缓冲区                       │
+│  │  └─ buffer.add(state, action, reward, next_state, done)│
+│  │                                                   │
+│  ├─ 5.2 采样批次数据 (batch_size=256)              │
+│  │  └─ 使用PER优先级采样                          │
+│  │                                                   │
+│  ├─ 5.3 计算Critic损失                             │
+│  │  ├─ 生成目标动作 (Target Actor)                │
+│  │  │  └─ target_action = target_actor(next_state) │
+│  │  │     + clipped_noise  # 目标策略平滑        │
+│  │  │                                              │
+│  │  ├─ 计算目标Q值 (Twin Target Critics)          │
+│  │  │  ├─ q1_target = target_critic1(next_state, target_action)│
+│  │  │  ├─ q2_target = target_critic2(next_state, target_action)│
+│  │  │  └─ target_q = min(q1, q2)  # 减少过估计    │
+│  │  │                                              │
+│  │  ├─ 计算TD目标                                 │
+│  │  │  └─ y = reward + γ × (1-done) × target_q   │
+│  │  │                                              │
+│  │  ├─ 计算当前Q值                                │
+│  │  │  ├─ current_q1 = critic1(state, action)     │
+│  │  │  └─ current_q2 = critic2(state, action)     │
+│  │  │                                              │
+│  │  ├─ Critic损失                                 │
+│  │  │  └─ loss = MSE(current_q1, y) + MSE(current_q2, y)│
+│  │  │                                              │
+│  │  └─ 反向传播更新Critic                         │
+│  │     ├─ critic_optimizer.zero_grad()             │
+│  │     ├─ loss.backward()                          │
+│  │     ├─ 梯度裁剪 (norm=0.7)                     │
+│  │     └─ critic_optimizer.step()                  │
+│  │                                                   │
+│  ├─ 5.4 延迟Actor更新 (每policy_delay=2步)        │
+│  │  ├─ 计算Actor损失                              │
+│  │  │  ├─ new_action = actor(state)                │
+│  │  │  └─ actor_loss = -critic1(state, new_action).mean()│
+│  │  │                                              │
+│  │  ├─ 反向传播更新Actor                          │
+│  │  │  ├─ actor_optimizer.zero_grad()              │
+│  │  │  ├─ actor_loss.backward()                    │
+│  │  │  ├─ 梯度裁剪                                │
+│  │  │  └─ actor_optimizer.step()                   │
+│  │  │                                              │
+│  │  └─ 软更新目标网络                             │
+│  │     ├─ target_actor = τ×actor + (1-τ)×target_actor│
+│  │     └─ target_critics = τ×critics + (1-τ)×target_critics│
+│  │                                                   │
+│  └─ 5.5 更新PER优先级                             │
+│     └─ 根据TD误差更新样本优先级                   │
+└─────────────────────────────────────────────────────┘
+
+📌 阶段3: Episode结束与统计
+Episode结束后:
+├─ 记录Episode统计
+│  ├─ 总奖励
+│  ├─ 平均延迟
+│  ├─ 总能耗
+│  ├─ 完成率
+│  ├─ 缓存命中率
+│  └─ 迁移统计
+│
+├─ 衰减探索噪声
+│  └─ exploration_noise *= noise_decay (0.9997)
+│
+└─ 打印进度信息
+   └─ 每50个Episode打印一次详细统计
+
+📌 阶段4: 周期性评估 (每eval_interval=50个episode)
+评估流程:
+├─ 关闭探索噪声
+├─ 运行10个测试Episode
+├─ 计算平均性能指标
+│  ├─ 平均奖励
+│  ├─ 平均延迟
+│  ├─ 平均能耗
+│  └─ 平均完成率
+└─ 保存性能曲线
+
+📌 阶段5: 训练结束与保存 (800个episode完成后)
+保存结果:
+├─ 1) 模型权重
+│  └─ results/single_agent/td3/models/
+│     ├─ actor_final.pth
+│     ├─ critic1_final.pth
+│     ├─ critic2_final.pth
+│     └─ target_networks_final.pth
+│
+├─ 2) 训练数据
+│  └─ results/single_agent/td3/training_results_YYYYMMDD_HHMMSS.json
+│     ├─ rewards: [...]
+│     ├─ delays: [...]
+│     ├─ energies: [...]
+│     ├─ completion_rates: [...]
+│     └─ cache_metrics: {...}
+│
+└─ 3) 可视化图表
+   └─ results/single_agent/td3/training_chart_YYYYMMDD_HHMMSS.png
+      ├─ 奖励曲线
+      ├─ 延迟曲线
+      ├─ 能耗曲线
+      └─ 完成率曲线
+      
+🔑 核心技术亮点
+1. Twin Delayed DDPG (TD3)
+    双Critic网络减少Q值过估计
+    延迟策略更新提高稳定性
+    目标策略平滑化减少方差
+2. 自适应控制机制
+    智能缓存控制：热度追踪 + 分层缓存
+    智能迁移控制：多维触发 + 成本效益
+3. 统一奖励函数
+    多目标优化：延迟、能耗、完成率
+    对数惩罚：避免极端值影响
+    平衡权重：确保各项指标协调
+4. 动态网络拓扑
+    车辆移动模型：真实道路场景
+    固定RSU/UAV：验证算法有效性
+    自适应计算资源分配
+
+"""
