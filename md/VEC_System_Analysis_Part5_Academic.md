@@ -38,26 +38,26 @@ self.uavs = [{'id': f'UAV_{i}', ...} for i in range(2)]     # |U|=2
 **论文定义**（L322-352）:
 ```latex
 任务分类：
-- 类别1（极度延迟敏感）: T_max,j ≤ τ₁ = 4时隙
-- 类别2（延迟敏感）:     τ₁ < T_max,j ≤ τ₂ = 10时隙  
-- 类别3（中度容忍）:     τ₂ < T_max,j ≤ τ₃ = 25时隙
-- 类别4（延迟容忍）:     T_max,j > τ₃
+- 类别1（极度延迟敏感）: T_max,j <= tau1 = 1时隙
+- 类别2（延迟敏感）:     tau1 < T_max,j <= tau2 = 2时隙
+- 类别3（中度容忍）:     tau2 < T_max,j <= tau3 = 3时隙
+- 类别4（延迟容忍）:     tau3 < T_max,j <= tau4 = 4时隙
 ```
 
 **代码实现**（`system_config.py:98-122`）:
 ```python
 self.delay_thresholds = {
-    'extremely_sensitive': 4,    # τ₁ = 4时隙 = 0.8s
-    'sensitive': 10,             # τ₂ = 10时隙 = 2.0s
-    'moderately_tolerant': 25,   # τ₃ = 25时隙 = 5.0s
+    'extremely_sensitive': 1,    # tau1 = 1时隙 = 0.2s
+    'sensitive': 2,             # tau2 = 2时隙 = 0.4s
+    'moderately_tolerant': 3,   # tau3 = 3时隙 = 0.6s
 }
 
 def get_task_type(self, max_delay_slots: int) -> int:
-    if max_delay_slots <= 4:
+    if max_delay_slots <= 1:
         return 1  # EXTREMELY_DELAY_SENSITIVE
-    elif max_delay_slots <= 10:
+    elif max_delay_slots <= 2:
         return 2  # DELAY_SENSITIVE
-    elif max_delay_slots <= 25:
+    elif max_delay_slots <= 3:
         return 3  # MODERATELY_DELAY_TOLERANT
     else:
         return 4  # DELAY_TOLERANT

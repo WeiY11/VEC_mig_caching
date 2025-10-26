@@ -19,8 +19,8 @@ DEFAULT_CONFIG = {
     "task_generation": {
         "arrival_rate": 1.5,        # tasks/second - 调整为与0.2s时隙匹配
         "data_size_range": [0.5e6/8, 15e6/8],  # 🔧 修复: 0.5-15 Mbits = 0.0625-1.875 MB
-        "compute_density": 400,     # cycles/bit - 适应12GHz RSU处理能力
-        "deadline_range": [2.0, 15.0],  # seconds - 延长截止时间
+        "compute_density": 120,     # cycles/bit - 对应表IV基准
+        "deadline_range": [0.2, 0.8],  # seconds - 对应1-4个时隙
         "output_ratio": 0.1         # 输出大小比例
     },
     

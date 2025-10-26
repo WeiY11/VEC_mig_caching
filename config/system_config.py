@@ -12,10 +12,12 @@ from typing import Dict, Any, Tuple, List
 
 @dataclass(frozen=True)
 class TaskProfileSpec:
-    """描述单类任务的数据范围与计算密度"""
+    """描述单类任务的数据范围、计算密度及延迟属性"""
     task_type: int
     data_range: Tuple[float, float]
     compute_density: float
+    max_latency_slots: int
+    latency_weight: float
 
 
 @dataclass(frozen=True)
@@ -99,7 +101,7 @@ class TaskConfig:
     
     def __init__(self):
         self.num_priority_levels = 4
-        self.task_compute_density = 400  # 🔧 降低计算密度，适应现实算力
+        self.task_compute_density = 120  # cycles/bit，作为缺省值
         self.arrival_rate = 2.5   # tasks/second - 🚀 12车辆极高负载优化
         
         # 🔧 重新设计：任务参数 - 分层设计不同复杂度任务
@@ -110,45 +112,58 @@ class TaskConfig:
         self.compute_cycles_range = (1e8, 1e10)  # cycles
         
         # 截止时间配置
-        self.deadline_range = (1.0, 10.0)  # seconds
+        self.deadline_range = (0.2, 0.8)  # seconds，对应1-4个时隙
         
         # 输出比例配置
         self.task_output_ratio = 0.05  # 输出大小是输入大小的5%
         
         # 🔧 重新设计：任务类型阈值 - 基于12GHz RSU实际处理能力
         self.delay_thresholds = {
-            'extremely_sensitive': 4,    # τ₁ = 4 时隙 = 0.8s (RSU快速处理)
-            'sensitive': 10,             # τ₂ = 10 时隙 = 2.0s (Vehicle处理)
-            'moderately_tolerant': 25,   # τ₃ = 25 时隙 = 5.0s (UAV/复杂任务)
+            'extremely_sensitive': 1,    # τ₁ = 1 个时隙 = 0.2s
+            'sensitive': 2,              # τ₂ = 2 个时隙 = 0.4s
+            'moderately_tolerant': 3,    # τ₃ = 3 个时隙 = 0.6s
+        }
+
+        # 延迟成本权重（参考论文表IV）
+        self.latency_cost_weights = {
+            1: 1.0,
+            2: 0.4,
+            3: 0.4,
+            4: 0.4,
         }
 
         # Deadline 放松参数
-        self.deadline_relax_default = 1.2
-        self.deadline_relax_fallback = 1.3
+        self.deadline_relax_default = 1.0
+        self.deadline_relax_fallback = 1.0
 
         # 任务类型特化参数（Dataclass形式）
         self.task_profiles: Dict[int, TaskProfileSpec] = {
-            1: TaskProfileSpec(1, (0.5e6/8, 3e6/8), 300),
-            2: TaskProfileSpec(2, (2e6/8, 8e6/8), 400),
-            3: TaskProfileSpec(3, (5e6/8, 12e6/8), 500),
-            4: TaskProfileSpec(4, (8e6/8, 15e6/8), 600),
+            1: TaskProfileSpec(1, (0.5e6/8, 2e6/8), 60, 1, 1.0),
+            2: TaskProfileSpec(2, (1.5e6/8, 5e6/8), 90, 2, 0.4),
+            3: TaskProfileSpec(3, (4e6/8, 9e6/8), 120, 3, 0.4),
+            4: TaskProfileSpec(4, (7e6/8, 15e6/8), 150, 4, 0.4),
         }
         # 兼容旧字段格式
         self.task_type_specs = {
-            k: {'data_range': v.data_range, 'compute_density': v.compute_density}
+            k: {
+                'data_range': v.data_range,
+                'compute_density': v.compute_density,
+                'max_latency_slots': v.max_latency_slots,
+                'latency_weight': v.latency_weight,
+            }
             for k, v in self.task_profiles.items()
         }
 
         # 场景定义
         self.scenarios: List[TaskScenarioSpec] = [
-            TaskScenarioSpec('emergency_brake', 0.2, 0.6, 1, 1.6, 0.08),
-            TaskScenarioSpec('collision_avoid', 0.3, 0.6, 1, 1.6, 0.07),
-            TaskScenarioSpec('navigation', 0.9, 1.9, 2, 1.35, 0.25),
-            TaskScenarioSpec('traffic_signal', 1.1, 2.0, 2, 1.35, 0.15),
-            TaskScenarioSpec('video_process', 2.2, 4.8, 3, 1.25, 0.20),
-            TaskScenarioSpec('image_recognition', 2.5, 4.9, 3, 1.25, 0.15),
-            TaskScenarioSpec('data_analysis', 5.5, 12.0, 4, 1.15, 0.08),
-            TaskScenarioSpec('ml_training', 8.0, 18.0, 4, 1.15, 0.02),
+            TaskScenarioSpec('emergency_brake', 0.18, 0.22, 1, 1.0, 0.08),
+            TaskScenarioSpec('collision_avoid', 0.18, 0.24, 1, 1.0, 0.07),
+            TaskScenarioSpec('navigation', 0.38, 0.42, 2, 1.0, 0.25),
+            TaskScenarioSpec('traffic_signal', 0.38, 0.44, 2, 1.0, 0.15),
+            TaskScenarioSpec('video_process', 0.58, 0.64, 3, 1.0, 0.20),
+            TaskScenarioSpec('image_recognition', 0.58, 0.66, 3, 1.0, 0.15),
+            TaskScenarioSpec('data_analysis', 0.78, 0.84, 4, 1.0, 0.08),
+            TaskScenarioSpec('ml_training', 0.78, 0.86, 4, 1.0, 0.02),
         ]
         self._scenario_weights = [scenario.weight for scenario in self.scenarios]
         self._scenario_lookup = {scenario.name: scenario for scenario in self.scenarios}
@@ -196,7 +211,12 @@ class TaskConfig:
         """根据场景权重汇总任务类型重要性，用于协同优化权重。"""
         totals = defaultdict(float)
         for scenario in self.scenarios:
-            totals[scenario.task_type] += scenario.weight
+            profile = self.task_profiles.get(scenario.task_type)
+            latency_weight = profile.latency_weight if profile else 1.0
+            totals[scenario.task_type] += scenario.weight * latency_weight
+
+        for task_type, profile in self.task_profiles.items():
+            totals[task_type] = max(totals[task_type], profile.latency_weight)
 
         # 确保每个任务类型至少具备基线权重
         for task_type in self.task_profiles.keys():
@@ -212,6 +232,10 @@ class TaskConfig:
             for task_type in self.task_profiles.keys()
         }
         return priority_weights
+
+    def get_latency_cost_weight(self, task_type: int) -> float:
+        """返回任务类型的延迟成本权重"""
+        return float(self.latency_cost_weights.get(task_type, 1.0))
 
     def get_priority_weight(self, task_type: int) -> float:
         """返回指定任务类型的优先级权重。"""

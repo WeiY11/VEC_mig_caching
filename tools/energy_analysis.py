@@ -28,7 +28,7 @@ def manual_calculation_typical_task():
     data_size_mb = 1.0  # 1MB
     data_size_bytes = data_size_mb * 1e6
     data_size_bits = data_size_bytes * 8
-    compute_density = 400  # cycles/bit
+    compute_density = 120  # cycles/bit
     distance = 200.0  # meters
     
     print(f"任务：{data_size_mb}MB, 计算密度{compute_density} cycles/bit, 距离{distance}m")
@@ -203,7 +203,7 @@ def code_vs_manual_comparison():
     code_rsu_static = 2.0  # 代码默认
     
     data_size_bits = 8e6
-    compute_density = 400
+    compute_density = 120
     
     # 使用代码的计算逻辑
     total_cycles = data_size_bits * compute_density
