@@ -1,0 +1,32 @@
+@dataclass
+class ProcessingOption:
+    """处理选项数据结构"""
+    mode: ProcessingMode
+    target_node_id: str
+    predicted_delay: float
+    energy_cost: float
+    success_probability: float
+    migration_source: Optional[str] = None  # 迁移源节�?(仅迁移模�?
+    cache_hit: bool = False  # 是否缓存命中
+    
+    @property
+    def weighted_cost(self) -> float:
+        """计算加权成本"""
+        # 归一化因�?- 基于实际数据范围调整
+        delay_norm = 0.15  # �?(基于平均时延0.08�?
+        energy_norm = 250.0  # 焦�?(基于平均能�?00W左右)
+        
+        # 权重 (可配�? - 进一步增加能耗权重以促进卸载
+        w_delay = 0.15  # 进一步降低时延权�?
+        w_energy = 0.7  # 进一步增加能耗权�?
+        w_reliability = 0.15  # 进一步降低可靠性权�?
+        
+        normalized_delay = self.predicted_delay / delay_norm
+        normalized_energy = self.energy_cost / energy_norm
+        reliability_penalty = 1.0 - self.success_probability
+        
+        return (w_delay * normalized_delay + 
+                w_energy * normalized_energy + 
+                w_reliability * reliability_penalty)
+
+

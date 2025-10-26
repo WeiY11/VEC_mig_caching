@@ -1,7 +1,7 @@
-#!/usr/bin/env python3
+﻿#!/usr/bin/env python3
 """
-完整系统仿真器
-用于测试完整的车联网边缘缓存系统
+瀹屾暣绯荤粺浠跨湡鍣?
+鐢ㄤ簬娴嬭瘯瀹屾暣鐨勮溅鑱旂綉杈圭紭缂撳瓨绯荤粺
 """
 
 import numpy as np
@@ -10,33 +10,33 @@ import random
 from typing import Dict, List, Tuple, Any, Optional
 import json
 from datetime import datetime
-# 🔧 修复：导入统一时间管理器
+# 馃敡 淇锛氬鍏ョ粺涓€鏃堕棿绠＄悊鍣?
 from utils.unified_time_manager import get_simulation_time, advance_simulation_time, reset_simulation_time
-# 🔧 修复：导入realistic内容生成器
+# 馃敡 淇锛氬鍏ealistic鍐呭鐢熸垚鍣?
 from utils.realistic_content_generator import generate_realistic_content, get_realistic_content_size
 
 class CompleteSystemSimulator:
-    """完整系统仿真器"""
+    """瀹屾暣绯荤粺浠跨湡鍣?""
     
     def __init__(self, config: Dict = None):
-        """初始化仿真器"""
+        """鍒濆鍖栦豢鐪熷櫒"""
         self.config = config or self.get_default_config()
         self.override_topology = self.config.get('override_topology', False)
-        # 统一系统配置入口（若可用）
+        # 缁熶竴绯荤粺閰嶇疆鍏ュ彛锛堣嫢鍙敤锛?
         try:
             from config import config as sys_config
             self.sys_config = sys_config
         except Exception:
             self.sys_config = None
         
-        # 网络拓扑
+        # 缃戠粶鎷撴墤
         if self.sys_config is not None and not self.config.get('override_topology', False):
             self.num_vehicles = getattr(self.sys_config.network, 'num_vehicles', 12)
             self.num_rsus = getattr(self.sys_config.network, 'num_rsus', 6)
             self.num_uavs = getattr(self.sys_config.network, 'num_uavs', 2)
         else:
             self.num_vehicles = self.config.get('num_vehicles', 12)
-            self.num_rsus = self.config.get('num_rsus', 4)  # 🔧 修复：使用正确的默认值
+            self.num_rsus = self.config.get('num_rsus', 4)  # 馃敡 淇锛氫娇鐢ㄦ纭殑榛樿鍊?
             self.num_uavs = self.config.get('num_uavs', 2)
         if self.sys_config is not None and not self.override_topology:
             default_radius = getattr(self.sys_config.network, 'coverage_radius', 300)
@@ -45,33 +45,33 @@ class CompleteSystemSimulator:
         self.coverage_radius = self.config.get('coverage_radius', default_radius)
 
         
-        # 仿真参数
+        # 浠跨湡鍙傛暟
         if self.sys_config is not None and not self.config.get('override_topology', False):
             self.simulation_time = getattr(self.sys_config, 'simulation_time', 1000)
-            self.time_slot = getattr(self.sys_config.network, 'time_slot_duration', 0.2)  # 🚀 适应高负载时隙
-            self.task_arrival_rate = getattr(self.sys_config.task, 'arrival_rate', 2.5)  # 🚀 高负载到达率
+            self.time_slot = getattr(self.sys_config.network, 'time_slot_duration', 0.2)  # 馃殌 閫傚簲楂樿礋杞芥椂闅?
+            self.task_arrival_rate = getattr(self.sys_config.task, 'arrival_rate', 2.5)  # 馃殌 楂樿礋杞藉埌杈剧巼
         else:
             self.simulation_time = self.config.get('simulation_time', 1000)
-            self.time_slot = self.config.get('time_slot', 0.2)  # 🚀 高负载默认时隙
-            self.task_arrival_rate = self.config.get('task_arrival_rate', 2.5)  # 🚀 高负载默认到达率
+            self.time_slot = self.config.get('time_slot', 0.2)  # 馃殌 楂樿礋杞介粯璁ゆ椂闅?
+            self.task_arrival_rate = self.config.get('task_arrival_rate', 2.5)  # 馃殌 楂樿礋杞介粯璁ゅ埌杈剧巼
         
         self.task_config = getattr(self.sys_config, 'task', None) if self.sys_config is not None else None
         self.service_config = getattr(self.sys_config, 'service', None) if self.sys_config is not None else None
         self.stats_config = getattr(self.sys_config, 'stats', None) if self.sys_config is not None else None
         
-        # 性能统计与运行态
+        # 鎬ц兘缁熻涓庤繍琛屾€?
         self.stats = self._fresh_stats_dict()
-        self.active_tasks: List[Dict] = []  # 每项: {id, vehicle_id, arrival_time, deadline, work_remaining, node_type, node_idx}
+        self.active_tasks: List[Dict] = []  # 姣忛」: {id, vehicle_id, arrival_time, deadline, work_remaining, node_type, node_idx}
         self.task_counter = 0
         self.current_step = 0
         self.current_time = 0.0
         
-        # 初始化组件
+        # 鍒濆鍖栫粍浠?
         self.initialize_components()
         self._reset_runtime_states()
     
     def get_default_config(self) -> Dict:
-        """获取默认配置"""
+        """鑾峰彇榛樿閰嶇疆"""
         return {
             'num_vehicles': 12,
             'num_rsus': 6,
@@ -96,22 +96,22 @@ class CompleteSystemSimulator:
         }
     
     def initialize_components(self):
-        """初始化系统组件"""
-        # 🚦 主干道+双路口初始化
-        # 坐标系统 0..1000，主干道沿 x 轴中线 y=500，从左向右；两处路口位于 x=300 与 x=700
+        """鍒濆鍖栫郴缁熺粍浠?""
+        # 馃殾 涓诲共閬?鍙岃矾鍙ｅ垵濮嬪寲
+        # 鍧愭爣绯荤粺 0..1000锛屼富骞查亾娌?x 杞翠腑绾?y=500锛屼粠宸﹀悜鍙筹紱涓ゅ璺彛浣嶄簬 x=300 涓?x=700
         self.road_y = 500.0
-        self.intersections = {  # 信号灯相位: 周期 T，绿灯比例 g
+        self.intersections = {  # 淇″彿鐏浉浣? 鍛ㄦ湡 T锛岀豢鐏瘮渚?g
             'L': {'x': 300.0, 'cycle_T': 60.0, 'green_ratio': 0.5, 'phase_offset': 0.0},
             'R': {'x': 700.0, 'cycle_T': 60.0, 'green_ratio': 0.5, 'phase_offset': 15.0},
         }
 
-        # 车辆初始化：落在道路上，方向为东(0)或西(pi)，车道内微扰
+        # 杞﹁締鍒濆鍖栵細钀藉湪閬撹矾涓婏紝鏂瑰悜涓轰笢(0)鎴栬タ(pi)锛岃溅閬撳唴寰壈
         self.vehicles = []
         for i in range(self.num_vehicles):
-            go_east = np.random.rand() < 0.6  # 60% 向东
+            go_east = np.random.rand() < 0.6  # 60% 鍚戜笢
             base_dir = 0.0 if go_east else np.pi
             x0 = np.random.uniform(100.0, 900.0)
-            y0 = self.road_y + np.random.uniform(-6.0, 6.0)  # 简单两车道路幅
+            y0 = self.road_y + np.random.uniform(-6.0, 6.0)  # 绠€鍗曚袱杞﹂亾璺箙
             v0 = np.random.uniform(12.0, 22.0)
             vehicle = {
                 'id': f'V_{i}',
@@ -125,13 +125,13 @@ class CompleteSystemSimulator:
                 'device_cache_capacity': 32.0
             }
             self.vehicles.append(vehicle)
-        print("🚦 车辆初始化完成：主干道双路口场景")
+        print("馃殾 杞﹁締鍒濆鍖栧畬鎴愶細涓诲共閬撳弻璺彛鍦烘櫙")
         
-        # RSU节点
+        # RSU鑺傜偣
         self.rsus = []
-        # 🔧 动态RSU部署：根据num_rsus均匀分布在道路上
+        # 馃敡 鍔ㄦ€丷SU閮ㄧ讲锛氭牴鎹畁um_rsus鍧囧寑鍒嗗竷鍦ㄩ亾璺笂
         if self.num_rsus <= 4:
-            # 原始固定4个RSU的部署
+            # 鍘熷鍥哄畾4涓猂SU鐨勯儴缃?
             rsu_positions = [
                 np.array([300.0, 500.0]),
                 np.array([500.0, 500.0]),
@@ -139,14 +139,14 @@ class CompleteSystemSimulator:
                 np.array([900.0, 500.0]),
             ]
         else:
-            # 动态生成RSU位置，均匀分布在200-900之间
+            # 鍔ㄦ€佺敓鎴怰SU浣嶇疆锛屽潎鍖€鍒嗗竷鍦?00-900涔嬮棿
             rsu_positions = []
-            spacing = 700.0 / (self.num_rsus - 1)  # 均匀间隔
+            spacing = 700.0 / (self.num_rsus - 1)  # 鍧囧寑闂撮殧
             for i in range(self.num_rsus):
                 x_pos = 200.0 + i * spacing
                 rsu_positions.append(np.array([x_pos, 500.0]))
         
-        # 创建RSU
+        # 鍒涘缓RSU
         for i in range(self.num_rsus):
             rsu = {
                 'id': f'RSU_{i}',
@@ -160,28 +160,28 @@ class CompleteSystemSimulator:
             }
             self.rsus.append(rsu)
         
-        # UAV节点
+        # UAV鑺傜偣
         self.uavs = []
-        # 🔧 动态UAV部署：根据num_uavs均匀分布
+        # 馃敡 鍔ㄦ€乁AV閮ㄧ讲锛氭牴鎹畁um_uavs鍧囧寑鍒嗗竷
         if self.num_uavs <= 2:
-            # 原始2架UAV的部署
+            # 鍘熷2鏋禪AV鐨勯儴缃?
             uav_positions = [
                 np.array([300.0, 500.0, 120.0]),
                 np.array([700.0, 500.0, 120.0]),
             ]
         else:
-            # 动态生成UAV位置，均匀分布在道路上方
+            # 鍔ㄦ€佺敓鎴怳AV浣嶇疆锛屽潎鍖€鍒嗗竷鍦ㄩ亾璺笂鏂?
             uav_positions = []
-            spacing = 600.0 / (self.num_uavs - 1)  # 均匀间隔
+            spacing = 600.0 / (self.num_uavs - 1)  # 鍧囧寑闂撮殧
             for i in range(self.num_uavs):
                 x_pos = 200.0 + i * spacing
                 uav_positions.append(np.array([x_pos, 500.0, 120.0]))
         
-        # 创建UAV
+        # 鍒涘缓UAV
         for i in range(self.num_uavs):
             uav = {
                 'id': f'UAV_{i}',
-                'position': uav_positions[i],  # 固定悬停位置
+                'position': uav_positions[i],  # 鍥哄畾鎮仠浣嶇疆
                 'velocity': 0.0,
                 'coverage_radius': 350.0,
                 'cache': {},
@@ -192,19 +192,19 @@ class CompleteSystemSimulator:
             }
             self.uavs.append(uav)
         
-        print(f"✓ 创建了 {self.num_vehicles} 车辆, {self.num_rsus} RSU, {self.num_uavs} UAV")
+        print(f"鉁?鍒涘缓浜?{self.num_vehicles} 杞﹁締, {self.num_rsus} RSU, {self.num_uavs} UAV")
         
-        # 🏢 初始化中央RSU调度器 (选择RSU_2作为中央调度中心)
+        # 馃彚 鍒濆鍖栦腑澶甊SU璋冨害鍣?(閫夋嫨RSU_2浣滀负涓ぎ璋冨害涓績)
         try:
             from utils.central_rsu_scheduler import create_central_scheduler
             central_rsu_id = f"RSU_{2 if self.num_rsus > 2 else 0}"
             self.central_scheduler = create_central_scheduler(central_rsu_id)
-            print(f"🏢 中央RSU调度器已启用: {central_rsu_id}")
+            print(f"馃彚 涓ぎRSU璋冨害鍣ㄥ凡鍚敤: {central_rsu_id}")
         except Exception as e:
-            print(f"⚠️ 中央调度器加载失败: {e}")
+            print(f"鈿狅笍 涓ぎ璋冨害鍣ㄥ姞杞藉け璐? {e}")
             self.central_scheduler = None
         
-        # 懒加载迁移管理器
+        # 鎳掑姞杞借縼绉荤鐞嗗櫒
         try:
             from migration.migration_manager import TaskMigrationManager
             if not hasattr(self, 'migration_manager') or self.migration_manager is None:
@@ -212,24 +212,24 @@ class CompleteSystemSimulator:
         except Exception:
             self.migration_manager = None
         
-        # 一致性自检（不强制终止，仅提示）
+        # 涓€鑷存€ц嚜妫€锛堜笉寮哄埗缁堟锛屼粎鎻愮ず锛?
         try:
             expected_rsus, expected_uavs = 4, 2
             if self.num_rsus != expected_rsus or self.num_uavs != expected_uavs:
-                print(f"⚠️ 拓扑一致性提示: 当前 num_rsus={self.num_rsus}, num_uavs={self.num_uavs}, 建议为 {expected_rsus}/{expected_uavs} 以匹配论文图示")
-            print("🏢 中央RSU设定: RSU_2 (作为调度与回传汇聚节点)")
+                print(f"鈿狅笍 鎷撴墤涓€鑷存€ф彁绀? 褰撳墠 num_rsus={self.num_rsus}, num_uavs={self.num_uavs}, 寤鸿涓?{expected_rsus}/{expected_uavs} 浠ュ尮閰嶈鏂囧浘绀?)
+            print("馃彚 涓ぎRSU璁惧畾: RSU_2 (浣滀负璋冨害涓庡洖浼犳眹鑱氳妭鐐?")
         except Exception:
             pass
     
     def _setup_scenario(self):
-        """设置仿真场景"""
-        # 重新初始化组件（如果需要）
+        """璁剧疆浠跨湡鍦烘櫙"""
+        # 閲嶆柊鍒濆鍖栫粍浠讹紙濡傛灉闇€瑕侊級
         self.initialize_components()
         self._reset_runtime_states()
-        print("✓ 初始化了 6 个缓存管理器")
+        print("鉁?鍒濆鍖栦簡 6 涓紦瀛樼鐞嗗櫒")
 
     def _fresh_stats_dict(self) -> Dict[str, float]:
-        """创建新的统计字典，保证关键指标齐全"""
+        """鍒涘缓鏂扮殑缁熻瀛楀吀锛屼繚璇佸叧閿寚鏍囬綈鍏?""
         return {
             'total_tasks': 0,
             'processed_tasks': 0,
@@ -262,7 +262,7 @@ class CompleteSystemSimulator:
         }
 
     def _reset_runtime_states(self):
-        """重置运行时状态（用于episode重启）"""
+        """閲嶇疆杩愯鏃剁姸鎬侊紙鐢ㄤ簬episode閲嶅惎锛?""
         reset_simulation_time()
         self.current_step = 0
         self.current_time = 0.0
@@ -271,7 +271,7 @@ class CompleteSystemSimulator:
         self.active_tasks = []
         self._last_app_name = 'unknown'
 
-        # 重置车辆/节点状态
+        # 閲嶇疆杞﹁締/鑺傜偣鐘舵€?
         for vehicle in self.vehicles:
             vehicle.setdefault('tasks', [])
             vehicle['tasks'].clear()
@@ -291,13 +291,13 @@ class CompleteSystemSimulator:
     
     def _get_realistic_content_size(self, content_id: str) -> float:
         """
-        🔧 修复：使用realistic内容生成器获取大小
+        馃敡 淇锛氫娇鐢╮ealistic鍐呭鐢熸垚鍣ㄨ幏鍙栧ぇ灏?
         """
         return get_realistic_content_size(content_id)
     
     def _calculate_available_cache_capacity(self, cache: Dict, cache_capacity_mb: float) -> float:
         """
-        🔧 修复：正确计算可用缓存容量(MB)
+        馃敡 淇锛氭纭绠楀彲鐢ㄧ紦瀛樺閲?MB)
         """
         if not cache or cache_capacity_mb <= 0:
             return cache_capacity_mb
@@ -307,7 +307,7 @@ class CompleteSystemSimulator:
             if isinstance(item, dict) and 'size' in item:
                 total_used_mb += float(item.get('size', 0.0))
             else:
-                # 兼容旧格式
+                # 鍏煎鏃ф牸寮?
                 total_used_mb += 1.0
         
         available_mb = cache_capacity_mb - total_used_mb
@@ -315,7 +315,7 @@ class CompleteSystemSimulator:
     
     def _infer_content_type(self, content_id: str) -> str:
         """
-        🔧 修复：根据内容ID推断内容类型
+        馃敡 淇锛氭牴鎹唴瀹笽D鎺ㄦ柇鍐呭绫诲瀷
         """
         content_id_lower = content_id.lower()
         
@@ -339,7 +339,7 @@ class CompleteSystemSimulator:
             return 'general'
     
     def generate_task(self, vehicle_id: str) -> Dict:
-        """生成计算任务 - 使用配置驱动的任务场景定义"""
+        """鐢熸垚璁＄畻浠诲姟 - 浣跨敤閰嶇疆椹卞姩鐨勪换鍔″満鏅畾涔?""
         self.task_counter += 1
 
         task_cfg = getattr(self.sys_config, 'task', None) if self.sys_config is not None else None
@@ -371,7 +371,7 @@ class CompleteSystemSimulator:
             compute_density = self.config.get('task_compute_density', 400)
             max_delay_slots = max(1, int(deadline_duration / max(self.config.get('time_slot', self.time_slot), 0.1)))
 
-        # 任务复杂度控制
+        # 浠诲姟澶嶆潅搴︽帶鍒?
         data_size_mb = data_size_bytes / 1e6
         effective_density = compute_density
         complexity_multiplier = 1.0
@@ -407,7 +407,7 @@ class CompleteSystemSimulator:
 
         self._last_app_name = scenario_name
 
-        # 📊 任务统计收集
+        # 馃搳 浠诲姟缁熻鏀堕泦
         gen_stats = self.stats.setdefault('task_generation', {'total': 0, 'by_type': {}, 'by_scenario': {}})
         gen_stats['total'] += 1
         by_type = gen_stats.setdefault('by_type', {})
@@ -424,27 +424,27 @@ class CompleteSystemSimulator:
             type3_pct = by_type.get(3, 0) / total_classified * 100
             type4_pct = by_type.get(4, 0) / total_classified * 100
             print(
-                f"📊 任务分类统计({gen_stats['total']}): "
-                f"类型1={type1_pct:.1f}%, 类型2={type2_pct:.1f}%, 类型3={type3_pct:.1f}%, 类型4={type4_pct:.1f}%"
+                f"馃搳 浠诲姟鍒嗙被缁熻({gen_stats['total']}): "
+                f"绫诲瀷1={type1_pct:.1f}%, 绫诲瀷2={type2_pct:.1f}%, 绫诲瀷3={type3_pct:.1f}%, 绫诲瀷4={type4_pct:.1f}%"
             )
             print(
-                f"   当前任务: {scenario_name}, {deadline_duration:.2f}s → "
-                f"类型{task_type}, 数据{data_size_mb:.2f}MB"
+                f"   褰撳墠浠诲姟: {scenario_name}, {deadline_duration:.2f}s 鈫?"
+                f"绫诲瀷{task_type}, 鏁版嵁{data_size_mb:.2f}MB"
             )
 
         return task
     
     def calculate_distance(self, pos1: np.ndarray, pos2: np.ndarray) -> float:
-        """计算两点间距离"""
+        """璁＄畻涓ょ偣闂磋窛绂?""
         if len(pos1) == 3 and len(pos2) == 2:
-            pos2 = np.append(pos2, 0)  # 2D转3D
+            pos2 = np.append(pos2, 0)  # 2D杞?D
         elif len(pos1) == 2 and len(pos2) == 3:
             pos1 = np.append(pos1, 0)
         
         return np.linalg.norm(pos1 - pos2)
     
     def _find_least_loaded_node(self, node_type: str, exclude_node: Dict = None) -> Dict:
-        """寻找负载最轻的节点"""
+        """瀵绘壘璐熻浇鏈€杞荤殑鑺傜偣"""
         if node_type == 'RSU':
             candidates = [rsu for rsu in self.rsus if rsu != exclude_node]
         elif node_type == 'UAV':
@@ -455,23 +455,23 @@ class CompleteSystemSimulator:
         if not candidates:
             return None
         
-        # 找到队列长度最短的节点
+        # 鎵惧埌闃熷垪闀垮害鏈€鐭殑鑺傜偣
         best_node = min(candidates, key=lambda n: len(n.get('computation_queue', [])))
         return best_node
     
     def _process_node_queues(self):
-        """🔧 关键修复：处理RSU和UAV队列中的任务，防止任务堆积"""
-        # 处理所有RSU队列
+        """馃敡 鍏抽敭淇锛氬鐞哛SU鍜孶AV闃熷垪涓殑浠诲姟锛岄槻姝换鍔″爢绉?""
+        # 澶勭悊鎵€鏈塕SU闃熷垪
         for rsu in self.rsus:
             self._process_single_node_queue(rsu, 'RSU')
         
-        # 处理所有UAV队列
+        # 澶勭悊鎵€鏈塙AV闃熷垪
         for uav in self.uavs:
             self._process_single_node_queue(uav, 'UAV')
     
 
     def _process_single_node_queue(self, node: Dict, node_type: str):
-        "处理单个节点的计算队列"
+        "澶勭悊鍗曚釜鑺傜偣鐨勮绠楅槦鍒?
         queue = node.get('computation_queue', []) or []
         queue_len = len(queue)
         if queue_len == 0:
@@ -581,7 +581,7 @@ class CompleteSystemSimulator:
         node['computation_queue'] = new_queue
 
     def find_nearest_rsu(self, vehicle_pos: np.ndarray) -> Dict:
-        """找到最近的RSU"""
+        """鎵惧埌鏈€杩戠殑RSU"""
         min_distance = float('inf')
         nearest_rsu = None
         
@@ -594,7 +594,7 @@ class CompleteSystemSimulator:
         return nearest_rsu
     
     def find_nearest_uav(self, vehicle_pos: np.ndarray) -> Dict:
-        """找到最近的UAV"""
+        """鎵惧埌鏈€杩戠殑UAV"""
         min_distance = float('inf')
         nearest_uav = None
         
@@ -607,7 +607,7 @@ class CompleteSystemSimulator:
         return nearest_uav
     
     def check_cache_hit(self, content_id: str, node: Dict) -> bool:
-        """检查缓存命中"""
+        """妫€鏌ョ紦瀛樺懡涓?""
         if content_id in node.get('cache', {}):
             self.stats['cache_hits'] += 1
             return True
@@ -622,11 +622,11 @@ class CompleteSystemSimulator:
         agents_actions: Dict = None,
         node_type: str = 'RSU'
     ) -> bool:
-        """🤖 智能体控制的自适应缓存检查"""
-        # 基础缓存检查
+        """馃 鏅鸿兘浣撴帶鍒剁殑鑷€傚簲缂撳瓨妫€鏌?""
+        # 鍩虹缂撳瓨妫€鏌?
         cache_hit = content_id in node.get('cache', {})
         
-        # 更新统计
+        # 鏇存柊缁熻
         if cache_hit:
             self.stats['cache_hits'] += 1
             if node_type == 'RSU':
@@ -634,15 +634,15 @@ class CompleteSystemSimulator:
         else:
             self.stats['cache_misses'] += 1
             
-            # 🤖 如果有智能体控制器，执行自适应缓存策略
+            # 馃 濡傛灉鏈夋櫤鑳戒綋鎺у埗鍣紝鎵ц鑷€傚簲缂撳瓨绛栫暐
             if agents_actions and 'cache_controller' in agents_actions:
                 cache_controller = agents_actions['cache_controller']
                 
-                # 更新内容热度
+                # 鏇存柊鍐呭鐑害
                 cache_controller.update_content_heat(content_id)
                 cache_controller.record_cache_result(content_id, was_hit=False)
                 
-                # 🔧 修复：使用realistic内容大小和正确容量计算
+                # 馃敡 淇锛氫娇鐢╮ealistic鍐呭澶у皬鍜屾纭閲忚绠?
                 data_size = self._get_realistic_content_size(content_id)
                 capacity_limit = node.get('cache_capacity', 1000.0 if node_type == 'RSU' else 200.0)
                 available_capacity = self._calculate_available_cache_capacity(
@@ -680,7 +680,7 @@ class CompleteSystemSimulator:
                     if 'Collaborative cache' in reason:
                         cache_controller.cache_stats['collaborative_writes'] += 1
         
-        # 记录缓存控制器统计
+        # 璁板綍缂撳瓨鎺у埗鍣ㄧ粺璁?
         if agents_actions and 'cache_controller' in agents_actions and cache_hit:
             cache_controller = agents_actions['cache_controller'] 
             cache_controller.record_cache_result(content_id, was_hit=True)
@@ -690,34 +690,34 @@ class CompleteSystemSimulator:
     
     def _calculate_enhanced_load_factor(self, node: Dict, node_type: str) -> float:
         """
-        🔧 修复：统一和realistic的负载因子计算
-        基于实际队列负载，不使用虚假的限制
+        馃敡 淇锛氱粺涓€鍜宺ealistic鐨勮礋杞藉洜瀛愯绠?
+        鍩轰簬瀹為檯闃熷垪璐熻浇锛屼笉浣跨敤铏氬亣鐨勯檺鍒?
         """
         queue_length = len(node.get('computation_queue', []))
         
-        # 🔧 基于实际观察调整容量基准
+        # 馃敡 鍩轰簬瀹為檯瑙傚療璋冩暣瀹归噺鍩哄噯
         if node_type == 'RSU':
-            # 基于实际测试，RSU处理能力约20个任务为满负载
+            # 鍩轰簬瀹為檯娴嬭瘯锛孯SU澶勭悊鑳藉姏绾?0涓换鍔′负婊¤礋杞?
             base_capacity = 20.0  
             queue_factor = queue_length / base_capacity
         else:  # UAV
-            # UAV处理能力约10个任务为满负载
+            # UAV澶勭悊鑳藉姏绾?0涓换鍔′负婊¤礋杞?
             base_capacity = 10.0
             queue_factor = queue_length / base_capacity
         
-        # 🔧 修复：使用正确的缓存计算
+        # 馃敡 淇锛氫娇鐢ㄦ纭殑缂撳瓨璁＄畻
         cache_utilization = self._calculate_correct_cache_utilization(
             node.get('cache', {}), 
             node.get('cache_capacity', 1000.0 if node_type == 'RSU' else 200.0)
         )
         
-        # 🔧 简化但准确的负载计算
+        # 馃敡 绠€鍖栦絾鍑嗙‘鐨勮礋杞借绠?
         load_factor = (
-            0.8 * queue_factor +           # 队列是主要负载指标80%
-            0.2 * cache_utilization       # 缓存利用率20%
+            0.8 * queue_factor +           # 闃熷垪鏄富瑕佽礋杞芥寚鏍?0%
+            0.2 * cache_utilization       # 缂撳瓨鍒╃敤鐜?0%
         )
         
-        # 🔧 不限制在1.0，允许显示真实过载程度
+        # 馃敡 涓嶉檺鍒跺湪1.0锛屽厑璁告樉绀虹湡瀹炶繃杞界▼搴?
         return max(0.0, load_factor)
     
     def _summarize_task_types(self) -> Dict[str, Any]:
@@ -786,7 +786,7 @@ class CompleteSystemSimulator:
     
     def _calculate_correct_cache_utilization(self, cache: Dict, cache_capacity_mb: float) -> float:
         """
-        🔧 计算正确的缓存利用率
+        馃敡 璁＄畻姝ｇ‘鐨勭紦瀛樺埄鐢ㄧ巼
         """
         if not cache or cache_capacity_mb <= 0:
             return 0.0
@@ -796,26 +796,26 @@ class CompleteSystemSimulator:
             if isinstance(item, dict) and 'size' in item:
                 total_used_mb += float(item.get('size', 0.0))
             else:
-                total_used_mb += 1.0  # 兼容旧格式
+                total_used_mb += 1.0  # 鍏煎鏃ф牸寮?
         
         utilization = total_used_mb / cache_capacity_mb
         return min(1.0, max(0.0, utilization))
 
-    # ==================== 新增：一步仿真涉及的核心辅助函数 ====================
+    # ==================== 鏂板锛氫竴姝ヤ豢鐪熸秹鍙婄殑鏍稿績杈呭姪鍑芥暟 ====================
 
     def _update_vehicle_positions(self):
-        """简单更新车辆位置，模拟车辆沿主干道移动"""
+        """绠€鍗曟洿鏂拌溅杈嗕綅缃紝妯℃嫙杞﹁締娌夸富骞查亾绉诲姩"""
         for vehicle in self.vehicles:
             position = vehicle.get('position')
             if position is None or len(position) < 2:
                 continue
 
-            # === 1) 更新速度（缓慢加减速 + 交叉口减速） ===
+            # === 1) 鏇存柊閫熷害锛堢紦鎱㈠姞鍑忛€?+ 浜ゅ弶鍙ｅ噺閫燂級 ===
             base_speed = float(vehicle.get('velocity', 15.0))
             accel_state = vehicle.setdefault('speed_accel', 0.0)
             accel_state = 0.7 * accel_state + np.random.uniform(-0.4, 0.4)
 
-            # 在接近路口时降低速度，避免高速冲过交叉口
+            # 鍦ㄦ帴杩戣矾鍙ｆ椂闄嶄綆閫熷害锛岄伩鍏嶉珮閫熷啿杩囦氦鍙夊彛
             for intersection in self.intersections.values():
                 dist_to_signal = abs(position[0] - intersection['x'])
                 if dist_to_signal < 40.0:
@@ -826,7 +826,7 @@ class CompleteSystemSimulator:
             vehicle['speed_accel'] = accel_state
             vehicle['velocity'] = new_speed
 
-            # === 2) 方向保持，同时允许轻微抖动 ===
+            # === 2) 鏂瑰悜淇濇寔锛屽悓鏃跺厑璁歌交寰姈鍔?===
             direction = vehicle.get('direction', 0.0)
             heading_jitter = vehicle.setdefault('heading_jitter', 0.0)
             heading_jitter = 0.6 * heading_jitter + np.random.uniform(-0.01, 0.01)
@@ -837,7 +837,7 @@ class CompleteSystemSimulator:
             dx = np.cos(direction) * new_speed * self.time_slot
             dy = np.sin(direction) * new_speed * self.time_slot
 
-            # === 3) 侧向漂移（模拟轻微换道） ===
+            # === 3) 渚у悜婕傜Щ锛堟ā鎷熻交寰崲閬擄級 ===
             lane_bias = vehicle.get('lane_bias', position[1] - self.road_y)
             lane_switch_timer = vehicle.setdefault('lane_switch_timer', np.random.randint(80, 160))
             lane_switch_timer -= 1
@@ -852,7 +852,7 @@ class CompleteSystemSimulator:
             lateral_state = 0.5 * lateral_state + np.random.uniform(-0.25, 0.25)
             vehicle['lateral_state'] = np.clip(lateral_state, -2.0, 2.0)
 
-            # === 4) 应用位置更新（x 环路，y 受 lane_bias 与漂移影响） ===
+            # === 4) 搴旂敤浣嶇疆鏇存柊锛坸 鐜矾锛寉 鍙?lane_bias 涓庢紓绉诲奖鍝嶏級 ===
             new_x = (position[0] + dx) % 1000.0
             baseline_lane_y = float(self.road_y + lane_bias)
             new_y = baseline_lane_y + vehicle['lateral_state']
@@ -862,12 +862,12 @@ class CompleteSystemSimulator:
             vehicle['position'][1] = new_y
 
     def _sample_arrivals(self) -> int:
-        """按泊松过程采样每车每时隙的任务到达数"""
+        """鎸夋硦鏉捐繃绋嬮噰鏍锋瘡杞︽瘡鏃堕殭鐨勪换鍔″埌杈炬暟"""
         lam = max(1e-6, float(self.task_arrival_rate) * float(self.time_slot))
         return int(np.random.poisson(lam))
 
     def _choose_offload_target(self, actions: Dict, rsu_available: bool, uav_available: bool) -> str:
-        """根据智能体提供的偏好选择卸载目标"""
+        """鏍规嵁鏅鸿兘浣撴彁渚涚殑鍋忓ソ閫夋嫨鍗歌浇鐩爣"""
         prefs = actions.get('vehicle_offload_pref') or {}
         probs = np.array([
             max(0.0, float(prefs.get('local', 0.0))),
@@ -890,14 +890,14 @@ class CompleteSystemSimulator:
         return str(np.random.choice(target_labels, p=probs))
 
     def _estimate_remote_work_units(self, task: Dict, node_type: str) -> float:
-        """估计远程节点的工作量单位（供队列调度使用）"""
+        """浼拌杩滅▼鑺傜偣鐨勫伐浣滈噺鍗曚綅锛堜緵闃熷垪璋冨害浣跨敤锛?""
         requirement = float(task.get('computation_requirement', 1500.0))
         base_divisor = 1200.0 if node_type == 'RSU' else 1600.0
         work_units = requirement / base_divisor
         return float(np.clip(work_units, 0.5, 12.0))
 
     def _estimate_local_processing(self, task: Dict, vehicle: Dict) -> Tuple[float, float]:
-        """估计本地处理的延迟与能耗"""
+        """浼拌鏈湴澶勭悊鐨勫欢杩熶笌鑳借€?""
         cpu_freq = 2.5e9
         power = 6.5
         if self.sys_config is not None:
@@ -915,8 +915,8 @@ class CompleteSystemSimulator:
         return processing_time, energy
 
     def _estimate_transmission(self, data_size_bytes: float, distance: float, link: str) -> Tuple[float, float]:
-        """估计上传耗时与能耗"""
-        # 有效吞吐量 (bit/s)
+        """浼拌涓婁紶鑰楁椂涓庤兘鑰?""
+        # 鏈夋晥鍚炲悙閲?(bit/s)
         if link == 'uav':
             base_rate = 45e6
             power_w = 0.12
@@ -932,18 +932,18 @@ class CompleteSystemSimulator:
         return delay, energy
 
     def _append_active_task(self, task_entry: Dict):
-        """将任务记录加入活跃列表"""
+        """灏嗕换鍔¤褰曞姞鍏ユ椿璺冨垪琛?""
         self.active_tasks.append(task_entry)
 
     def _cleanup_active_tasks(self):
-        """移除已经完成或丢弃的任务"""
+        """绉婚櫎宸茬粡瀹屾垚鎴栦涪寮冪殑浠诲姟"""
         self.active_tasks = [
             task for task in self.active_tasks
             if not task.get('completed') and not task.get('dropped')
         ]
 
     def _handle_deadlines(self):
-        """检查队列任务是否超期并丢弃"""
+        """妫€鏌ラ槦鍒椾换鍔℃槸鍚﹁秴鏈熷苟涓㈠純"""
         for node_list, node_type in ((self.rsus, 'RSU'), (self.uavs, 'UAV')):
             for idx, node in enumerate(node_list):
                 queue = node.get('computation_queue', [])
@@ -981,7 +981,7 @@ class CompleteSystemSimulator:
                             avg_wait = drop_stats['wait_time_sum'] / max(1, drop_stats['total'])
                             avg_queue = drop_stats['queue_sum'] / max(1, drop_stats['total'])
                             print(
-                                f"⚠️ Dropped tasks: {drop_stats['total']} "
+                                f"鈿狅笍 Dropped tasks: {drop_stats['total']} "
                                 f"(avg wait {avg_wait:.2f}s, avg queue {avg_queue:.1f}) "
                                 f"latest type {task_type}, scenario {scenario_name}"
                             )
@@ -991,7 +991,7 @@ class CompleteSystemSimulator:
 
     def _store_in_vehicle_cache(self, vehicle: Dict, content_id: str, size_mb: float,
                                 cache_controller: Optional[Any] = None):
-        """将内容推送到车载缓存，使用简单LRU淘汰"""
+        """灏嗗唴瀹规帹閫佸埌杞﹁浇缂撳瓨锛屼娇鐢ㄧ畝鍗昄RU娣樻卑"""
         if size_mb <= 0.0:
             return
         capacity = float(vehicle.get('device_cache_capacity', 32.0))
@@ -1000,7 +1000,7 @@ class CompleteSystemSimulator:
         cache = vehicle.setdefault('device_cache', {})
         total_used = sum(float(meta.get('size', 0.0) or 0.0) for meta in cache.values())
         if total_used + size_mb > capacity:
-            # LRU淘汰
+            # LRU娣樻卑
             ordered = sorted(cache.items(), key=lambda item: item[1].get('timestamp', 0.0))
             for cid, meta in ordered:
                 removed_size = float(meta.get('size', 0.0) or 0.0)
@@ -1022,7 +1022,7 @@ class CompleteSystemSimulator:
 
     def _store_in_neighbor_rsu_cache(self, neighbor: Dict, content_id: str, size_mb: float,
                                      content_meta: Dict, cache_controller: Optional[Any]):
-        """尝试将内容推送到邻近RSU"""
+        """灏濊瘯灏嗗唴瀹规帹閫佸埌閭昏繎RSU"""
         if size_mb <= 0.0:
             return
         cache = neighbor.setdefault('cache', {})
@@ -1058,7 +1058,7 @@ class CompleteSystemSimulator:
             cache_controller.cache_stats['collaborative_writes'] += 1
 
     def _propagate_cache_after_hit(self, content_id: str, rsu_node: Dict, agents_actions: Optional[Dict]):
-        """RSU命中后向车辆和邻近RSU推送内容"""
+        """RSU鍛戒腑鍚庡悜杞﹁締鍜岄偦杩慠SU鎺ㄩ€佸唴瀹?""
         cache_meta = rsu_node.get('cache', {}).get(content_id)
         if not cache_meta:
             return
@@ -1067,14 +1067,14 @@ class CompleteSystemSimulator:
         if agents_actions:
             cache_controller = agents_actions.get('cache_controller')
 
-        # 推送到覆盖范围内的车辆
+        # 鎺ㄩ€佸埌瑕嗙洊鑼冨洿鍐呯殑杞﹁締
         coverage = rsu_node.get('coverage_radius', 300.0)
         for vehicle in self.vehicles:
             distance = self.calculate_distance(vehicle.get('position', np.zeros(2)), rsu_node['position'])
             if distance <= coverage * 0.8:
                 self._store_in_vehicle_cache(vehicle, content_id, size_mb, cache_controller)
 
-        # 推送到邻近RSU
+        # 鎺ㄩ€佸埌閭昏繎RSU
         for neighbor in self.rsus:
             if neighbor is rsu_node:
                 continue
@@ -1083,7 +1083,7 @@ class CompleteSystemSimulator:
                 self._store_in_neighbor_rsu_cache(neighbor, content_id, size_mb, cache_meta, cache_controller)
 
     def _dispatch_task(self, vehicle: Dict, task: Dict, actions: Dict, step_summary: Dict):
-        """根据动作分配任务"""
+        """鏍规嵁鍔ㄤ綔鍒嗛厤浠诲姟"""
         cache_controller = None
         if isinstance(actions, dict):
             cache_controller = actions.get('cache_controller')
@@ -1123,7 +1123,7 @@ class CompleteSystemSimulator:
             self._handle_local_processing(vehicle, task, step_summary)
 
     def _assign_to_rsu(self, vehicle: Dict, task: Dict, actions: Dict, step_summary: Dict) -> bool:
-        """分配至RSU"""
+        """鍒嗛厤鑷砇SU"""
         if not self.rsus:
             return False
 
@@ -1137,7 +1137,7 @@ class CompleteSystemSimulator:
 
         accessible = np.array(in_range_mask, dtype=float)
         if accessible.sum() == 0:
-            # 没有覆盖的RSU
+            # 娌℃湁瑕嗙洊鐨凴SU
             return False
 
         probs = np.ones(len(self.rsus), dtype=float)
@@ -1159,7 +1159,7 @@ class CompleteSystemSimulator:
         return success
 
     def _assign_to_uav(self, vehicle: Dict, task: Dict, actions: Dict, step_summary: Dict) -> bool:
-        """分配至UAV"""
+        """鍒嗛厤鑷砋AV"""
         if not self.uavs:
             return False
 
@@ -1204,7 +1204,7 @@ class CompleteSystemSimulator:
         actions: Dict,
         step_summary: Dict
     ) -> bool:
-        """执行远程卸载：缓存判定、建立队列并记录统计"""
+        """鎵ц杩滅▼鍗歌浇锛氱紦瀛樺垽瀹氥€佸缓绔嬮槦鍒楀苟璁板綍缁熻"""
         actions = actions or {}
         cache_hit = False
 
@@ -1214,7 +1214,7 @@ class CompleteSystemSimulator:
             cache_hit = self.check_cache_hit_adaptive(task['content_id'], node, actions, node_type='UAV')
 
         if cache_hit:
-            # 缓存命中：快速完成
+            # 缂撳瓨鍛戒腑锛氬揩閫熷畬鎴?
             delay = max(0.02, 0.2 * self.time_slot)
             power = 18.0 if node_type == 'RSU' else 12.0
             energy = power * delay * 0.1
@@ -1258,7 +1258,7 @@ class CompleteSystemSimulator:
         return True
 
     def _handle_local_processing(self, vehicle: Dict, task: Dict, step_summary: Dict):
-        """本地处理任务"""
+        """鏈湴澶勭悊浠诲姟"""
         processing_delay, energy = self._estimate_local_processing(task, vehicle)
         self.stats['processed_tasks'] += 1
         self.stats['completed_tasks'] += 1
@@ -1268,7 +1268,7 @@ class CompleteSystemSimulator:
 
     
     def check_adaptive_migration(self, agents_actions: Dict = None):
-        """🎯 多维度智能迁移检查 (阈值触发+负载差触发+跟随迁移)"""
+        """馃幆 澶氱淮搴︽櫤鑳借縼绉绘鏌?(闃堝€艰Е鍙?璐熻浇宸Е鍙?璺熼殢杩佺Щ)"""
         if not agents_actions or 'migration_controller' not in agents_actions:
             return
         
@@ -1282,10 +1282,10 @@ class CompleteSystemSimulator:
             except Exception:
                 hotspot_map = {}
         
-        # 🔍 收集所有节点状态用于邻居比较
+        # 馃攳 鏀堕泦鎵€鏈夎妭鐐圭姸鎬佺敤浜庨偦灞呮瘮杈?
         all_node_states = {}
         
-        # RSU状态收集
+        # RSU鐘舵€佹敹闆?
         for i, rsu in enumerate(self.rsus):
             queue = rsu.get('computation_queue', [])
             queue_len = len(queue)
@@ -1295,7 +1295,7 @@ class CompleteSystemSimulator:
             total_data = sum(task.get('data_size', 1.0) for task in queue)
             bandwidth_capacity = rsu.get('bandwidth_capacity', 50.0)
             bandwidth_load = float(np.clip(total_data / max(1.0, bandwidth_capacity), 0.0, 0.99))
-            cpu_load = float(np.clip(queue_len / 25.0, 0.0, 0.99))
+            cpu_load = float(np.clip(queue_len / 10.0, 0.0, 0.99))
 
             all_node_states[f'rsu_{i}'] = {
                 'cpu_load': cpu_load,
@@ -1310,7 +1310,7 @@ class CompleteSystemSimulator:
                 'hotspot_intensity': float(np.clip(hotspot_map.get(f'RSU_{i}', 0.0), 0.0, 1.0))
             }
 
-        # UAV状态收集
+        # UAV鐘舵€佹敹闆?
         for i, uav in enumerate(self.uavs):
             queue = uav.get('computation_queue', [])
             queue_len = len(queue)
@@ -1335,24 +1335,24 @@ class CompleteSystemSimulator:
                 'hotspot_intensity': 0.0
             }
         
-        # 🏢 RSU迁移检查 (阈值+负载差触发)
+        # 馃彚 RSU杩佺Щ妫€鏌?(闃堝€?璐熻浇宸Е鍙?
         for i, rsu in enumerate(self.rsus):
             node_id = f'rsu_{i}'
             current_state = all_node_states[node_id]
             
-            # 更新负载历史
+            # 鏇存柊璐熻浇鍘嗗彶
             migration_controller.update_node_load(node_id, current_state['load_factor'])
             
-            # 🎯 多维度迁移触发检查
+            # 馃幆 澶氱淮搴﹁縼绉昏Е鍙戞鏌?
             should_migrate, reason, urgency = migration_controller.should_trigger_migration(
                 node_id, current_state, all_node_states
             )
             
             if should_migrate:
                 self.stats['migrations_executed'] = self.stats.get('migrations_executed', 0) + 1
-                print(f"🎯 {node_id} 触发迁移: {reason} (紧急度:{urgency:.3f})")
+                print(f"馃幆 {node_id} 瑙﹀彂杩佺Щ: {reason} (绱ф€ュ害:{urgency:.3f})")
                 
-                # 执行RSU间迁移
+                # 鎵цRSU闂磋縼绉?
                 result = self.execute_rsu_migration(i, urgency)
                 if result.get('success'):
                     self.stats['migrations_successful'] = self.stats.get('migrations_successful', 0) + 1
@@ -1360,24 +1360,24 @@ class CompleteSystemSimulator:
                 else:
                     migration_controller.record_migration_result(False)
         
-        # 🚁 UAV迁移检查
+        # 馃殎 UAV杩佺Щ妫€鏌?
         for i, uav in enumerate(self.uavs):
             node_id = f'uav_{i}'
             current_state = all_node_states[node_id]
             
-            # 更新负载历史
+            # 鏇存柊璐熻浇鍘嗗彶
             migration_controller.update_node_load(node_id, current_state['load_factor'], current_state['battery_level'])
             
-            # 🎯 多维度迁移触发检查
+            # 馃幆 澶氱淮搴﹁縼绉昏Е鍙戞鏌?
             should_migrate, reason, urgency = migration_controller.should_trigger_migration(
                 node_id, current_state, all_node_states
             )
             
             if should_migrate:
                 self.stats['migrations_executed'] = self.stats.get('migrations_executed', 0) + 1
-                print(f"🎯 {node_id} 触发迁移: {reason} (紧急度:{urgency:.3f})")
+                print(f"馃幆 {node_id} 瑙﹀彂杩佺Щ: {reason} (绱ф€ュ害:{urgency:.3f})")
                 
-                # UAV迁移到RSU
+                # UAV杩佺Щ鍒癛SU
                 result = self.execute_uav_migration(i, urgency)
                 if result.get('success'):
                     self.stats['migrations_successful'] = self.stats.get('migrations_successful', 0) + 1
@@ -1385,24 +1385,24 @@ class CompleteSystemSimulator:
                 else:
                     migration_controller.record_migration_result(False)
         
-        # 🚗 车辆跟随迁移检查
+        # 馃殫 杞﹁締璺熼殢杩佺Щ妫€鏌?
         self._check_vehicle_handover_migration(migration_controller)
     
     def _check_vehicle_handover_migration(self, migration_controller):
-        """🚗 车辆跟随迁移：当车辆移动超出当前边缘节点通信覆盖时触发迁移"""
+        """馃殫 杞﹁締璺熼殢杩佺Щ锛氬綋杞﹁締绉诲姩瓒呭嚭褰撳墠杈圭紭鑺傜偣閫氫俊瑕嗙洊鏃惰Е鍙戣縼绉?""
         handover_count = 0
         
-        # 检查每个活跃任务的车辆位置
+        # 妫€鏌ユ瘡涓椿璺冧换鍔＄殑杞﹁締浣嶇疆
         for task in list(self.active_tasks):
             if task.get('node_type') not in ['RSU', 'UAV']:
-                continue  # 只检查边缘节点任务
+                continue  # 鍙鏌ヨ竟缂樿妭鐐逛换鍔?
             
             try:
-                # 找到对应车辆
+                # 鎵惧埌瀵瑰簲杞﹁締
                 vehicle = next(v for v in self.vehicles if v['id'] == task['vehicle_id'])
                 current_pos = vehicle['position']
                 
-                # 获取当前服务节点
+                # 鑾峰彇褰撳墠鏈嶅姟鑺傜偣
                 current_node = None
                 if task['node_type'] == 'RSU' and task.get('node_idx') is not None:
                     current_node = self.rsus[task['node_idx']]
@@ -1412,42 +1412,42 @@ class CompleteSystemSimulator:
                 if current_node is None:
                     continue
                 
-                # 🔍 检查通信覆盖和跟随迁移触发
+                # 馃攳 妫€鏌ラ€氫俊瑕嗙洊鍜岃窡闅忚縼绉昏Е鍙?
                 distance_to_current = self.calculate_distance(current_pos, current_node['position'])
-                coverage_radius = current_node.get('coverage_radius', 500.0)  # 默认500m覆盖
+                coverage_radius = current_node.get('coverage_radius', 500.0)  # 榛樿500m瑕嗙洊
                 
-                # 🔧 智能跟随迁移触发机制：
-                # 1. 基础阈值：85%覆盖半径（信号质量开始明显下降）
-                # 2. 考虑车辆速度：高速车辆提前触发
-                # 3. 考虑预测：车辆是否在快速远离当前节点
+                # 馃敡 鏅鸿兘璺熼殢杩佺Щ瑙﹀彂鏈哄埗锛?
+                # 1. 鍩虹闃堝€硷細85%瑕嗙洊鍗婂緞锛堜俊鍙疯川閲忓紑濮嬫槑鏄句笅闄嶏級
+                # 2. 鑰冭檻杞﹁締閫熷害锛氶珮閫熻溅杈嗘彁鍓嶈Е鍙?
+                # 3. 鑰冭檻棰勬祴锛氳溅杈嗘槸鍚﹀湪蹇€熻繙绂诲綋鍓嶈妭鐐?
                 
                 vehicle_speed = np.linalg.norm(vehicle.get('velocity', [0, 0]))
                 
-                # 🔧 优化的速度调整因子：速度越快，越早触发
-                # 30 m/s → 0.85 (425m触发)
-                # 45 m/s → 0.775 (387m触发)  
-                # 60 m/s → 0.70 (350m触发)
+                # 馃敡 浼樺寲鐨勯€熷害璋冩暣鍥犲瓙锛氶€熷害瓒婂揩锛岃秺鏃╄Е鍙?
+                # 30 m/s 鈫?0.85 (425m瑙﹀彂)
+                # 45 m/s 鈫?0.775 (387m瑙﹀彂)  
+                # 60 m/s 鈫?0.70 (350m瑙﹀彂)
                 speed_factor = max(0.70, 1.0 - (vehicle_speed / 200.0))
                 
-                # 动态触发阈值
+                # 鍔ㄦ€佽Е鍙戦槇鍊?
                 trigger_threshold = coverage_radius * speed_factor
                 
-                # 超出动态阈值，触发跟随迁移
+                # 瓒呭嚭鍔ㄦ€侀槇鍊硷紝瑙﹀彂璺熼殢杩佺Щ
                 if distance_to_current > trigger_threshold:
-                    # 🔍 寻找最佳新服务节点
+                    # 馃攳 瀵绘壘鏈€浣虫柊鏈嶅姟鑺傜偣
                     best_new_node = None
                     best_distance = float('inf')
                     best_node_idx = None
                     best_node_type = None
                     
-                    # 检查所有RSU - 优先选择RSU（稳定性更好）
+                    # 妫€鏌ユ墍鏈塕SU - 浼樺厛閫夋嫨RSU锛堢ǔ瀹氭€ф洿濂斤級
                     for i, rsu in enumerate(self.rsus):
                         dist = self.calculate_distance(current_pos, rsu['position'])
                         if dist <= rsu.get('coverage_radius', 500.0):
                             queue_len = len(rsu.get('computation_queue', []))
                             cpu_load = rsu.get('cpu_usage', 0.5)
                             
-                            # 🔧 综合评分：距离 + 队列 + 负载
+                            # 馃敡 缁煎悎璇勫垎锛氳窛绂?+ 闃熷垪 + 璐熻浇
                             score = dist * 1.0 + queue_len * 30 + cpu_load * 200
                             
                             if score < best_distance:
@@ -1456,15 +1456,15 @@ class CompleteSystemSimulator:
                                 best_node_idx = i
                                 best_node_type = 'RSU'
                     
-                    # 检查所有UAV（作为备选）
-                    if best_new_node is None or best_distance > 500:  # RSU不理想时考虑UAV
+                    # 妫€鏌ユ墍鏈塙AV锛堜綔涓哄閫夛級
+                    if best_new_node is None or best_distance > 500:  # RSU涓嶇悊鎯虫椂鑰冭檻UAV
                         for i, uav in enumerate(self.uavs):
                             dist = self.calculate_distance(current_pos, uav['position'])
                             if dist <= uav.get('coverage_radius', 300.0):
                                 queue_len = len(uav.get('computation_queue', []))
                                 cpu_load = uav.get('cpu_usage', 0.5)
                                 
-                                # UAV评分略有不同（考虑移动性）
+                                # UAV璇勫垎鐣ユ湁涓嶅悓锛堣€冭檻绉诲姩鎬э級
                                 score = dist * 1.2 + queue_len * 20 + cpu_load * 150
                                 
                                 if score < best_distance:
@@ -1473,8 +1473,8 @@ class CompleteSystemSimulator:
                                     best_node_idx = i
                                     best_node_type = 'UAV'
                     
-                    # 🚀 执行跟随迁移（只在找到明显更好的节点时）
-                    # 必须满足：1) 找到新节点, 2) 新节点不同, 3) 新节点明显更优
+                    # 馃殌 鎵ц璺熼殢杩佺Щ锛堝彧鍦ㄦ壘鍒版槑鏄炬洿濂界殑鑺傜偣鏃讹級
+                    # 蹇呴』婊¤冻锛?) 鎵惧埌鏂拌妭鐐? 2) 鏂拌妭鐐逛笉鍚? 3) 鏂拌妭鐐规槑鏄炬洿浼?
                     current_queue = len(current_node.get('computation_queue', []))
                     current_score = distance_to_current * 1.0 + current_queue * 30
                     origin_queue_before = current_queue
@@ -1482,14 +1482,14 @@ class CompleteSystemSimulator:
                     should_migrate = (
                         best_new_node is not None and 
                         (best_node_idx != task.get('node_idx') or best_node_type != task['node_type']) and
-                        best_distance < current_score * 0.7  # 新节点至少好30%才迁移
+                        best_distance < current_score * 0.7  # 鏂拌妭鐐硅嚦灏戝ソ30%鎵嶈縼绉?
                     )
                     
                     if should_migrate:
                         origin_node_type = task['node_type']
                         origin_node_idx = task.get('node_idx')
                         
-                        # 从原节点移除任务
+                        # 浠庡師鑺傜偣绉婚櫎浠诲姟
                         if origin_node_type == 'RSU':
                             old_queue = self.rsus[origin_node_idx].get('computation_queue', [])
                             updated_queue = [t for t in old_queue if t.get('id') != task['id']]
@@ -1505,12 +1505,12 @@ class CompleteSystemSimulator:
                         else:
                             origin_queue_after = origin_queue_before
                         
-                        # 添加到新节点
+                        # 娣诲姞鍒版柊鑺傜偣
                         if 'computation_queue' not in best_new_node:
                             best_new_node['computation_queue'] = []
                         target_queue_before = len(best_new_node['computation_queue'])
                         
-                        # 创建新任务项
+                        # 鍒涘缓鏂颁换鍔￠」
                         migrated_task = {
                             'id': task['id'],
                             'vehicle_id': task['vehicle_id'],
@@ -1531,39 +1531,39 @@ class CompleteSystemSimulator:
                         best_new_node['computation_queue'].append(migrated_task)
                         target_queue_after = len(best_new_node['computation_queue'])
                         
-                        # 更新任务信息
+                        # 鏇存柊浠诲姟淇℃伅
                         task['node_type'] = best_node_type
                         task['node_idx'] = best_node_idx
                         
                         handover_count += 1
                         migration_label = handover_count
                         
-                        # 🔧 增强日志：显示触发原因和迁移收益
+                        # 馃敡 澧炲己鏃ュ織锛氭樉绀鸿Е鍙戝師鍥犲拰杩佺Щ鏀剁泭
                         print(
-                            f"🚗 车辆跟随迁移[{migration_label}]: 车辆 {task['vehicle_id']} 任务 {task['id']} "
-                            f"从 {origin_node_type}_{origin_node_idx} → {best_node_type}_{best_node_idx}"
+                            f"馃殫 杞﹁締璺熼殢杩佺Щ[{migration_label}]: 杞﹁締 {task['vehicle_id']} 浠诲姟 {task['id']} "
+                            f"浠?{origin_node_type}_{origin_node_idx} 鈫?{best_node_type}_{best_node_idx}"
                         )
-                        print(f"   触发原因: 距离{distance_to_current:.1f}m > 阈值{trigger_threshold:.1f}m (车速{vehicle_speed:.1f}m/s)")
-                        print(f"   迁移收益: 当前评分{current_score:.1f} → 新评分{best_distance:.1f} (改善{(1-best_distance/current_score)*100:.1f}%)")
+                        print(f"   瑙﹀彂鍘熷洜: 璺濈{distance_to_current:.1f}m > 闃堝€納trigger_threshold:.1f}m (杞﹂€焮vehicle_speed:.1f}m/s)")
+                        print(f"   杩佺Щ鏀剁泭: 褰撳墠璇勫垎{current_score:.1f} 鈫?鏂拌瘎鍒唟best_distance:.1f} (鏀瑰杽{(1-best_distance/current_score)*100:.1f}%)")
                         print(
-                            f"   队列趋势: {origin_node_type}_{origin_node_idx}: {origin_queue_before} → {origin_queue_after}, "
-                            f"{best_node_type}_{best_node_idx}: {target_queue_before} → {target_queue_after}"
+                            f"   闃熷垪瓒嬪娍: {origin_node_type}_{origin_node_idx}: {origin_queue_before} 鈫?{origin_queue_after}, "
+                            f"{best_node_type}_{best_node_idx}: {target_queue_before} 鈫?{target_queue_after}"
                         )
                         
-                        # 记录跟随迁移统计
+                        # 璁板綍璺熼殢杩佺Щ缁熻
                         self.stats['migrations_executed'] = self.stats.get('migrations_executed', 0) + 1
                         self.stats['migrations_successful'] = self.stats.get('migrations_successful', 0) + 1
                         self.stats['handover_migrations'] = self.stats.get('handover_migrations', 0) + 1
                         migration_controller.record_migration_result(True, cost=5.0, delay_saved=0.3)
                 
             except Exception as e:
-                continue  # 忽略错误，继续处理下一个任务
+                continue  # 蹇界暐閿欒锛岀户缁鐞嗕笅涓€涓换鍔?
         
         if handover_count > 0:
-            print(f"🚗 本时隙执行了 {handover_count} 次车辆跟随迁移")
+            print(f"馃殫 鏈椂闅欐墽琛屼簡 {handover_count} 娆¤溅杈嗚窡闅忚縼绉?)
     
     def run_simulation_step(self, step: int, actions: Optional[Dict] = None) -> Dict[str, Any]:
-        """执行单个仿真步，返回截至当前的累计统计数据"""
+        """鎵ц鍗曚釜浠跨湡姝ワ紝杩斿洖鎴嚦褰撳墠鐨勭疮璁＄粺璁℃暟鎹?""
         actions = actions or {}
 
         advance_simulation_time()
@@ -1577,10 +1577,10 @@ class CompleteSystemSimulator:
             'local_cache_hits': 0
         }
 
-        # 1. 更新车辆位置
+        # 1. 鏇存柊杞﹁締浣嶇疆
         self._update_vehicle_positions()
 
-        # 2. 生成任务并分配
+        # 2. 鐢熸垚浠诲姟骞跺垎閰?
         for vehicle in self.vehicles:
             arrivals = self._sample_arrivals()
             if arrivals <= 0:
@@ -1594,18 +1594,18 @@ class CompleteSystemSimulator:
                 self.stats['generated_data_bytes'] += float(task.get('data_size_bytes', 0.0))
                 self._dispatch_task(vehicle, task, actions, step_summary)
 
-        # 3. 智能迁移策略
+        # 3. 鏅鸿兘杩佺Щ绛栫暐
         if actions:
             self.check_adaptive_migration(actions)
 
-        # 4. 处理队列中的任务
+        # 4. 澶勭悊闃熷垪涓殑浠诲姟
         self._process_node_queues()
 
-        # 5. 检查超时并清理
+        # 5. 妫€鏌ヨ秴鏃跺苟娓呯悊
         self._handle_deadlines()
         self._cleanup_active_tasks()
 
-        # 汇总信息
+        # 姹囨€讳俊鎭?
         step_summary.update({
             'current_time': self.current_time,
             'rsu_queue_lengths': [len(rsu.get('computation_queue', [])) for rsu in self.rsus],
@@ -1631,7 +1631,7 @@ class CompleteSystemSimulator:
             if i == source_rsu_idx:
                 continue
             queue_len = len(rsu.get('computation_queue', []))
-            cpu_load = min(0.99, queue_len / 25.0)
+            cpu_load = min(0.99, queue_len / 10.0)
             score = queue_len + cpu_load * 10.0
             candidates.append((i, queue_len, cpu_load, score))
 
@@ -1698,7 +1698,7 @@ class CompleteSystemSimulator:
         for i, rsu in enumerate(self.rsus):
             queue_len = len(rsu.get('computation_queue', []))
             distance = self.calculate_distance(uav_position, rsu['position'])
-            cpu_load = min(0.99, queue_len / 25.0)
+            cpu_load = min(0.99, queue_len / 10.0)
             score = distance * 0.01 + queue_len + cpu_load * 10.0
             candidates.append((i, queue_len, cpu_load, distance, score))
 
@@ -1719,7 +1719,7 @@ class CompleteSystemSimulator:
 
         base_success_rate = 0.75
         distance_penalty = min(0.35, distance / 1200.0)
-        load_penalty = min(0.25, target_queue_len / 40.0)
+        load_penalty = min(0.25, target_queue_len / 16.0)
         urgency_bonus = min(0.2, urgency)
         actual_success_rate = np.clip(base_success_rate - distance_penalty - load_penalty + urgency_bonus, 0.35, 0.95)
         if np.random.random() > actual_success_rate:
@@ -1741,3 +1741,4 @@ class CompleteSystemSimulator:
 
         migration_cost = wireless_energy + wireless_delay * 800.0
         return {'success': True, 'cost': migration_cost, 'delay_saved': delay_saved}
+

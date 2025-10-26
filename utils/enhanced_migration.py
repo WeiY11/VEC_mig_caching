@@ -432,7 +432,8 @@ class EnhancedTaskMigrationManager:
         # 迁移成本
         transmission_cost = distance / 1000.0 * num_tasks
         computation_cost = num_tasks * 0.1
-        latency_cost = migration_delay * 10.0
+        # 与时隙对齐：以时隙数表示延迟成本
+        latency_cost = migration_delay / max(1e-9, config.network.time_slot_duration)
         
         total_cost = (self.alpha_comp * computation_cost + 
                      self.alpha_tx * transmission_cost + 

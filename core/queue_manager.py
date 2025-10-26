@@ -1,6 +1,6 @@
-"""
-多优先级生命周期队列管理器 - 对应论文第2.3节
-实现VEC系统中的分层队列系统和M/M/1非抢占式优先级队列模型
+﻿"""
+澶氫紭鍏堢骇鐢熷懡鍛ㄦ湡闃熷垪绠＄悊鍣?- 瀵瑰簲璁烘枃绗?.3鑺?
+瀹炵幇VEC绯荤粺涓殑鍒嗗眰闃熷垪绯荤粺鍜孧/M/1闈炴姠鍗犲紡浼樺厛绾ч槦鍒楁ā鍨?
 """
 import numpy as np
 import math
@@ -15,7 +15,7 @@ from utils import ExponentialMovingAverage
 
 @dataclass
 class QueueStatistics:
-    """队列统计信息"""
+    """闃熷垪缁熻淇℃伅"""
     total_arrivals: int = 0
     total_departures: int = 0
     total_drops: int = 0
@@ -24,65 +24,65 @@ class QueueStatistics:
     avg_service_time: float = 0.0
     
     def __post_init__(self):
-        # 初始化优先级统计字典
+        # 鍒濆鍖栦紭鍏堢骇缁熻瀛楀吀
         self.priority_arrivals: Dict[int, int] = defaultdict(int)
         self.priority_waiting_times: Dict[int, float] = defaultdict(float)
 
 
 class PriorityQueueManager:
     """
-    多优先级生命周期队列管理器
+    澶氫紭鍏堢骇鐢熷懡鍛ㄦ湡闃熷垪绠＄悊鍣?
     
-    实现功能:
-    1. 多维队列管理 (生命周期 × 优先级)
-    2. M/M/1非抢占式优先级队列预测
-    3. 队列统计与性能分析
-    4. 负载均衡与容量管理
+    瀹炵幇鍔熻兘:
+    1. 澶氱淮闃熷垪绠＄悊 (鐢熷懡鍛ㄦ湡 脳 浼樺厛绾?
+    2. M/M/1闈炴姠鍗犲紡浼樺厛绾ч槦鍒楅娴?
+    3. 闃熷垪缁熻涓庢€ц兘鍒嗘瀽
+    4. 璐熻浇鍧囪　涓庡閲忕鐞?
     """
     
     def __init__(self, node_id: str, node_type: NodeType):
         self.node_id = node_id
         self.node_type = node_type
         
-        # 队列维度参数
+        # 闃熷垪缁村害鍙傛暟
         self.max_lifetime = config.queue.max_lifetime  # L
         self.num_priorities = config.task.num_priority_levels  # P
         
-        # 队列结构 - {(lifetime, priority): QueueSlot}
+        # 闃熷垪缁撴瀯 - {(lifetime, priority): QueueSlot}
         self.queues: Dict[Tuple[int, int], QueueSlot] = {}
         self._initialize_queues()
         
-        # 容量限制
+        # 瀹归噺闄愬埗
         self.max_capacity = self._get_queue_capacity()
         self.current_usage = 0.0
         
-        # 统计信息
+        # 缁熻淇℃伅
         self.statistics = QueueStatistics()
         
-        # M/M/1模型参数
-        self.arrival_rates: Dict[int, float] = defaultdict(float)  # λ_i (按优先级)
-        self.service_rate: float = 0.0  # μ
-        self.load_factors: Dict[int, float] = defaultdict(float)  # ρ_i = λ_i/μ
+        # M/M/1妯″瀷鍙傛暟
+        self.arrival_rates: Dict[int, float] = defaultdict(float)  # 位_i (鎸変紭鍏堢骇)
+        self.service_rate: float = 0.0  # 渭
+        self.load_factors: Dict[int, float] = defaultdict(float)  # 蟻_i = 位_i/渭
         
-        # 移动平均计算器
+        # 绉诲姩骞冲潎璁＄畻鍣?
         self.avg_calculators = {
             'arrival_rate': ExponentialMovingAverage(alpha=0.1),
             'service_rate': ExponentialMovingAverage(alpha=0.1),
             'waiting_time': ExponentialMovingAverage(alpha=0.1)
         }
         
-        # 时间窗口统计
-        self.time_window_size = 10  # 统计窗口大小 (时隙)
-        self.recent_arrivals: List[Dict[int, int]] = []  # 最近到达统计
-        self.recent_services: List[int] = []  # 最近服务统计
+        # 鏃堕棿绐楀彛缁熻
+        self.time_window_size = 6  # 缁熻绐楀彛澶у皬 (鏃堕殭)
+        self.recent_arrivals: List[Dict[int, int]] = []  # 鏈€杩戝埌杈剧粺璁?
+        self.recent_services: List[int] = []  # 鏈€杩戞湇鍔＄粺璁?
     
     def _initialize_queues(self):
-        """初始化队列结构"""
+        """鍒濆鍖栭槦鍒楃粨鏋?""
         if self.node_type == NodeType.VEHICLE:
-            # 车辆维护完整的L×P队列矩阵
+            # 杞﹁締缁存姢瀹屾暣鐨凩脳P闃熷垪鐭╅樀
             lifetime_range = range(1, self.max_lifetime + 1)
         else:
-            # RSU和UAV维护(L-1)×P队列矩阵  
+            # RSU鍜孶AV缁存姢(L-1)脳P闃熷垪鐭╅樀  
             lifetime_range = range(1, self.max_lifetime)
         
         for lifetime in lifetime_range:
@@ -90,7 +90,7 @@ class PriorityQueueManager:
                 self.queues[(lifetime, priority)] = QueueSlot(lifetime, priority)
     
     def _get_queue_capacity(self) -> float:
-        """获取队列容量限制"""
+        """鑾峰彇闃熷垪瀹归噺闄愬埗"""
         if self.node_type == NodeType.VEHICLE:
             return config.queue.vehicle_queue_capacity
         elif self.node_type == NodeType.RSU:
@@ -100,31 +100,31 @@ class PriorityQueueManager:
     
     def add_task(self, task: Task) -> bool:
         """
-        添加任务到队列
+        娣诲姞浠诲姟鍒伴槦鍒?
         
         Args:
-            task: 待添加的任务
+            task: 寰呮坊鍔犵殑浠诲姟
             
         Returns:
-            是否成功添加
+            鏄惁鎴愬姛娣诲姞
         """
-        # 检查容量限制
+        # 妫€鏌ュ閲忛檺鍒?
         if self.current_usage + task.data_size > self.max_capacity:
             self._handle_queue_overflow(task)
             return False
         
-        # 确定队列位置
+        # 纭畾闃熷垪浣嶇疆
         lifetime = task.remaining_lifetime_slots
         priority = task.priority
         queue_key = (lifetime, priority)
         
-        # 检查队列是否存在
+        # 妫€鏌ラ槦鍒楁槸鍚﹀瓨鍦?
         if queue_key not in self.queues:
-            # 生命周期超出范围，任务被丢弃
+            # 鐢熷懡鍛ㄦ湡瓒呭嚭鑼冨洿锛屼换鍔¤涓㈠純
             self.statistics.total_drops += 1
             return False
         
-        # 添加到相应队列
+        # 娣诲姞鍒扮浉搴旈槦鍒?
         success = self.queues[queue_key].add_task(task)
         
         if success:
@@ -132,23 +132,23 @@ class PriorityQueueManager:
             self.statistics.total_arrivals += 1
             self.statistics.priority_arrivals[priority] += 1
             
-            # 更新到达率统计
+            # 鏇存柊鍒拌揪鐜囩粺璁?
             self._update_arrival_statistics(priority)
         
         return success
     
     def get_next_task(self) -> Optional[Task]:
         """
-        获取下一个待处理任务
-        按照非抢占式优先级调度策略
+        鑾峰彇涓嬩竴涓緟澶勭悊浠诲姟
+        鎸夌収闈炴姠鍗犲紡浼樺厛绾ц皟搴︾瓥鐣?
         """
-        # 按优先级从高到低遍历 (priority=1是最高优先级)
+        # 鎸変紭鍏堢骇浠庨珮鍒颁綆閬嶅巻 (priority=1鏄渶楂樹紭鍏堢骇)
         for priority in range(1, self.num_priorities + 1):
-            # 在同一优先级内，按生命周期紧迫程度遍历
+            # 鍦ㄥ悓涓€浼樺厛绾у唴锛屾寜鐢熷懡鍛ㄦ湡绱ц揩绋嬪害閬嶅巻
             for lifetime in range(1, self.max_lifetime + 1):
                 queue_key = (lifetime, priority)
                 if queue_key in self.queues and not self.queues[queue_key].is_empty():
-                    # 找到下一个任务
+                    # 鎵惧埌涓嬩竴涓换鍔?
                     queue = self.queues[queue_key]
                     task = queue.get_next_task()
                     if task:
@@ -158,22 +158,22 @@ class PriorityQueueManager:
     
     def remove_task(self, task: Task) -> bool:
         """
-        从队列中移除任务
+        浠庨槦鍒椾腑绉婚櫎浠诲姟
         
         Args:
-            task: 待移除的任务
+            task: 寰呯Щ闄ょ殑浠诲姟
             
         Returns:
-            是否成功移除
+            鏄惁鎴愬姛绉婚櫎
         """
-        # 遍历所有队列寻找任务
+        # 閬嶅巻鎵€鏈夐槦鍒楀鎵句换鍔?
         for queue in self.queues.values():
             removed_task = queue.remove_task(task.task_id)
             if removed_task:
                 self.current_usage -= removed_task.data_size
                 self.statistics.total_departures += 1
                 
-                # 更新服务统计
+                # 鏇存柊鏈嶅姟缁熻
                 self._update_service_statistics()
                 
                 return True
@@ -182,81 +182,81 @@ class PriorityQueueManager:
     
     def predict_waiting_time_mm1(self, task: Task) -> float:
         """
-        使用M/M/1非抢占式优先级队列模型预测等待时间
-        对应论文式(2)和式(3)
-        添加数值稳定性保障
+        浣跨敤M/M/1闈炴姠鍗犲紡浼樺厛绾ч槦鍒楁ā鍨嬮娴嬬瓑寰呮椂闂?
+        瀵瑰簲璁烘枃寮?2)鍜屽紡(3)
+        娣诲姞鏁板€肩ǔ瀹氭€т繚闅?
         
         Args:
-            task: 待预测的任务
+            task: 寰呴娴嬬殑浠诲姟
             
         Returns:
-            预测等待时间 (秒)
+            棰勬祴绛夊緟鏃堕棿 (绉?
         """
         priority = task.priority
         
-        # 检查优先级的有效性
+        # 妫€鏌ヤ紭鍏堢骇鐨勬湁鏁堟€?
         if priority < 1 or priority > len(self.load_factors):
             return float('inf')
         
-        # 检查服务率的有效性
-        if self.service_rate <= 1e-10:  # 防止除以零
+        # 妫€鏌ユ湇鍔＄巼鐨勬湁鏁堟€?
+        if self.service_rate <= 1e-10:  # 闃叉闄や互闆?
             return float('inf')
         
-        # 检查稳定性条件
+        # 妫€鏌ョǔ瀹氭€ф潯浠?
         total_rho = sum(self.load_factors.values())
-        if total_rho >= 0.99:  # 留有一定的稳定性余量
-            return float('inf')  # 系统不稳定
+        if total_rho >= 0.99:  # 鐣欐湁涓€瀹氱殑绋冲畾鎬т綑閲?
+            return float('inf')  # 绯荤粺涓嶇ǔ瀹?
         
-        # 计算优先级为priority的任务平均等待时间 - 论文式(2)
+        # 璁＄畻浼樺厛绾т负priority鐨勪换鍔″钩鍧囩瓑寰呮椂闂?- 璁烘枃寮?2)
         numerator = sum(self.load_factors.get(p, 0) for p in range(1, priority + 1))
         
-        # 分母计算 - 添加数值稳定性检查
+        # 鍒嗘瘝璁＄畻 - 娣诲姞鏁板€肩ǔ瀹氭€ф鏌?
         denominator1 = 1 - sum(self.load_factors.get(p, 0) for p in range(1, priority))
         denominator2 = 1 - sum(self.load_factors.get(p, 0) for p in range(1, priority + 1))
         
-        # 防止分母过小
+        # 闃叉鍒嗘瘝杩囧皬
         min_denominator = 1e-6
         if denominator1 <= min_denominator or denominator2 <= min_denominator:
             return float('inf')
         
-        # 论文式(2): T_wait = (1/μ) * [Σρ_i] / [(1-Σρ_{i<p})(1-Σρ_{i≤p})]
+        # 璁烘枃寮?2): T_wait = (1/渭) * [危蟻_i] / [(1-危蟻_{i<p})(1-危蟻_{i鈮})]
         waiting_time = (1 / self.service_rate) * (numerator / (denominator1 * denominator2))
         
-        # 限制等待时间在合理范围内
-        max_waiting_time = 100.0  # 最大100秒
+        # 闄愬埗绛夊緟鏃堕棿鍦ㄥ悎鐞嗚寖鍥村唴
+        max_waiting_time = 100.0  # 鏈€澶?00绉?
         waiting_time = min(waiting_time, max_waiting_time)
         
-        return max(0.0, waiting_time)  # 确保非负
+        return max(0.0, waiting_time)  # 纭繚闈炶礋
     
     def predict_waiting_time_instantaneous(self, task: Task) -> float:
         """
-        基于瞬时队列状态预测等待时间
-        对应论文式(4)的瞬时积压预测
+        鍩轰簬鐬椂闃熷垪鐘舵€侀娴嬬瓑寰呮椂闂?
+        瀵瑰簲璁烘枃寮?4)鐨勭灛鏃剁Н鍘嬮娴?
         
         Args:
-            task: 待预测的任务
+            task: 寰呴娴嬬殑浠诲姟
             
         Returns:
-            预测等待时间 (秒)
+            棰勬祴绛夊緟鏃堕棿 (绉?
         """
         priority = task.priority
         
-        # 计算当前正在服务的任务剩余时间 (简化)
-        current_service_remaining = 0.0  # 实际中需要跟踪当前服务任务
+        # 璁＄畻褰撳墠姝ｅ湪鏈嶅姟鐨勪换鍔″墿浣欐椂闂?(绠€鍖?
+        current_service_remaining = 0.0  # 瀹為檯涓渶瑕佽窡韪綋鍓嶆湇鍔′换鍔?
         
-        # 计算优先级更高的任务总处理时间
+        # 璁＄畻浼樺厛绾ф洿楂樼殑浠诲姟鎬诲鐞嗘椂闂?
         higher_priority_workload = 0.0
         for p in range(1, priority):
             for (lifetime, prio), queue in self.queues.items():
                 if prio == p and not queue.is_empty():
-                    # 计算该队列的工作负载
+                    # 璁＄畻璇ラ槦鍒楃殑宸ヤ綔璐熻浇
                     queue_workload = queue.data_volume * config.task.task_compute_density
                     higher_priority_workload += queue_workload
         
-        # 假设的平均CPU频率 (简化)
+        # 鍋囪鐨勫钩鍧嘋PU棰戠巼 (绠€鍖?
         avg_cpu_freq = self._get_average_cpu_frequency()
         
-        # 瞬时等待时间预测 - 对应论文式(4)
+        # 鐬椂绛夊緟鏃堕棿棰勬祴 - 瀵瑰簲璁烘枃寮?4)
         if avg_cpu_freq > 0:
             waiting_time = (current_service_remaining + higher_priority_workload) / avg_cpu_freq
         else:
@@ -265,7 +265,7 @@ class PriorityQueueManager:
         return waiting_time
     
     def _get_average_cpu_frequency(self) -> float:
-        """获取平均CPU频率 (简化实现)"""
+        """鑾峰彇骞冲潎CPU棰戠巼 (绠€鍖栧疄鐜?"""
         if self.node_type == NodeType.VEHICLE:
             freq_range = config.compute.vehicle_cpu_freq_range
             return float(np.mean(freq_range))
@@ -276,38 +276,38 @@ class PriorityQueueManager:
     
     def update_lifetime(self):
         """
-        更新所有任务的生命周期
-        每个时隙开始时调用
+        鏇存柊鎵€鏈変换鍔＄殑鐢熷懡鍛ㄦ湡
+        姣忎釜鏃堕殭寮€濮嬫椂璋冪敤
         """
         new_queues = {}
         dropped_tasks = []
         
         for (lifetime, priority), queue in self.queues.items():
             if queue.is_empty():
-                # 保持空队列结构
+                # 淇濇寔绌洪槦鍒楃粨鏋?
                 new_queues[(lifetime, priority)] = QueueSlot(lifetime, priority)
             else:
-                # 计算新的生命周期
+                # 璁＄畻鏂扮殑鐢熷懡鍛ㄦ湡
                 new_lifetime = max(0, lifetime - 1)
                 
                 if new_lifetime > 0:
-                    # 任务移动到新的生命周期队列
+                    # 浠诲姟绉诲姩鍒版柊鐨勭敓鍛藉懆鏈熼槦鍒?
                     new_key = (new_lifetime, priority)
                     if new_key not in new_queues:
                         new_queues[new_key] = QueueSlot(new_lifetime, priority)
                     
-                    # 移动所有任务
+                    # 绉诲姩鎵€鏈変换鍔?
                     for task in queue.task_list:
                         new_queues[new_key].add_task(task)
                 else:
-                    # 生命周期用尽，任务被丢弃
+                    # 鐢熷懡鍛ㄦ湡鐢ㄥ敖锛屼换鍔¤涓㈠純
                     for task in queue.task_list:
                         task.is_dropped = True
                         dropped_tasks.append(task)
                         self.current_usage -= task.data_size
                         self.statistics.total_drops += 1
         
-        # 确保所有队列位置都有对应的队列对象
+        # 纭繚鎵€鏈夐槦鍒椾綅缃兘鏈夊搴旂殑闃熷垪瀵硅薄
         self._ensure_all_queues_exist(new_queues)
         
         self.queues = new_queues
@@ -315,7 +315,7 @@ class PriorityQueueManager:
         return dropped_tasks
     
     def _ensure_all_queues_exist(self, queue_dict: Dict):
-        """确保所有队列位置都存在"""
+        """纭繚鎵€鏈夐槦鍒椾綅缃兘瀛樺湪"""
         if self.node_type == NodeType.VEHICLE:
             lifetime_range = range(1, self.max_lifetime + 1)
         else:
@@ -328,22 +328,22 @@ class PriorityQueueManager:
                     queue_dict[key] = QueueSlot(lifetime, priority)
     
     def _handle_queue_overflow(self, task: Task):
-        """处理队列溢出"""
-        # 尝试通过丢弃低优先级任务来腾出空间
+        """澶勭悊闃熷垪婧㈠嚭"""
+        # 灏濊瘯閫氳繃涓㈠純浣庝紭鍏堢骇浠诲姟鏉ヨ吘鍑虹┖闂?
         freed_space = self._drop_low_priority_tasks(task.data_size)
         
         if freed_space >= task.data_size:
-            # 成功腾出空间，重新尝试添加
+            # 鎴愬姛鑵惧嚭绌洪棿锛岄噸鏂板皾璇曟坊鍔?
             self.add_task(task)
         else:
-            # 无法腾出足够空间，丢弃当前任务
+            # 鏃犳硶鑵惧嚭瓒冲绌洪棿锛屼涪寮冨綋鍓嶄换鍔?
             self.statistics.total_drops += 1
     
     def _drop_low_priority_tasks(self, required_space: float) -> float:
-        """丢弃低优先级任务以腾出空间"""
+        """涓㈠純浣庝紭鍏堢骇浠诲姟浠ヨ吘鍑虹┖闂?""
         freed_space = 0.0
         
-        # 从最低优先级开始丢弃
+        # 浠庢渶浣庝紭鍏堢骇寮€濮嬩涪寮?
         for priority in range(self.num_priorities, 0, -1):
             if freed_space >= required_space:
                 break
@@ -353,7 +353,7 @@ class PriorityQueueManager:
                 if queue_key in self.queues and not self.queues[queue_key].is_empty():
                     queue = self.queues[queue_key]
                     
-                    # 丢弃队列中的任务
+                    # 涓㈠純闃熷垪涓殑浠诲姟
                     while not queue.is_empty() and freed_space < required_space:
                         task = queue.task_list.pop()
                         freed_space += task.data_size
@@ -361,40 +361,40 @@ class PriorityQueueManager:
                         task.is_dropped = True
                         self.statistics.total_drops += 1
                         
-                        # 更新队列数据量
+                        # 鏇存柊闃熷垪鏁版嵁閲?
                         queue.data_volume -= task.data_size
         
         return freed_space
     
     def _update_arrival_statistics(self, priority: int):
-        """更新到达率统计"""
-        # 记录当前时隙的到达
+        """鏇存柊鍒拌揪鐜囩粺璁?""
+        # 璁板綍褰撳墠鏃堕殭鐨勫埌杈?
         current_slot_arrivals = defaultdict(int)
         current_slot_arrivals[priority] += 1
         
         self.recent_arrivals.append(dict(current_slot_arrivals))
         
-        # 限制历史长度
+        # 闄愬埗鍘嗗彶闀垮害
         if len(self.recent_arrivals) > self.time_window_size:
             self.recent_arrivals.pop(0)
         
-        # 计算到达率
+        # 璁＄畻鍒拌揪鐜?
         self._calculate_arrival_rates()
     
     def _update_service_statistics(self):
-        """更新服务率统计"""
-        # 记录当前时隙的服务
+        """鏇存柊鏈嶅姟鐜囩粺璁?""
+        # 璁板綍褰撳墠鏃堕殭鐨勬湇鍔?
         self.recent_services.append(1)
         
-        # 限制历史长度
+        # 闄愬埗鍘嗗彶闀垮害
         if len(self.recent_services) > self.time_window_size:
             self.recent_services.pop(0)
         
-        # 计算服务率
+        # 璁＄畻鏈嶅姟鐜?
         self._calculate_service_rate()
     
     def _calculate_arrival_rates(self):
-        """计算各优先级的到达率"""
+        """璁＄畻鍚勪紭鍏堢骇鐨勫埌杈剧巼"""
         if not self.recent_arrivals:
             return
         
@@ -405,7 +405,7 @@ class PriorityQueueManager:
             self.arrival_rates[priority] = total_arrivals / window_duration
     
     def _calculate_service_rate(self):
-        """计算服务率"""
+        """璁＄畻鏈嶅姟鐜?""
         if not self.recent_services:
             return
         
@@ -413,7 +413,7 @@ class PriorityQueueManager:
         total_services = sum(self.recent_services)
         self.service_rate = total_services / window_duration
         
-        # 更新负载因子
+        # 鏇存柊璐熻浇鍥犲瓙
         for priority in range(1, self.num_priorities + 1):
             if self.service_rate > 0:
                 self.load_factors[priority] = self.arrival_rates[priority] / self.service_rate
@@ -421,18 +421,18 @@ class PriorityQueueManager:
                 self.load_factors[priority] = 0.0
     
     def get_queue_state_vector(self) -> np.ndarray:
-        """获取队列状态向量"""
+        """鑾峰彇闃熷垪鐘舵€佸悜閲?""
         state_features = []
         
-        # 基本队列信息
+        # 鍩烘湰闃熷垪淇℃伅
         state_features.extend([
-            self.current_usage / self.max_capacity,  # 容量利用率
-            len([q for q in self.queues.values() if not q.is_empty()]) / len(self.queues),  # 活跃队列比例
-            sum(self.load_factors.values()),  # 总负载因子
-            self.service_rate / 100.0,  # 归一化服务率
+            self.current_usage / self.max_capacity,  # 瀹归噺鍒╃敤鐜?
+            len([q for q in self.queues.values() if not q.is_empty()]) / len(self.queues),  # 娲昏穬闃熷垪姣斾緥
+            sum(self.load_factors.values()),  # 鎬昏礋杞藉洜瀛?
+            self.service_rate / 100.0,  # 褰掍竴鍖栨湇鍔＄巼
         ])
         
-        # 各优先级队列状态
+        # 鍚勪紭鍏堢骇闃熷垪鐘舵€?
         for priority in range(1, self.num_priorities + 1):
             priority_tasks = sum(len(queue.task_list) 
                                for (l, p), queue in self.queues.items() 
@@ -442,16 +442,16 @@ class PriorityQueueManager:
                               if p == priority)
             
             state_features.extend([
-                priority_tasks / 50.0,  # 归一化任务数
-                priority_data / self.max_capacity,  # 归一化数据量
-                self.arrival_rates.get(priority, 0.0) / 10.0,  # 归一化到达率
-                self.load_factors.get(priority, 0.0),  # 负载因子
+                priority_tasks / 50.0,  # 褰掍竴鍖栦换鍔℃暟
+                priority_data / self.max_capacity,  # 褰掍竴鍖栨暟鎹噺
+                self.arrival_rates.get(priority, 0.0) / 10.0,  # 褰掍竴鍖栧埌杈剧巼
+                self.load_factors.get(priority, 0.0),  # 璐熻浇鍥犲瓙
             ])
         
         return np.array(state_features, dtype=np.float32)
     
     def get_queue_statistics(self) -> Dict:
-        """获取队列统计信息"""
+        """鑾峰彇闃熷垪缁熻淇℃伅"""
         total_requests = self.statistics.total_arrivals + self.statistics.total_drops
         
         return {
@@ -469,16 +469,16 @@ class PriorityQueueManager:
         }
     
     def is_stable(self) -> bool:
-        """检查队列系统是否稳定"""
+        """妫€鏌ラ槦鍒楃郴缁熸槸鍚︾ǔ瀹?""
         total_load = sum(self.load_factors.values())
         return total_load < config.queue.max_load_factor
     
     def get_utilization(self) -> float:
-        """获取队列利用率"""
+        """鑾峰彇闃熷垪鍒╃敤鐜?""
         return self.current_usage / self.max_capacity
     
     def get_priority_distribution(self) -> Dict[int, float]:
-        """获取各优先级任务分布"""
+        """鑾峰彇鍚勪紭鍏堢骇浠诲姟鍒嗗竷"""
         total_tasks = sum(len(queue.task_list) for queue in self.queues.values())
         
         if total_tasks == 0:
