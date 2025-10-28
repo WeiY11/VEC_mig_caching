@@ -77,8 +77,9 @@ class RLConfig:
         # 鉂?宸插純鐢ㄥ弬鏁帮紙淇濈暀浠ュ吋瀹规棫浠ｇ爜锛?
         self.reward_weight_loss = 0.0      # 宸茬Щ闄わ細data_loss鏄椂寤剁殑琛嶇敓鎸囨爣
         self.reward_weight_completion = 0.0  # 宸查泦鎴愬埌dropped_penalty
-        self.reward_weight_cache = 0.3       # 缂撳瓨鍛戒腑鐜?/ 娣樻卑鎴愭湰鏉冮噸
-        self.reward_weight_migration = 0.2   # 杩佺Щ鏀剁泭 / 鎴愭湰鏉冮噸
+        # 统一奖励仅优化时延+能耗+丢弃轻惩罚，缓存/迁移不直接入目标
+        self.reward_weight_cache = 0.0
+        self.reward_weight_migration = 0.0
 
         # 馃幆 寤舵椂-鑳借€椾紭鍖栫洰鏍囬槇鍊硷紙渚涚畻娉曞姩鎬佽皟鏁达級
         self.latency_target = 0.40  # Target average latency (seconds)

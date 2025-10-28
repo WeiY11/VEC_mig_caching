@@ -18,6 +18,11 @@ from caching.cache_manager import HeatBasedCacheStrategy
 # 导入配置
 from config import config
 
+try:
+    from utils.unified_time_manager import get_simulation_time
+except ImportError:  # pragma: no cover - 容错处理
+    get_simulation_time = None
+
 
 class EnhancedSystemSimulator(CompleteSystemSimulator):
     """
@@ -114,7 +119,9 @@ class EnhancedSystemSimulator(CompleteSystemSimulator):
         
         # 记录访问到热度策略
         self.heat_strategy.update_heat(content_id, access_weight=1.0)
-        
+        # 对缓存事件使用统一仿真时间；若不可用则退回真实时间
+        current_time = get_simulation_time() if callable(get_simulation_time) else time.time()
+
         # 尝试从缓存获取
         cache_hit = False
         cache_source = 'miss'

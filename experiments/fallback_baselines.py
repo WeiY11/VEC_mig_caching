@@ -286,11 +286,53 @@ class SimulatedAnnealingPolicy(HeuristicPolicy):
         return self._choice_to_action(self.current_choice)
 
 
+class GreedyPolicy(HeuristicPolicy):
+    """Greedy baseline: pick the least-loaded compute target.
+
+    Uses the 4th column (index 3) of node feature vectors as a proxy for queue/load.
+    Falls back to 0.5 when unavailable. Chooses among local aggregate, per-RSU, per-UAV.
+    """
+
+    def __init__(self) -> None:
+        super().__init__("Greedy")
+
+    def select_action(self, state) -> np.ndarray:
+        veh, rsu, uav = self._structured_state(state)
+
+        def _mean_col(arr, idx: int, default: float) -> float:
+            if arr.size == 0 or arr.ndim != 2 or arr.shape[1] <= idx:
+                return default
+            return float(np.mean(arr[:, idx]))
+
+        def _argmin_col(arr, idx: int) -> int:
+            if arr.size == 0 or arr.ndim != 2 or arr.shape[1] <= idx:
+                return -1
+            return int(np.argmin(arr[:, idx]))
+
+        local_load = _mean_col(veh, 3, 0.5)
+        best_rsu_idx = _argmin_col(rsu, 3)
+        rsu_load = float(rsu[best_rsu_idx, 3]) if best_rsu_idx >= 0 else 0.7
+        best_uav_idx = _argmin_col(uav, 3)
+        uav_load = float(uav[best_uav_idx, 3]) if best_uav_idx >= 0 else 0.8
+
+        # Select the minimum-load family
+        loads = [("local", local_load), ("rsu", rsu_load), ("uav", uav_load)]
+        kind, _ = min(loads, key=lambda kv: kv[1])
+
+        if kind == "rsu" and best_rsu_idx >= 0:
+            return self._action_from_preference(local_score=-1.5, rsu_score=4.0, uav_score=-1.5, rsu_index=best_rsu_idx)
+        if kind == "uav" and best_uav_idx >= 0:
+            return self._action_from_preference(local_score=-1.0, rsu_score=-1.0, uav_score=4.0, uav_index=best_uav_idx)
+        return self._action_from_preference(local_score=4.0, rsu_score=-2.0, uav_score=-2.0)
+
+
 def create_baseline_algorithm(name: str, **kwargs):
     """Return a heuristic controller by name."""
     key = name.strip().lower()
     if key in {"random"}:
         return RandomPolicy(seed=kwargs.get("seed"))
+    if key in {"greedy"}:
+        return GreedyPolicy()
     if key in {"localonly", "local_only"}:
         return LocalOnlyPolicy()
     if key in {"rsuonly", "rsu_only"}:

@@ -1,1 +1,0 @@
-@echo off\r\npython run_td3_hier_pipeline.py %*\r\n
