@@ -2,6 +2,8 @@
 # -*- coding: utf-8 -*-
 """
 TD3聚焦对比实验 - 启动脚本
+python run_td3_focused.py --mode standard --experiment dual
+python run_td3_focused.py --mode quick --experiment dual
 python run_td3_focused.py --mode standard --experiment all
 快速使用：
     # 快速测试（1-2小时，验证流程）
@@ -78,14 +80,35 @@ def main():
         "--experiment",
         type=str,
         default="all",
-        choices=["all", "baseline", "vehicle", "network"],
-        help="实验选择: all(全部), baseline(算法对比), vehicle(车辆规模), network(网络条件)"
+        choices=["all", "baseline", "vehicle", "network", "dual"],
+        help="实验选择: all(全部), baseline(算法对比), vehicle(车辆规模), network(网络条件), dual(两阶段对比)"
     )
     
     parser.add_argument(
         "--show-plan",
         action="store_true",
         help="只显示实验计划，不执行"
+    )
+    
+    # 非交互确认：在 standard 模式下跳过交互式确认
+    parser.add_argument(
+        "--yes", "-y",
+        action="store_true",
+        help="在standard模式下跳过确认提示（非交互运行推荐）"
+    )
+    
+    # 🌐 实时可视化参数
+    parser.add_argument(
+        "--realtime-vis",
+        action="store_true",
+        help="启用实时可视化（每个算法独立端口）"
+    )
+    
+    parser.add_argument(
+        "--vis-port",
+        type=int,
+        default=5000,
+        help="实时可视化基础端口（默认5000，每个算法自动递增）"
     )
     
     args = parser.parse_args()
@@ -99,16 +122,26 @@ def main():
     
     # 确认执行
     if args.mode == "standard":
-        print("⚠️  Standard模式预计需要24-30小时")
-        response = input("是否继续? (y/n): ").strip().lower()
-        if response != 'y':
-            print("已取消")
-            return
+        if args.yes:
+            print("⚠️  Standard模式（已通过 --yes 自动确认）")
+        else:
+            print("⚠️  Standard模式预计需要24-30小时")
+            try:
+                response = input("是否继续? (y/n): ").strip().lower()
+            except EOFError:
+                response = 'n'
+            if response != 'y':
+                print("已取消")
+                return
     
     # 运行实验
     print("\n🚀 开始运行实验...\n")
     
-    runner = TD3FocusedComparison()
+    # 🌐 传递实时可视化参数
+    runner = TD3FocusedComparison(
+        realtime=args.realtime_vis,
+        vis_port=args.vis_port
+    )
     
     if args.experiment == "all":
         runner.run_all_experiments(mode=args.mode)
@@ -120,9 +153,12 @@ def main():
         elif args.experiment == "vehicle":
             configs = runner.define_vehicle_scaling()
             print("\n📈 运行车辆规模扫描实验...")
-        else:  # network
+        elif args.experiment == "network":
             configs = runner.define_network_conditions()
             print("\n🌐 运行网络条件对比实验...")
+        else:  # dual
+            configs = runner.define_dual_stage_ablation()
+            print("\n🧠 运行两阶段组合对比实验 (与原始TD3对比)...")
         
         for config in configs:
             if args.mode == "quick":
@@ -151,4 +187,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-

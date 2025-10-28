@@ -1,0 +1,26 @@
+# VEC边缘计算迁移与缓存系统 - 依赖项清单
+# Kaggle环境已预装部分库，此文件列出所有需要的依赖
+
+# 核心深度学习框架
+torch>=2.0.0
+numpy>=1.24.0
+scipy>=1.10.0
+
+# 可视化
+matplotlib>=3.7.0
+seaborn>=0.12.0
+
+# 数据处理
+pandas>=2.0.0
+
+# Web可视化（可选，Kaggle上可能不需要）
+flask>=2.3.0
+flask-socketio>=5.3.0
+
+# 工具库
+tqdm>=4.65.0
+pyyaml>=6.0
+
+# 科学计算
+scikit-learn>=1.3.0
+

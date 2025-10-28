@@ -12,6 +12,7 @@ Provides high-fidelity simulation of vehicle, RSU, and UAV interactions.
 import numpy as np
 import torch
 import random
+import os
 from typing import Dict, List, Tuple, Any, Optional
 import json
 from datetime import datetime
@@ -23,6 +24,7 @@ from utils.unified_time_manager import get_simulation_time, advance_simulation_t
 # 🔑 修复：导入realistic内容生成器
 # Realistic content generator for simulating various content types
 from utils.realistic_content_generator import generate_realistic_content, get_realistic_content_size
+from decision.two_stage_planner import TwoStagePlanner, PlanEntry
 
 class CompleteSystemSimulator:
     """
@@ -98,6 +100,9 @@ class CompleteSystemSimulator:
         self.task_counter = 0
         self.current_step = 0
         self.current_time = 0.0
+        # Two-stage planning toggle (env-controlled)
+        self._two_stage_enabled = (os.environ.get('TWO_STAGE_MODE', '').strip() in {'1', 'true', 'True'})
+        self._two_stage_planner: TwoStagePlanner | None = None
         
         # 初始化组件（车辆、RSU、UAV等）
         # Initialize components (vehicles, RSUs, UAVs, etc.)
@@ -1912,19 +1917,36 @@ class CompleteSystemSimulator:
         # Update vehicle positions based on movement model
         self._update_vehicle_positions()
 
-        # 2. 生成任务并分配
-        # Generate and dispatch tasks for each vehicle
-        for vehicle in self.vehicles:
+        # 2. 生成任务并（可选）两阶段规划后分配
+        # Generate new tasks for each vehicle first (batch), then optionally plan
+        tasks_batch: List[Tuple[int, Dict, Dict]] = []
+        for vidx, vehicle in enumerate(self.vehicles):
             arrivals = self._sample_arrivals()
             if arrivals <= 0:
                 continue
-
             vehicle_id = vehicle['id']
             for _ in range(arrivals):
                 task = self.generate_task(vehicle_id)
                 step_summary['generated_tasks'] += 1
                 self.stats['total_tasks'] += 1
                 self.stats['generated_data_bytes'] += float(task.get('data_size_bytes', 0.0))
+                tasks_batch.append((vidx, vehicle, task))
+
+        # Stage-1 planning (coarse assignment + resource estimation)
+        # If STAGE1_ALG is present (Dual-stage controller mode), we skip heuristic
+        # planning here because Stage-1 decisions are embedded in the action vector.
+        plan_map: Dict[str, PlanEntry] = {}
+        if self._two_stage_enabled and tasks_batch and (os.environ.get('STAGE1_ALG', '').strip() == ''):
+            if self._two_stage_planner is None:
+                self._two_stage_planner = TwoStagePlanner()
+            plan_map = self._two_stage_planner.build_plan(self, tasks_batch)
+
+        # Dispatch tasks (use plan if available)
+        for vidx, vehicle, task in tasks_batch:
+            plan_entry = plan_map.get(task.get('id') or task.get('task_id', '')) if plan_map else None
+            if plan_entry is not None:
+                self._dispatch_task_with_plan(vehicle, task, plan_entry, actions, step_summary)
+            else:
                 self._dispatch_task(vehicle, task, actions, step_summary)
 
         # 3. 智能迁移策略
@@ -1953,6 +1975,43 @@ class CompleteSystemSimulator:
         cumulative_stats = dict(self.stats)
         cumulative_stats.update(step_summary)
         return cumulative_stats
+
+    def _dispatch_task_with_plan(self, vehicle: Dict, task: Dict, plan: PlanEntry,
+                                 actions: Dict, step_summary: Dict):
+        """Dispatch a task following the Stage-1 plan entry.
+
+        Falls back to legacy dispatch if the target is not feasible.
+        """
+        try:
+            # Local processing
+            if plan.target_type == 'local' or plan.target_idx is None:
+                return self._handle_local_processing(vehicle, task, step_summary)
+
+            # Remote: RSU/UAV explicit target
+            if plan.target_type == 'rsu':
+                idx = int(plan.target_idx)
+                if 0 <= idx < len(self.rsus):
+                    node = self.rsus[idx]
+                    distance = self.calculate_distance(vehicle.get('position', np.zeros(2)), node['position'])
+                    ok = self._handle_remote_assignment(vehicle, task, node, 'RSU', idx, distance, actions or {}, step_summary)
+                    if ok:
+                        step_summary['remote_tasks'] += 1
+                        return True
+            elif plan.target_type == 'uav':
+                idx = int(plan.target_idx)
+                if 0 <= idx < len(self.uavs):
+                    node = self.uavs[idx]
+                    distance = self.calculate_distance(vehicle.get('position', np.zeros(2)), node['position'])
+                    ok = self._handle_remote_assignment(vehicle, task, node, 'UAV', idx, distance, actions or {}, step_summary)
+                    if ok:
+                        step_summary['remote_tasks'] += 1
+                        return True
+        except Exception:
+            # On any failure, fall back to legacy path
+            pass
+
+        # Fallback: legacy selection
+        return self._dispatch_task(vehicle, task, actions, step_summary)
     
     def execute_rsu_migration(self, source_rsu_idx: int, urgency: float) -> Dict[str, float]:
         """

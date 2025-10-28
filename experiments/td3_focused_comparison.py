@@ -1,27 +1,102 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-TD3聚焦对比实验框架
-针对论文投稿的精简对比实验方案
+TD3聚焦对比实验框架 - 学术论文实验自动化工具
+====================================================
 
-核心目标：证明CAM-TD3方案有效降低时延和能耗
+📚 程序功能概述
+--------------
+这是一个为车联网边缘计算(VEC)系统设计的深度强化学习算法对比实验框架。
+主要用于验证CAM-TD3算法在任务卸载、缓存管理、任务迁移等场景下的性能优势。
 
-实验设计：
-1. Baseline对比（4个算法）：证明CAM-TD3优于其他方法
-2. 车辆规模扫描（5个点）：证明在不同负载下都有效
-3. 网络条件对比（3个维度）：证明在不同网络条件下都鲁棒
+🎯 核心目标
+----------
+证明CAM-TD3方案在以下方面优于baseline算法：
+1. 降低任务处理时延
+2. 减少系统能耗
+3. 提高任务完成率
+4. 在不同网络条件和负载下保持鲁棒性
 
-论文产出：
-- Table 1: 算法性能对比（时延、能耗、完成率）
-- Figure 1: 车辆规模影响曲线
-- Figure 2: 网络条件影响对比
 
-预计时间：标准模式约24-30小时
+   
 
-运行命令（单种子运行，已内置）：
-- 全套快速（单种子）: python run_td3_focused.py --mode quick --experiment all
-- 全套标准（单种子）: python run_td3_focused.py --mode standard --experiment all
-- 仅运行单组: python run_td3_focused.py --mode standard --experiment baseline|vehicle|network
+🚀 运行模式（2种）
+-----------------
+
+Quick模式（快速验证，1-2小时）：
+  - Episodes: 原始轮次 × 10%（60-80轮）
+  - Seeds: 仅用第1个种子
+  - 用途：验证实验流程、发现bug、初步判断收敛趋势
+  命令：python run_td3_focused.py --mode quick --experiment dual
+python run_td3_focused.py --mode quick --experiment dual --plot-reward-only
+
+Standard模式（论文标准，24-30小时）：
+  - Episodes: 完整轮次（600-800轮）
+  - Seeds: 仅用第1个种子（单种子运行，已内置）
+  - 用途：生成论文正式结果
+  命令：python run_td3_focused.py --mode standard --experiment dual -y
+python run_td3_focused.py --mode standard --experiment dual --plot-reward-only
+
+
+# 1. 快速验证两阶段实验（推荐首次运行）
+python run_td3_focused.py --mode quick --experiment dual
+
+# 2. 完整两阶段实验（论文用）
+python run_td3_focused.py --mode standard --experiment dual -y
+
+# 3. 完整Baseline对比
+python run_td3_focused.py --mode standard --experiment baseline -y
+
+# 4. 运行全部实验组
+python run_td3_focused.py --mode standard --experiment all -y
+
+# 5. 查看结果
+cat results/td3_focused/*/experiment_summary.json
+ls results/td3_focused/*/figures/
+
+📖 核心类说明
+------------
+- ExperimentConfig: 实验配置数据类，包含算法、轮次、场景参数等
+- TD3FocusedComparison: 实验执行器，负责运行实验、收集结果、生成报告
+
+🔑 关键方法
+----------
+- define_baseline_comparison(): 定义Baseline对比实验配置
+- define_vehicle_scaling(): 定义车辆规模扫描实验配置
+- define_network_conditions(): 定义网络条件对比实验配置
+- define_dual_stage_ablation(): 定义两阶段组合对比实验配置
+- run_experiment(): 运行单个实验（核心执行逻辑）
+- _generate_paper_materials(): 生成论文素材（图表+表格+统计报告）
+
+
+
+═══════════════════════════════════════════════════════════════════════════
+📌 快速参考卡
+═══════════════════════════════════════════════════════════════════════════
+
+实验类型选择：
+  --experiment baseline  → Baseline算法对比（4算法：CAM-TD3/DDPG/SAC/Greedy）
+  --experiment vehicle   → 车辆规模扫描（5规模×2算法 = 10实验）
+  --experiment network   → 网络条件对比（3维度×2算法 = 16实验）
+  --experiment dual      → 两阶段组合对比（6算法：单阶段 vs 两阶段）
+  --experiment all       → 运行全部实验（30个实验）
+
+运行模式：
+  --mode quick      → 10%轮次（60-80轮），1-2小时，用于验证
+  --mode standard   → 100%轮次（600-800轮），24-30小时，论文标准
+
+快捷命令：
+  python run_td3_focused.py --mode quick --experiment dual      # 快速验证
+  python run_td3_focused.py --mode standard --experiment dual -y  # 论文实验
+
+输出位置：
+  results/td3_focused/YYYYMMDD_HHMMSS/
+  ├── CAM-TD3.json, TD3.json, SAC.json, ...  # 结果JSON
+  ├── figures/*.png, *.pdf                     # 可视化图表
+  ├── table1_latex.tex                         # LaTeX表格
+  └── statistical_analysis.txt                 # 统计报告
+
+═══════════════════════════════════════════════════════════════════════════
 """
 
 import os
@@ -37,6 +112,7 @@ import matplotlib.pyplot as plt
 import matplotlib
 from scipy import stats
 from experiments.xuance_integration import run_xuance_algorithm, is_xuance_algorithm
+import os
 
 # 设置中文字体
 matplotlib.rcParams['font.sans-serif'] = ['SimHei', 'DejaVu Sans', 'Arial']
@@ -45,7 +121,64 @@ matplotlib.rcParams['axes.unicode_minus'] = False
 
 @dataclass
 class ExperimentConfig:
-    """实验配置"""
+    """
+    实验配置数据类
+    
+    【功能】
+    封装单个实验的所有配置参数，包括算法选择、训练轮次、网络拓扑等。
+    
+    【属性说明】
+    name: str
+        实验名称，用于结果文件命名（如"CAM-TD3"、"TD3_GreedyStage1"）
+    description: str
+        实验描述，记录在结果JSON中供后续查阅
+    algorithm: str
+        算法类型，支持："TD3", "DDPG", "SAC", "PPO", "DQN", "Greedy", "CAM_TD3"
+    episodes: int
+        训练轮次，Quick模式会自动乘以0.1（默认800轮）
+    seeds: List[int]
+        随机种子列表，但run_td3_focused.py会强制只用第1个（默认[42, 2025, 3407]）
+    
+    num_vehicles: int
+        车辆数量（默认12辆）
+    num_rsus: int
+        路侧单元数量（默认4个）
+    num_uavs: int
+        无人机数量（默认2个）
+    bandwidth: float
+        系统带宽，单位MHz（默认20.0）
+    
+    extra_params: Dict[str, Any]
+        额外参数字典，支持：
+        - "stage1_alg": 两阶段实验的第一阶段算法（"greedy"/"heuristic"）
+        - "enable_cache": 是否启用缓存（True/False）
+        - "disable_migration": 是否禁用迁移（True/False）
+    
+    【使用示例】
+    ```python
+    # 创建标准TD3实验配置
+    config = ExperimentConfig(
+        name="TD3",
+        description="原始TD3算法",
+        algorithm="TD3",
+        episodes=600,
+        seeds=[42],
+        num_vehicles=12,
+        num_rsus=4,
+        num_uavs=2,
+        bandwidth=20.0
+    )
+    
+    # 创建两阶段实验配置
+    config = ExperimentConfig(
+        name="TD3_GreedyStage1",
+        description="两阶段：Greedy卸载 + TD3缓存",
+        algorithm="TD3",
+        episodes=600,
+        extra_params={"stage1_alg": "greedy"}
+    )
+    ```
+    """
     name: str
     description: str
     algorithm: str = "TD3"
@@ -62,19 +195,107 @@ class ExperimentConfig:
     extra_params: Dict[str, Any] = field(default_factory=dict)
     
     def to_dict(self):
+        """转换为字典格式，用于JSON序列化"""
         return asdict(self)
 
 
 class TD3FocusedComparison:
-    """TD3聚焦对比实验执行器"""
+    """
+    TD3聚焦对比实验执行器 - 核心控制类
     
-    def __init__(self, output_dir: str = "results/td3_focused"):
+    【功能】
+    负责管理和执行整个实验流程，包括：
+    1. 定义实验配置（4种实验类型）
+    2. 执行训练任务（调用train_single_agent）
+    3. 收集和聚合结果（多种子平均）
+    4. 生成论文素材（图表、表格、统计报告）
+    
+    【属性】
+    output_dir: Path
+        实验结果输出根目录（默认"results/td3_focused"）
+    timestamp: str
+        当前实验的时间戳，格式YYYYMMDD_HHMMSS
+    experiment_dir: Path
+        本次实验的完整输出目录（output_dir/timestamp）
+    results: Dict[str, Any]
+        存储所有实验结果的字典，键为实验名称
+    
+    【主要工作流程】
+    1. 初始化 → 创建带时间戳的输出目录
+    2. 定义实验 → 调用define_xxx()方法生成ExperimentConfig列表
+    3. 运行实验 → 对每个config调用run_experiment()
+    4. 聚合结果 → 多种子结果统计（均值、标准差）
+    5. 生成报告 → 自动生成图表、表格、统计分析
+    
+    【使用示例】
+    ```python
+    # 创建实验执行器
+    runner = TD3FocusedComparison()
+    
+    # 定义并运行两阶段实验
+    configs = runner.define_dual_stage_ablation()
+    for config in configs:
+        config.episodes = 60  # Quick模式
+        config.seeds = [42]   # 单种子
+        result = runner.run_experiment(config)
+        runner.results[config.name] = result
+    
+    # 生成论文素材
+    runner._save_summary()
+    runner._generate_paper_materials()
+    ```
+    
+    【方法概览】
+    实验定义方法（4个）：
+    - define_baseline_comparison(): Baseline算法对比
+    - define_vehicle_scaling(): 车辆规模扫描
+    - define_network_conditions(): 网络条件对比
+    - define_dual_stage_ablation(): 两阶段组合对比
+    
+    核心执行方法：
+    - run_experiment(): 运行单个实验配置
+    - run_all_experiments(): 运行完整实验套件
+    
+    结果处理方法：
+    - _aggregate_results(): 聚合多种子结果
+    - _save_summary(): 保存实验总结JSON
+    - _generate_paper_materials(): 生成所有论文素材
+    
+    可视化方法：
+    - _plot_baseline_comparison(): 绘制Baseline对比图
+    - _plot_vehicle_scaling(): 绘制车辆规模影响图
+    - _plot_bandwidth_impact(): 绘制带宽影响图
+    - _plot_rsu_density(): 绘制RSU密度影响图
+    - _plot_comprehensive_comparison(): 绘制综合对比图
+    - plot_reward_curves_only(): 绘制奖励曲线图
+    
+    报告生成方法：
+    - _generate_comparison_table(): 生成CSV对比表
+    - _generate_curve_data(): 生成曲线数据JSON
+    - _generate_latex_table(): 生成LaTeX表格代码
+    - _generate_statistical_analysis(): 生成统计分析报告
+    """
+    
+    def __init__(self, output_dir: str = "results/td3_focused", realtime: bool = False, vis_port: int = 5000):
+        """
+        初始化实验执行器
+        
+        参数：
+            output_dir: 实验结果输出根目录
+        
+        功能：
+            1. 创建带时间戳的输出目录
+            2. 初始化结果存储字典
+        """
         self.output_dir = Path(output_dir)
         self.timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         self.experiment_dir = self.output_dir / self.timestamp
         self.experiment_dir.mkdir(parents=True, exist_ok=True)
         
         self.results: Dict[str, Any] = {}
+        # 实时可视化配置
+        self.realtime: bool = bool(realtime)
+        self.vis_port: int = int(vis_port)
     
     # ========================================================
     # 实验1: Baseline对比（证明优越性）
@@ -344,7 +565,7 @@ class TD3FocusedComparison:
         print(f"   轮次: {config.episodes} episodes")
         print(f"   场景: {config.num_vehicles}车 + {config.num_rsus}RSU + {config.num_uavs}UAV, BW={config.bandwidth}MHz")
         print(f"{'='*80}\n")
-        
+
         scenario_overrides = {
             "num_vehicles": config.num_vehicles,
             "num_rsus": config.num_rsus,
@@ -353,8 +574,33 @@ class TD3FocusedComparison:
             "override_topology": True
         }
         scenario_overrides.update(config.extra_params)
-        
+
+        # Two-stage control (Stage1/Stage2) via env vars
         extra_params = dict(config.extra_params or {})
+        stage1_alg = (extra_params.get("stage1_alg") or os.environ.get("STAGE1_ALG", "")).strip()
+        # If any explicit stage1 is set, disable internal planner explicitly
+        if stage1_alg:
+            os.environ['STAGE1_ALG'] = stage1_alg
+            os.environ['TWO_STAGE_MODE'] = '0'
+            print(f"[Two-Stage] Stage1={stage1_alg}, Stage2={config.algorithm}")
+        else:
+            # Ensure no leftover
+            os.environ.pop('STAGE1_ALG', None)
+            os.environ.pop('TWO_STAGE_MODE', None)
+
+        # 统一设置可视化展示名（避免都显示成TD3）
+        def _set_display_label():
+            label = config.name
+            # 兼容命名：若为两阶段组合，优先显示“Greedy+TD3”风格
+            s1 = (extra_params.get("stage1_alg") or "").strip().lower()
+            if s1 in ("greedy", "heuristic"):
+                base = config.algorithm.upper()
+                label = f"{s1.capitalize()}+{base}"
+            os.environ['ALGO_DISPLAY_NAME'] = label
+
+        def _clear_display_label():
+            os.environ.pop('ALGO_DISPLAY_NAME', None)
+
         enable_cache_flag = extra_params.get("enable_cache")
         if extra_params.get("disable_cache"):
             enable_cache_flag = False
@@ -367,8 +613,8 @@ class TD3FocusedComparison:
         for key in ("enable_cache", "disable_cache", "enable_migration", "disable_migration"):
             scenario_overrides.pop(key, None)
         
-        base_drl_set = {"TD3", "DDPG", "SAC", "PPO", "DQN"}
-        algorithm_key = config.algorithm.upper()
+        base_drl_set = {"TD3", "DDPG", "SAC", "PPO", "DQN", "CAM_TD3", "CAMTD3", "TD3_LE", "TD3_LATENCY_ENERGY"}
+        algorithm_key = config.algorithm.upper().replace('-', '_')
         xuance_flag = is_xuance_algorithm(config.algorithm)
         is_drl = (algorithm_key in base_drl_set) or xuance_flag
 
@@ -401,14 +647,18 @@ class TD3FocusedComparison:
                         disable_migration=disable_migration_flag,
                     )
                 else:
+                    _set_display_label()
                     result = train_single_algorithm(
                         config.algorithm,
                         num_episodes=config.episodes,
                         silent_mode=True,
                         override_scenario=scenario_payload,
                         use_enhanced_cache=use_enhanced_cache,
-                        disable_migration=disable_migration_flag
+                        disable_migration=disable_migration_flag,
+                        enable_realtime_vis=self.realtime,
+                        vis_port=(self.vis_port + (abs(hash(config.name)) % 200))
                     )
+                    _clear_display_label()
 
                 elapsed_time = time.time() - start_time
 
@@ -432,6 +682,7 @@ class TD3FocusedComparison:
                     "avg_energy": tail_mean(episode_metrics.get("total_energy", [])),
                     "task_completion_rate": tail_mean(episode_metrics.get("task_completion_rate", [])),
                     "cache_hit_rate": tail_mean(episode_metrics.get("cache_hit_rate", [])),
+                    "reward_curve": list(map(float, episode_rewards or [])),
                 }
                 seed_results.append(seed_result)
                 print(f"      ✓ DRL - delay: {seed_result['avg_delay']:.3f}s, energy: {seed_result['avg_energy']:.1f}J")
@@ -495,6 +746,7 @@ class TD3FocusedComparison:
                     "avg_energy": float(np.mean(energies[-tail:] or [0.0])),
                     "task_completion_rate": float(np.mean(completions[-tail:] or [0.0])),
                     "cache_hit_rate": float(np.mean(cache_rates[-tail:] or [0.0])),
+                    "reward_curve": list(map(float, episode_rewards or [])),
                 }
                 seed_results.append(seed_result)
                 print(f"      ✓ Heuristic - delay: {seed_result['avg_delay']:.3f}s, energy: {seed_result['avg_energy']:.1f}J")
@@ -509,6 +761,144 @@ class TD3FocusedComparison:
         print(f"✓ 结果已保存: {result_file.name}")
         
         return aggregated
+
+    # ========================================================
+    # 实验4: 两阶段组合对比（与原始TD3对比）
+    # ========================================================
+
+    def define_dual_stage_ablation(self) -> List[ExperimentConfig]:
+        """
+        定义两阶段组合与原始TD3的直接对比实验
+        
+        【实验目的】
+        对比单阶段端到端RL与两阶段分解方案的性能差异：
+        - 单阶段方案：RL算法同时学习卸载决策和缓存/迁移控制
+        - 两阶段方案：Stage1用启发式处理卸载，Stage2用RL学习缓存/迁移
+        
+        【实验场景】
+        固定网络拓扑：12车 + 4RSU + 2UAV, 20MHz带宽
+        
+        【算法配置】（共6个）
+        
+        1. CAM-TD3（单阶段混合融合）
+           - 你的方案，融合启发式分布与TD3策略
+           - 算法标识：TD3（训练管线通过增强缓存/迁移体现）
+           - 特点：35%启发式权重混合，平衡探索与利用
+        
+        2. TD3（原始单阶段baseline）
+           - 纯TD3算法，无任何混合或分解
+           - 端到端学习卸载+缓存+迁移
+           - 作为性能对照组
+        
+        3. SAC（原始单阶段baseline）
+           - 软演员-评论家算法
+           - 熵正则化，探索性更强
+           - 收敛速度通常比TD3慢20-30%
+        
+        4. TD3_GreedyStage1（两阶段）
+           - Stage1: 贪心算法选择最近节点卸载（固定策略）
+           - Stage2: TD3学习缓存策略和迁移决策（8维控制参数）
+           - 优势：降低动作空间复杂度，加速收敛
+        
+        5. SAC_HeuristicStage1（两阶段）
+           - Stage1: 启发式规则平衡RSU负载（固定策略）
+           - Stage2: SAC学习缓存和迁移策略
+           - 优势：启发式比贪心更智能，SAC探索性强
+        
+        6. TD3_HeuristicStage1（两阶段）
+           - Stage1: 启发式规则平衡RSU负载
+           - Stage2: TD3学习缓存和迁移策略
+           - 预期：可能是两阶段方案中性能最优的
+        
+        【训练参数】
+        episodes: 600轮（Quick模式60轮）
+        seeds: [42, 2025, 3407]（但run_td3_focused.py强制只用第1个）
+        
+        【预期结果】
+        通过对比6个算法，回答：
+        1. CAM-TD3混合融合是否优于纯TD3？
+        2. 两阶段分解是否比单阶段更优？
+        3. 哪种Stage1策略（Greedy/Heuristic）更有效？
+        4. TD3 vs SAC在两阶段场景下的表现？
+        
+        【论文价值】
+        证明算法架构选择（单阶段/两阶段/混合）对性能的影响，
+        为后续研究提供设计指导。
+        
+        返回：
+            List[ExperimentConfig]: 6个实验配置的列表
+        """
+        configs: List[ExperimentConfig] = []
+        base_params = {
+            "num_vehicles": 12,
+            "num_rsus": 4,
+            "num_uavs": 2,
+            "bandwidth": 20.0,
+        }
+
+        # 1) 原始 CAM-TD3（你的方案，单阶段，基于TD3+增强缓存/迁移的默认配置）
+        configs.append(ExperimentConfig(
+            name="CAM-TD3",
+            description="你的方案：CAM-TD3（单阶段，混合融合）",
+            algorithm="TD3",
+            episodes=600,
+            seeds=[42, 2025, 3407],
+            **base_params
+        ))
+
+        # 2) 原始 TD3（单算法 baseline）
+        configs.append(ExperimentConfig(
+            name="TD3",
+            description="原始TD3（单阶段）",
+            algorithm="TD3",
+            episodes=600,
+            seeds=[42, 2025, 3407],
+            **base_params
+        ))
+
+        # 2b) 原始 SAC（单阶段 baseline）
+        configs.append(ExperimentConfig(
+            name="SAC",
+            description="原始SAC（单阶段）",
+            algorithm="SAC",
+            episodes=600,
+            seeds=[42, 2025, 3407],
+            **base_params
+        ))
+
+        # 3) Greedy + TD3（两阶段）
+        configs.append(ExperimentConfig(
+            name="TD3_GreedyStage1",
+            description="两阶段：Stage1=Greedy卸载，Stage2=TD3缓存/迁移",
+            algorithm="TD3",
+            episodes=600,
+            seeds=[42, 2025, 3407],
+            extra_params={"stage1_alg": "greedy"},  # 触发两阶段模式
+            **base_params
+        ))
+
+        # 4) Heuristic + SAC（两阶段）
+        configs.append(ExperimentConfig(
+            name="SAC_HeuristicStage1",
+            description="两阶段：Stage1=Heuristic卸载，Stage2=SAC缓存/迁移",
+            algorithm="SAC",
+            episodes=600,
+            seeds=[42, 2025, 3407],
+            extra_params={"stage1_alg": "heuristic"},
+            **base_params
+        ))
+
+        # 5) Heuristic + TD3（两阶段）
+        configs.append(ExperimentConfig(
+            name="TD3_HeuristicStage1",
+            description="两阶段：Stage1=Heuristic卸载，Stage2=TD3缓存/迁移",
+            algorithm="TD3",
+            episodes=600,
+            seeds=[42, 2025, 3407],
+            extra_params={"stage1_alg": "heuristic"},
+            **base_params
+        ))
+        return configs
     
     def _aggregate_results(self, seed_results: List[Dict[str, Any]]) -> Dict[str, Any]:
         """聚合多种子结果"""
@@ -529,6 +919,21 @@ class TD3FocusedComparison:
                     "min": float(np.min(values)),
                     "max": float(np.max(values))
                 }
+
+        # 奖励曲线聚合（逐episode求均值/方差），用于对比奖励变化曲线
+        reward_curves = [r.get("reward_curve") for r in seed_results if r.get("reward_curve")]
+        if reward_curves:
+            max_len = max(len(c) for c in reward_curves)
+            padded = []
+            for c in reward_curves:
+                if len(c) < max_len and len(c) > 0:
+                    c = list(c) + [c[-1]] * (max_len - len(c))
+                padded.append(c)
+            arr = np.array(padded, dtype=float)
+            aggregated["reward_curve"] = {
+                "mean": arr.mean(axis=0).tolist(),
+                "std": arr.std(axis=0).tolist()
+            }
         
         return aggregated
     
@@ -659,7 +1064,13 @@ class TD3FocusedComparison:
         
         # 生成统计分析报告
         self._generate_statistical_analysis()
-        
+
+        # 生成奖励曲线对比图（默认一起产出，便于论文使用）
+        try:
+            self.plot_reward_curves_only(alg_names=list(self.results.keys()), title="Reward Curves Comparison")
+        except Exception as e:
+            print(f"⚠️ 奖励曲线生成失败: {e}")
+
         print("✓ 论文素材已生成")
     
     def _generate_comparison_table(self):
@@ -740,20 +1151,79 @@ class TD3FocusedComparison:
         figures_dir = self.experiment_dir / "figures"
         figures_dir.mkdir(exist_ok=True)
         
-        # 图1: Baseline算法对比（柱状图）
-        self._plot_baseline_comparison(figures_dir)
+        # 检测实验类型（根据结果键判断）
+        has_vehicle_data = any(key.startswith("CAM-TD3_V") for key in self.results.keys())
+        has_bandwidth_data = any(key.startswith("CAM-TD3_BW") for key in self.results.keys())
+        has_rsu_data = any(key.startswith("CAM-TD3_RSU") for key in self.results.keys())
+        has_dual_data = all(key in self.results for key in ["CAM-TD3", "TD3", "SAC"])
         
-        # 图2: 车辆规模影响（折线图）
-        self._plot_vehicle_scaling(figures_dir)
+        # 图1: Baseline算法对比（适用于baseline和dual实验）
+        if "CAM-TD3" in self.results:
+            self._plot_baseline_comparison(figures_dir)
         
-        # 图3: 带宽影响（折线图）
-        self._plot_bandwidth_impact(figures_dir)
+        # 图2-4: 只在对应实验中生成
+        if has_vehicle_data:
+            self._plot_vehicle_scaling(figures_dir)
         
-        # 图4: RSU密度影响（折线图）
-        self._plot_rsu_density(figures_dir)
+        if has_bandwidth_data:
+            self._plot_bandwidth_impact(figures_dir)
         
-        # 图5: 综合对比（多子图）
-        self._plot_comprehensive_comparison(figures_dir)
+        if has_rsu_data:
+            self._plot_rsu_density(figures_dir)
+        
+        # 图5: 综合对比（只在运行all时生成）
+        if has_vehicle_data or has_bandwidth_data or has_rsu_data:
+            self._plot_comprehensive_comparison(figures_dir)
+        
+        # 🆕 图6: 两阶段专用对比（只在dual实验中生成）
+        if has_dual_data and len(self.results) >= 4:
+            self._plot_dual_stage_comparison(figures_dir)
+            
+        # 🆕 图7: 奖励曲线对比（适用于所有实验）
+        if self.results:
+            self.plot_reward_curves_only()
+
+    def plot_reward_curves_only(self, alg_names: Optional[List[str]] = None, title: str = "Reward Curves Comparison"):
+        """仅绘制奖励变化曲线，用于快速对比不同方案的收敛过程。
+
+        Args:
+            alg_names: 指定要绘制的算法名称列表；默认为当前结果中的所有算法键。
+            title: 图标题。
+        """
+        print("\n  生成奖励变化曲线对比图...")
+        figures_dir = self.experiment_dir / "figures"
+        figures_dir.mkdir(exist_ok=True)
+
+        if alg_names is None:
+            alg_names = list(self.results.keys())
+
+        plt.figure(figsize=(10, 6))
+        cmap = plt.get_cmap('tab10')
+        for idx, name in enumerate(alg_names):
+            result = self.results.get(name)
+            if not result:
+                continue
+            curve = result.get("reward_curve", {})
+            mean = curve.get("mean") if isinstance(curve, dict) else None
+            if not mean:
+                # 兼容旧结果：尝试从均值reward中构造水平线
+                avg = result.get("avg_reward", {}).get("mean") if isinstance(result.get("avg_reward"), dict) else None
+                if avg is not None:
+                    mean = [float(avg)] * 50
+            if not mean:
+                continue
+            x = np.arange(1, len(mean) + 1)
+            plt.plot(x, mean, label=name, linewidth=2.0, color=cmap(idx % 10))
+
+        plt.xlabel('Episode', fontsize=13, fontweight='bold')
+        plt.ylabel('Reward', fontsize=13, fontweight='bold')
+        plt.title(title, fontsize=14, fontweight='bold')
+        plt.grid(True, linestyle='--', alpha=0.3)
+        plt.legend(fontsize=11)
+        out = figures_dir / "reward_curves.png"
+        plt.savefig(out, dpi=300, bbox_inches='tight')
+        plt.close()
+        print(f"    ✓ 奖励曲线图: {out.name}")
     
     def _plot_baseline_comparison(self, figures_dir: Path):
         """绘制Baseline算法对比图"""
@@ -1047,8 +1517,149 @@ class TD3FocusedComparison:
         plt.close()
         print(f"    ✓ RSU密度影响图: rsu_density.png/pdf")
     
+    def _plot_dual_stage_comparison(self, figures_dir: Path):
+        """
+        绘制两阶段实验专用对比图（dual实验）
+        
+        【功能】
+        为dual实验（6个算法）生成专门的可视化：
+        1. 时延-能耗散点图（双目标对比）
+        2. 算法性能雷达图（多维度对比）
+        3. 两阶段效果柱状图（单阶段 vs 两阶段）
+        """
+        print("\n    生成两阶段专用对比图...")
+        
+        # 提取6个算法的结果
+        algorithms = ["CAM-TD3", "TD3", "SAC", "TD3_GreedyStage1", "SAC_HeuristicStage1", "TD3_HeuristicStage1"]
+        colors = ['#2E86AB', '#A23B72', '#F18F01', '#56B4E9', '#E69F00', '#009E73']
+        markers = ['o', 's', '^', 'D', 'v', 'p']
+        
+        # 创建3子图布局
+        fig = plt.figure(figsize=(18, 6))
+        
+        # ===== 子图1: 时延-能耗散点图（Pareto前沿分析）=====
+        ax1 = plt.subplot(1, 3, 1)
+        
+        for i, alg in enumerate(algorithms):
+            if alg in self.results:
+                result = self.results[alg]
+                delay = result["avg_delay"]["mean"]
+                energy = result["avg_energy"]["mean"]
+                delay_std = result["avg_delay"]["std"]
+                energy_std = result["avg_energy"]["std"]
+                
+                # 绘制散点（带误差线）
+                ax1.errorbar(delay, energy, xerr=delay_std, yerr=energy_std,
+                           fmt=markers[i], markersize=12, linewidth=2, capsize=5,
+                           label=alg, color=colors[i], alpha=0.8)
+                
+                # 标注算法名
+                ax1.annotate(alg, (delay, energy), 
+                           textcoords="offset points", xytext=(5, 5),
+                           fontsize=9, fontweight='bold')
+        
+        ax1.set_xlabel('Average Delay (s)', fontsize=13, fontweight='bold')
+        ax1.set_ylabel('Average Energy (J)', fontsize=13, fontweight='bold')
+        ax1.set_title('(a) Delay-Energy Trade-off (Pareto Analysis)', fontsize=14, fontweight='bold')
+        ax1.legend(fontsize=9, loc='best', frameon=True, shadow=True)
+        ax1.grid(True, alpha=0.3, linestyle='--')
+        
+        # ===== 子图2: 算法性能雷达图 =====
+        ax2 = plt.subplot(1, 3, 2, projection='polar')
+        
+        # 5个性能维度
+        metrics = ['Delay\n(Lower Better)', 'Energy\n(Lower Better)', 
+                  'Completion\nRate', 'Cache Hit\nRate', 'Migration\nSuccess']
+        num_metrics = len(metrics)
+        angles = np.linspace(0, 2 * np.pi, num_metrics, endpoint=False).tolist()
+        angles += angles[:1]  # 闭合
+        
+        # 绘制每个算法的雷达图
+        for i, alg in enumerate(algorithms[:3]):  # 只绘制前3个（避免过于拥挤）
+            if alg in self.results:
+                result = self.results[alg]
+                
+                # 归一化值（时延和能耗越小越好，取倒数归一化）
+                max_delay = max(self.results[a]["avg_delay"]["mean"] for a in algorithms if a in self.results)
+                max_energy = max(self.results[a]["avg_energy"]["mean"] for a in algorithms if a in self.results)
+                
+                values = [
+                    1.0 - result["avg_delay"]["mean"] / max_delay,  # 时延（归一化反转）
+                    1.0 - result["avg_energy"]["mean"] / max_energy,  # 能耗（归一化反转）
+                    result["task_completion_rate"]["mean"],  # 完成率
+                    result["cache_hit_rate"]["mean"],  # 缓存命中率
+                    result.get("migration_success_rate", {}).get("mean", 0.5)  # 迁移成功率
+                ]
+                values += values[:1]  # 闭合
+                
+                ax2.plot(angles, values, 'o-', linewidth=2, label=alg, 
+                        color=colors[i], markersize=8)
+                ax2.fill(angles, values, alpha=0.15, color=colors[i])
+        
+        ax2.set_xticks(angles[:-1])
+        ax2.set_xticklabels(metrics, fontsize=10)
+        ax2.set_ylim(0, 1)
+        ax2.set_title('(b) Multi-dimensional Performance Radar', fontsize=14, fontweight='bold', pad=20)
+        ax2.legend(loc='upper right', bbox_to_anchor=(1.3, 1.1), fontsize=10)
+        ax2.grid(True, alpha=0.3)
+        
+        # ===== 子图3: 单阶段 vs 两阶段对比柱状图 =====
+        ax3 = plt.subplot(1, 3, 3)
+        
+        # 分组：单阶段（CAM-TD3, TD3, SAC）vs 两阶段（3个两阶段配置）
+        single_stage = ["CAM-TD3", "TD3", "SAC"]
+        dual_stage = ["TD3_GreedyStage1", "SAC_HeuristicStage1", "TD3_HeuristicStage1"]
+        
+        single_delays = [self.results[alg]["avg_delay"]["mean"] for alg in single_stage if alg in self.results]
+        dual_delays = [self.results[alg]["avg_delay"]["mean"] for alg in dual_stage if alg in self.results]
+        
+        if single_delays and dual_delays:
+            x = np.arange(max(len(single_delays), len(dual_delays)))
+            width = 0.35
+            
+            # 填充到相同长度
+            while len(single_delays) < len(dual_delays):
+                single_delays.append(0)
+            while len(dual_delays) < len(single_delays):
+                dual_delays.append(0)
+            
+            bars1 = ax3.bar(x - width/2, single_delays, width, label='Single-Stage',
+                          color='#2E86AB', alpha=0.8, edgecolor='black', linewidth=1.2)
+            bars2 = ax3.bar(x + width/2, dual_delays, width, label='Dual-Stage',
+                          color='#56B4E9', alpha=0.8, edgecolor='black', linewidth=1.2)
+            
+            ax3.set_xlabel('Algorithm Index', fontsize=13, fontweight='bold')
+            ax3.set_ylabel('Average Delay (s)', fontsize=13, fontweight='bold')
+            ax3.set_title('(c) Single-Stage vs Dual-Stage Comparison', fontsize=14, fontweight='bold')
+            ax3.set_xticks(x)
+            ax3.set_xticklabels([f'Alg{i+1}' for i in range(len(x))], fontsize=11)
+            ax3.legend(fontsize=11, loc='upper right', frameon=True, shadow=True)
+            ax3.grid(axis='y', alpha=0.3, linestyle='--')
+            
+            # 添加数值标注
+            for bar in bars1:
+                height = bar.get_height()
+                if height > 0:
+                    ax3.text(bar.get_x() + bar.get_width()/2., height,
+                           f'{height:.3f}', ha='center', va='bottom', fontsize=9)
+            for bar in bars2:
+                height = bar.get_height()
+                if height > 0:
+                    ax3.text(bar.get_x() + bar.get_width()/2., height,
+                           f'{height:.3f}', ha='center', va='bottom', fontsize=9)
+        
+        plt.tight_layout()
+        
+        # 保存
+        for fmt in ['png', 'pdf']:
+            save_path = figures_dir / f"dual_stage_comparison.{fmt}"
+            plt.savefig(save_path, dpi=300, bbox_inches='tight')
+        
+        plt.close()
+        print(f"    ✓ 两阶段对比图: dual_stage_comparison.png/pdf")
+    
     def _plot_comprehensive_comparison(self, figures_dir: Path):
-        """绘制综合对比图（4个子图）"""
+        """绘制综合对比图（4个子图）- 仅用于all实验"""
         fig = plt.figure(figsize=(16, 12))
         gs = fig.add_gridspec(2, 2, hspace=0.3, wspace=0.25)
         

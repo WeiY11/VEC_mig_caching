@@ -27,6 +27,8 @@ python train_single_agent.py --algorithm TD3 --episodes 1600 --num-vehicles 16
 python train_single_agent.py --algorithm TD3 --episodes 1600 --num-vehicles 20
 python train_single_agent.py --algorithm TD3 --episodes 1600 --num-vehicles 24
 python train_single_agent.py --algorithm TD3-LE --episodes 1600 --num-vehicles 12
+python train_single_agent.py --algorithm SAC --episodes 800
+python train_single_agent.py --algorithm PPO --episodes 800
 🔧 禁用增强缓存 (如需baseline对比):
 python train_single_agent.py --algorithm TD3 --episodes 1600 --num-vehicles 20 --no-enhanced-cache
 
@@ -304,6 +306,18 @@ class SingleAgentTrainingEnvironment:
             self.agent_env = SACEnvironment(num_vehicles, num_rsus, num_uavs)
         else:
             raise ValueError(f"不支持的算法: {algorithm}")
+
+        # 🧠 若指定了阶段一算法（通过环境变量），用DualStage封装器组合两个阶段
+        stage1_alg = os.environ.get('STAGE1_ALG', '').strip().lower()
+        if stage1_alg:
+            try:
+                from single_agent.dual_stage_controller import DualStageControllerEnv
+                self.agent_env = DualStageControllerEnv(self.agent_env, self.simulator, stage1_strategy=stage1_alg)
+                print(f"🧠 启用两阶段控制：Stage1={stage1_alg} + Stage2={self.algorithm}")
+                # Two-stage planner inside simulator becomes redundant
+                os.environ['TWO_STAGE_MODE'] = '0'
+            except Exception as e:
+                print(f"⚠️ 两阶段控制封装失败，回退到单算法: {e}")
         
         # 训练统计
         self.episode_rewards = []
@@ -909,14 +923,15 @@ class SingleAgentTrainingEnvironment:
         ppo_config = self.agent_env.config
         should_update = (
             episode % ppo_config.update_frequency == 0 or  # 每N个episode
-            self.agent_env.buffer.size >= ppo_config.buffer_size * 0.9  # buffer接近满
+            self.agent_env.agent.buffer.size >= ppo_config.buffer_size * 0.9  # buffer接近满
         )
         
         # 进行更新
+        # PPOEnvironment.update只接受last_value参数，force_update在agent内部处理
         if should_update:
-            training_info = self.agent_env.update(last_value_float, force_update=True)
+            training_info = self.agent_env.agent.update(last_value_float, force_update=True)
         else:
-            training_info = self.agent_env.update(last_value_float, force_update=False)
+            training_info = self.agent_env.agent.update(last_value_float, force_update=False)
         
         system_metrics = info.get('system_metrics', {})
         
@@ -1174,8 +1189,10 @@ def train_single_algorithm(algorithm: str, num_episodes: Optional[int] = None, e
     visualizer = None
     if enable_realtime_vis and REALTIME_AVAILABLE:
         print(f"🌐 启动实时可视化服务器 (端口: {vis_port})")
+        # 允许通过环境变量覆盖可视化展示名（用于两阶段标签）
+        display_name = os.environ.get('ALGO_DISPLAY_NAME', algorithm)
         visualizer = create_visualizer(
-            algorithm=algorithm,
+            algorithm=display_name,
             total_episodes=num_episodes,
             port=vis_port,
             auto_open=True
@@ -1822,12 +1839,33 @@ def main():
     # 🚀 增强缓存参数（默认启用）
     parser.add_argument('--no-enhanced-cache', action='store_true', 
                        help='禁用增强缓存系统（默认启用分层L1/L2 + 热度策略 + RSU协作）')
+    # 🧭 两阶段管线开关（Stage-1 预分配 + Stage-2 精细调度）
+    parser.add_argument('--two-stage', action='store_true', help='启用两阶段求解（预分配+精细调度）')
+    # 🧠 指定两个阶段的算法
+    parser.add_argument('--stage1-alg', type=str, default=None,
+                        help='阶段一算法（offloading 头）：heuristic|greedy|cache_first|distance_first')
+    parser.add_argument('--stage2-alg', type=str, default=None,
+                        help='阶段二算法（缓存/迁移控制的RL）：TD3|SAC|DDPG|PPO|DQN|TD3-LE')
     
     args = parser.parse_args()
 
     if args.seed is not None:
         os.environ['RANDOM_SEED'] = str(args.seed)
         _apply_global_seed_from_env()
+
+    # Toggle two-stage pipeline via environment for the simulator
+    if args.two_stage:
+        os.environ['TWO_STAGE_MODE'] = '1'
+    # Stage1/Stage2 algorithm selections (env-based for env init)
+    if args.stage1_alg:
+        os.environ['STAGE1_ALG'] = args.stage1_alg
+    if args.stage2_alg:
+        # 允许覆盖主算法选择
+        if not args.algorithm:
+            args.algorithm = args.stage2_alg
+        else:
+            # 覆写为阶段二选择
+            args.algorithm = args.stage2_alg
 
     # 🔧 修复：正确构建override_scenario参数
     override_scenario = None

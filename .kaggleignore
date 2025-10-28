@@ -1,0 +1,57 @@
+# Kaggle上传时忽略的文件和目录
+# 减小Dataset大小，加快上传速度
+
+# Python缓存
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+
+# 训练结果（太大）
+results/
+models/
+checkpoints/
+
+# 生成的图表
+academic_figures/
+*.png
+*.pdf
+*.jpg
+*.jpeg
+
+# 日志和临时文件
+*.log
+*.json
+*.csv
+*.txt
+!requirements.txt
+!KAGGLE_GUIDE.md
+
+# IDE配置
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Git相关
+.git/
+.gitignore
+
+# 大文件
+*.zip
+*.tar
+*.gz
+
+# 测试文件
+test_results/
+__snippet*.txt
+__patchchunk.txt
+__u.txt
+
+# 文档（可选，如果Dataset空间紧张）
+# docs/
+# *.md
+# !KAGGLE_GUIDE.md
+
