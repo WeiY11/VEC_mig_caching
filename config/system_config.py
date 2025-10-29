@@ -193,29 +193,39 @@ class RLConfig:
         self.critic_lr = 0.0003
         self.gamma = 0.99
         self.tau = 0.005
-        self.batch_size = 128
-        self.memory_size = 100000
+        self.batch_size = 256          # 提高批次大小（128→256）提高样本效率
+        self.memory_size = 200000      # 扩大replay buffer（100k→200k）增强稳定性
         self.noise_std = 0.05          # 降低噪声标准差
         self.policy_delay = 2
         self.noise_clip = 0.3           # 降低噪声裁剪
-        self.exploration_noise = 0.05   # 降低探索噪声
+        self.exploration_noise = 0.1   # 初始探索噪声（将通过衰减降低）
         self.policy_noise = 0.1         # 降低策略噪声
         self.target_noise = 0.1         # 降低目标噪声
         self.update_freq = 1
-        self.buffer_size = 100000
+        self.buffer_size = 200000      # 与memory_size保持一致
         self.warmup_steps = 1000
         
+        # 🆕 学习率衰减策略（优化收敛性）
+        self.lr_decay_rate = 0.995     # 学习率衰减率
+        self.lr_decay_interval = 100   # 每100轮衰减一次
+        self.min_lr = 0.00005          # 最小学习率
+        
+        # 🆕 噪声衰减策略（提高后期稳定性）
+        self.noise_decay = 0.998       # 每轮噪声衰减率
+        self.min_noise = 0.01          # 最小探索噪声
+        
         # 🎯 核心奖励权重（统一奖励函数）
-        # Objective = ω_T × 时延 + ω_E × 能耗
-        self.reward_weight_delay = 2.4  # Delay weight (target approx 0.4s)
-        self.reward_weight_energy = 1.0  # Energy weight
-        self.reward_penalty_dropped = 0.02 # 轻微惩罚（保证完成率约束）
+        # Objective = ω_T × 时延 + ω_E × 能耗 + ω_C × 缓存失效
+        # 🔧 优化v2.0（2025-10-29）：平衡性能优化与缓存激活
+        self.reward_weight_delay = 2.0  # Delay weight (降低以平衡能耗)
+        self.reward_weight_energy = 1.8  # Energy weight (提高以强化能耗优化)
+        self.reward_penalty_dropped = 0.03 # 适中惩罚（0.02太小，0.05太大抑制缓存）
         
         # ⚠️ 已弃用参数（保留以兼容旧代码）
         self.reward_weight_loss = 0.0      # 已移除：data_loss是时延的衍生指标
         self.reward_weight_completion = 0.0  # 已集成到dropped_penalty
-        # 统一奖励仅优化时延+能耗+丢弃轻惩罚，缓存/迁移不直接入目标
-        self.reward_weight_cache = 0.35
+        # 🔧 缓存权重大幅提升：0.35→1.2（使其与能耗权重相当，激活缓存策略）
+        self.reward_weight_cache = 1.2  # 提高3.4倍，让缓存对总奖励有显著影响
         self.reward_weight_migration = 0.0
 
         # 🎯 延时-能耗优化目标阈值（供算法动态调整）

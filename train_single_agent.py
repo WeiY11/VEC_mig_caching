@@ -250,7 +250,8 @@ class SingleAgentTrainingEnvironment:
     """单智能体训练环境基类"""
     
     def __init__(self, algorithm: str, override_scenario: Optional[Dict[str, Any]] = None, 
-                 use_enhanced_cache: bool = False, disable_migration: bool = False):
+                 use_enhanced_cache: bool = False, disable_migration: bool = False,
+                 enforce_offload_mode: Optional[str] = None):
         self.input_algorithm = algorithm
         normalized_algorithm = algorithm.upper().replace('-', '_')
         alias_map = {
@@ -270,6 +271,35 @@ class SingleAgentTrainingEnvironment:
         if override_scenario:
             scenario_config.update(override_scenario)
             scenario_config['override_topology'] = True
+        
+        mode_aliases = {
+            'local': 'local_only',
+            'local_only': 'local_only',
+            'remote': 'remote_only',
+            'remote_only': 'remote_only',
+            '': ''
+        }
+        forced_mode_input = (
+            enforce_offload_mode
+            or scenario_config.get('forced_offload_mode')
+            or os.environ.get('FORCE_OFFLOAD_MODE', '')
+        )
+        requested_mode = mode_aliases.get(str(forced_mode_input).strip().lower(), '')
+        if requested_mode not in {'', 'local_only', 'remote_only'}:
+            print(f"⚠️ 未识别的强制卸载模式: {forced_mode_input}, 将忽略。")
+            requested_mode = ''
+        self.enforce_offload_mode = requested_mode
+        if self.enforce_offload_mode:
+            scenario_config['forced_offload_mode'] = self.enforce_offload_mode
+            if self.enforce_offload_mode == 'remote_only':
+                scenario_config.setdefault('allow_local_processing', False)
+            elif self.enforce_offload_mode == 'local_only':
+                scenario_config.setdefault('allow_local_processing', True)
+
+        if self.enforce_offload_mode == 'local_only':
+            print("🧷 强制卸载模式: 全部本地处理（Local-Only）")
+        elif self.enforce_offload_mode == 'remote_only':
+            print("🧷 强制卸载模式: 全部远端执行（Remote-Only）")
         
         # 选择仿真器类型
         self.use_enhanced_cache = use_enhanced_cache and ENHANCED_CACHE_AVAILABLE
@@ -1090,6 +1120,19 @@ class SingleAgentTrainingEnvironment:
                     })
                 sim_actions.update(payload)
 
+            forced_mode = getattr(self, 'enforce_offload_mode', '')
+            if forced_mode == 'local_only':
+                sim_actions['vehicle_offload_pref'] = {'local': 1.0, 'rsu': 0.0, 'uav': 0.0}
+            elif forced_mode == 'remote_only':
+                if num_rsus == 0 and num_uavs == 0:
+                    sim_actions['vehicle_offload_pref'] = {'local': 1.0, 'rsu': 0.0, 'uav': 0.0}
+                elif num_rsus == 0:
+                    sim_actions['vehicle_offload_pref'] = {'local': 0.0, 'rsu': 0.0, 'uav': 1.0}
+                elif num_uavs == 0:
+                    sim_actions['vehicle_offload_pref'] = {'local': 0.0, 'rsu': 1.0, 'uav': 0.0}
+                else:
+                    sim_actions['vehicle_offload_pref'] = {'local': 0.0, 'rsu': 0.5, 'uav': 0.5}
+
             # Attach distance-cache tradeoff gate for heuristic guidance (if actor exposes it)
             try:
                 import numpy as _np  # safe local import
@@ -1216,7 +1259,8 @@ class SingleAgentTrainingEnvironment:
 def train_single_algorithm(algorithm: str, num_episodes: Optional[int] = None, eval_interval: Optional[int] = None, 
                           save_interval: Optional[int] = None, enable_realtime_vis: bool = False, 
                           vis_port: int = 5000, silent_mode: bool = False, override_scenario: Optional[Dict[str, Any]] = None,
-                          use_enhanced_cache: bool = False, disable_migration: bool = False) -> Dict:
+                          use_enhanced_cache: bool = False, disable_migration: bool = False,
+                          enforce_offload_mode: Optional[str] = None) -> Dict:
     """训练单个算法
     
     Args:
@@ -1261,9 +1305,13 @@ def train_single_algorithm(algorithm: str, num_episodes: Optional[int] = None, e
     print("=" * 60)
     
     # 创建训练环境（应用额外场景覆盖）
-    training_env = SingleAgentTrainingEnvironment(algorithm, override_scenario=override_scenario, 
-                                                  use_enhanced_cache=use_enhanced_cache, 
-                                                  disable_migration=disable_migration)
+    training_env = SingleAgentTrainingEnvironment(
+        algorithm,
+        override_scenario=override_scenario,
+        use_enhanced_cache=use_enhanced_cache,
+        disable_migration=disable_migration,
+        enforce_offload_mode=enforce_offload_mode
+    )
     canonical_algorithm = training_env.algorithm
     if canonical_algorithm != algorithm:
         print(f"⚙️  规范化算法标识: {canonical_algorithm}")
@@ -1921,6 +1969,8 @@ def main():
     parser.add_argument('--compare', action='store_true', help='比较所有算法')
     parser.add_argument('--seed', type=int, default=None, help='覆盖随机种子 (默认读取config或环境变量)')
     parser.add_argument('--num-vehicles', type=int, default=None, help='覆盖车辆数量用于实验')
+    parser.add_argument('--force-offload', type=str, choices=['local', 'remote', 'local_only', 'remote_only'],
+                        help='强制卸载模式：local/local_only 或 remote/remote_only')
     # 🌐 实时可视化参数
     parser.add_argument('--realtime-vis', action='store_true', help='启用实时可视化')
     parser.add_argument('--vis-port', type=int, default=5000, help='实时可视化服务器端口 (默认: 5000)')
@@ -1965,6 +2015,13 @@ def main():
         os.environ['TRAINING_SCENARIO_OVERRIDES'] = json.dumps(override_scenario)
         print(f"📋 覆盖参数: 车辆数 = {args.num_vehicles}")
     
+    enforce_mode = None
+    if getattr(args, 'force_offload', None):
+        if args.force_offload in ('local', 'local_only'):
+            enforce_mode = 'local_only'
+        elif args.force_offload in ('remote', 'remote_only'):
+            enforce_mode = 'remote_only'
+    
     # 创建结果目录
     os.makedirs("results/single_agent", exist_ok=True)
     
@@ -1982,7 +2039,8 @@ def main():
             enable_realtime_vis=args.realtime_vis,
             vis_port=args.vis_port,
             override_scenario=override_scenario,  # 🔧 新增：传递覆盖参数
-            use_enhanced_cache=not args.no_enhanced_cache  # 🚀 默认启用增强缓存
+            use_enhanced_cache=not args.no_enhanced_cache,  # 🚀 默认启用增强缓存
+            enforce_offload_mode=enforce_mode
         )
     else:
         print("请指定 --algorithm 或使用 --compare 标志")

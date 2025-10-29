@@ -51,6 +51,9 @@ class CompleteSystemSimulator:
                    如果为None，则使用默认配置
         """
         self.config = config or self.get_default_config()
+        self.allow_local_processing = bool(self.config.get('allow_local_processing', True))
+        forced_mode = str(self.config.get('forced_offload_mode', '')).strip().lower()
+        self.forced_offload_mode = forced_mode if forced_mode in {'local_only', 'remote_only'} else ''
         self.override_topology = self.config.get('override_topology', False)
         
         # 统一系统配置入口（若可用）
@@ -1577,6 +1580,11 @@ class CompleteSystemSimulator:
                 cache_controller.update_content_heat(content_id)
             return
 
+        forced_mode = getattr(self, 'forced_offload_mode', '')
+        if forced_mode == 'local_only':
+            self._handle_local_processing(vehicle, task, step_summary)
+            return
+
         rsu_available = len(self.rsus) > 0
         uav_available = len(self.uavs) > 0
         target = self._choose_offload_target(actions, rsu_available, uav_available)
@@ -1830,12 +1838,41 @@ class CompleteSystemSimulator:
             
         Handle task processing on local vehicle device.
         """
+        if not getattr(self, 'allow_local_processing', True):
+            self._record_forced_drop(vehicle, task, step_summary, reason='local_processing_disabled')
+            return
+
         processing_delay, energy = self._estimate_local_processing(task, vehicle)
         self.stats['processed_tasks'] += 1
         self.stats['completed_tasks'] += 1
         self.stats['total_delay'] += processing_delay
         self.stats['total_energy'] += energy
         step_summary['local_tasks'] += 1
+
+    def _record_forced_drop(self, vehicle: Dict, task: Dict, step_summary: Dict, reason: str = 'forced_drop') -> None:
+        """记录因策略约束导致的任务丢弃事件"""
+        self.stats['dropped_tasks'] = self.stats.get('dropped_tasks', 0) + 1
+        self.stats['dropped_data_bytes'] = self.stats.get('dropped_data_bytes', 0.0) + float(task.get('data_size_bytes', 0.0))
+
+        drop_stats = self.stats.setdefault('drop_stats', {
+            'total': 0,
+            'wait_time_sum': 0.0,
+            'queue_sum': 0,
+            'by_type': {},
+            'by_scenario': {}
+        })
+        drop_stats['total'] = drop_stats.get('total', 0) + 1
+        task_type = task.get('task_type', 'unknown')
+        scenario_name = task.get('app_scenario', 'unknown')
+        by_type = drop_stats.setdefault('by_type', {})
+        by_type[task_type] = by_type.get(task_type, 0) + 1
+        by_scenario = drop_stats.setdefault('by_scenario', {})
+        by_scenario[scenario_name] = by_scenario.get(scenario_name, 0) + 1
+
+        step_summary['dropped_tasks'] = step_summary.get('dropped_tasks', 0) + 1
+        forced_key = 'forced_drops'
+        step_summary[forced_key] = step_summary.get(forced_key, 0) + 1
+        step_summary['last_forced_drop_reason'] = reason
 
     
     def check_adaptive_migration(self, agents_actions: Dict = None):
