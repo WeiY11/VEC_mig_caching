@@ -47,6 +47,10 @@ class UnifiedRewardCalculator:
         self.penalty_dropped = float(config.rl.reward_penalty_dropped)  # 任务丢弃惩罚
         self.weight_cache = float(getattr(config.rl, "reward_weight_cache", 0.0))  # 缓存权重
         self.weight_migration = float(getattr(config.rl, "reward_weight_migration", 0.0))  # 迁移权重
+        self.latency_target = float(getattr(config.rl, "latency_target", 0.4))
+        self.energy_target = float(getattr(config.rl, "energy_target", 1200.0))
+        self.latency_tolerance = float(getattr(config.rl, "latency_upper_tolerance", self.latency_target * 2.0))
+        self.energy_tolerance = float(getattr(config.rl, "energy_upper_tolerance", self.energy_target * 1.5))
 
         # 归一化任务优先级权重（如果存在）
         # Normalise priority weights if they exist.
@@ -67,6 +71,8 @@ class UnifiedRewardCalculator:
         # Normalisation factors (200 ms slot, ~1000 J typical energy).
         self.delay_normalizer = 0.2  # 延迟归一化因子（秒）
         self.energy_normalizer = 1000.0  # 能耗归一化因子（焦耳）
+        self.delay_bonus_scale = max(1e-6, self.latency_target)
+        self.energy_bonus_scale = max(1e-6, self.energy_target)
         
         # SAC算法使用不同的归一化参数
         if self.algorithm == "SAC":
@@ -202,60 +208,57 @@ class UnifiedRewardCalculator:
             0.0, self._safe_float(system_metrics.get("task_completion_rate"))
         )
 
-        # 归一化核心成本指标
-        # Normalised core costs.
-        norm_delay = avg_delay / max(1e-9, self.delay_normalizer)
-        norm_energy = total_energy / max(1e-9, self.energy_normalizer)
+        # ========== 核心归一化：统一使用目标值归一化 ==========
+        # Objective = w_T × (delay/target) + w_E × (energy/target)
+        # 这样可以确保两个指标在同一尺度上，权重才有意义
+        
+        norm_delay = avg_delay / max(self.latency_target, 1e-6)
+        norm_energy = total_energy / max(self.energy_target, 1e-6)
 
-        # 计算总成本：延迟成本 + 能耗成本 + 任务丢弃惩罚
-        total_cost = self.weight_delay * norm_delay + self.weight_energy * norm_energy
-        total_cost += self.penalty_dropped * dropped_tasks
+        # 计算核心成本：归一化后的加权和
+        core_cost = self.weight_delay * norm_delay + self.weight_energy * norm_energy
+        
+        # 任务丢弃惩罚（轻微惩罚，主要用于保证完成率）
+        drop_penalty = self.penalty_dropped * dropped_tasks
+        
+        # 总成本
+        total_cost = core_cost + drop_penalty
 
-        # 可选的缓存和迁移惩罚
-        # Optional cache/migration penalties.
-        if cache_metrics and self.weight_cache:
-            miss_rate = self._safe_float(cache_metrics.get("miss_rate"), 0.0)
+        # ========== 辅助指标（可选，权重较小）==========
+        # 注意：缓存和迁移是手段，不是优化目标，所以权重设为0
+        
+        # 可选的缓存惩罚（通常权重为0）
+        if cache_metrics and self.weight_cache > 0:
+            miss_rate = np.clip(self._safe_float(cache_metrics.get("miss_rate"), 0.0), 0.0, 1.0)
             total_cost += self.weight_cache * miss_rate
 
-        if migration_metrics and self.weight_migration:
+        # 可选的迁移惩罚（通常权重为0）
+        if migration_metrics and self.weight_migration > 0:
             migration_cost = self._safe_float(migration_metrics.get("migration_cost"), 0.0)
             total_cost += self.weight_migration * migration_cost
 
-        # 当延迟/能耗超过配置的软限制时，添加温和的惩罚
-        # Add gentle penalties when latency/energy exceed configured soft limits.
-        latency_target = self._safe_float(getattr(config.rl, "latency_target", 0.0), 0.0)
-        latency_tolerance = self._safe_float(
-            getattr(config.rl, "latency_upper_tolerance", latency_target), latency_target
-        )
-        if latency_tolerance > 0 and avg_delay > latency_tolerance:
-            # 超出容忍范围的延迟会产生额外惩罚
-            total_cost += self.weight_delay * (avg_delay - latency_tolerance) / latency_tolerance
-
-        energy_target = self._safe_float(getattr(config.rl, "energy_target", 0.0), 0.0)
-        energy_tolerance = self._safe_float(
-            getattr(config.rl, "energy_upper_tolerance", energy_target), energy_target
-        )
-        if energy_tolerance > 0 and total_energy > energy_tolerance:
-            # 超出容忍范围的能耗会产生额外惩罚
-            total_cost += self.weight_energy * (total_energy - energy_tolerance) / energy_tolerance
-
-        # SAC期望正向奖励 -> 允许小的奖励加成
-        # SAC expects positive reward -> allow small bonus.
-        bonus = 0.0
+        # ========== 计算最终奖励 ==========
+        # 奖励 = -成本（成本越低，奖励越高）
+        
         if self.algorithm == "SAC":
-            # 延迟低于归一化阈值时给予奖励
-            if avg_delay < self.delay_normalizer:
-                bonus += (self.delay_normalizer - avg_delay) * 3.0
-            # 任务完成率高于95%时给予额外奖励
+            # SAC需要适度正向奖励，添加基础奖励
+            base_reward = 5.0  # 基础奖励
+            # 完成率高时额外奖励
+            completion_bonus = 0.0
             if completion_rate > 0.95:
-                bonus += (completion_rate - 0.95) * 15.0
-            reward = bonus - total_cost
+                completion_bonus = (completion_rate - 0.95) * 10.0
+            reward = base_reward + completion_bonus - total_cost
         else:
-            # 其他算法使用负成本作为奖励
+            # TD3/DDPG/PPO等算法：直接使用负成本作为奖励
             reward = -total_cost
 
-        # 裁剪奖励值到指定范围，防止梯度爆炸或消失
-        reward = float(np.clip(reward, *self.reward_clip_range))
+        # 裁剪奖励值（归一化后范围更小）
+        # 预期范围：-10 到 0（如果一切正常）
+        if self.algorithm == "SAC":
+            reward = float(np.clip(reward, -15.0, 10.0))
+        else:
+            reward = float(np.clip(reward, -20.0, 0.0))
+        
         return reward
 
     def get_reward_breakdown(self, system_metrics: Dict) -> str:
@@ -270,20 +273,36 @@ class UnifiedRewardCalculator:
         Returns:
             格式化的多行字符串，包含奖励详细分解
         """
-        avg_delay = self._safe_float(system_metrics.get("avg_task_delay"), 0.0)
-        total_energy = self._safe_float(system_metrics.get("total_energy_consumption"), 0.0)
-        dropped_tasks = self._safe_int(system_metrics.get("dropped_tasks"), 0)
-        completion_rate = self._safe_float(system_metrics.get("task_completion_rate"), 0.0)
+        avg_delay = max(0.0, self._safe_float(system_metrics.get("avg_task_delay"), 0.0))
+        total_energy = max(0.0, self._safe_float(system_metrics.get("total_energy_consumption"), 0.0))
+        dropped_tasks = max(0, self._safe_int(system_metrics.get("dropped_tasks"), 0))
+        completion_rate = max(0.0, self._safe_float(system_metrics.get("task_completion_rate"), 0.0))
 
+        # 计算归一化值
+        norm_delay = avg_delay / max(self.latency_target, 1e-6)
+        norm_energy = total_energy / max(self.energy_target, 1e-6)
+        
+        # 计算加权成本
+        weighted_delay = self.weight_delay * norm_delay
+        weighted_energy = self.weight_energy * norm_energy
+        core_cost = weighted_delay + weighted_energy
+        
         reward = self.calculate_reward(system_metrics)
         lines = [
             f"Reward report ({self.algorithm}):",
-            f"  total reward        : {reward:.3f}",
-            f"  latency             : {avg_delay:.3f}s (norm {avg_delay / max(1e-9, self.delay_normalizer):.3f})",
-            f"  energy              : {total_energy:.2f}J (norm {total_energy / max(1e-9, self.energy_normalizer):.3f})",
-            f"  completion rate     : {completion_rate:.1%}",
-            f"  dropped tasks       : {dropped_tasks}",
-            f"  core cost estimate  : {self.weight_delay * avg_delay / max(1e-9, self.delay_normalizer) + self.weight_energy * total_energy / max(1e-9, self.energy_normalizer):.3f}",
+            f"  Total Reward        : {reward:.3f}",
+            f"  ----------------------------------------",
+            f"  Delay               : {avg_delay:.4f}s (target: {self.latency_target}s)",
+            f"  Normalized Delay    : {norm_delay:.4f}",
+            f"  Weighted Delay      : {weighted_delay:.4f} (w={self.weight_delay})",
+            f"  ----------------------------------------",
+            f"  Energy              : {total_energy:.2f}J (target: {self.energy_target:.0f}J)",
+            f"  Normalized Energy   : {norm_energy:.4f}",
+            f"  Weighted Energy     : {weighted_energy:.4f} (w={self.weight_energy})",
+            f"  ----------------------------------------",
+            f"  Core Cost (D+E)     : {core_cost:.4f}",
+            f"  Dropped Tasks       : {dropped_tasks} (penalty: {self.penalty_dropped * dropped_tasks:.4f})",
+            f"  Completion Rate     : {completion_rate:.1%}",
         ]
         return "\n".join(lines)
 

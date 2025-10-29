@@ -918,6 +918,21 @@ class CompleteSystemSimulator:
             # Execute adaptive caching strategy with intelligent controller
             if agents_actions and 'cache_controller' in agents_actions:
                 cache_controller = agents_actions['cache_controller']
+                rl_guidance = agents_actions.get('rl_guidance') if isinstance(agents_actions, dict) else None
+                cache_preference = 0.5
+                if isinstance(rl_guidance, dict):
+                    tradeoff_weights = rl_guidance.get('tradeoff_weights')
+                    if isinstance(tradeoff_weights, (list, tuple)) and len(tradeoff_weights) >= 2:
+                        cache_preference = float(np.clip(tradeoff_weights[1], 0.0, 1.0))
+                    else:
+                        cache_bias = rl_guidance.get('cache_bias')
+                        if isinstance(cache_bias, (list, tuple)) and len(cache_bias) > 0:
+                            cache_preference = float(np.clip(np.mean(cache_bias), 0.0, 1.0))
+                    energy_pressure_vec = rl_guidance.get('energy_pressure')
+                    if isinstance(energy_pressure_vec, (list, tuple, np.ndarray)):
+                        energy_pressure = float(np.clip(np.asarray(energy_pressure_vec, dtype=float).reshape(-1)[0], 0.35, 1.8))
+                        cache_preference = float(np.clip(cache_preference * energy_pressure, 0.0, 1.0))
+
                 
                 # 更新内容热度
                 # Update content heat
@@ -943,6 +958,15 @@ class CompleteSystemSimulator:
                 )
                 
                 # 如果决定缓存，执行淘汰和写入操作
+                if should_cache and cache_preference < 0.35:
+                    should_cache = False
+                elif not should_cache and cache_preference > 0.7 and available_capacity >= data_size:
+                    should_cache = True
+                    reason = reason or 'RL-guided cache'
+                    evictions = []
+                elif should_cache and available_capacity < data_size and not evictions:
+                    should_cache = False
+
                 # If decided to cache, perform eviction and write operations
                 if should_cache:
                     if 'cache' not in node:
@@ -1181,6 +1205,23 @@ class CompleteSystemSimulator:
             max(0.0, float(prefs.get('rsu', 0.0))) if rsu_available else 0.0,
             max(0.0, float(prefs.get('uav', 0.0))) if uav_available else 0.0,
         ], dtype=float)
+
+        guidance = actions.get('rl_guidance') or {}
+        if isinstance(guidance, dict):
+            guide_prior = np.array(guidance.get('offload_prior', []), dtype=float)
+            if guide_prior.size >= 3:
+                probs *= np.clip(guide_prior[:3], 1e-4, None)
+            distance_focus = np.array(guidance.get('distance_focus', []), dtype=float)
+            if distance_focus.size >= 3:
+                probs *= np.clip(distance_focus[:3], 0.2, None)
+            cache_focus = np.array(guidance.get('cache_focus', []), dtype=float)
+            if cache_focus.size >= 3:
+                probs *= np.clip(cache_focus[:3], 0.2, None)
+            energy_pressure_vec = guidance.get('energy_pressure')
+            if isinstance(energy_pressure_vec, (list, tuple, np.ndarray)):
+                pressure = float(np.clip(np.asarray(energy_pressure_vec, dtype=float).reshape(-1)[0], 0.35, 1.8))
+                energy_weights = np.array([1.0 / pressure, pressure, pressure], dtype=float)
+                probs *= energy_weights
 
         if probs.sum() <= 0:
             probs = np.array([
@@ -1452,6 +1493,20 @@ class CompleteSystemSimulator:
         if isinstance(rsu_pref, (list, tuple, np.ndarray)) and len(rsu_pref) == len(self.rsus):
             probs = np.array([max(0.0, float(v)) for v in rsu_pref], dtype=float)
 
+        guidance = actions.get('rl_guidance') or {}
+        if isinstance(guidance, dict):
+            rsu_prior = np.array(guidance.get('rsu_prior', []), dtype=float)
+            if rsu_prior.size >= len(self.rsus):
+                probs *= np.clip(rsu_prior[:len(self.rsus)], 1e-4, None)
+            cache_focus = guidance.get('cache_focus')
+            if isinstance(cache_focus, (list, tuple)) and len(cache_focus) >= 2:
+                cache_weight = float(np.clip(cache_focus[1], 0.0, 1.0))
+                probs = np.power(probs, 0.8 + 0.4 * cache_weight)
+            distance_focus = guidance.get('distance_focus')
+            if isinstance(distance_focus, (list, tuple)) and len(distance_focus) >= 2:
+                distance_weight = float(np.clip(distance_focus[1], 0.0, 1.0))
+                probs = np.power(probs, 0.8 + 0.4 * distance_weight)
+
         weights = probs * accessible
         if weights.sum() <= 0:
             weights = accessible
@@ -1486,6 +1541,16 @@ class CompleteSystemSimulator:
         uav_pref = actions.get('uav_selection_probs')
         if isinstance(uav_pref, (list, tuple, np.ndarray)) and len(uav_pref) == len(self.uavs):
             probs = np.array([max(0.0, float(v)) for v in uav_pref], dtype=float)
+
+        guidance = actions.get('rl_guidance') or {}
+        if isinstance(guidance, dict):
+            uav_prior = np.array(guidance.get('uav_prior', []), dtype=float)
+            if uav_prior.size >= len(self.uavs):
+                probs *= np.clip(uav_prior[:len(self.uavs)], 1e-4, None)
+            distance_focus = guidance.get('distance_focus')
+            if isinstance(distance_focus, (list, tuple)) and len(distance_focus) >= 3:
+                distance_weight = float(np.clip(distance_focus[2], 0.0, 1.0))
+                probs = np.power(probs, 0.8 + 0.4 * distance_weight)
 
         weights = probs * accessible
         if weights.sum() <= 0:

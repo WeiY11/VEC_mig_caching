@@ -542,15 +542,19 @@ def plot_objective_function_breakdown(training_env, algorithm: str, save_path: s
     # 计算目标函数各组成部分
     episodes = range(1, len(training_env.episode_rewards) + 1)
     
-    # 🔧 获取统一奖励函数的权重
+    # 🔧 获取统一奖励函数的权重和目标值
     try:
         from config import config
-        w_delay = config.rl.reward_weight_delay      # ω_T = 2.0
-        w_energy = config.rl.reward_weight_energy    # ω_E = 1.2
+        w_delay = config.rl.reward_weight_delay          # ω_T (如 2.4)
+        w_energy = config.rl.reward_weight_energy        # ω_E (如 1.0)
+        delay_target = config.rl.latency_target          # 目标时延 (如 0.4s)
+        energy_target = config.rl.energy_target          # 目标能耗 (如 1200J)
     except:
-        w_delay, w_energy = 2.0, 1.2  # 默认权重
+        w_delay, w_energy = 2.4, 1.0  # 默认权重
+        delay_target, energy_target = 0.4, 1200.0  # 默认目标
     
-    # 计算各组成部分（只有时延和能耗）
+    # 计算各组成部分（归一化后的加权值）
+    # ✅ 正确公式：Objective = ω_T × (delay/target) + ω_E × (energy/target)
     delay_components = []
     energy_components = []
     total_objectives = []
@@ -559,19 +563,19 @@ def plot_objective_function_breakdown(training_env, algorithm: str, save_path: s
         idx = i - 1
         if idx < len(training_env.episode_metrics.get('avg_delay', [])):
             delay = training_env.episode_metrics['avg_delay'][idx]
-            # 🔧 使用实际时延值（秒）乘以权重
-            delay_component = w_delay * delay
+            # ✅ 正确：先归一化再加权
+            delay_normalized = delay / max(delay_target, 1e-6)
+            delay_component = w_delay * delay_normalized
             delay_components.append(delay_component)
         
         if idx < len(training_env.episode_metrics.get('total_energy', [])):
             energy = training_env.episode_metrics['total_energy'][idx]
-            # 🔧 使用归一化能耗值（焦耳）乘以权重
-            # 典型能耗在200-600J，归一化到合理范围
-            energy_norm = energy / 100.0  # 归一化使其与时延量级相当
-            energy_component = w_energy * energy_norm
+            # ✅ 正确：先归一化再加权
+            energy_normalized = energy / max(energy_target, 1e-6)
+            energy_component = w_energy * energy_normalized
             energy_components.append(energy_component)
         
-        # 计算总目标函数值（只有时延+能耗）
+        # 计算总目标函数值（归一化后的加权和）
         if delay_components and energy_components:
             total_obj = delay_components[-1] + energy_components[-1]
             total_objectives.append(total_obj)
@@ -580,18 +584,20 @@ def plot_objective_function_breakdown(training_env, algorithm: str, save_path: s
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(15, 6))
     fig.suptitle(f'{algorithm} Objective Function Analysis', fontsize=16, fontweight='bold')
     
-    # 左图：组成部分分解（只显示时延和能耗）
+    # 左图：组成部分分解（归一化后的加权值）
     if delay_components:
         ax1.plot(episodes[:len(delay_components)], delay_components,
-                color=COLORS['warning'], linewidth=2.5, label=f'ω_T × Delay ({w_delay})')
+                color=COLORS['warning'], linewidth=2.5, 
+                label=f'ω_T × (Delay/Target) = {w_delay} × (D/{delay_target}s)')
     if energy_components:
         ax1.plot(episodes[:len(energy_components)], energy_components,
-                color=COLORS['secondary'], linewidth=2.5, label=f'ω_E × Energy ({w_energy})')
+                color=COLORS['secondary'], linewidth=2.5, 
+                label=f'ω_E × (Energy/Target) = {w_energy} × (E/{energy_target:.0f}J)')
     
-    ax1.set_title('Objective Function Components\n(Core: Delay + Energy)')
+    ax1.set_title('Objective Function Components (Normalized)\n(Core: Delay + Energy)')
     ax1.set_xlabel('Episode')
-    ax1.set_ylabel('Component Value')
-    ax1.legend(frameon=False, loc='upper right')
+    ax1.set_ylabel('Normalized Component Value')
+    ax1.legend(frameon=False, loc='best', fontsize=9)
     ax1.grid(True, alpha=0.3)
     
     # 右图：总目标函数与奖励对比

@@ -1,5 +1,8 @@
 """
 
+
+平滑时延能耗”和“注意力权衡距离与缓存”的优化
+python train_single_agent.py --algorithm TD3 --episodes 800 --num-vehicles 12 --two-stage
 🐍🖥️📚
 cd offloading_strategy_comparison
 # 1. 测试（1分钟）
@@ -162,6 +165,24 @@ def _apply_global_seed_from_env():
     print(f"🔐 全局随机种子已设置为 {seed}")
 
 
+def _maybe_apply_reward_smoothing_from_env():
+    """Optionally enable reward smoothing via environment variables.
+
+    RL_SMOOTH_DELAY, RL_SMOOTH_ENERGY, RL_SMOOTH_ALPHA can be provided.
+    """
+    try:
+        d = os.environ.get('RL_SMOOTH_DELAY')
+        e = os.environ.get('RL_SMOOTH_ENERGY')
+        a = os.environ.get('RL_SMOOTH_ALPHA')
+        if d is not None:
+            setattr(config.rl, 'reward_smooth_delay_weight', float(d))
+        if e is not None:
+            setattr(config.rl, 'reward_smooth_energy_weight', float(e))
+        if a is not None:
+            setattr(config.rl, 'reward_smooth_alpha', float(a))
+    except Exception:
+        pass
+
 def _build_scenario_config() -> Dict[str, Any]:
     """构建模拟环境配置，允许通过环境变量覆盖默认值"""
     scenario = {
@@ -201,6 +222,7 @@ def _build_scenario_config() -> Dict[str, Any]:
 
 
 _apply_global_seed_from_env()
+_maybe_apply_reward_smoothing_from_env()
 
 
 def generate_timestamp() -> str:
@@ -1026,7 +1048,28 @@ class SingleAgentTrainingEnvironment:
                         'migration_controller': self.adaptive_migration_controller
                     })
                 sim_actions.update(payload)
-            
+
+            # Attach distance-cache tradeoff gate for heuristic guidance (if actor exposes it)
+            try:
+                import numpy as _np  # safe local import
+                actor_obj = getattr(self.agent_env, 'agent', None)
+                if actor_obj is not None:
+                    actor_obj = getattr(actor_obj, 'actor', None)
+                gate = None
+                if actor_obj is not None:
+                    gate = getattr(actor_obj, 'last_tradeoff_gate', None)
+                    if gate is None:
+                        enc = getattr(actor_obj, 'encoder', None)
+                        if enc is not None:
+                            gate = getattr(enc, 'last_gate', None)
+                if gate is not None:
+                    try:
+                        sim_actions['dc_tradeoff_gate'] = float(_np.clip(gate, 0.0, 1.0))
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+
             return sim_actions
         except Exception as e:
             print(f"⚠️ 动作构造异常: {e}")

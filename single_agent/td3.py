@@ -116,7 +116,7 @@ class TD3Config:
 class GraphFeatureExtractor(nn.Module):
     """
     轻量图特征编码器：将车辆/RSU/UAV状态映射为增强的全局表示。
-    通过注意力汇聚获得整体上下文，为策略输出提供结构信息。
+    通过显式的距离/缓存注意力，让Actor学习权衡策略。
     """
 
     def __init__(
@@ -134,6 +134,7 @@ class GraphFeatureExtractor(nn.Module):
         self.num_uavs = num_uavs
         self.node_feature_dim = node_feature_dim
         self.global_feature_dim = global_feature_dim
+        self.embed_dim = embed_dim
 
         self.node_encoder = nn.Sequential(
             nn.Linear(node_feature_dim, embed_dim),
@@ -149,8 +150,26 @@ class GraphFeatureExtractor(nn.Module):
                 "uavs": nn.Linear(embed_dim, embed_dim),
             }
         )
-        # attention 汇聚 + 三个群组均值 + 原始全局特征
-        self.output_dim = embed_dim * 4 + global_feature_dim
+        self.distance_proj = nn.Sequential(
+            nn.Linear(3, embed_dim),
+            nn.ReLU(),
+            nn.Linear(embed_dim, 1),
+        )
+        self.cache_proj = nn.Sequential(
+            nn.Linear(2, embed_dim),
+            nn.ReLU(),
+            nn.Linear(embed_dim, 1),
+        )
+        self.tradeoff_head = nn.Sequential(
+            nn.Linear(embed_dim * 2, embed_dim),
+            nn.ReLU(),
+            nn.Linear(embed_dim, 2),
+        )
+
+        # 群组嵌入(3) + 全局attention(1) + 距离/缓存上下文(2) + 权衡上下文(1) + 全局特征
+        self.output_dim = embed_dim * 7 + global_feature_dim
+
+        self._last_outputs: Dict[str, torch.Tensor] = {}
 
     def forward(self, state: torch.Tensor) -> torch.Tensor:
         batch = state.size(0)
@@ -179,6 +198,7 @@ class GraphFeatureExtractor(nn.Module):
         all_nodes = torch.cat([vehicle_feats, rsu_feats, uav_feats], dim=1)
         if all_nodes.numel() == 0:
             zeros = torch.zeros(batch, self.output_dim - self.global_feature_dim, device=state.device)
+            self._last_outputs = {}
             return torch.cat([zeros, global_segment], dim=1)
 
         encoded = self.node_encoder(all_nodes)  # [B, N, E]
@@ -197,14 +217,100 @@ class GraphFeatureExtractor(nn.Module):
         rsu_embed = group_pool(rsu_feats, self.group_proj["rsus"])
         uav_embed = group_pool(uav_feats, self.group_proj["uavs"])
 
-        fused = torch.cat(
-            [vehicle_embed, rsu_embed, uav_embed, attention_embed, global_segment], dim=1
+        distance_inputs = []
+        cache_inputs = []
+
+        if vehicle_feats.size(1) > 0:
+            pad = vehicle_feats.new_zeros(batch, vehicle_feats.size(1), 1)
+            distance_inputs.append(torch.cat([vehicle_feats[:, :, :2], pad], dim=-1))
+            cache_inputs.append(
+                torch.stack([vehicle_feats[:, :, 3], vehicle_feats[:, :, 4]], dim=-1)
+            )
+
+        if rsu_feats.size(1) > 0:
+            pad = rsu_feats.new_zeros(batch, rsu_feats.size(1), 1)
+            distance_inputs.append(torch.cat([rsu_feats[:, :, :2], pad], dim=-1))
+            cache_inputs.append(
+                torch.stack([rsu_feats[:, :, 2], rsu_feats[:, :, 3]], dim=-1)
+            )
+
+        if uav_feats.size(1) > 0:
+            uav_dist = uav_feats[:, :, :3]
+            if uav_dist.size(-1) < 3:
+                pad = uav_feats.new_zeros(batch, uav_feats.size(1), 3 - uav_dist.size(-1))
+                uav_dist = torch.cat([uav_dist, pad], dim=-1)
+            distance_inputs.append(uav_dist)
+            cache_inputs.append(
+                torch.stack([uav_feats[:, :, 3], uav_feats[:, :, 4]], dim=-1)
+            )
+
+        distance_context = state.new_zeros(batch, self.embed_dim)
+        cache_context = state.new_zeros(batch, self.embed_dim)
+        distance_weights = None
+        cache_weights = None
+
+        if distance_inputs:
+            distance_inputs_tensor = torch.cat(distance_inputs, dim=1)
+            distance_logits = self.distance_proj(distance_inputs_tensor).squeeze(-1)
+            distance_weights = torch.softmax(distance_logits, dim=1)
+            distance_context = torch.sum(distance_weights.unsqueeze(-1) * encoded, dim=1)
+
+        if cache_inputs:
+            cache_inputs_tensor = torch.cat(cache_inputs, dim=1)
+            cache_logits = self.cache_proj(cache_inputs_tensor).squeeze(-1)
+            cache_weights = torch.softmax(cache_logits, dim=1)
+            cache_context = torch.sum(cache_weights.unsqueeze(-1) * encoded, dim=1)
+
+        if distance_inputs and cache_inputs:
+            tradeoff_logits = self.tradeoff_head(
+                torch.cat([distance_context, cache_context], dim=1)
+            )
+            tradeoff_weights = torch.softmax(tradeoff_logits, dim=1)
+        else:
+            tradeoff_weights = state.new_full((batch, 2), 0.5)
+
+        tradeoff_embed = (
+            tradeoff_weights[:, :1] * distance_context
+            + tradeoff_weights[:, 1:] * cache_context
         )
+
+        fused = torch.cat(
+            [
+                vehicle_embed,
+                rsu_embed,
+                uav_embed,
+                attention_embed,
+                distance_context,
+                cache_context,
+                tradeoff_embed,
+                global_segment,
+            ],
+            dim=1,
+        )
+
+        self._last_outputs = {
+            "vehicle_embed": vehicle_embed,
+            "rsu_embed": rsu_embed,
+            "uav_embed": uav_embed,
+            "attention_embed": attention_embed,
+            "attention_weights": attn_weights,
+            "distance_context": distance_context,
+            "cache_context": cache_context,
+            "tradeoff_weights": tradeoff_weights,
+            "distance_weights": distance_weights,
+            "cache_weights": cache_weights,
+            "global_segment": global_segment,
+        }
+
         return fused
+
+    def get_last_outputs(self) -> Dict[str, torch.Tensor]:
+        return getattr(self, "_last_outputs", {})
+
 
 
 class TD3Actor(nn.Module):
-    """多头结构的 TD3 Actor，同步输出卸载策略与缓存/迁移参数。"""
+    """多头结构TD3 Actor，引入注意力权衡距离与缓存，输出策略与引导分布。"""
 
     def __init__(
         self,
@@ -223,6 +329,9 @@ class TD3Actor(nn.Module):
         self.max_action = max_action
         self.offload_dim = offload_dim
         self.cache_dim = cache_dim
+        self.num_vehicles = num_vehicles
+        self.num_rsus = num_rsus
+        self.num_uavs = num_uavs
 
         self.encoder = GraphFeatureExtractor(
             num_vehicles=num_vehicles,
@@ -253,12 +362,24 @@ class TD3Actor(nn.Module):
             nn.Linear(head_hidden, cache_dim),
         )
 
+        self.distance_gate = nn.Sequential(
+            nn.Linear(graph_embed_dim, hidden_dim),
+            nn.ReLU(),
+        )
+        self.cache_gate = nn.Sequential(
+            nn.Linear(graph_embed_dim, hidden_dim),
+            nn.ReLU(),
+        )
+
         self._init_weights(self.shared)
         self._init_weights(self.offload_head)
         self._init_weights(self.cache_head)
+        self._init_weights(self.distance_gate)
+        self._init_weights(self.cache_gate)
 
         self._last_offload = None
         self._last_cache = None
+        self._latest_guidance: Dict[str, np.ndarray] = {}
 
     @staticmethod
     def _init_weights(module: nn.Module):
@@ -269,16 +390,131 @@ class TD3Actor(nn.Module):
 
     def forward(self, state: torch.Tensor) -> torch.Tensor:
         fused = self.encoder(state)
+        encoder_ctx = self.encoder.get_last_outputs()
         shared_feat = self.shared(fused)
 
-        offload_raw = torch.tanh(self.offload_head(shared_feat))
-        cache_raw = torch.tanh(self.cache_head(shared_feat))
+        modulated_feat = shared_feat
+        if encoder_ctx:
+            distance_ctx = encoder_ctx.get("distance_context")
+            cache_ctx = encoder_ctx.get("cache_context")
+            tradeoff_weights = encoder_ctx.get("tradeoff_weights")
+            if (
+                distance_ctx is not None
+                and cache_ctx is not None
+                and tradeoff_weights is not None
+            ):
+                distance_adjust = self.distance_gate(distance_ctx)
+                cache_adjust = self.cache_gate(cache_ctx)
+                modulated_feat = (
+                    shared_feat
+                    + tradeoff_weights[:, :1] * distance_adjust
+                    + tradeoff_weights[:, 1:] * cache_adjust
+                )
+
+        offload_raw = torch.tanh(self.offload_head(modulated_feat))
+        cache_raw = torch.tanh(self.cache_head(modulated_feat))
 
         self._last_offload = offload_raw
         self._last_cache = cache_raw
 
+        if not torch.is_grad_enabled():
+            self._cache_guidance(offload_raw, cache_raw, encoder_ctx)
+        else:
+            self._latest_guidance = {}
+
         combined = torch.cat([offload_raw, cache_raw], dim=1)
         return self.max_action * combined
+
+    def _cache_guidance(
+        self,
+        offload_raw: torch.Tensor,
+        cache_raw: torch.Tensor,
+        encoder_ctx: Optional[Dict[str, torch.Tensor]],
+    ) -> None:
+        offload = offload_raw.detach()
+        cache = cache_raw.detach()
+
+        start = 0
+        task_logits = offload[:, start : start + 3]
+        start += 3
+        rsu_logits = (
+            offload[:, start : start + self.num_rsus]
+            if self.num_rsus > 0
+            else None
+        )
+        start += self.num_rsus
+        uav_logits = (
+            offload[:, start : start + self.num_uavs]
+            if self.num_uavs > 0
+            else None
+        )
+
+        guidance: Dict[str, np.ndarray] = {}
+        guidance["offload_prior"] = (
+            torch.softmax(task_logits, dim=1).cpu().numpy()
+        )
+        if rsu_logits is not None and rsu_logits.size(1) > 0:
+            guidance["rsu_prior"] = (
+                torch.softmax(rsu_logits, dim=1).cpu().numpy()
+            )
+        if uav_logits is not None and uav_logits.size(1) > 0:
+            guidance["uav_prior"] = (
+                torch.softmax(uav_logits, dim=1).cpu().numpy()
+            )
+
+        guidance["cache_bias"] = (0.5 * (cache + 1.0)).cpu().numpy()
+
+        if encoder_ctx:
+            tradeoff_weights = encoder_ctx.get("tradeoff_weights")
+            if tradeoff_weights is not None:
+                guidance["tradeoff_weights"] = (
+                    tradeoff_weights.detach().cpu().numpy()
+                )
+            distance_weights = encoder_ctx.get("distance_weights")
+            cache_weights = encoder_ctx.get("cache_weights")
+            distance_group = self._aggregate_group_weights(distance_weights)
+            cache_group = self._aggregate_group_weights(cache_weights)
+            if distance_group is not None:
+                guidance["distance_focus"] = (
+                    distance_group.detach().cpu().numpy()
+                )
+            if cache_group is not None:
+                guidance["cache_focus"] = (
+                    cache_group.detach().cpu().numpy()
+                )
+
+        cleaned: Dict[str, np.ndarray] = {}
+        for key, value in guidance.items():
+            if isinstance(value, np.ndarray):
+                cleaned[key] = value.squeeze(0).copy() if value.shape[0] == 1 else value.copy()
+        self._latest_guidance = cleaned
+
+    def _aggregate_group_weights(
+        self, weights: Optional[torch.Tensor]
+    ) -> Optional[torch.Tensor]:
+        if weights is None:
+            return None
+        counts = [
+            self.encoder.num_vehicles,
+            self.encoder.num_rsus,
+            self.encoder.num_uavs,
+        ]
+        idx = 0
+        segments = []
+        for count in counts:
+            if count > 0:
+                segments.append(weights[:, idx : idx + count].sum(dim=1, keepdim=True))
+            idx += count
+        if not segments:
+            return None
+        stacked = torch.cat(segments, dim=1)
+        total = stacked.sum(dim=1, keepdim=True).clamp_min(1e-6)
+        return stacked / total
+
+    def get_latest_guidance(self) -> Dict[str, np.ndarray]:
+        if not self._latest_guidance:
+            return {}
+        return {key: value.copy() for key, value in self._latest_guidance.items()}
 
 
 class TD3Critic(nn.Module):
@@ -480,6 +716,19 @@ class TD3Agent:
         self.step_count = 0
         self.update_count = 0
         self.late_stage_applied = False
+        self.latest_guidance: Dict[str, np.ndarray] = {}
+        self.guidance_ema: Dict[str, np.ndarray] = {}
+        self.guidance_ema_decay = 0.6
+        self.guidance_temperature_bounds = (0.7, 1.1)
+        # 🔧 从全局config对象获取目标值（不是TD3Config）
+        from config import config as global_config
+        self.latency_target = float(getattr(global_config.rl, "latency_target", 0.4))
+        self.energy_target = float(getattr(global_config.rl, "energy_target", 1200.0))
+        self.guidance_feedback_beta = 0.12
+        self.energy_ema = self.energy_target
+        self.delay_ema = self.latency_target
+        self.energy_excess_ema = 0.0
+        self.delay_excess_ema = 0.0
         
         # 训练统计
         self.actor_losses = []
@@ -490,7 +739,11 @@ class TD3Agent:
         state_tensor = torch.FloatTensor(state).unsqueeze(0).to(self.device)
         
         with torch.no_grad():
-            action = self.actor(state_tensor).cpu().numpy()[0]
+            action_tensor = self.actor(state_tensor)
+            raw_guidance = self.actor.get_latest_guidance()
+        processed_guidance = self._process_guidance(raw_guidance)
+        self.latest_guidance = processed_guidance
+        action = action_tensor.cpu().numpy()[0]
         
         # 添加探索噪声
         if training:
@@ -499,6 +752,89 @@ class TD3Agent:
         
         return action
     
+    def get_latest_guidance(self) -> Dict[str, np.ndarray]:
+        if not self.latest_guidance:
+            return {}
+        return {key: (value.copy() if isinstance(value, np.ndarray) else value)
+                for key, value in self.latest_guidance.items()}
+    
+    def _process_guidance(self, guidance: Dict[str, np.ndarray]) -> Dict[str, np.ndarray]:
+        if not guidance:
+            return {}
+        smoothed = self._smooth_guidance(guidance)
+        adjusted = self._apply_guidance_temperature(smoothed)
+        return adjusted
+
+    def _smooth_guidance(self, guidance: Dict[str, np.ndarray]) -> Dict[str, np.ndarray]:
+        result: Dict[str, np.ndarray] = {}
+        decay = float(np.clip(self.guidance_ema_decay, 0.0, 0.99))
+        for key, value in guidance.items():
+            arr = np.array(value, dtype=np.float32)
+            arr = arr.reshape(1, -1) if arr.ndim == 1 else arr.astype(np.float32)
+            prev = self.guidance_ema.get(key)
+            if prev is None or prev.shape != arr.shape:
+                ema = arr
+            else:
+                ema = decay * prev + (1.0 - decay) * arr
+            self.guidance_ema[key] = ema
+            result[key] = ema.copy()
+        return result
+
+    def _apply_guidance_temperature(self, guidance: Dict[str, np.ndarray]) -> Dict[str, np.ndarray]:
+        processed: Dict[str, np.ndarray] = {}
+        energy_ratio = float(self.energy_ema / max(self.energy_target, 1e-6))
+        delay_ratio = float(self.delay_ema / max(self.latency_target, 1e-6))
+        base_pressure = energy_ratio / max(delay_ratio, 0.7)
+        pressure_adjust = 0.8 * self.energy_excess_ema - 0.3 * self.delay_excess_ema
+        energy_pressure = float(base_pressure + pressure_adjust)
+        temperature_min, temperature_max = self.guidance_temperature_bounds
+        energy_pressure = float(np.clip(energy_pressure, temperature_min, temperature_max))
+        temperature = float(np.clip(1.0 / max(energy_pressure, 1e-6), temperature_min, temperature_max))
+
+        for key, value in guidance.items():
+            arr = np.array(value, dtype=np.float32)
+            arr = arr.reshape(1, -1) if arr.ndim == 1 else arr
+            if key in ("offload_prior", "rsu_prior", "uav_prior"):
+                logits = np.log(np.clip(arr, 1e-6, None))
+                logits = logits / max(temperature, 1e-6)
+                logits = logits - logits.max(axis=1, keepdims=True)
+                arr = np.exp(logits)
+                arr /= arr.sum(axis=1, keepdims=True)
+                if key == "offload_prior":
+                    energy_scale = float(np.clip(energy_pressure, 0.85, 1.15))
+                    local_weight = 1.0 + (energy_scale - 1.0) * 0.6
+                    rsu_weight = 1.0 - (energy_scale - 1.0) * 0.35
+                    uav_weight = rsu_weight
+                    energy_weights = np.array([local_weight, rsu_weight, uav_weight], dtype=float)
+                    energy_weights = np.clip(energy_weights, 0.35, 1.4)
+                    arr = np.clip(arr * energy_weights.reshape(1, -1), 1e-4, None)
+                    arr /= arr.sum(axis=1, keepdims=True)
+            elif key == "tradeoff_weights":
+                arr = np.clip(arr, 1e-6, None)
+                arr[:, 1:2] *= energy_pressure
+                arr[:, :1] /= energy_pressure
+                arr /= arr.sum(axis=1, keepdims=True)
+            processed[key] = arr[0] if arr.shape[0] == 1 else arr
+
+        processed["energy_pressure"] = np.array([energy_pressure], dtype=np.float32)
+        return processed
+
+    def update_guidance_feedback(
+        self,
+        system_metrics: Dict[str, float],
+        cache_metrics: Optional[Dict[str, float]] = None,
+        migration_metrics: Optional[Dict[str, float]] = None,
+    ) -> None:
+        energy = float(system_metrics.get("total_energy_consumption", 0.0))
+        delay = float(system_metrics.get("avg_task_delay", 0.0))
+        beta = float(np.clip(self.guidance_feedback_beta, 0.0, 1.0))
+        self.energy_ema = (1.0 - beta) * self.energy_ema + beta * max(energy, 0.0)
+        self.delay_ema = (1.0 - beta) * self.delay_ema + beta * max(delay, 0.0)
+        energy_ratio = energy / max(self.energy_target, 1e-6) if self.energy_target > 0 else 0.0
+        delay_ratio = delay / max(self.latency_target, 1e-6) if self.latency_target > 0 else 0.0
+        self.energy_excess_ema = (1.0 - beta) * self.energy_excess_ema + beta * max(0.0, energy_ratio - 1.0)
+        self.delay_excess_ema = (1.0 - beta) * self.delay_excess_ema + beta * max(0.0, delay_ratio - 1.0)
+
     def store_experience(self, state: np.ndarray, action: np.ndarray, reward: float,
                         next_state: np.ndarray, done: bool):
         """存储经验"""
@@ -822,7 +1158,11 @@ class TD3Environment:
     def get_actions(self, state: np.ndarray, training: bool = True) -> Dict[str, np.ndarray]:
         """获取动作"""
         global_action = self.agent.select_action(state, training)
-        return self.decompose_action(global_action)
+        actions = self.decompose_action(global_action)
+        guidance = self.agent.get_latest_guidance()
+        if guidance:
+            actions['guidance'] = guidance
+        return actions
     
     def calculate_reward(self, system_metrics: Dict, 
                        cache_metrics: Optional[Dict] = None,
