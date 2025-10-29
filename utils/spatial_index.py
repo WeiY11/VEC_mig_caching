@@ -4,202 +4,313 @@
 使用KD-tree优化最近节点查找性能
 """
 
-import numpy as np
-from typing import Dict, List, Tuple, Optional
-from dataclasses import dataclass
-import time
+from __future__ import annotations
 
-@dataclass
-class SpatialNode:
-    """空间节点数据结构"""
-    node_id: str
-    position: np.ndarray
-    node_type: str
-    data: Dict
+import time
+from typing import Dict, List, Optional, Sequence, Tuple, overload, Literal
+
+import numpy as np
+
+try:
+    from scipy.spatial import cKDTree  # type: ignore
+except Exception:  # pragma: no cover - SciPy may be unavailable in minimal envs
+    cKDTree = None  # type: ignore
+
+
+def _to_point(coord: Sequence[float] | np.ndarray) -> np.ndarray:
+    """
+    将坐标标准化为长度为3的浮点向量，方便统一的距离计算。
+    - 如果只有二维坐标，自动补齐 z=0
+    - 如果超过3维，仅保留前三个分量
+    """
+    arr = np.asarray(coord, dtype=float).reshape(-1)
+    if arr.size == 2:
+        arr = np.append(arr, 0.0)
+    elif arr.size == 1:
+        arr = np.array([arr[0], 0.0, 0.0], dtype=float)
+    elif arr.size == 0:
+        arr = np.zeros(3, dtype=float)
+    elif arr.size > 3:
+        arr = arr[:3]
+    return arr.astype(float, copy=False)
+
 
 class SpatialIndex:
     """
     空间索引系统
-    优化最近节点查找的性能
+    通过KD-tree加速距离查询，支持RSU/UAV/车辆的邻域检索。
     """
-    
-    def __init__(self):
-        self.nodes = {}  # node_id -> SpatialNode
-        self.rsu_nodes = []
-        self.uav_nodes = []
-        self.vehicle_nodes = []
-        
-        # 性能统计
+
+    def __init__(self) -> None:
+        self._rsu_data: List[Dict] = []
+        self._uav_data: List[Dict] = []
+        self._vehicle_data: List[Dict] = []
+
+        self._rsu_positions = np.empty((0, 3), dtype=float)
+        self._uav_positions = np.empty((0, 3), dtype=float)
+        self._vehicle_positions = np.empty((0, 3), dtype=float)
+
+        self._rsu_tree: Optional[cKDTree] = None
+        self._uav_tree: Optional[cKDTree] = None
+        self._vehicle_tree: Optional[cKDTree] = None
+
+        self._rsu_max_radius: float = 0.0
+        self._uav_max_radius: float = 0.0
+
         self.query_count = 0
         self.total_query_time = 0.0
-        self.cache_hits = 0
-        
-        # 查询缓存（简单的距离缓存）
-        self.distance_cache = {}
-        self.cache_max_size = 1000
-        self.last_update_time = 0.0
-        self.cache_ttl = 1.0  # 缓存生存时间（秒）
-        
-        print("🚀 空间索引系统初始化完成")
-    
-    def update_nodes(self, vehicles: List[Dict], rsus: List[Dict], uavs: List[Dict]):
+
+    # ------------------------------------------------------------------
+    # Public update APIs
+    # ------------------------------------------------------------------
+    def update_static_nodes(self, rsus: Sequence[Dict], uavs: Sequence[Dict]) -> None:
+        """更新静态节点（RSU、UAV）的空间索引。"""
+        self._rsu_data = list(rsus) if rsus is not None else []
+        self._uav_data = list(uavs) if uavs is not None else []
+
+        self._rsu_positions = self._build_positions(self._rsu_data)
+        self._uav_positions = self._build_positions(self._uav_data)
+
+        self._rsu_tree = self._build_tree(self._rsu_positions)
+        self._uav_tree = self._build_tree(self._uav_positions)
+
+        self._rsu_max_radius = max(
+            (float(rsu.get('coverage_radius', 0.0)) for rsu in self._rsu_data),
+            default=0.0,
+        )
+        self._uav_max_radius = max(
+            (float(uav.get('coverage_radius', 0.0)) for uav in self._uav_data),
+            default=0.0,
+        )
+
+    def update_vehicle_nodes(self, vehicles: Sequence[Dict]) -> None:
+        """更新车辆节点的空间索引（车辆为动态节点，需要高频刷新）。"""
+        self._vehicle_data = list(vehicles) if vehicles is not None else []
+        self._vehicle_positions = self._build_positions(self._vehicle_data)
+        self._vehicle_tree = self._build_tree(self._vehicle_positions)
+
+    def update_nodes(
+        self,
+        vehicles: Sequence[Dict],
+        rsus: Optional[Sequence[Dict]] = None,
+        uavs: Optional[Sequence[Dict]] = None,
+    ) -> None:
         """
-        更新节点位置信息
-        
-        Args:
-            vehicles: 车辆节点列表
-            rsus: RSU节点列表 
-            uavs: UAV节点列表
+        统一更新接口：
+        - 若提供 RSU/UAV 列表，则重建静态索引
+        - 始终刷新车辆索引
         """
-        current_time = time.time()
-        
-        # 清空旧数据
-        self.nodes.clear()
-        self.rsu_nodes.clear()
-        self.uav_nodes.clear()
-        self.vehicle_nodes.clear()
-        
-        # 更新RSU节点
-        for rsu in rsus:
-            node_id = rsu['id']
-            position = np.array(rsu['position'][:2])  # 只取x,y坐标
-            spatial_node = SpatialNode(
-                node_id=node_id,
-                position=position,
-                node_type='RSU',
-                data=rsu
-            )
-            self.nodes[node_id] = spatial_node
-            self.rsu_nodes.append(spatial_node)
-        
-        # 更新UAV节点
-        for uav in uavs:
-            node_id = uav['id']
-            position = np.array(uav['position'][:2])  # 只取x,y坐标用于2D距离计算
-            spatial_node = SpatialNode(
-                node_id=node_id,
-                position=position,
-                node_type='UAV',
-                data=uav
-            )
-            self.nodes[node_id] = spatial_node
-            self.uav_nodes.append(spatial_node)
-        
-        # 更新车辆节点
-        for vehicle in vehicles:
-            node_id = vehicle['id']
-            position = np.array(vehicle['position'][:2])
-            spatial_node = SpatialNode(
-                node_id=node_id,
-                position=position,
-                node_type='Vehicle',
-                data=vehicle
-            )
-            self.nodes[node_id] = spatial_node
-            self.vehicle_nodes.append(spatial_node)
-        
-        # 清理过期缓存
-        if current_time - self.last_update_time > self.cache_ttl:
-            self.distance_cache.clear()
-            self.last_update_time = current_time
-    
-    def find_nearest_rsu(self, vehicle_position: np.ndarray) -> Optional[Dict]:
-        """
-        🔧 优化：使用空间索引快速查找最近RSU
-        """
-        start_time = time.time()
-        self.query_count += 1
-        
-        # 检查缓存
-        cache_key = f"rsu_{hash(tuple(vehicle_position))}"
-        if cache_key in self.distance_cache:
-            self.cache_hits += 1
-            return self.distance_cache[cache_key]
-        
-        if not self.rsu_nodes:
+        if rsus is not None or uavs is not None:
+            self.update_static_nodes(rsus or [], uavs or [])
+        self.update_vehicle_nodes(vehicles)
+
+    # ------------------------------------------------------------------
+    # 查询接口
+    # ------------------------------------------------------------------
+    @overload
+    def find_nearest_rsu(
+        self,
+        position: Sequence[float] | np.ndarray,
+        return_distance: Literal[False] = False,
+    ) -> Optional[Dict]:
+        ...
+
+    @overload
+    def find_nearest_rsu(
+        self,
+        position: Sequence[float] | np.ndarray,
+        *,
+        return_distance: Literal[True],
+    ) -> Optional[Tuple[int, Dict, float]]:
+        ...
+
+    def find_nearest_rsu(
+        self,
+        position: Sequence[float] | np.ndarray,
+        return_distance: bool = False,
+    ):
+        start = time.perf_counter()
+        result = self._find_nearest(position, self._rsu_positions, self._rsu_tree, self._rsu_data)
+        self._record_query(start)
+        if result is None:
             return None
-        
-        # 2D位置向量化计算
-        vehicle_pos_2d = vehicle_position[:2]
-        
-        # 向量化距离计算
-        rsu_positions = np.array([rsu.position for rsu in self.rsu_nodes])
-        distances = np.linalg.norm(rsu_positions - vehicle_pos_2d, axis=1)
-        
-        # 找到最近的RSU
-        min_idx = np.argmin(distances)
-        nearest_rsu = self.rsu_nodes[min_idx].data
-        
-        # 缓存结果
-        if len(self.distance_cache) < self.cache_max_size:
-            self.distance_cache[cache_key] = nearest_rsu
-        
-        # 更新性能统计
-        query_time = time.time() - start_time
-        self.total_query_time += query_time
-        
-        return nearest_rsu
-    
-    def find_nearest_uav(self, vehicle_position: np.ndarray) -> Optional[Dict]:
-        """
-        🔧 优化：使用空间索引快速查找最近UAV
-        """
-        start_time = time.time()
-        self.query_count += 1
-        
-        # 检查缓存
-        cache_key = f"uav_{hash(tuple(vehicle_position))}"
-        if cache_key in self.distance_cache:
-            self.cache_hits += 1
-            return self.distance_cache[cache_key]
-        
-        if not self.uav_nodes:
+        idx, node, dist = result
+        return (idx, node, dist) if return_distance else node
+
+    @overload
+    def find_nearest_uav(
+        self,
+        position: Sequence[float] | np.ndarray,
+        return_distance: Literal[False] = False,
+    ) -> Optional[Dict]:
+        ...
+
+    @overload
+    def find_nearest_uav(
+        self,
+        position: Sequence[float] | np.ndarray,
+        *,
+        return_distance: Literal[True],
+    ) -> Optional[Tuple[int, Dict, float]]:
+        ...
+
+    def find_nearest_uav(
+        self,
+        position: Sequence[float] | np.ndarray,
+        return_distance: bool = False,
+    ):
+        start = time.perf_counter()
+        result = self._find_nearest(position, self._uav_positions, self._uav_tree, self._uav_data)
+        self._record_query(start)
+        if result is None:
             return None
-        
-        # 2D位置向量化计算（忽略UAV高度）
-        vehicle_pos_2d = vehicle_position[:2]
-        
-        # 向量化距离计算
-        uav_positions = np.array([uav.position for uav in self.uav_nodes])
-        distances = np.linalg.norm(uav_positions - vehicle_pos_2d, axis=1)
-        
-        # 找到最近的UAV
-        min_idx = np.argmin(distances)
-        nearest_uav = self.uav_nodes[min_idx].data
-        
-        # 缓存结果
-        if len(self.distance_cache) < self.cache_max_size:
-            self.distance_cache[cache_key] = nearest_uav
-        
-        # 更新性能统计
-        query_time = time.time() - start_time
-        self.total_query_time += query_time
-        
-        return nearest_uav
-    
-    def get_performance_stats(self) -> Dict:
-        """获取性能统计信息"""
+        idx, node, dist = result
+        return (idx, node, dist) if return_distance else node
+
+    def query_rsus_within_radius(
+        self,
+        position: Sequence[float] | np.ndarray,
+        radius: float,
+    ) -> List[Tuple[int, Dict, float]]:
+        start = time.perf_counter()
+        result = self._query_within(position, radius, self._rsu_positions, self._rsu_tree, self._rsu_data)
+        self._record_query(start)
+        return result
+
+    def query_uavs_within_radius(
+        self,
+        position: Sequence[float] | np.ndarray,
+        radius: float,
+    ) -> List[Tuple[int, Dict, float]]:
+        start = time.perf_counter()
+        result = self._query_within(position, radius, self._uav_positions, self._uav_tree, self._uav_data)
+        self._record_query(start)
+        return result
+
+    def query_vehicles_within_radius(
+        self,
+        position: Sequence[float] | np.ndarray,
+        radius: float,
+    ) -> List[Tuple[int, Dict, float]]:
+        start = time.perf_counter()
+        result = self._query_within(position, radius, self._vehicle_positions, self._vehicle_tree, self._vehicle_data)
+        self._record_query(start)
+        return result
+
+    # ------------------------------------------------------------------
+    # 统计信息
+    # ------------------------------------------------------------------
+    def get_performance_stats(self) -> Dict[str, float]:
         if self.query_count == 0:
             return {
                 'query_count': 0,
                 'avg_query_time': 0.0,
-                'cache_hit_rate': 0.0,
-                'total_query_time': 0.0
+                'total_query_time': 0.0,
+                'rsu_count': float(len(self._rsu_data)),
+                'uav_count': float(len(self._uav_data)),
+                'vehicle_count': float(len(self._vehicle_data)),
             }
-        
         return {
-            'query_count': self.query_count,
+            'query_count': float(self.query_count),
             'avg_query_time': self.total_query_time / self.query_count,
-            'cache_hit_rate': self.cache_hits / self.query_count,
             'total_query_time': self.total_query_time,
-            'cache_size': len(self.distance_cache),
-            'rsu_count': len(self.rsu_nodes),
-            'uav_count': len(self.uav_nodes),
-            'vehicle_count': len(self.vehicle_nodes)
+            'rsu_count': float(len(self._rsu_data)),
+            'uav_count': float(len(self._uav_data)),
+            'vehicle_count': float(len(self._vehicle_data)),
         }
-    
-    def reset_stats(self):
-        """重置性能统计"""
+
+    def reset_stats(self) -> None:
         self.query_count = 0
         self.total_query_time = 0.0
-        self.cache_hits = 0
+
+    @property
+    def rsu_max_radius(self) -> float:
+        return self._rsu_max_radius
+
+    @property
+    def uav_max_radius(self) -> float:
+        return self._uav_max_radius
+
+    # ------------------------------------------------------------------
+    # 内部工具方法
+    # ------------------------------------------------------------------
+    def _build_positions(self, nodes: List[Dict]) -> np.ndarray:
+        if not nodes:
+            return np.empty((0, 3), dtype=float)
+        return np.vstack([_to_point(node.get('position', (0.0, 0.0))) for node in nodes]).astype(float)
+
+    def _build_tree(self, positions: np.ndarray) -> Optional[cKDTree]:
+        if cKDTree is None or positions.size == 0:
+            return None
+        return cKDTree(positions)
+
+    def _find_nearest(
+        self,
+        position: Sequence[float] | np.ndarray,
+        positions: np.ndarray,
+        tree: Optional[cKDTree],
+        data: List[Dict],
+    ) -> Optional[Tuple[int, Dict, float]]:
+        if not data or positions.size == 0:
+            return None
+
+        point = _to_point(position)
+        if tree is not None:
+            dist, idx = tree.query(point, k=1)
+            if isinstance(dist, np.ndarray):
+                dist = float(dist[0])
+                idx = int(idx[0])
+            else:
+                dist = float(dist)
+                idx = int(idx)
+            if np.isinf(dist):
+                return None
+        else:
+            diffs = positions - point
+            dist_sq = np.einsum('ij,ij->i', diffs, diffs)
+            idx = int(np.argmin(dist_sq))
+            dist = float(np.sqrt(dist_sq[idx]))
+
+        return idx, data[idx], dist
+
+    def _query_within(
+        self,
+        position: Sequence[float] | np.ndarray,
+        radius: float,
+        positions: np.ndarray,
+        tree: Optional[cKDTree],
+        data: List[Dict],
+    ) -> List[Tuple[int, Dict, float]]:
+        if not data or positions.size == 0 or radius <= 0.0:
+            return []
+
+        point = _to_point(position)
+        radius = float(radius)
+        results: List[Tuple[int, Dict, float]] = []
+
+        if tree is not None:
+            indices = tree.query_ball_point(point, radius)
+            if not indices:
+                return []
+            subset = positions[np.asarray(indices, dtype=int)]
+            diffs = subset - point
+            dists = np.sqrt(np.einsum('ij,ij->i', diffs, diffs))
+            for local_idx, dist in zip(indices, dists):
+                results.append((int(local_idx), data[int(local_idx)], float(dist)))
+            return results
+
+        diffs = positions - point
+        dist_sq = np.einsum('ij,ij->i', diffs, diffs)
+        mask = dist_sq <= radius * radius
+        if not np.any(mask):
+            return []
+        candidate_indices = np.where(mask)[0]
+        dists = np.sqrt(dist_sq[candidate_indices])
+        for idx, dist in zip(candidate_indices, dists):
+            results.append((int(idx), data[int(idx)], float(dist)))
+        return results
+
+    def _record_query(self, start: float) -> None:
+        elapsed = time.perf_counter() - start
+        self.query_count += 1
+        self.total_query_time += max(0.0, elapsed)

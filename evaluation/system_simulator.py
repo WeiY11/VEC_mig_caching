@@ -24,6 +24,7 @@ from utils.unified_time_manager import get_simulation_time, advance_simulation_t
 # 🔑 修复：导入realistic内容生成器
 # Realistic content generator for simulating various content types
 from utils.realistic_content_generator import generate_realistic_content, get_realistic_content_size
+from utils.spatial_index import SpatialIndex
 from decision.two_stage_planner import TwoStagePlanner, PlanEntry
 
 class CompleteSystemSimulator:
@@ -103,6 +104,7 @@ class CompleteSystemSimulator:
         # Two-stage planning toggle (env-controlled)
         self._two_stage_enabled = (os.environ.get('TWO_STAGE_MODE', '').strip() in {'1', 'true', 'True'})
         self._two_stage_planner: TwoStagePlanner | None = None
+        self.spatial_index: Optional[SpatialIndex] = SpatialIndex()
         
         # 初始化组件（车辆、RSU、UAV等）
         # Initialize components (vehicles, RSUs, UAVs, etc.)
@@ -290,6 +292,8 @@ class CompleteSystemSimulator:
             print("[Topology] Central RSU configured as RSU_2 for coordination.")
         except Exception:
             pass
+
+        self._refresh_spatial_index(update_static=True, update_vehicle=True)
     
     def _setup_scenario(self):
         """
@@ -600,6 +604,23 @@ class CompleteSystemSimulator:
         return np.linalg.norm(pos1 - pos2)
     
     
+    def _refresh_spatial_index(self, update_static: bool = True, update_vehicle: bool = True) -> None:
+        """
+        保持空间索引与实体位置同步。
+        update_static=False 时仅刷新车辆索引，避免重复构建静态KD-tree。
+        """
+        if not getattr(self, 'spatial_index', None):
+            return
+        try:
+            if update_static:
+                self.spatial_index.update_static_nodes(self.rsus, self.uavs)
+            if update_vehicle:
+                self.spatial_index.update_vehicle_nodes(self.vehicles)
+        except Exception:
+            # 索引刷新失败时回退至朴素遍历逻辑
+            pass
+    
+    
     def _find_least_loaded_node(self, node_type: str, exclude_node: Dict = None) -> Dict:
         """
         寻找负载最轻的节点（用于任务分配和迁移决策）
@@ -781,79 +802,72 @@ class CompleteSystemSimulator:
 
     def find_nearest_rsu(self, vehicle_pos: np.ndarray) -> Dict:
         """
-        找到最近的RSU（路侧单元）并检查是否在覆盖范围内
-        Find the nearest RSU (Road Side Unit) and check if within coverage
-        
-        该方法用于任务卸载时为车辆选择最优的RSU：
-        - 遍历所有RSU，计算与车辆的距离
-        - 只考虑覆盖范围内的RSU（distance <= coverage_radius）
-        - 返回距离最近的RSU
-        - 如果没有RSU在覆盖范围内，返回None
-        
-        This method selects the optimal RSU for vehicle task offloading:
-        - Iterates through all RSUs, calculates distance to vehicle
-        - Only considers RSUs within coverage (distance <= coverage_radius)
-        - Returns the nearest RSU
-        - Returns None if no RSU is within coverage
-        
-        参数 Args:
-            vehicle_pos: 车辆位置坐标（2D或3D NumPy数组） | Vehicle position coordinates (2D or 3D NumPy array)
-            
-        返回 Returns:
-            Dict: 最近的RSU节点字典，如果没有可用RSU返回None | Nearest RSU node dict, or None if no available RSU
+        ??????????????????RSU?
+        Fallback to brute-force iteration when the index is unavailable.
         """
-        min_distance = float('inf')  # 初始化为无穷大 | Initialize to infinity
-        nearest_rsu = None
-        
-        # 遍历所有RSU，寻找距离最近且在覆盖范围内的
-        # Iterate through all RSUs to find nearest one within coverage
+        if not self.rsus:
+            return None
+
+        vehicle_vec = np.asarray(vehicle_pos, dtype=float)
+        best_node = None
+        best_distance = float('inf')
+
+        if getattr(self, 'spatial_index', None):
+            nearest = self.spatial_index.find_nearest_rsu(vehicle_vec, return_distance=True)
+            if nearest:
+                _, node, dist = nearest
+                coverage = float(node.get('coverage_radius', self.coverage_radius))
+                if dist <= coverage:
+                    return node
+                best_node = node
+                best_distance = dist
+
+            max_radius = self.spatial_index.rsu_max_radius or max(
+                (float(rsu.get('coverage_radius', self.coverage_radius)) for rsu in self.rsus),
+                default=self.coverage_radius,
+            )
+            neighbors = self.spatial_index.query_rsus_within_radius(vehicle_vec, max_radius)
+            for _, node, dist in neighbors:
+                coverage = float(node.get('coverage_radius', self.coverage_radius))
+                if dist <= coverage and dist < best_distance:
+                    best_node = node
+                    best_distance = dist
+
+            if best_node and best_distance <= best_node.get('coverage_radius', self.coverage_radius):
+                return best_node
+
         for rsu in self.rsus:
-            distance = self.calculate_distance(vehicle_pos, rsu['position'])
-            # 检查是否在覆盖范围内且距离更近
-            # Check if within coverage and closer
-            if distance < min_distance and distance <= rsu['coverage_radius']:
-                min_distance = distance
-                nearest_rsu = rsu
-        
-        return nearest_rsu
-    
-    
+            distance = self.calculate_distance(vehicle_vec, rsu['position'])
+            coverage = float(rsu.get('coverage_radius', self.coverage_radius))
+            if distance <= coverage and distance < best_distance:
+                best_node = rsu
+                best_distance = distance
+
+        return best_node
+
     def find_nearest_uav(self, vehicle_pos: np.ndarray) -> Dict:
         """
-        找到最近的UAV（无人机）节点（不考虑覆盖范围限制）
-        Find the nearest UAV (Unmanned Aerial Vehicle) node (without coverage constraint)
-        
-        该方法与find_nearest_rsu类似，但有关键区别：
-        - UAV通常用于动态覆盖和灵活部署
-        - 不检查覆盖范围限制（UAV可以快速移动到需要的位置）
-        - 返回距离最近的UAV，即使当前不在标准覆盖范围内
-        - 用于需要UAV支援或动态调度的场景
-        
-        This method is similar to find_nearest_rsu but with key differences:
-        - UAVs are used for dynamic coverage and flexible deployment
-        - Does not check coverage range (UAVs can quickly move to needed positions)
-        - Returns nearest UAV even if not currently within standard coverage
-        - Used for scenarios requiring UAV support or dynamic scheduling
-        
-        参数 Args:
-            vehicle_pos: 车辆位置向量（2D或3D） | Vehicle position vector (2D or 3D)
-            
-        返回 Returns:
-            Dict: 最近的UAV节点字典，如果没有UAV返回None | Nearest UAV node dict, or None if no UAVs exist
+        ???????????UAV???
         """
-        min_distance = float('inf')  # 初始化最小距离为无穷大 | Initialize min distance to infinity
+        if not self.uavs:
+            return None
+
+        vehicle_vec = np.asarray(vehicle_pos, dtype=float)
+        if getattr(self, 'spatial_index', None):
+            nearest = self.spatial_index.find_nearest_uav(vehicle_vec, return_distance=True)
+            if nearest:
+                return nearest[1]
+
+        min_distance = float('inf')
         nearest_uav = None
-        
-        # 遍历所有UAV，找到距离最近的
-        # Iterate through all UAVs to find the nearest one
         for uav in self.uavs:
-            distance = self.calculate_distance(vehicle_pos, uav['position'])
+            distance = self.calculate_distance(vehicle_vec, uav['position'])
             if distance < min_distance:
                 min_distance = distance
                 nearest_uav = uav
-        
+
         return nearest_uav
-    
+
     def check_cache_hit(self, content_id: str, node: Dict) -> bool:
         """
         检查缓存命中
@@ -1192,6 +1206,8 @@ class CompleteSystemSimulator:
             vehicle['position'][0] = new_x
             vehicle['position'][1] = new_y
 
+        self._refresh_spatial_index(update_static=False, update_vehicle=True)
+
     def _sample_arrivals(self) -> int:
         """鎸夋硦鏉捐繃绋嬮噰鏍锋瘡杞︽瘡鏃堕殭鐨勪换鍔″埌杈炬暟"""
         lam = max(1e-6, float(self.task_arrival_rate) * float(self.time_slot))
@@ -1417,18 +1433,30 @@ class CompleteSystemSimulator:
 
         # 鎺ㄩ€佸埌瑕嗙洊鑼冨洿鍐呯殑杞﹁締
         coverage = rsu_node.get('coverage_radius', 300.0)
-        for vehicle in self.vehicles:
-            distance = self.calculate_distance(vehicle.get('position', np.zeros(2)), rsu_node['position'])
-            if distance <= coverage * 0.8:
-                self._store_in_vehicle_cache(vehicle, content_id, size_mb, cache_controller)
+        if getattr(self, 'spatial_index', None):
+            vehicles_in_range = self.spatial_index.query_vehicles_within_radius(rsu_node['position'], coverage * 0.8)
+            for _, vehicle_node, _ in vehicles_in_range:
+                self._store_in_vehicle_cache(vehicle_node, content_id, size_mb, cache_controller)
+        else:
+            for vehicle in self.vehicles:
+                distance = self.calculate_distance(vehicle.get('position', np.zeros(2)), rsu_node['position'])
+                if distance <= coverage * 0.8:
+                    self._store_in_vehicle_cache(vehicle, content_id, size_mb, cache_controller)
 
-        # 鎺ㄩ€佸埌閭昏繎RSU
-        for neighbor in self.rsus:
-            if neighbor is rsu_node:
-                continue
-            distance = self.calculate_distance(neighbor['position'], rsu_node['position'])
-            if distance <= coverage * 1.2:
+        # ?????RSU
+        if getattr(self, 'spatial_index', None):
+            neighbor_candidates = self.spatial_index.query_rsus_within_radius(rsu_node['position'], coverage * 1.2)
+            for _, neighbor, _ in neighbor_candidates:
+                if neighbor is rsu_node:
+                    continue
                 self._store_in_neighbor_rsu_cache(neighbor, content_id, size_mb, cache_meta, cache_controller)
+        else:
+            for neighbor in self.rsus:
+                if neighbor is rsu_node:
+                    continue
+                distance = self.calculate_distance(neighbor['position'], rsu_node['position'])
+                if distance <= coverage * 1.2:
+                    self._store_in_neighbor_rsu_cache(neighbor, content_id, size_mb, cache_meta, cache_controller)
 
     def _dispatch_task(self, vehicle: Dict, task: Dict, actions: Dict, step_summary: Dict):
         """鏍规嵁鍔ㄤ綔鍒嗛厤浠诲姟"""
@@ -1471,33 +1499,50 @@ class CompleteSystemSimulator:
             self._handle_local_processing(vehicle, task, step_summary)
 
     def _assign_to_rsu(self, vehicle: Dict, task: Dict, actions: Dict, step_summary: Dict) -> bool:
-        """鍒嗛厤鑷砇SU"""
+        """???RSU??????????????????"""
         if not self.rsus:
             return False
 
-        vehicle_pos = np.array(vehicle.get('position', [0.0, 0.0]))
-        distances = []
-        in_range_mask = []
-        for rsu in self.rsus:
-            dist = self.calculate_distance(vehicle_pos, rsu['position'])
-            distances.append(dist)
-            in_range_mask.append(1.0 if dist <= rsu.get('coverage_radius', 300.0) else 0.0)
+        vehicle_pos = np.asarray(vehicle.get('position', [0.0, 0.0]), dtype=float)
+        candidates = []
+        if getattr(self, 'spatial_index', None):
+            max_radius = self.spatial_index.rsu_max_radius or max(
+                (float(rsu.get('coverage_radius', self.coverage_radius)) for rsu in self.rsus),
+                default=self.coverage_radius,
+            )
+            candidates = self.spatial_index.query_rsus_within_radius(vehicle_pos, max_radius)
+            if not candidates:
+                nearest = self.spatial_index.find_nearest_rsu(vehicle_pos, return_distance=True)
+                if nearest:
+                    candidates = [nearest]
 
-        accessible = np.array(in_range_mask, dtype=float)
-        if accessible.sum() == 0:
-            # 娌℃湁瑕嗙洊鐨凴SU
+        if not candidates:
+            candidates = [
+                (idx, rsu, self.calculate_distance(vehicle_pos, rsu['position']))
+                for idx, rsu in enumerate(self.rsus)
+            ]
+
+        filtered = [
+            (idx, node, dist)
+            for idx, node, dist in candidates
+            if dist <= float(node.get('coverage_radius', self.coverage_radius))
+        ]
+        if not filtered:
             return False
 
-        probs = np.ones(len(self.rsus), dtype=float)
+        candidate_indices = np.array([idx for idx, _, _ in filtered], dtype=int)
+        distances = np.array([dist for _, _, dist in filtered], dtype=float)
+
+        probs = np.ones_like(distances)
         rsu_pref = actions.get('rsu_selection_probs')
         if isinstance(rsu_pref, (list, tuple, np.ndarray)) and len(rsu_pref) == len(self.rsus):
-            probs = np.array([max(0.0, float(v)) for v in rsu_pref], dtype=float)
+            probs *= np.array([max(0.0, float(rsu_pref[idx])) for idx in candidate_indices], dtype=float)
 
         guidance = actions.get('rl_guidance') or {}
         if isinstance(guidance, dict):
             rsu_prior = np.array(guidance.get('rsu_prior', []), dtype=float)
             if rsu_prior.size >= len(self.rsus):
-                probs *= np.clip(rsu_prior[:len(self.rsus)], 1e-4, None)
+                probs *= np.clip(rsu_prior[candidate_indices], 1e-4, None)
             cache_focus = guidance.get('cache_focus')
             if isinstance(cache_focus, (list, tuple)) and len(cache_focus) >= 2:
                 cache_weight = float(np.clip(cache_focus[1], 0.0, 1.0))
@@ -1507,63 +1552,85 @@ class CompleteSystemSimulator:
                 distance_weight = float(np.clip(distance_focus[1], 0.0, 1.0))
                 probs = np.power(probs, 0.8 + 0.4 * distance_weight)
 
-        weights = probs * accessible
+        weights = probs
         if weights.sum() <= 0:
-            weights = accessible
+            weights = np.ones_like(weights)
 
         weights = weights / weights.sum()
-        rsu_idx = int(np.random.choice(np.arange(len(self.rsus)), p=weights))
-        distance = distances[rsu_idx]
+        choice = int(np.random.choice(np.arange(len(candidate_indices)), p=weights))
+        rsu_idx = int(candidate_indices[choice])
+        distance = float(distances[choice])
         node = self.rsus[rsu_idx]
         success = self._handle_remote_assignment(vehicle, task, node, 'RSU', rsu_idx, distance, actions, step_summary)
         if success:
             step_summary['remote_tasks'] += 1
         return success
 
+
     def _assign_to_uav(self, vehicle: Dict, task: Dict, actions: Dict, step_summary: Dict) -> bool:
-        """鍒嗛厤鑷砋AV"""
+        """???UAV????????????????"""
         if not self.uavs:
             return False
 
-        vehicle_pos = np.array(vehicle.get('position', [0.0, 0.0]))
-        distances = []
-        in_range_mask = []
-        for uav in self.uavs:
-            dist = self.calculate_distance(vehicle_pos, uav['position'])
-            distances.append(dist)
-            in_range_mask.append(1.0 if dist <= uav.get('coverage_radius', 350.0) else 0.0)
+        vehicle_pos = np.asarray(vehicle.get('position', [0.0, 0.0]), dtype=float)
+        candidates = []
+        if getattr(self, 'spatial_index', None):
+            max_radius = self.spatial_index.uav_max_radius or max(
+                (float(uav.get('coverage_radius', 350.0)) for uav in self.uavs),
+                default=350.0,
+            )
+            candidates = self.spatial_index.query_uavs_within_radius(vehicle_pos, max_radius)
+            if not candidates:
+                nearest = self.spatial_index.find_nearest_uav(vehicle_pos, return_distance=True)
+                if nearest:
+                    candidates = [nearest]
 
-        accessible = np.array(in_range_mask, dtype=float)
-        if accessible.sum() == 0:
+        if not candidates:
+            candidates = [
+                (idx, uav, self.calculate_distance(vehicle_pos, uav['position']))
+                for idx, uav in enumerate(self.uavs)
+            ]
+
+        filtered = [
+            (idx, node, dist)
+            for idx, node, dist in candidates
+            if dist <= float(node.get('coverage_radius', 350.0))
+        ]
+        if not filtered:
             return False
 
-        probs = np.ones(len(self.uavs), dtype=float)
+        candidate_indices = np.array([idx for idx, _, _ in filtered], dtype=int)
+        distances = np.array([dist for _, _, dist in filtered], dtype=float)
+
+        probs = np.ones_like(distances)
         uav_pref = actions.get('uav_selection_probs')
         if isinstance(uav_pref, (list, tuple, np.ndarray)) and len(uav_pref) == len(self.uavs):
-            probs = np.array([max(0.0, float(v)) for v in uav_pref], dtype=float)
+            probs *= np.array([max(0.0, float(uav_pref[idx])) for idx in candidate_indices], dtype=float)
 
         guidance = actions.get('rl_guidance') or {}
         if isinstance(guidance, dict):
             uav_prior = np.array(guidance.get('uav_prior', []), dtype=float)
             if uav_prior.size >= len(self.uavs):
-                probs *= np.clip(uav_prior[:len(self.uavs)], 1e-4, None)
+                probs *= np.clip(uav_prior[candidate_indices], 1e-4, None)
             distance_focus = guidance.get('distance_focus')
             if isinstance(distance_focus, (list, tuple)) and len(distance_focus) >= 3:
                 distance_weight = float(np.clip(distance_focus[2], 0.0, 1.0))
                 probs = np.power(probs, 0.8 + 0.4 * distance_weight)
 
-        weights = probs * accessible
+        weights = probs
         if weights.sum() <= 0:
-            weights = accessible
+            weights = np.ones_like(weights)
 
         weights = weights / weights.sum()
-        uav_idx = int(np.random.choice(np.arange(len(self.uavs)), p=weights))
-        distance = distances[uav_idx]
+        choice = int(np.random.choice(np.arange(len(candidate_indices)), p=weights))
+        uav_idx = int(candidate_indices[choice])
+        distance = float(distances[choice])
         node = self.uavs[uav_idx]
         success = self._handle_remote_assignment(vehicle, task, node, 'UAV', uav_idx, distance, actions, step_summary)
         if success:
             step_summary['remote_tasks'] += 1
         return success
+
 
     def _handle_remote_assignment(
         self,
