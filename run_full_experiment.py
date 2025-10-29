@@ -309,12 +309,16 @@ class FullExperimentRunner:
                     
                     # 缓存请求
                     cache_requests += 1
-                    if cache_manager.request_content(f"content_{task.task_id}", task.data_size):
+                    cache_signature = f"{task.task_type.value}_{int(task.data_size)}_{int(task.compute_cycles)}"
+                    hit, _cache_action = cache_manager.request_content(cache_signature, task.data_size)
+                    if hit:
                         cache_hits += 1
+
+                    cache_states = {rsu.node_id: cache_manager.get_cache_state() for rsu in rsus}
                     
                     # 卸载决策
                     decision = decision_maker.make_offloading_decision(
-                        task, node_states, node_positions
+                        task, node_states, node_positions, cache_states=cache_states
                     )
                     
                     # 模拟任务处理

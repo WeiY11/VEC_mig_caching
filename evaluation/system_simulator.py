@@ -97,6 +97,15 @@ class CompleteSystemSimulator:
         # 性能统计与运行状态
         # Performance statistics and runtime state
         self.stats = self._fresh_stats_dict()
+        self.queue_config = getattr(self.sys_config, 'queue', None)
+        queue_cfg = self.queue_config
+        self.queue_stability_threshold = float(getattr(queue_cfg, 'global_rho_threshold', 1.0)) if queue_cfg is not None else 1.0
+        self.queue_warning_ratio = float(getattr(queue_cfg, 'stability_warning_ratio', 0.9)) if queue_cfg is not None else 0.9
+        self.node_max_load_factor = float(getattr(queue_cfg, 'max_load_factor', 1.0)) if queue_cfg is not None else 1.0
+        self.rsu_nominal_capacity = float(getattr(queue_cfg, 'rsu_nominal_capacity', 20.0)) if queue_cfg is not None else 20.0
+        self.uav_nominal_capacity = float(getattr(queue_cfg, 'uav_nominal_capacity', 10.0)) if queue_cfg is not None else 10.0
+        self._queue_overload_warning_active = False
+        self._queue_warning_triggered = False
         self.active_tasks: List[Dict] = []  # 每项: {id, vehicle_id, arrival_time, deadline, work_remaining, node_type, node_idx}
         self.task_counter = 0
         self.current_step = 0
@@ -343,7 +352,12 @@ class CompleteSystemSimulator:
                 'queue_sum': 0,
                 'by_type': {},
                 'by_scenario': {}
-            }
+            },
+            'queue_rho_sum': 0.0,
+            'queue_rho_max': 0.0,
+            'queue_overload_flag': False,
+            'queue_overload_events': 0,
+            'queue_rho_by_node': {}
         }
 
     def _reset_runtime_states(self):
@@ -358,6 +372,8 @@ class CompleteSystemSimulator:
         reset_simulation_time()
         self.current_step = 0
         self.current_time = 0.0
+        self._queue_overload_warning_active = False
+        self._queue_warning_triggered = False
         self.task_counter = 0
         self.stats = self._fresh_stats_dict()
         self.active_tasks = []
@@ -1020,6 +1036,17 @@ class CompleteSystemSimulator:
             
         return cache_hit
     
+    def _calculate_node_rho(self, node: Dict, node_type: str) -> float:
+        """Estimate queue utilization (?) based on nominal capacities."""
+        if node_type == 'RSU':
+            capacity = max(1.0, float(self.rsu_nominal_capacity))
+        elif node_type == 'UAV':
+            capacity = max(1.0, float(self.uav_nominal_capacity))
+        else:
+            capacity = 1.0
+        queue_length = len(node.get('computation_queue', []))
+        return float(queue_length / capacity)
+
     def _calculate_enhanced_load_factor(self, node: Dict, node_type: str) -> float:
         """
         馃敡 淇锛氱粺涓€鍜宺ealistic鐨勮礋杞藉洜瀛愯绠?
@@ -1030,12 +1057,10 @@ class CompleteSystemSimulator:
         # 馃敡 鍩轰簬瀹為檯瑙傚療璋冩暣瀹归噺鍩哄噯
         if node_type == 'RSU':
             # 鍩轰簬瀹為檯娴嬭瘯锛孯SU澶勭悊鑳藉姏绾?0涓换鍔′负婊¤礋杞?
-            base_capacity = 20.0  
-            queue_factor = queue_length / base_capacity
+            queue_factor = self._calculate_node_rho(node, 'RSU')
         else:  # UAV
             # UAV澶勭悊鑳藉姏绾?0涓换鍔′负婊¤礋杞?
-            base_capacity = 10.0
-            queue_factor = queue_length / base_capacity
+            queue_factor = self._calculate_node_rho(node, 'UAV')
         
         # 馃敡 淇锛氫娇鐢ㄦ纭殑缂撳瓨璁＄畻
         cache_utilization = self._calculate_correct_cache_utilization(
@@ -1052,6 +1077,73 @@ class CompleteSystemSimulator:
         # 馃敡 涓嶉檺鍒跺湪1.0锛屽厑璁告樉绀虹湡瀹炶繃杞界▼搴?
         return max(0.0, load_factor)
     
+    def _monitor_queue_stability(self) -> Dict[str, Any]:
+        """Monitor aggregate queue load and report stability metrics."""
+        node_rhos: Dict[str, float] = {}
+        overloaded_nodes: Dict[str, float] = {}
+        approaching_nodes: Dict[str, float] = {}
+        total_rho = 0.0
+        max_rho = 0.0
+        warning_threshold = self.queue_warning_ratio * self.node_max_load_factor if self.node_max_load_factor > 0 else self.queue_warning_ratio
+
+        for idx, rsu in enumerate(self.rsus):
+            rho = self._calculate_node_rho(rsu, 'RSU')
+            node_id = f'RSU_{idx}'
+            node_rhos[node_id] = rho
+            total_rho += rho
+            max_rho = max(max_rho, rho)
+            if rho >= self.node_max_load_factor:
+                overloaded_nodes[node_id] = rho
+            elif rho >= warning_threshold:
+                approaching_nodes[node_id] = rho
+
+        for idx, uav in enumerate(self.uavs):
+            rho = self._calculate_node_rho(uav, 'UAV')
+            node_id = f'UAV_{idx}'
+            node_rhos[node_id] = rho
+            total_rho += rho
+            max_rho = max(max_rho, rho)
+            if rho >= self.node_max_load_factor:
+                overloaded_nodes[node_id] = rho
+            elif rho >= warning_threshold:
+                approaching_nodes[node_id] = rho
+
+        overloaded = total_rho >= self.queue_stability_threshold
+        self.stats['queue_rho_sum'] = total_rho
+        self.stats['queue_rho_max'] = max_rho
+        self.stats['queue_overload_flag'] = overloaded
+        self.stats['queue_rho_by_node'] = dict(node_rhos)
+        if overloaded:
+            self.stats['queue_overload_events'] = self.stats.get('queue_overload_events', 0) + 1
+
+        if overloaded and not self._queue_overload_warning_active:
+            detail = ', '.join(f"{node}:{rho:.2f}" for node, rho in overloaded_nodes.items()) or 'none'
+            print(f"[Stability] Σρ={total_rho:.2f} exceeds threshold {self.queue_stability_threshold:.2f}. Overloaded nodes: {detail}")
+        elif not overloaded and self._queue_overload_warning_active:
+            print('[Stability] Queue load returned below stability threshold.')
+
+        if not overloaded:
+            if approaching_nodes and not self._queue_warning_triggered:
+                detail = ', '.join(f"{node}:{rho:.2f}" for node, rho in approaching_nodes.items())
+                print(f"[Stability] Queue load approaching limit: {detail}")
+                self._queue_warning_triggered = True
+            elif not approaching_nodes:
+                self._queue_warning_triggered = False
+        else:
+            self._queue_warning_triggered = True
+
+        self._queue_overload_warning_active = overloaded
+
+        return {
+            'queue_rho_sum': total_rho,
+            'queue_rho_max': max_rho,
+            'queue_overload_flag': overloaded,
+            'queue_rho_by_node': node_rhos,
+            'queue_overloaded_nodes': overloaded_nodes,
+            'queue_warning_nodes': approaching_nodes
+        }
+
+
     def _summarize_task_types(self) -> Dict[str, Any]:
         """Aggregate per-task-type queues, active counts, and deadline slack."""
         num_types = 4
@@ -2102,6 +2194,8 @@ class CompleteSystemSimulator:
             'active_tasks': len(self.active_tasks)
         })
 
+        stability_metrics = self._monitor_queue_stability()
+        step_summary.update(stability_metrics)
         step_summary.update(self._summarize_task_types())
 
         cumulative_stats = dict(self.stats)

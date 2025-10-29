@@ -249,6 +249,11 @@ class QueueConfig:
         self.priority_levels = 4
         # Aging factor tuned for short slots (strong decay each step)
         self.aging_factor = 0.25
+        self.max_load_factor = 0.95
+        self.global_rho_threshold = float(os.environ.get('QUEUE_GLOBAL_RHO_THRESHOLD', '1.0'))
+        self.stability_warning_ratio = float(os.environ.get('QUEUE_STABILITY_WARNING_RATIO', '0.9'))
+        self.rsu_nominal_capacity = float(os.environ.get('QUEUE_RSU_NOMINAL_CAPACITY', '20.0'))
+        self.uav_nominal_capacity = float(os.environ.get('QUEUE_UAV_NOMINAL_CAPACITY', '10.0'))
 
 class TaskConfig:
     """

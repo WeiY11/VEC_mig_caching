@@ -360,6 +360,10 @@ class SingleAgentTrainingEnvironment:
             'migration_avg_cost': [],
             'migration_avg_delay_saved': [],
             'migration_success_rate': [],
+            'queue_rho_sum': [],
+            'queue_rho_max': [],
+            'queue_overload_flag': [],
+            'queue_overload_events': [],
             'episode_steps': [],  # 🔧 新增：记录每个episode的实际步数
             'task_type_queue_share_1': [],
             'task_type_queue_share_2': [],
@@ -390,6 +394,7 @@ class SingleAgentTrainingEnvironment:
             'recent_energy': MovingAverage(100),
             'recent_completion': MovingAverage(100)
         }
+        self._episode_counters_initialized = False
         
         print(f"✓ {self.algorithm}训练环境初始化完成")
         print(f"✓ 算法类型: 单智能体")
@@ -418,9 +423,41 @@ class SingleAgentTrainingEnvironment:
         utilization = total_used_mb / cache_capacity_mb
         return min(1.0, max(0.0, utilization))
     
+    def _initialize_episode_counters(self, stats: Optional[Dict[str, Any]] = None) -> None:
+        """Reset per-episode baseline counters to avoid carrying over cumulative stats."""
+        stats_dict: Dict[str, Any]
+        if stats is None:
+            stats_dict = {}
+        else:
+            try:
+                stats_dict = dict(stats)
+            except Exception:
+                stats_dict = {}
+
+        self._episode_energy_base = float(stats_dict.get('total_energy', 0.0) or 0.0)
+        self._episode_processed_base = int(stats_dict.get('processed_tasks', 0) or 0)
+        self._episode_dropped_base = int(stats_dict.get('dropped_tasks', 0) or 0)
+        self._episode_generated_bytes_base = float(stats_dict.get('generated_data_bytes', 0.0) or 0.0)
+        self._episode_dropped_bytes_base = float(stats_dict.get('dropped_data_bytes', 0.0) or 0.0)
+
+        # Cache controllers keep their own cumulative counters; snapshot them as the new baseline
+        if hasattr(self, 'adaptive_cache_controller'):
+            cache_metrics = self.adaptive_cache_controller.get_cache_metrics()
+            self._episode_cache_requests_base = int(cache_metrics.get('total_requests', 0) or 0)
+            self._episode_cache_evictions_base = int(cache_metrics.get('evicted_items', 0) or 0)
+            self._episode_cache_collab_base = int(cache_metrics.get('collaborative_writes', 0) or 0)
+        else:
+            self._episode_cache_requests_base = 0
+            self._episode_cache_evictions_base = 0
+            self._episode_cache_collab_base = 0
+
+        self._episode_queue_overload_events_base = int(stats_dict.get('queue_overload_events', 0) or 0)
+        self._episode_counters_initialized = True
+
     def reset_environment(self) -> np.ndarray:
         """重置环境并返回初始状态"""
         # 重置仿真器状态
+        self._episode_counters_initialized = False
         self.simulator._setup_scenario()
         
         # 收集系统状态
@@ -472,14 +509,13 @@ class SingleAgentTrainingEnvironment:
         # 🔧 修复：重置能耗追踪器，避免跨episode累积
         if hasattr(self, '_last_total_energy'):
             delattr(self, '_last_total_energy')
-        # 设置本episode能耗基线（用于计算增量能耗）
-        self._episode_energy_base = 0.0
-        
-        # 获取初始状态向量
+
+        self._initialize_episode_counters(getattr(self.simulator, 'stats', None))
+
         state = self.agent_env.get_state_vector(node_states, system_metrics)
-        
+
         return state
-    
+
     def step(self, action, state, actions_dict: Optional[Dict] = None) -> Tuple[np.ndarray, float, bool, Dict]:
         """执行一步仿真，应用智能体动作到仿真器"""
         # 构造传递给仿真器的动作（将连续动作映射为本地/RSU/UAV偏好）
@@ -612,24 +648,25 @@ class SingleAgentTrainingEnvironment:
         # 🔧 修复能耗计算：使用真实累积能耗并转换为本episode增量
         current_total_energy = safe_get('total_energy', 0.0)
 
+        if not getattr(self, '_episode_counters_initialized', False):
+            self._initialize_episode_counters(step_stats)
+
         # 自适应控制器统计（用于奖励与指标归一化）
         cache_metrics = self.adaptive_cache_controller.get_cache_metrics()
         migration_metrics = self.adaptive_migration_controller.get_migration_metrics()
         cache_total_requests = int(cache_metrics.get('total_requests', 0) or 0)
         cache_total_evictions = int(cache_metrics.get('evicted_items', 0) or 0)
         cache_total_collab = int(cache_metrics.get('collaborative_writes', 0) or 0)
-        
-        # 初始化本episode各项统计基线
-        if not hasattr(self, '_episode_energy_base_initialized'):
-            self._episode_energy_base = current_total_energy
-            self._episode_processed_base = total_processed
-            self._episode_dropped_base = total_dropped
-            self._episode_generated_bytes_base = current_generated_bytes
-            self._episode_dropped_bytes_base = current_dropped_bytes
-            self._episode_cache_requests_base = cache_total_requests
-            self._episode_cache_evictions_base = cache_total_evictions
-            self._episode_cache_collab_base = cache_total_collab
-            self._episode_energy_base_initialized = True
+
+        queue_rho_sum = float(step_stats.get('queue_rho_sum', 0.0) or 0.0)
+        queue_rho_max = float(step_stats.get('queue_rho_max', 0.0) or 0.0)
+        queue_overload_flag = 1.0 if bool(step_stats.get('queue_overload_flag', False)) else 0.0
+        queue_rho_by_node = step_stats.get('queue_rho_by_node', {}) or {}
+        queue_overloaded_nodes = step_stats.get('queue_overloaded_nodes', {}) or {}
+        queue_warning_nodes = step_stats.get('queue_warning_nodes', {}) or {}
+        queue_overload_events_total = int(step_stats.get('queue_overload_events', 0) or 0)
+        queue_overload_events = max(0, queue_overload_events_total - getattr(self, '_episode_queue_overload_events_base', 0))
+
         
         # 计算本episode增量能耗（防止负值与异常）
         if current_total_energy <= 0.0:
@@ -771,6 +808,13 @@ class SingleAgentTrainingEnvironment:
             'task_type_active_counts': active_counts,
             'task_type_drop_rate': drop_rate,
             'task_type_generated_share': generated_share,
+            'queue_rho_sum': queue_rho_sum,
+            'queue_rho_max': queue_rho_max,
+            'queue_overload_flag': queue_overload_flag,
+            'queue_overload_events': queue_overload_events,
+            'queue_rho_by_node': queue_rho_by_node,
+            'queue_overloaded_nodes': queue_overloaded_nodes,
+            'queue_warning_nodes': queue_warning_nodes,
             'rsu_hotspot_intensity_list': hotspot_list,
             'rsu_hotspot_mean': rsu_hotspot_mean,
             'rsu_hotspot_peak': rsu_hotspot_peak
@@ -783,6 +827,7 @@ class SingleAgentTrainingEnvironment:
             max_steps = config.experiment.max_steps_per_episode
         
         # 重置环境
+        self._episode_counters_initialized = False
         state = self.reset_environment()
         
         # 🔧 保存当前episode编号
@@ -790,10 +835,6 @@ class SingleAgentTrainingEnvironment:
         
         # 🔧 重置episode步数跟踪，修复能耗计算
         self._current_episode_step = 0
-        
-        # 重置episode统计基线标记
-        if hasattr(self, '_episode_energy_base_initialized'):
-            delattr(self, '_episode_energy_base_initialized')
         
         episode_reward = 0.0
         episode_info = {}
@@ -1297,6 +1338,10 @@ def train_single_algorithm(algorithm: str, num_episodes: Optional[int] = None, e
             'cache_collaborative_writes': 'cache_collaborative_writes',
             'local_cache_hits': 'local_cache_hits',
             'migration_success_rate': 'migration_success_rate',
+            'queue_rho_sum': 'queue_rho_sum',
+            'queue_rho_max': 'queue_rho_max',
+            'queue_overload_flag': 'queue_overload_flag',
+            'queue_overload_events': 'queue_overload_events',
             'migration_avg_cost': 'migration_avg_cost',
             'migration_avg_delay_saved': 'migration_avg_delay_saved',
             'rsu_hotspot_mean': 'rsu_hotspot_mean',
