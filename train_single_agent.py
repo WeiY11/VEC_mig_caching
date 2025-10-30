@@ -94,7 +94,7 @@ if sys.platform == 'win32':
 
 import argparse
 import json
-from fixed_topology_optimizer import FixedTopologyOptimizer
+from tools.fixed_topology_optimizer import FixedTopologyOptimizer
 import numpy as np
 import matplotlib.pyplot as plt
 import time

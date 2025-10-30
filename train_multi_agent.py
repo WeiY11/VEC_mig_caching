@@ -10,6 +10,28 @@ python train_multi_agent.py --algorithm MAPPO --episodes 200
 python train_multi_agent.py --algorithm SAC-MA --episodes 200
 python train_multi_agent.py --compare --episodes 200  # 比较所有算法
 """
+import os
+import sys
+
+# 🔧 修复Windows编码问题
+if sys.platform == 'win32':
+    try:
+        if hasattr(sys.stdout, 'reconfigure'):
+            sys.stdout.reconfigure(encoding='utf-8', errors='replace')
+        elif hasattr(sys.stdout, 'buffer'):
+            import io
+            sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace', line_buffering=True)
+    except Exception:
+        pass
+    try:
+        if hasattr(sys.stderr, 'reconfigure'):
+            sys.stderr.reconfigure(encoding='utf-8', errors='replace')
+        elif hasattr(sys.stderr, 'buffer'):
+            import io
+            sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', errors='replace', line_buffering=True)
+    except Exception:
+        pass
+
 # 性能优化 - 必须在其他导入之前
 try:
     from tools.performance_optimization import *
@@ -18,7 +40,6 @@ except ImportError:
     OPTIMIZED_BATCH_SIZES = {}
     PARALLEL_ENVS = 1
     NUM_WORKERS = 0
-import os
 import argparse
 import numpy as np
 import matplotlib.pyplot as plt
@@ -459,14 +480,14 @@ class MultiAgentTrainingEnvironment:
         }
     
     def _calculate_rewards(self, system_metrics: Dict) -> Dict[str, float]:
-        """计算智能体奖励 - 使用简化的、基于成本的奖励函数"""
-        from utils.simple_reward_calculator import calculate_simple_reward
+        """计算智能体奖励 - 使用统一奖励函数"""
+        from utils.unified_reward_calculator import calculate_unified_reward
         
         rewards = {}
         agent_ids = ['vehicle_agent', 'rsu_agent', 'uav_agent']
         
         # 为所有智能体计算统一的、基于全局指标的奖励
-        reward_val = calculate_simple_reward(system_metrics)
+        reward_val = calculate_unified_reward(system_metrics, algorithm='general')
         
         for agent_id in agent_ids:
             # 共享奖励信号以促进合作

@@ -2,7 +2,6 @@
 
 Provides utilities for planning and executing task migrations."""
 import numpy as np
-import time
 import uuid
 from typing import Dict, List, Tuple, Optional, Any
 from dataclasses import dataclass
@@ -10,6 +9,7 @@ from enum import Enum
 
 from models.data_structures import Task, Position
 from config import config
+from utils.unified_time_manager import get_simulation_time
 
 
 class MigrationType(Enum):
@@ -67,7 +67,7 @@ class TaskMigrationManager:
     def check_migration_needs(self, node_states: Dict, node_positions: Dict[str, Position]) -> List[MigrationPlan]:
         """Check nodes and create migration plans."""
         migration_plans = []
-        current_time = time.time()
+        current_time = get_simulation_time()
         
         for node_id, state in node_states.items():
             # 妫€鏌ュ喎鍗存湡
@@ -136,16 +136,26 @@ class TaskMigrationManager:
         if source_node_id in node_positions and target_node_id in node_positions:
             distance = node_positions[source_node_id].distance_to(node_positions[target_node_id])
 
-        transmission_cost = distance / 1000.0  # 距离成本
-        computation_cost = 1.0  # 固定计算成本
+        transmission_cost = distance / 1000.0  # 传输成本近似按公里计算
+        computation_cost = 1.0  # 固定计算成本占位
 
         migration_bandwidth = max(1e-9, getattr(config.migration, 'migration_bandwidth', 1e6))
-        migration_delay = max(0.01, distance / migration_bandwidth)
+        data_range = getattr(config.task, 'task_data_size_range', getattr(config.task, 'data_size_range', (1.0, 1.0)))
+        if isinstance(data_range, (list, tuple)) and len(data_range) >= 2:
+            avg_data_size = (float(data_range[0]) + float(data_range[1])) / 2.0
+        elif isinstance(data_range, (list, tuple)):
+            avg_data_size = float(data_range[0])
+        else:
+            avg_data_size = float(data_range)
+        data_size_bits = max(avg_data_size * 8.0, 1.0)
+        migration_delay = max(0.01, data_size_bits / migration_bandwidth)
         latency_cost = migration_delay / max(1e-9, config.network.time_slot_duration)  # 延迟成本
 
-        total_cost = (self.alpha_comp * computation_cost +
-                     self.alpha_tx * transmission_cost +
-                     self.alpha_lat * latency_cost)
+        total_cost = (
+            self.alpha_comp * computation_cost +
+            self.alpha_tx * transmission_cost +
+            self.alpha_lat * latency_cost
+        )
 
         success_prob = max(0.5, 0.9 - distance / 10000.0)  # 距离越远成功率越低
 
@@ -189,7 +199,7 @@ class TaskMigrationManager:
             migration_plan.is_completed = True
 
             # 更新冷却时间
-            self.node_last_migration[migration_plan.source_node_id] = time.time()
+            self.node_last_migration[migration_plan.source_node_id] = get_simulation_time()
 
             # Update average migration cost
             self._update_avg_cost(migration_plan.migration_cost)

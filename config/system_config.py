@@ -35,7 +35,7 @@ import os
 import random
 from collections import defaultdict
 from dataclasses import dataclass
-from typing import Dict, Any, Tuple, List
+from typing import Dict, Any, Tuple, List, Optional
 
 
 @dataclass(frozen=True)
@@ -264,6 +264,10 @@ class QueueConfig:
         self.stability_warning_ratio = float(os.environ.get('QUEUE_STABILITY_WARNING_RATIO', '0.9'))
         self.rsu_nominal_capacity = float(os.environ.get('QUEUE_RSU_NOMINAL_CAPACITY', '20.0'))
         self.uav_nominal_capacity = float(os.environ.get('QUEUE_UAV_NOMINAL_CAPACITY', '10.0'))
+        # Capacity limits (bytes) used for queue admission control
+        self.vehicle_queue_capacity = float(os.environ.get('QUEUE_VEHICLE_CAPACITY', '2.5e8'))
+        self.rsu_queue_capacity = float(os.environ.get('QUEUE_RSU_CAPACITY', '1.5e9'))
+        self.uav_queue_capacity = float(os.environ.get('QUEUE_UAV_CAPACITY', '6e8'))
 
 class TaskConfig:
     """
@@ -367,31 +371,149 @@ class TaskConfig:
         self._scenario_lookup = {scenario.name: scenario for scenario in self.scenarios}
         self.type_priority_weights = self._compute_type_priority_weights()
     
-    def get_task_type(self, max_delay_slots: int) -> int:
+    def get_task_type(
+        self,
+        max_delay_slots: int,
+        data_size: Optional[float] = None,
+        compute_cycles: Optional[float] = None,
+        compute_density: Optional[float] = None,
+        time_slot: Optional[float] = None,
+        system_load: Optional[float] = None,
+        is_cacheable: bool = False,
+    ) -> int:
         """
-        根据最大延迟时隙数确定任务类型
-        对应论文第2.1节任务分类框架
-        
-        【功能】将时隙数映射到任务类型
-        【参数】
-        - max_delay_slots: 任务最大可容忍延迟时隙数
-        
-        【返回值】任务类型值(1-4)
-        - 1: EXTREMELY_DELAY_SENSITIVE (≤1个时隙)
-        - 2: DELAY_SENSITIVE (≤2个时隙)
-        - 3: MODERATELY_DELAY_TOLERANT (≤3个时隙)
-        - 4: DELAY_TOLERANT (>3个时隙)
-        
-        【论文对应】Section 2.1, Equation (1)
+        基于多维特征的任务分类，兼顾时延、数据规模和计算强度。
         """
-        if max_delay_slots <= self.delay_thresholds['extremely_sensitive']:
-            return 1  # EXTREMELY_DELAY_SENSITIVE
-        elif max_delay_slots <= self.delay_thresholds['sensitive']:
-            return 2  # DELAY_SENSITIVE
-        elif max_delay_slots <= self.delay_thresholds['moderately_tolerant']:
-            return 3  # MODERATELY_DELAY_TOLERANT
-        else:
-            return 4  # DELAY_TOLERANT
+        thresholds = self._get_dynamic_delay_thresholds(system_load)
+        base_type = self._determine_base_type(max_delay_slots, thresholds)
+        slot_duration = self._resolve_time_slot(time_slot)
+
+        density = compute_density
+        if density is None and compute_cycles is not None and data_size:
+            bits = max(float(data_size) * 8.0, 1.0)
+            density = compute_cycles / bits
+
+        task_type = self._adjust_by_processing_capacity(
+            base_type, compute_cycles, max_delay_slots, slot_duration
+        )
+        task_type = self._iterative_adjustment(
+            task_type,
+            lambda t: self._adjust_by_data_size(t, data_size, is_cacheable),
+        )
+        task_type = self._iterative_adjustment(
+            task_type,
+            lambda t: self._adjust_by_compute_density(t, density, is_cacheable),
+        )
+
+        return max(1, min(4, int(task_type)))
+
+    def _get_dynamic_delay_thresholds(self, system_load: Optional[float]) -> Dict[str, int]:
+        thresholds = dict(self.delay_thresholds)
+        if system_load is None:
+            return thresholds
+        try:
+            load = float(system_load)
+        except (TypeError, ValueError):
+            return thresholds
+        load = max(0.0, min(load, 1.5))
+        scale = 1.0 + 0.35 * (load - 0.5)
+        scale = max(0.6, min(scale, 1.4))
+        for key, value in thresholds.items():
+            thresholds[key] = max(1, int(round(value * scale)))
+        return thresholds
+
+    def _determine_base_type(self, max_delay_slots: int, thresholds: Dict[str, int]) -> int:
+        if max_delay_slots <= thresholds['extremely_sensitive']:
+            return 1
+        if max_delay_slots <= thresholds['sensitive']:
+            return 2
+        if max_delay_slots <= thresholds['moderately_tolerant']:
+            return 3
+        return 4
+
+    def _resolve_time_slot(self, override: Optional[float]) -> float:
+        if override and override > 0:
+            return float(override)
+        global_cfg = globals().get('config')
+        try:
+            return float(getattr(getattr(global_cfg, 'network', None), 'time_slot_duration', 0.2))
+        except Exception:
+            return 0.2
+
+    def _iterative_adjustment(self, task_type: int, adjust_fn) -> int:
+        adjusted = task_type
+        for _ in range(3):
+            new_value = adjust_fn(adjusted)
+            if new_value == adjusted:
+                break
+            adjusted = new_value
+        return adjusted
+
+    def _adjust_by_data_size(self, task_type: int, data_size: Optional[float], is_cacheable: bool) -> int:
+        if data_size is None or data_size <= 0:
+            return task_type
+        profile = self.task_profiles.get(task_type)
+        if not profile:
+            return task_type
+        data_min, data_max = profile.data_range
+        upper_margin = 1.25 if not is_cacheable else 1.45
+        lower_margin = 0.55
+        if data_size > data_max * upper_margin and task_type < 4:
+            return task_type + 1
+        if data_size < data_min * lower_margin and task_type > 1:
+            return task_type - 1
+        return task_type
+
+    def _adjust_by_compute_density(self, task_type: int, compute_density: Optional[float], is_cacheable: bool) -> int:
+        if compute_density is None or compute_density <= 0:
+            return task_type
+        profile = self.task_profiles.get(task_type)
+        if not profile or profile.compute_density <= 0:
+            return task_type
+        baseline = profile.compute_density
+        upper_margin = 1.35 if not is_cacheable else 1.55
+        lower_margin = 0.65
+        if compute_density > baseline * upper_margin and task_type < 4:
+            return task_type + 1
+        if compute_density < baseline * lower_margin and task_type > 1:
+            return task_type - 1
+        return task_type
+
+    def _adjust_by_processing_capacity(
+        self,
+        task_type: int,
+        compute_cycles: Optional[float],
+        max_delay_slots: int,
+        slot_duration: float,
+    ) -> int:
+        if compute_cycles is None or compute_cycles <= 0 or max_delay_slots <= 0:
+            return task_type
+        budgets = self._estimate_processing_budgets(max_delay_slots, slot_duration)
+        adjusted = task_type
+        while adjusted < 4 and compute_cycles > budgets.get(adjusted, float('inf')):
+            adjusted += 1
+        return adjusted
+
+    def _estimate_processing_budgets(self, max_delay_slots: int, slot_duration: float) -> Dict[int, float]:
+        compute_cfg = getattr(globals().get('config'), 'compute', None)
+        efficiency = 0.8
+        vehicle_peak = 2.5e9
+        rsu_peak = 12e9
+        if compute_cfg:
+            efficiency = float(getattr(compute_cfg, 'parallel_efficiency', efficiency))
+            vehicle_range = getattr(compute_cfg, 'vehicle_cpu_freq_range', (vehicle_peak, vehicle_peak))
+            rsu_range = getattr(compute_cfg, 'rsu_cpu_freq_range', (rsu_peak, rsu_peak))
+            vehicle_peak = float(vehicle_range[1])
+            rsu_peak = float(rsu_range[1])
+        slot = max(slot_duration, 1e-6)
+        budgets = {
+            1: vehicle_peak * efficiency * slot * max(1, max_delay_slots),
+            2: rsu_peak * efficiency * slot * max(1, max_delay_slots),
+            3: rsu_peak * efficiency * slot * max(2, int(max_delay_slots * 1.2)),
+            4: float('inf'),
+        }
+        return budgets
+
 
     def sample_scenario(self) -> TaskScenarioSpec:
         """

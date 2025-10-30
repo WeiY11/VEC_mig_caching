@@ -145,7 +145,7 @@ class MATD3Agent:
         
         # 优化后的批次大小 - 对应论文中的批量处理参数
         self.optimized_batch_size = OPTIMIZED_BATCH_SIZES.get('MATD3', config.rl.batch_size)
-        print(f"🚀 {agent_id} 使用优化批次大小: {self.optimized_batch_size}")
+        print(f"{agent_id} 使用优化批次大小: {self.optimized_batch_size}")
         
         # 噪声参数
         self.policy_noise = config.rl.policy_noise

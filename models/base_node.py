@@ -2,6 +2,7 @@
 VEC系统节点实现 - 对应论文第2节系统模型
 包含车辆、RSU、UAV三种节点类型的具体实现
 """
+import logging
 import numpy as np
 import math
 import time
@@ -14,6 +15,9 @@ from .data_structures import (
 )
 from config import config
 from utils import generate_poisson_arrivals, ExponentialMovingAverage
+
+
+logger = logging.getLogger(__name__)
 
 
 class BaseNode(ABC):
@@ -29,6 +33,8 @@ class BaseNode(ABC):
         # 多优先级生命周期队列 - 对应论文第2.3节
         self.queues: Dict[Tuple[int, int], QueueSlot] = {}
         self._initialize_queues()
+        self._queue_data_usage: float = 0.0
+        self._queue_instability_alerted = False
         
         # 性能统计
         self.processed_tasks: List[Task] = []
@@ -77,39 +83,49 @@ class BaseNode(ABC):
     
     def add_task_to_queue(self, task: Task) -> bool:
         """
-        将任务添加到相应的队列槽位
-        根据任务的剩余生命周期和优先级确定槽位
+        ���������ӵ���Ӧ�Ķ��в�λ
+        ���������ʣ���������ں����ȼ�ȷ����λ
         """
         lifetime = task.remaining_lifetime_slots
         priority = task.priority
-        
-        # 检查队列容量
-        if self._check_queue_capacity():
-            queue_key = (lifetime, priority)
-            if queue_key in self.queues:
-                return self.queues[queue_key].add_task(task)
-            else:
-                # 如果生命周期超出范围，任务被丢弃
-                self.dropped_tasks.append(task)
-                task.is_dropped = True
-                return False
-        else:
-            # 队列已满，任务被丢弃
-            self.dropped_tasks.append(task)
-            task.is_dropped = True
+
+        if lifetime <= 0:
+            self._register_drop(task)
             return False
-    
-    def _check_queue_capacity(self) -> bool:
-        """检查队列容量是否允许新任务"""
-        total_data = sum(queue.data_volume for queue in self.queues.values())
-        
+
+        if not self._has_capacity_for(task):
+            logger.debug("Queue capacity reached for %s; dropping task %s", self.node_id, task.task_id)
+            self._register_drop(task)
+            return False
+
+        queue_key = (lifetime, priority)
+        if queue_key not in self.queues:
+            self._register_drop(task)
+            return False
+
+        if self.queues[queue_key].add_task(task):
+            self._queue_data_usage += task.data_size
+            task.queue_arrival_time = time.time()
+            task.waiting_delay = 0.0
+            return True
+
+        return False
+
+    def _has_capacity_for(self, task: Task) -> bool:
+        """�����������Ƿ������������"""
+        capacity_limit = self._get_queue_capacity_limit()
+        if capacity_limit <= 0:
+            return True
+        return (self._queue_data_usage + task.data_size) <= capacity_limit
+
+    def _get_queue_capacity_limit(self) -> float:
+        """��ȡ��ǰ�ڵ��Ӧ�Ķ�������Ϣ"""
         if self.node_type == NodeType.VEHICLE:
-            return total_data < config.queue.vehicle_queue_capacity
-        elif self.node_type == NodeType.RSU:
-            return total_data < config.queue.rsu_queue_capacity
-        else:  # UAV
-            return total_data < config.queue.uav_queue_capacity
-    
+            return getattr(config.queue, 'vehicle_queue_capacity', -1.0)
+        if self.node_type == NodeType.RSU:
+            return getattr(config.queue, 'rsu_queue_capacity', -1.0)
+        return getattr(config.queue, 'uav_queue_capacity', -1.0)
+
     def get_next_task_to_process(self) -> Optional[Task]:
         """
         获取下一个待处理任务
@@ -127,55 +143,69 @@ class BaseNode(ABC):
     
     def process_task(self, task: Task) -> bool:
         """
-        处理任务
-        返回是否成功处理
+        ��������
+        ���򷵻ؽ��Ƿ�ɹ��������
         """
-        # 计算处理时延
+        # ���㴦��ʱ��
         processing_delay = self.calculate_processing_delay(task)
-        
-        # 检查是否超出截止时间
+
+        # ����Ƿ�Խ����ֹʱ��
         if task.is_deadline_violated():
-            self.dropped_tasks.append(task)
-            task.is_dropped = True
+            self._remove_task_from_queue(task)
+            self._register_drop(task)
             return False
-        
-        # 执行任务处理
-        task.start_time = time.time()
+
+        # ִ����������
+        task_start_time = time.time()
+        task.start_time = task_start_time
+        if task.queue_arrival_time is not None:
+            task.waiting_delay = max(0.0, task_start_time - task.queue_arrival_time)
+        else:
+            task.waiting_delay = max(0.0, task.waiting_delay)
         task.processing_delay = processing_delay
         task.assigned_node_id = self.node_id
-        
-        # 计算能耗
+
+        # ���㹦�ˣ?
         energy_cost = self.calculate_energy_consumption(processing_delay)
         self.state.total_energy += energy_cost
         self.energy_consumption_history.append(energy_cost)
-        # 限制历史记录长度，防止内存泄漏
+        # ������ʷ��¼������ֹ�ڴ����?
         if len(self.energy_consumption_history) > 100:
             self.energy_consumption_history.pop(0)
-        
-        # 模拟处理完成
-        task.completion_time = task.start_time + processing_delay
+
+        # ģ�⴦��������
+        task.completion_time = task_start_time + processing_delay
         task.is_completed = True
-        
-        # 从队列中移除任务
+
+        # �Ӷ������Ƴ�����
         self._remove_task_from_queue(task)
-        
-        # 添加到已处理任务列表
+
+        # ������Ѵ��������б?
         self.processed_tasks.append(task)
-        # 限制已处理任务列表长度，防止内存泄漏
+        # ������Ѵ��������б�������ֹ�ڴ洢��
         if len(self.processed_tasks) > 50:
             self.processed_tasks.pop(0)
-        
-        # 更新统计信息
+
+        # ����ͳ����Ϣ
         self._update_statistics()
-        
+
         return True
-    
-    def _remove_task_from_queue(self, task: Task):
+
+    def _remove_task_from_queue(self, task: Task) -> bool:
         """从队列中移除指定任务"""
         for queue in self.queues.values():
             removed_task = queue.remove_task(task.task_id)
             if removed_task:
-                break
+                self._queue_data_usage = max(0.0, self._queue_data_usage - removed_task.data_size)
+                removed_task.queue_arrival_time = None
+                return True
+        return False
+
+    def _register_drop(self, task: Task):
+        """记录任务被丢弃"""
+        if not task.is_dropped:
+            task.is_dropped = True
+            self.dropped_tasks.append(task)
     
     def predict_waiting_time(self, task: Task) -> float:
         """
@@ -197,10 +227,21 @@ class BaseNode(ABC):
         
         # 检查稳定性条件
         total_rho = sum(rho_values.values())
-        if total_rho >= 1.0:
+        warning_ratio = getattr(config.queue, 'stability_warning_ratio', 0.9)
+        instability_threshold = getattr(config.queue, 'global_rho_threshold', 1.0)
+
+        if total_rho >= warning_ratio:
+            self.state.stability_warning = True
+            if total_rho >= instability_threshold and not self._queue_instability_alerted:
+                logger.warning("Queue at node %s is unstable (total rho=%.3f)", self.node_id, total_rho)
+                self._queue_instability_alerted = True
+        else:
+            self.state.stability_warning = False
+            self._queue_instability_alerted = False
+
+        if total_rho >= instability_threshold:
             return float('inf')
-        
-        # 计算优先级为priority的任务平均等待时间 - 论文式(2)
+
         numerator = sum(rho_values[p] for p in range(1, priority + 1))
         
         denominator1 = 1 - sum(rho_values[p] for p in range(1, priority))
@@ -263,35 +304,33 @@ class BaseNode(ABC):
     
     def update_queue_lifetimes(self):
         """
-        更新队列中任务的生命周期
-        每个时隙开始时调用
+        �����и����е����ָʻ��ڣ�ÿ��ʱ�غ���
         """
-        # 创建新的队列结构
+        if self.node_type == NodeType.VEHICLE:
+            lifetime_range = range(1, config.queue.max_lifetime + 1)
+        else:
+            lifetime_range = range(1, config.queue.max_lifetime)
+
         new_queues = {}
-        
-        for (lifetime, priority), queue in self.queues.items():
-            if queue.is_empty():
-                # 保持空队列结构
+        for lifetime in lifetime_range:
+            for priority in range(1, config.task.num_priority_levels + 1):
                 new_queues[(lifetime, priority)] = QueueSlot(lifetime, priority)
-            else:
-                # 将任务移动到新的生命周期队列
-                new_lifetime = max(1, lifetime - 1)
-                new_key = (new_lifetime, priority)
-                
-                if new_key not in new_queues:
-                    new_queues[new_key] = QueueSlot(new_lifetime, priority)
-                
-                # 移动任务
-                for task in queue.task_list:
-                    if new_lifetime > 0:
-                        new_queues[new_key].add_task(task)
-                    else:
-                        # 生命周期用尽，任务被丢弃
-                        task.is_dropped = True
-                        self.dropped_tasks.append(task)
-        
+
+        for (lifetime, priority), queue in self.queues.items():
+            for task in queue.task_list:
+                if task.is_deadline_violated():
+                    self._register_drop(task)
+                    continue
+
+                new_lifetime = lifetime - 1
+                if new_lifetime >= 1 and (new_lifetime, priority) in new_queues:
+                    new_queues[(new_lifetime, priority)].add_task(task)
+                else:
+                    self._register_drop(task)
+
         self.queues = new_queues
-    
+        self._queue_data_usage = sum(slot.data_volume for slot in self.queues.values())
+
     def get_state_vector(self) -> np.ndarray:
         """获取节点状态向量，用于强化学习"""
         state_features = [

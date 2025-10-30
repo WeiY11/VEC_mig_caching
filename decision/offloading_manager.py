@@ -58,18 +58,41 @@ class TaskClassifier:
         }
 
     def classify_task(self, task: Task) -> TaskType:
-        s = task.max_delay_slots
-        if s <= self.threshold_1:
-            t = TaskType.EXTREMELY_DELAY_SENSITIVE
-        elif s <= self.threshold_2:
-            t = TaskType.DELAY_SENSITIVE
-        elif s <= self.threshold_3:
-            t = TaskType.MODERATELY_DELAY_TOLERANT
-        else:
-            t = TaskType.DELAY_TOLERANT
-        task.task_type = t
-        self.classification_stats[t] += 1
-        return t
+        max_delay_slots = int(getattr(task, 'max_delay_slots', 1) or 1)
+        data_size = float(getattr(task, 'data_size', 0.0) or 0.0)
+        compute_cycles = getattr(task, 'compute_cycles', None)
+        compute_density = None
+        if compute_cycles and data_size:
+            denom = max(data_size * 8.0, 1.0)
+            compute_density = compute_cycles / denom
+        system_load = self._estimate_system_load_hint()
+        slot_duration = getattr(config.network, 'time_slot_duration', 0.2)
+        type_value = config.get_task_type(
+            max_delay_slots,
+            data_size=data_size,
+            compute_cycles=compute_cycles,
+            compute_density=compute_density,
+            time_slot=slot_duration,
+            system_load=system_load,
+            is_cacheable=self._is_task_cacheable(task),
+        )
+        task_type = TaskType(type_value)
+        task.task_type = task_type
+        self.classification_stats[task_type] += 1
+        return task_type
+
+    def _estimate_system_load_hint(self) -> Optional[float]:
+        total = sum(self.classification_stats.values())
+        if total < 5:
+            return None
+        high_priority = (
+            self.classification_stats[TaskType.EXTREMELY_DELAY_SENSITIVE]
+            + self.classification_stats[TaskType.DELAY_SENSITIVE]
+        )
+        return max(0.0, min(1.0, high_priority / total))
+
+    def _is_task_cacheable(self, task: Task) -> bool:
+        return getattr(task, 'cache_access_count', 0) > 0
 
     def get_candidate_nodes(self, task: Task, all_nodes: Dict[str, 'Position']) -> List[str]:
         t = task.task_type
@@ -321,4 +344,3 @@ class OffloadingDecisionMaker:
         stats['classification_distribution'] = self.classifier.get_classification_distribution()
         stats['total_decisions'] = self.total_decisions
         return stats
-

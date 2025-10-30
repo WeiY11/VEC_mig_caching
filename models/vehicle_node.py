@@ -10,7 +10,11 @@ from typing import List, Optional, Tuple
 from .base_node import BaseNode
 from .data_structures import Task, Position, NodeType, TaskType
 from config import config
-from utils import generate_poisson_arrivals
+from utils import (
+    generate_poisson_arrivals, 
+    sample_zipf_content_id, 
+    sample_heavy_tailed_task_size
+)
 
 
 class VehicleNode(BaseNode):
@@ -120,26 +124,99 @@ class VehicleNode(BaseNode):
         return new_tasks
     
     def _create_random_task(self) -> Task:
-        """创建随机任务"""
-        # 随机生成任务属性
-        data_size_range = config.task.task_data_size_range
-        data_size = np.random.uniform(data_size_range[0], data_size_range[1])
+        """
+        创建随机任务 - 优化版
         
-        # 修复：数据大小是字节，需要转换为比特再乘以计算密度
-        compute_cycles = data_size * 8 * config.task.task_compute_density  # 字节转比特
+        【功能】基于场景生成真实任务，支持：
+        1. 场景化任务生成（8种应用场景）
+        2. 重尾数据大小分布（帕累托分布）
+        3. Zipf内容热度分布（协作缓存）
+        4. 合理的属性组合（避免不可能完成的任务）
+        
+        【改进说明】
+        - ✅ 基于场景抽样：按权重选择应用场景
+        - ✅ 重尾分布：数据大小符合帕累托分布（大量小任务+少量大任务）
+        - ✅ Zipf热度：内容访问符合Zipf分布（少数热门+大量冷门）
+        - ✅ 属性合理：紧急任务小数据+短期限，容忍任务大数据+长期限
+        
+        【论文对应】
+        - 场景定义：Section 2.1 "Task Model"
+        - Zipf分布：Section 2.7 "Collaborative Caching"
+        - 重尾分布：真实任务流量特征
+        """
+        # ========== 步骤1：基于权重选择应用场景 ==========
+        scenario = config.task.sample_scenario()
+        scenario_name = scenario.name
+        task_type_value = scenario.task_type
+        
+        # ========== 步骤2：获取场景规格和参数 ==========
+        profile = config.task.get_profile(task_type_value)
+        data_range = profile.data_range
+        compute_density = profile.compute_density
+        
+        # ========== 步骤3：生成数据大小（重尾分布） ==========
+        # 使用帕累托分布模拟真实任务大小分布
+        # shape=1.5: 温和的重尾（约70%小任务，30%中大任务）
+        data_size = sample_heavy_tailed_task_size(
+            min_size=data_range[0],
+            max_size=data_range[1],
+            shape=1.5  # 帕累托形状参数
+        )
+        
+        # ========== 步骤4：计算任务计算量 ==========
+        # 计算密度随场景类型变化
+        # 类型1（紧急）：低计算密度（60 cycles/bit）
+        # 类型4（分析）：高计算密度（150 cycles/bit）
+        compute_cycles = data_size * 8 * compute_density  # 字节转比特
         result_size = data_size * config.task.task_output_ratio
         
-        # 随机选择最大延迟容忍度 (指数分布，偏向较小值)
-        max_delay_slots = max(1, int(np.random.exponential(5.0)))
+        # ========== 步骤5：确定截止时间 ==========
+        # 基于场景规格的截止时间范围
+        deadline_seconds = np.random.uniform(
+            scenario.min_deadline,
+            scenario.max_deadline
+        )
         
-        # 根据延迟确定任务类型和优先级
-        task_type_value = config.get_task_type(max_delay_slots)
-        task_type = TaskType(task_type_value)
+        # 转换为时隙数
+        time_slot_duration = config.network.time_slot_duration
+        max_delay_slots = max(1, int(deadline_seconds / time_slot_duration))
         
+        # ========== 步骤6：动态调整任务分类 ==========
+        # 考虑数据大小、计算量、系统负载等多维特征
+        system_load = self.state.load_factor if hasattr(self, 'state') else None
+        
+        # 判断任务是否可缓存
+        # 类型3（视频）和类型4（数据分析）通常可缓存
+        is_cacheable = task_type_value in [3, 4] and np.random.random() < 0.7
+        
+        task_type_adjusted = config.task.get_task_type(
+            max_delay_slots=max_delay_slots,
+            data_size=data_size,
+            compute_cycles=compute_cycles,
+            compute_density=compute_density,
+            time_slot=time_slot_duration,
+            system_load=system_load,
+            is_cacheable=is_cacheable
+        )
+        task_type = TaskType(task_type_adjusted)
+        
+        # ========== 步骤7：分配优先级 ==========
         # 优先级与任务类型相关 (类型值小的优先级高)
-        priority = task_type_value + np.random.randint(0, 2)  # 增加随机性
+        # 类型1：优先级1-2（最高）
+        # 类型2：优先级2-3
+        # 类型3：优先级3-4
+        # 类型4：优先级4（最低）
+        priority = task_type_adjusted + np.random.randint(0, 2)
         priority = min(priority, config.task.num_priority_levels)
         
+        # ========== 步骤8：生成内容ID（Zipf分布） ==========
+        content_id = None
+        if is_cacheable:
+            # 可缓存任务：按Zipf分布选择内容
+            # 内容库大小1000，Zipf指数0.8
+            content_id = sample_zipf_content_id(num_contents=1000, exponent=0.8)
+        
+        # ========== 步骤9：创建任务对象 ==========
         task = Task(
             data_size=data_size,
             compute_cycles=compute_cycles,
@@ -147,7 +224,10 @@ class VehicleNode(BaseNode):
             max_delay_slots=max_delay_slots,
             task_type=task_type,
             priority=priority,
-            source_vehicle_id=self.node_id
+            source_vehicle_id=self.node_id,
+            content_id=content_id,
+            is_cacheable=is_cacheable,
+            scenario_name=scenario_name
         )
         
         return task

@@ -48,6 +48,11 @@ class Task:
     generation_time: float = 0.0       # 任务生成时间戳
     deadline: float = 0.0               # 任务截止时间
     
+    # 🆕 内容相关属性（协作缓存支持）
+    content_id: Optional[str] = None    # 内容ID（可缓存任务需要）
+    is_cacheable: bool = False          # 是否可缓存
+    scenario_name: Optional[str] = None # 场景名称（如'emergency_brake'）
+    
     # 执行状态
     assigned_node_id: Optional[str] = None      # 分配的执行节点
     start_time: Optional[float] = None          # 开始执行时间
@@ -59,6 +64,9 @@ class Task:
     transmission_delays: Dict[str, float] = field(default_factory=dict)
     waiting_delay: float = 0.0
     processing_delay: float = 0.0
+    queue_arrival_time: Optional[float] = None   # 进入队列时间戳
+    cache_last_access_time: Optional[float] = None
+    cache_access_count: int = 0
     
     @property
     def compute_density(self) -> float:
@@ -182,7 +190,8 @@ class NodeState:
     load_factor: float = 0.0            # 负载因子 ρ
     queue_length: int = 0               # 队列长度
     avg_waiting_time: float = 0.0       # 平均等待时间
-    
+    stability_warning: bool = False     # 队列稳定性告警标志
+
     def update_utilization(self, active_time: float, total_time: float):
         """更新CPU利用率"""
         if total_time > 0:

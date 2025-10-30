@@ -6,12 +6,29 @@ import numpy as np
 import time
 import math
 import random
+from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple, Set
 
 from .base_node import BaseNode
 from .data_structures import Task, Position, NodeType, CommunicationLink
 from config import config
 from utils import sigmoid
+
+
+@dataclass
+class CacheEntry:
+    """缓存条目，记录访问统计信息。"""
+    task: Task
+    last_access_time: float
+    access_count: int = 1
+
+    @property
+    def result_size(self) -> float:
+        return self.task.result_size
+
+    def touch(self, timestamp: float) -> None:
+        self.last_access_time = timestamp
+        self.access_count += 1
 
 
 class RSUNode(BaseNode):
@@ -35,7 +52,7 @@ class RSUNode(BaseNode):
         
         # 缓存系统 - 对应论文第2.2节
         self.cache_capacity = config.cache.rsu_cache_capacity  # S_cache,r
-        self.cached_results: Dict[str, Task] = {}  # 缓存的任务结果
+        self.cached_results: Dict[str, CacheEntry] = {}  # 缓存的任务结果
         self.cache_decisions: Dict[str, bool] = {}  # z_j,r 缓存决策变量
         
         # 缓存统计与预测
@@ -92,20 +109,36 @@ class RSUNode(BaseNode):
         
         return energy_consumption
     
+    def _cache_key(self, task: Task) -> str:
+        """Generate a stable cache key for a task signature."""
+        return f"{task.task_type.value}:{int(task.data_size)}:{int(task.compute_cycles)}"
+
+    def _record_request(self, task: Task) -> None:
+        """Record request timestamps for popularity tracking."""
+        task_key = self._cache_key(task)
+        history = self.request_history.setdefault(task_key, [])
+        history.append(time.time())
+        max_history = getattr(config.cache, 'request_history_size', 100)
+        if len(history) > max_history:
+            history.pop(0)
+
     def check_cache_hit(self, task: Task) -> bool:
-        """
-        检查缓存命中 - 对应论文式(1)缓存决策z_j,r
-        """
-        task_type_key = f"{task.task_type.value}_{task.data_size}_{task.compute_cycles}"
-        
-        # 检查是否已缓存该类型任务的结果
-        if task_type_key in self.cached_results:
+        """Return True on cache hit while updating access statistics."""
+        cache_key = self._cache_key(task)
+        entry = self.cached_results.get(cache_key)
+        if entry is not None:
+            now = time.time()
+            entry.touch(now)
+            task.cache_last_access_time = now
+            task.cache_access_count += 1
             self.cache_hit_count += 1
+            self._record_request(task)
             return True
-        else:
-            self.cache_miss_count += 1
-            return False
-    
+
+        self.cache_miss_count += 1
+        self._record_request(task)
+        return False
+
     def predict_cache_request_probability(self, task: Task) -> float:
         """
         预测缓存请求概率 - 对应论文式(1)
@@ -119,7 +152,7 @@ class RSUNode(BaseNode):
         alpha4 = config.cache.logistic_alpha4
         
         # 计算特征值
-        task_key = f"{task.task_type.value}_{task.data_size}"
+        task_key = self._cache_key(task)
         
         # H_j: 历史请求频率
         historical_frequency = self.request_history.get(task_key, [])
@@ -161,8 +194,8 @@ class RSUNode(BaseNode):
             return False
         
         # 检查缓存容量
-        current_cache_usage = sum(cached_task.result_size 
-                                for cached_task in self.cached_results.values())
+        current_cache_usage = sum(entry.result_size
+                                for entry in self.cached_results.values())
         
         if current_cache_usage + task.result_size > self.cache_capacity:
             # 缓存已满，需要替换策略
@@ -177,9 +210,13 @@ class RSUNode(BaseNode):
         should_cache = request_probability > cache_threshold
         
         if should_cache:
-            task_key = f"{task.task_type.value}_{task.data_size}_{task.compute_cycles}"
-            self.cached_results[task_key] = task
-            self.cache_decisions[task_key] = True
+            cache_key = self._cache_key(task)
+            now = time.time()
+            self.cached_results[cache_key] = CacheEntry(task=task, last_access_time=now)
+            self.cache_decisions[cache_key] = True
+            task.cache_last_access_time = now
+            task.cache_access_count = 1
+            self._record_request(task)
         
         return should_cache
     
@@ -195,133 +232,71 @@ class RSUNode(BaseNode):
             return self._random_replacement(required_size)
     
     def _lru_replacement(self, required_size: float) -> bool:
-        """LRU替换策略"""
-        # 按最后访问时间排序
-        sorted_items = sorted(self.cached_results.items(), 
-                            key=lambda x: getattr(x[1], 'last_access_time', 0))
-        
-        freed_size = 0.0
-        removed_keys = []
-        
-        for key, cached_task in sorted_items:
-            if freed_size >= required_size:
-                break
-            
-            freed_size += cached_task.result_size
-            removed_keys.append(key)
-        
-        # 移除选中的缓存项
-        for key in removed_keys:
-            del self.cached_results[key]
-            if key in self.cache_decisions:
-                del self.cache_decisions[key]
-        
-        return freed_size >= required_size
-    
-    def _lfu_replacement(self, required_size: float) -> bool:
-        """LFU替换策略"""
-        # 基于访问频率的替换 (简化实现)
+        """LRU replacement policy."""
         sorted_items = sorted(self.cached_results.items(),
-                            key=lambda x: self.request_history.get(x[0], []), 
-                            reverse=False)
-        
+                            key=lambda item: item[1].last_access_time)
+
         freed_size = 0.0
-        removed_keys = []
-        
-        for key, cached_task in sorted_items:
+        removed_keys: List[str] = []
+
+        for key, entry in sorted_items:
             if freed_size >= required_size:
                 break
-            
-            freed_size += cached_task.result_size
+
+            freed_size += entry.result_size
             removed_keys.append(key)
-        
+
         for key in removed_keys:
-            del self.cached_results[key]
-            if key in self.cache_decisions:
-                del self.cache_decisions[key]
-        
+            self.cached_results.pop(key, None)
+            self.cache_decisions.pop(key, None)
+            self.request_history.pop(key, None)
+
         return freed_size >= required_size
-    
+
+    def _lfu_replacement(self, required_size: float) -> bool:
+        """LFU replacement policy."""
+        sorted_items = sorted(self.cached_results.items(),
+                            key=lambda item: item[1].access_count)
+
+        freed_size = 0.0
+        removed_keys: List[str] = []
+
+        for key, entry in sorted_items:
+            if freed_size >= required_size:
+                break
+
+            freed_size += entry.result_size
+            removed_keys.append(key)
+
+        for key in removed_keys:
+            self.cached_results.pop(key, None)
+            self.cache_decisions.pop(key, None)
+            self.request_history.pop(key, None)
+
+        return freed_size >= required_size
+
     def _random_replacement(self, required_size: float) -> bool:
-        """随机替换策略"""
+        """Random replacement policy."""
         cache_items = list(self.cached_results.items())
         random.shuffle(cache_items)
-        
+
         freed_size = 0.0
-        removed_keys = []
-        
-        for key, cached_task in cache_items:
+        removed_keys: List[str] = []
+
+        for key, entry in cache_items:
             if freed_size >= required_size:
                 break
-            
-            freed_size += cached_task.result_size
+
+            freed_size += entry.result_size
             removed_keys.append(key)
-        
+
         for key in removed_keys:
-            del self.cached_results[key]
-            if key in self.cache_decisions:
-                del self.cache_decisions[key]
-        
+            self.cached_results.pop(key, None)
+            self.cache_decisions.pop(key, None)
+            self.request_history.pop(key, None)
+
         return freed_size >= required_size
-    
-    def process_offloaded_task(self, task: Task) -> Tuple[bool, float]:
-        """
-        处理卸载任务
-        
-        Returns:
-            (是否成功, 总处理时延)
-        """
-        # 1. 检查缓存命中
-        if self.check_cache_hit(task):
-            # 缓存命中，直接返回结果
-            cache_response_delay = 0.001  # 极短的响应时延
-            return True, cache_response_delay
-        
-        # 2. 缓存未命中，需要计算处理
-        processing_delay = self.calculate_processing_delay(task)
-        waiting_delay = self.predict_waiting_time(task)
-        
-        total_delay = waiting_delay + processing_delay
-        
-        # 3. 检查截止时间
-        if task.is_deadline_violated():
-            return False, total_delay
-        
-        # 4. 添加到处理队列
-        if not self.add_task_to_queue(task):
-            return False, total_delay
-        
-        # 5. 执行处理 (在实际调度中处理)
-        # 注意：不调用process_task，避免重复设置completion_time
-        # 在CompleteSystemSimulator中会正确设置包含传输时延的completion_time
-        
-        # 检查是否能成功处理
-        if task.is_deadline_violated():
-            success = False
-        else:
-            # 模拟处理成功
-            success = True
-            task.processing_delay = processing_delay
-            task.assigned_node_id = self.node_id
-            
-            # 添加到已处理任务列表
-            self.processed_tasks.append(task)
-            
-            # 6. 制定缓存决策
-            self.make_cache_decision(task)
-            
-            # 更新请求历史
-            task_key = f"{task.task_type.value}_{task.data_size}"
-            if task_key not in self.request_history:
-                self.request_history[task_key] = []
-            self.request_history[task_key].append(time.time())
-            
-            # 限制历史记录长度
-            if len(self.request_history[task_key]) > 100:
-                self.request_history[task_key].pop(0)
-        
-        return success, total_delay
-    
+
     def calculate_migration_cost(self, task: Task, target_rsu_id: str) -> float:
         """
         计算任务迁移成本 - 对应论文第6节
@@ -415,7 +390,7 @@ class RSUNode(BaseNode):
         rsu_specific_state = [
             self.calculate_cache_hit_rate(),
             len(self.cached_results) / 100.0,  # 归一化缓存项数量
-            (self.cache_capacity - sum(task.result_size for task in self.cached_results.values())) / self.cache_capacity,  # 剩余缓存容量比例
+            (self.cache_capacity - sum(entry.result_size for entry in self.cached_results.values())) / self.cache_capacity,  # 剩余缓存容量比例
             float(self.is_overloaded()),
             float(self.is_underloaded()),
             self.migration_cooldown / 10.0,  # 归一化冷却时间

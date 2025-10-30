@@ -86,7 +86,7 @@ class HierarchicalTrainingEnvironment:
         
         # 获取优化后的批次大小
         self.optimized_batch_size = self._get_optimized_batch_size()
-        print(f"🚀 使用优化批次大小: {self.optimized_batch_size}")
+        print(f"使用优化批次大小: {self.optimized_batch_size}")
         
         # 分层环境配置
         hierarchical_config = {
@@ -163,10 +163,10 @@ class HierarchicalTrainingEnvironment:
             'operational': {'updates': 0, 'avg_loss': 0.0, 'avg_reward': 0.0}
         }
         
-        print(f"🎯 分层训练环境初始化完成 - 模式: {self.training_mode}")
-        print(f"📊 战略层状态维度: {hierarchical_config['strategic_config']['state_dim']}")
-        print(f"📊 战术层智能体数量: {hierarchical_config['tactical_config']['num_agents']}")
-        print(f"📊 执行层智能体数量: {hierarchical_config['operational_config']['num_agents']}")
+        print(f"分层训练环境初始化完成 - 模式: {self.training_mode}")
+        print(f"战略层状态维度: {hierarchical_config['strategic_config']['state_dim']}")
+        print(f"战术层智能体数量: {hierarchical_config['tactical_config']['num_agents']}")
+        print(f"执行层智能体数量: {hierarchical_config['operational_config']['num_agents']}")
     
     def _get_optimized_batch_size(self) -> int:
         """获取优化后的批次大小"""
@@ -200,7 +200,7 @@ class HierarchicalTrainingEnvironment:
         step_count = 0
         done = False
         
-        print(f"🎮 开始第 {episode + 1} 回合训练 (模式: {self.training_mode})")
+        print(f"开始第 {episode + 1} 回合训练 (模式: {self.training_mode})")
         
         while not done and step_count < max_steps:
             # 执行环境步骤
@@ -421,7 +421,7 @@ class HierarchicalTrainingEnvironment:
                     eval_stats[f'{key}_mean'] = np.mean(values)
                     eval_stats[f'{key}_std'] = np.std(values)
         
-        print(f"📊 评估完成:")
+        print(f"评估完成:")
         print(f"   平均总奖励(均值/步): {eval_stats.get('total_reward_mean', 0):.2f} ± {eval_stats.get('total_reward_std', 0):.2f}")
         print(f"   平均任务延迟: {eval_stats.get('total_latency_mean', 0):.2f} ms")
         print(f"   平均成功率: {eval_stats.get('success_rate_mean', 0):.3f}")
@@ -435,12 +435,12 @@ class HierarchicalTrainingEnvironment:
             save_path = f"{save_path}_{timestamp}"
         
         self.hierarchical_env.save_models(save_path)
-        print(f"💾 分层模型已保存到: {save_path}")
+        print(f"分层模型已保存到: {save_path}")
     
     def load_models(self, load_path: str):
         """加载分层模型"""
         self.hierarchical_env.load_models(load_path)
-        print(f"📂 分层模型已从 {load_path} 加载")
+        print(f"分层模型已从 {load_path} 加载")
 
 
 def train_hierarchical_algorithm(training_mode: str = "hierarchical", 
@@ -457,11 +457,11 @@ def train_hierarchical_algorithm(training_mode: str = "hierarchical",
     if save_interval is None:
         save_interval = config.experiment.save_interval
     
-    print(f"🚀 开始分层强化学习训练")
-    print(f"📋 训练模式: {training_mode}")
-    print(f"📋 训练回合数: {num_episodes}")
-    print(f"📋 评估间隔: {eval_interval}")
-    print(f"📋 保存间隔: {save_interval}")
+    print(f"开始分层强化学习训练")
+    print(f"训练模式: {training_mode}")
+    print(f"训练回合数: {num_episodes}")
+    print(f"评估间隔: {eval_interval}")
+    print(f"保存间隔: {save_interval}")
     
     # 创建训练环境
     training_env = HierarchicalTrainingEnvironment(training_mode)
@@ -488,7 +488,7 @@ def train_hierarchical_algorithm(training_mode: str = "hierarchical",
             if current_performance > best_performance:
                 best_performance = current_performance
                 training_env.save_models(f"models/hierarchical_best_{training_mode}")
-                print(f"🏆 发现更好的模型! 性能: {current_performance:.2f}")
+                print(f"发现更好的模型! 性能: {current_performance:.2f}")
         
         # 定期保存检查点
         if (episode + 1) % save_interval == 0:
@@ -497,7 +497,7 @@ def train_hierarchical_algorithm(training_mode: str = "hierarchical",
         # 打印训练进度
         if (episode + 1) % 10 == 0:
             avg_reward = np.mean(training_env.episode_rewards['total'][-10:])
-            print(f"📈 回合 {episode + 1}/{num_episodes}, 最近10回合平均奖励: {avg_reward:.2f}, 用时: {episode_time:.2f}s")
+            print(f"回合 {episode + 1}/{num_episodes}, 最近10回合平均奖励: {avg_reward:.2f}, 用时: {episode_time:.2f}s")
     
     training_time = time.time() - training_start_time
     
@@ -513,9 +513,9 @@ def train_hierarchical_algorithm(training_mode: str = "hierarchical",
     # 绘制训练曲线
     plot_hierarchical_training_curves(training_mode, training_env)
     
-    print(f"🎉 分层训练完成!")
-    print(f"⏱️  总训练时间: {training_time:.2f} 秒")
-    print(f"📊 最终性能: {final_eval_stats.get('total_reward_mean', 0):.2f}")
+    print(f"分层训练完成!")
+    print(f"总训练时间: {training_time:.2f} 秒")
+    print(f"最终性能: {final_eval_stats.get('total_reward_mean', 0):.2f}")
     
     return {
         'training_mode': training_mode,
@@ -567,7 +567,7 @@ def save_hierarchical_training_results(training_mode: str,
     with open(filename, 'w', encoding='utf-8') as f:
         json.dump(results_serializable, f, indent=2, ensure_ascii=False)
     
-    print(f"💾 训练结果已保存到: {filename}")
+    print(f"训练结果已保存到: {filename}")
     
     return results
 
@@ -643,7 +643,7 @@ def plot_hierarchical_training_curves(training_mode: str,
     plt.savefig(filename, dpi=300, bbox_inches='tight')
     plt.show()
     
-    print(f"📊 训练曲线已保存到: {filename}")
+    print(f"训练曲线已保存到: {filename}")
 
 
 def compare_hierarchical_modes(modes: List[str], num_episodes: Optional[int] = None) -> Dict:
@@ -652,12 +652,12 @@ def compare_hierarchical_modes(modes: List[str], num_episodes: Optional[int] = N
     if num_episodes is None:
         num_episodes = config.experiment.num_episodes
     
-    print(f"🔄 开始比较分层训练模式: {modes}")
+    print(f"开始比较分层训练模式: {modes}")
     
     results = {}
     
     for mode in modes:
-        print(f"\n🎯 训练模式: {mode}")
+        print(f"\n训练模式: {mode}")
         mode_results = train_hierarchical_algorithm(mode, num_episodes)
         results[mode] = mode_results
     
@@ -678,7 +678,7 @@ def compare_hierarchical_modes(modes: List[str], num_episodes: Optional[int] = N
     with open(filename, 'w', encoding='utf-8') as f:
         json.dump(comparison_results, f, indent=2, ensure_ascii=False)
     
-    print(f"💾 比较结果已保存到: {filename}")
+    print(f"比较结果已保存到: {filename}")
     
     return results
 
@@ -742,7 +742,7 @@ def plot_hierarchical_mode_comparison(results: Dict):
     plt.savefig(filename, dpi=300, bbox_inches='tight')
     plt.show()
     
-    print(f"📊 比较图已保存到: {filename}")
+    print(f"比较图已保存到: {filename}")
 
 
 def main():

@@ -199,7 +199,7 @@ class CompleteSystemSimulator:
                 'device_cache_capacity': 32.0  # 车载缓存容量(MB)
             }
             self.vehicles.append(vehicle)
-        print("🛣️ 车辆初始化完成：主干道双路口场景")
+        print("车辆初始化完成：主干道双路口场景")
         
         # RSU节点初始化
         # RSU node initialization
@@ -270,7 +270,7 @@ class CompleteSystemSimulator:
             }
             self.uavs.append(uav)
         
-        print(f"✅ 创建了 {self.num_vehicles} 车辆, {self.num_rsus} RSU, {self.num_uavs} UAV")
+        print(f"创建了 {self.num_vehicles} 车辆, {self.num_rsus} RSU, {self.num_uavs} UAV")
         
         # 🏢 初始化中央RSU调度器(选择RSU_2作为中央调度中心)
         # Initialize central RSU scheduler for coordinated task management
@@ -278,9 +278,9 @@ class CompleteSystemSimulator:
             from utils.central_rsu_scheduler import create_central_scheduler
             central_rsu_id = f"RSU_{2 if self.num_rsus > 2 else 0}"
             self.central_scheduler = create_central_scheduler(central_rsu_id)
-            print(f"🏢 中央RSU调度器已启用: {central_rsu_id}")
+            print(f"中央RSU调度器已启用: {central_rsu_id}")
         except Exception as e:
-            print(f"⚠️ 中央调度器加载失败: {e}")
+            print(f"中央调度器加载失败: {e}")
             self.central_scheduler = None
         
         # 懒加载迁移管理器
@@ -318,7 +318,7 @@ class CompleteSystemSimulator:
         # 重新初始化组件（如果需要）
         self.initialize_components()
         self._reset_runtime_states()
-        print("✅ 初始化了 6 个缓存管理器")
+        print("初始化了 6 个缓存管理器")
 
     def _fresh_stats_dict(self) -> Dict[str, float]:
         """
@@ -504,7 +504,7 @@ class CompleteSystemSimulator:
         # 默认场景参数
         scenario_name = 'fallback'
         relax_factor_applied = self.config.get('deadline_relax_fallback', 1.3)
-        task_type = 3
+        initial_type = 3
 
         if task_cfg is not None:
             scenario = task_cfg.sample_scenario()
@@ -514,19 +514,24 @@ class CompleteSystemSimulator:
             deadline_duration = np.random.uniform(scenario.min_deadline, scenario.max_deadline)
             deadline_duration *= relax_factor_applied
             max_delay_slots = max(1, int(deadline_duration / max(time_slot, 1e-6)))
-            task_type = scenario.task_type or task_cfg.get_task_type(max_delay_slots)
+            initial_type = scenario.task_type or task_cfg.get_task_type(
+                max_delay_slots, time_slot=time_slot
+            )
 
-            profile = task_cfg.get_profile(task_type)
+            profile = task_cfg.get_profile(initial_type)
             data_min, data_max = profile.data_range
             data_size_bytes = float(np.random.uniform(data_min, data_max))
             compute_density = profile.compute_density
         else:
             deadline_duration = np.random.uniform(0.5, 3.0) * relax_factor_applied
-            task_type = int(np.random.randint(1, 5))
+            initial_type = int(np.random.randint(1, 5))
             data_size_mb = np.random.exponential(0.5)
             data_size_bytes = data_size_mb * 1e6
             compute_density = self.config.get('task_compute_density', 400)
-            max_delay_slots = max(1, int(deadline_duration / max(self.config.get('time_slot', self.time_slot), 0.1)))
+            max_delay_slots = max(
+                1,
+                int(deadline_duration / max(self.config.get('time_slot', self.time_slot), 0.1)),
+            )
 
         # 任务复杂度控制
         data_size_mb = data_size_bytes / 1e6
@@ -540,8 +545,24 @@ class CompleteSystemSimulator:
             effective_density = min(effective_density * 1.05, 200)
 
         total_bits = data_size_bytes * 8
-        computation_cycles = total_bits * effective_density
-        computation_mips = (computation_cycles / 1e6) * complexity_multiplier
+        base_cycles = total_bits * effective_density
+        adjusted_cycles = base_cycles * complexity_multiplier
+        computation_mips = adjusted_cycles / 1e6
+
+        cacheable_hint = scenario_name in {'video_process', 'image_recognition', 'data_analysis', 'ml_training'}
+        if task_cfg is not None:
+            refined_type = task_cfg.get_task_type(
+                max_delay_slots,
+                data_size=data_size_bytes,
+                compute_cycles=adjusted_cycles,
+                compute_density=effective_density,
+                time_slot=time_slot,
+                system_load=self.config.get('system_load_hint'),
+                is_cacheable=cacheable_hint,
+            )
+            task_type = max(initial_type, refined_type)
+        else:
+            task_type = initial_type
 
         task = {
             'id': f'task_{self.task_counter}',
@@ -581,7 +602,7 @@ class CompleteSystemSimulator:
             type3_pct = by_type.get(3, 0) / total_classified * 100
             type4_pct = by_type.get(4, 0) / total_classified * 100
             print(
-                f"📊 任务分类统计({gen_stats['total']}): "
+                f"任务分类统计({gen_stats['total']}): "
                 f"类型1={type1_pct:.1f}%, 类型2={type2_pct:.1f}%, 类型3={type3_pct:.1f}%, 类型4={type4_pct:.1f}%"
             )
             print(
