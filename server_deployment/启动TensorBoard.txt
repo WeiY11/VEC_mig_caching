@@ -1,0 +1,81 @@
+================================================================
+在服务器上启动 TensorBoard 监控 - 完整步骤
+================================================================
+
+问题原因
+--------
+训练脚本本身没有写 TensorBoard 日志，所以即使启动 TensorBoard 也看不到数据。
+
+解决方案
+--------
+我创建了一个日志监控脚本，会实时解析 batch_experiments.log
+并将训练指标写入 TensorBoard！
+
+操作步骤（三步搞定）
+================================================================
+
+步骤1：上传监控脚本到服务器
+---------------------------
+在本地（Windows PowerShell 或 Git Bash）执行：
+
+scp -P 47042 server_deployment/log_to_tensorboard.py root@region-9.autodl.pro:/root/VEC_mig_caching/server_deployment/
+scp -P 47042 server_deployment/start_monitoring.sh root@region-9.autodl.pro:/root/VEC_mig_caching/server_deployment/
+
+密码: dfUJkmli0mHk
+
+
+步骤2：在服务器上启动监控
+---------------------------
+ssh -p 47042 root@region-9.autodl.pro
+密码: dfUJkmli0mHk
+
+然后执行：
+cd /root/VEC_mig_caching
+bash server_deployment/start_monitoring.sh
+
+
+步骤3：在 AutoDL 控制台访问 TensorBoard
+----------------------------------------
+1. 打开 https://www.autodl.com/console
+2. 找到您的实例
+3. 点击"自定义服务"
+4. 端口填：6006
+5. 点击生成的链接
+
+
+完成！现在就能看到实时的训练曲线了！
+================================================================
+
+监控的指标包括：
+- 平均奖励 (Average Reward)
+- 平均时延 (Average Delay)
+- 总能耗 (Total Energy)
+- 任务完成率 (Completion Rate)
+
+每个实验都会有独立的曲线图！
+
+
+快速检查（可选）
+================================================================
+
+查看监控器是否正常工作：
+ssh -p 47042 root@region-9.autodl.pro "tail -20 /root/VEC_mig_caching/log_monitor.log"
+
+查看 TensorBoard 是否启动：
+ssh -p 47042 root@region-9.autodl.pro "ps aux | grep tensorboard"
+
+查看实验进度：
+ssh -p 47042 root@region-9.autodl.pro "tail -20 /root/VEC_mig_caching/batch_experiments.log"
+
+
+问题排查
+================================================================
+
+如果 TensorBoard 还是没数据：
+1. 检查 log_monitor.log 是否有错误
+2. 检查 runs/batch_experiments/ 目录是否有文件生成
+3. 确认实验还在运行（ps aux | grep run_batch）
+
+如果需要重启监控：
+ssh -p 47042 root@region-9.autodl.pro "cd /root/VEC_mig_caching && bash server_deployment/start_monitoring.sh"
+

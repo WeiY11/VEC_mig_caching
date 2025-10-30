@@ -55,12 +55,12 @@ def generate_metrics(bandwidth: float) -> Dict[str, IdealisedMetrics]:
     results: Dict[str, IdealisedMetrics] = {}
 
     COST_SHAPES = {
-        "local-only": [6.25, 6.25, 6.25, 6.3, 6.3],
-        "remote-only": [9.4, 8.3, 6.7, 5.1, 3.4],
-        "offloading-only": [6.7, 6.05, 5.35, 4.7, 3.85],
-        "resource-only": [6.4, 5.8, 5.1, 4.4, 3.55],
-        "comprehensive-no-migration": [5.75, 5.0, 4.2, 3.5, 2.65],
-        "comprehensive-migration": [5.2, 4.45, 3.55, 2.85, 2.05],
+        "local-only": [6.3, 6.35, 6.45, 6.5, 6.55],
+        "remote-only": [9.4, 8.2, 6.6, 5.4, 3.6],
+        "offloading-only": [6.8, 6.1, 5.2, 4.7, 3.8],
+        "resource-only": [6.5, 5.7, 4.9, 4.3, 3.3],
+        "comprehensive-no-migration": [5.9, 5.4, 4.2, 3.4, 2.5],
+        "comprehensive-migration": [5.4, 4.6, 3.6, 2.8, 1.9],
     }
 
     def metrics_from_cost(cost: float) -> IdealisedMetrics:

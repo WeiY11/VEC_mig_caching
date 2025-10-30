@@ -11,22 +11,25 @@ CAMTD3 参数敏感性分析 - 批量运行工具
 - 自动结果汇总
 - 错误处理和日志记录
 
+【默认运行模式】
+✅ 自动静默运行，无需手动交互
+✅ 自动保存所有训练报告
+✅ 支持长时间无人值守运行
+
 【使用方法】
 ```bash
-# 交互式模式（推荐）
-python experiments/camtd3_strategy_suite/run_batch_experiments.py
-
+# ✅ 默认静默运行（无需手动交互，推荐）
 # 快速测试所有实验（10轮）
 python experiments/camtd3_strategy_suite/run_batch_experiments.py --mode quick --all
 
-# 完整实验指定实验
+# 完整实验指定实验 - 自动保存报告，无人值守运行
 python experiments/camtd3_strategy_suite/run_batch_experiments.py --mode full --experiments 1,2,6,7,8
 
 # 并行运行（如果有多GPU）
-python experiments/camtd3_strategy_suite/run_batch_experiments.py --mode medium --parallel 3
+python experiments/camtd3_strategy_suite/run_batch_experiments.py --mode medium --parallel 3 --all
 
-# 静默模式
-python experiments/camtd3_strategy_suite/run_batch_experiments.py --mode quick --all --silent
+# 💡 如需交互式确认，添加 --interactive 参数
+python experiments/camtd3_strategy_suite/run_batch_experiments.py --mode full --all --interactive
 ```
 """
 
@@ -261,6 +264,8 @@ def run_single_experiment(
             cmd,
             capture_output=True,
             text=True,
+            encoding='utf-8',  # 修复Windows编码问题
+            errors='replace',   # 替换无法解码的字符
             timeout=7200,  # 2小时超时
         )
         
@@ -339,9 +344,9 @@ def run_experiments_sequential(
         
         # 打印结果
         if result["success"]:
-            print(colored(f"✓ 完成! 用时: {result['elapsed_time']/60:.1f} 分钟", "green"))
+            print(colored(f"[OK] 完成! 用时: {result['elapsed_time']/60:.1f} 分钟", "green"))
         else:
-            print(colored(f"✗ 失败! 错误: {result.get('error', result.get('stderr', 'Unknown'))}", "red"))
+            print(colored(f"[FAIL] 失败! 错误: {result.get('error', result.get('stderr', 'Unknown'))}", "red"))
     
     return results
 
@@ -387,7 +392,7 @@ def run_experiments_parallel(
             result = output_queue.get()
             results.append(result)
             
-            status_icon = colored("✓", "green") if result["success"] else colored("✗", "red")
+            status_icon = colored("[OK]", "green") if result["success"] else colored("[FAIL]", "red")
             print(f"  {status_icon} {result['name']}: {result['elapsed_time']/60:.1f} 分钟")
     
     return results
@@ -405,9 +410,9 @@ def print_summary(results: List[Dict[str, Any]], mode: Dict[str, Any], suite_id:
     print(f"\nSuite ID: {colored(suite_id, 'cyan')}")
     print(f"运行模式: {mode['key']} ({mode['episodes']} 轮/配置)")
     print(f"\n总实验数: {total}")
-    print(f"  {colored('✓', 'green')} 成功: {success}")
+    print(f"  {colored('[OK]', 'green')} 成功: {success}")
     if failed > 0:
-        print(f"  {colored('✗', 'red')} 失败: {failed}")
+        print(f"  {colored('[FAIL]', 'red')} 失败: {failed}")
     print(f"\n总用时: {total_time/3600:.2f} 小时 ({total_time/60:.1f} 分钟)")
     
     # 详细结果表
@@ -496,12 +501,21 @@ def main():
                        help="Suite标识符前缀 (默认: 自动生成时间戳)")
     parser.add_argument("--parallel", type=int, metavar="N",
                        help="并行运行最多N个实验（需要多GPU支持）")
-    parser.add_argument("--silent", action="store_true",
-                       help="静默模式（减少输出）")
-    parser.add_argument("--non-interactive", action="store_true",
-                       help="非交互模式（必须指定所有参数）")
+    parser.add_argument("--silent", action="store_true", default=True,
+                       help="静默模式（减少输出，默认开启）")
+    parser.add_argument("--non-interactive", action="store_true", default=True,
+                       help="非交互模式（默认开启，使用 --interactive 覆盖）")
+    parser.add_argument("--interactive", action="store_true",
+                       help="启用交互模式（覆盖 --non-interactive 和 --silent）")
+    parser.add_argument("--episodes", type=int,
+                       help="覆盖模式默认的训练轮数（用于快速测试）")
     
     args = parser.parse_args()
+    
+    # 如果指定了 --interactive，则启用交互模式
+    if args.interactive:
+        args.non_interactive = False
+        args.silent = False
     
     # ========== 交互式或命令行模式 ==========
     if args.non_interactive or (args.mode and (args.all or args.experiments or args.high_priority or args.new_only)):
@@ -529,6 +543,10 @@ def main():
         print_banner("CAMTD3 参数敏感性分析 - 批量运行工具")
         exp_ids = select_experiments_interactive()
         mode = select_mode_interactive()
+    
+    # 覆盖episodes（如果指定）
+    if args.episodes:
+        mode["episodes"] = args.episodes
     
     # 生成suite_id
     if args.suite_id:

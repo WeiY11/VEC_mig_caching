@@ -38,17 +38,22 @@ CAMTD3 车辆移动速度对比实验
 
 【使用示例】
 ```bash
+# ✅ 默认静默运行（无需手动交互，推荐）
 # 快速测试（100轮）
 python experiments/camtd3_strategy_suite/run_mobility_speed_comparison.py \\
     --episodes 100 --suite-id mobility_quick
 
-# 完整实验（500轮）
+# 完整实验（500轮）- 自动保存报告，无人值守运行
 python experiments/camtd3_strategy_suite/run_mobility_speed_comparison.py \\
     --episodes 500 --seed 42 --suite-id mobility_paper
 
 # 自定义速度配置（单位：m/s）
 python experiments/camtd3_strategy_suite/run_mobility_speed_comparison.py \\
     --speeds "10,15,20,25" --episodes 300
+
+# 💡 如需交互式确认保存报告，添加 --interactive 参数
+python experiments/camtd3_strategy_suite/run_mobility_speed_comparison.py \\
+    --episodes 500 --interactive
 ```
 
 【预计运行时间】
@@ -148,7 +153,7 @@ def run_single_config(
     results = train_single_algorithm(
         "CAMTD3",
         num_episodes=episodes,
-        silent_mode=args.silent,
+        silent_mode=True,  # 批量实验强制使用静默模式，避免交互卡住
         override_scenario=override_scenario,
         use_enhanced_cache=True,
         disable_migration=False,
@@ -328,9 +333,26 @@ def main() -> None:
         default="results/parameter_sensitivity",
         help="Root directory for outputs.",
     )
-    parser.add_argument("--silent", action="store_true", help="Run training in silent mode.")
+    parser.add_argument("--silent", action="store_true", default=True, help="Run training in silent mode (default: True for batch experiments).")
+    parser.add_argument("--interactive", action="store_true", help="Enable interactive mode (overrides silent).")
+    parser.add_argument(
+        "--realtime-vis",
+        action="store_true",
+        help="Enable real-time visualization during training.",
+    )
+    parser.add_argument(
+        "--vis-port",
+        type=int,
+        default=5000,
+        help="Port for visualization server (default: 5000).",
+    )
+    
     
     args = parser.parse_args()
+    
+    # 如果指定了 --interactive，则禁用静默模式
+    if args.interactive:
+        args.silent = False
     
     # 解析配置
     speeds = parse_speeds(args.speeds)

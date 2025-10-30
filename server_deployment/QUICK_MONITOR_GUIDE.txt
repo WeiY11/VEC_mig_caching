@@ -1,0 +1,70 @@
+========================================
+VEC批量实验 - 快速监控指南
+========================================
+
+🎯 实验信息
+-----------
+服务器: region-9.autodl.pro:47042
+密码: dfUJkmli0mHk
+进程ID: 1597
+日志: batch_experiments.log
+状态: ✅ 正在运行
+预计完成: 2-5天
+
+
+📱 快速监控（复制粘贴即可）
+--------------------------
+
+1️⃣ 连接服务器:
+ssh -p 47042 root@region-9.autodl.pro
+
+2️⃣ 查看状态:
+cd /root/VEC_mig_caching && ./remote_monitor.sh
+
+3️⃣ 实时日志:
+cd /root/VEC_mig_caching && tail -f batch_experiments.log
+
+4️⃣ GPU状态:
+nvidia-smi
+
+
+📥 下载结果（实验完成后，在本地运行）
+------------------------------------
+scp -P 47042 -r root@region-9.autodl.pro:/root/VEC_mig_caching/results/parameter_sensitivity D:\VEC_results
+
+
+🛑 停止实验（如需要）
+-------------------
+ssh -p 47042 root@region-9.autodl.pro
+cd /root/VEC_mig_caching
+kill 1597
+
+
+✅ 成功标志
+-----------
+- 进程ID 1597 仍在运行
+- GPU使用率 > 0%
+- 日志持续更新
+- results/目录有新文件
+
+
+⚠️ 注意事项
+-----------
+- 实验在后台运行，可以断开SSH
+- 建议每天检查一次进度
+- 不要关闭AutoDL实例
+- 保持足够的磁盘空间（至少20GB）
+
+
+📞 重要提醒
+-----------
+- 检查频率: 每天1-2次
+- 预计完成: 2025-11-01 或 11-02
+- 结果目录: results/parameter_sensitivity/
+- 详细文档: DEPLOYMENT_SUCCESS.md
+
+
+========================================
+实验已成功启动！祝实验顺利！🎉
+========================================
+

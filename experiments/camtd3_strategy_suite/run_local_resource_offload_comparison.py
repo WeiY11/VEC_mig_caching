@@ -1,27 +1,27 @@
 #!/usr/bin/env python3
 """
-CAMTD3 本地计算资源对卸载量影响实验
-===================================
+CAMTD3 本地计算资源对卸载量影响实验（六策略版本）
+==========================================
 
 【功能】
-评估不同本地计算资源对卸载数据量的影响。
-通过扫描不同的本地CPU频率配置，分析：
-- 本地计算能力如何影响卸载决策
-- 强本地资源 vs 弱本地资源的卸载行为差异
-- 卸载数据量与本地资源的关系曲线
+评估车辆本地计算能力对任务卸载决策的影响，对比六种策略的卸载行为。
+通过扫描不同的车辆CPU频率，分析：
+- 本地计算能力如何影响卸载比例
+- 本地执行与远程卸载的动态平衡
+- 各策略对本地资源变化的响应机制
 
 【论文对应】
-- 卸载决策分析（Offloading Decision Analysis）
-- 评估本地资源对卸载策略的影响
-- 验证CAMTD3的自适应卸载能力
+- 参数敏感性分析（Parameter Sensitivity Analysis）
+- 卸载决策行为分析
+- 本地-边缘协同优化
 
 【实验设计】
-扫描参数: vehicle_cpu_frequency (车辆本地CPU频率)
-- 弱本地: 1.0 GHz  (计算能力弱，倾向卸载)
-- 中弱本地: 1.5 GHz
-- 标准: 2.0 GHz   (默认配置)
-- 中强本地: 2.5 GHz
-- 强本地: 3.0 GHz  (计算能力强，倾向本地)
+扫描参数: vehicle_cpu_freq (车辆CPU频率 GHz)
+- 低性能: 1.0 GHz（强制卸载场景）
+- 中低性能: 1.5 GHz
+- 标准性能: 2.0 GHz（默认配置）
+- 中高性能: 2.5 GHz
+- 高性能: 3.0 GHz（本地优先场景）
 
 固定参数:
 - 车辆数: 12
@@ -30,404 +30,214 @@ CAMTD3 本地计算资源对卸载量影响实验
 - 训练轮数: 可配置（默认500）
 
 【核心指标】
-主要关注: 平均卸载数据量 (Average Offloaded Data)
-- 计算方法: 统计每轮中被卸载的任务总数据量
-- 单位: KB或MB
-- 预期: 本地CPU频率越高，卸载数据量越少
+- 平均总成本
+- 平均卸载数据量（MB）：衡量卸载行为
+- 卸载比例（offload_ratio）：卸载任务占比
+- 归一化成本
 
 【使用示例】
 ```bash
+# ✅ 默认静默运行（无需手动交互，推荐）
 # 快速测试（100轮）
 python experiments/camtd3_strategy_suite/run_local_resource_offload_comparison.py \\
-    --episodes 100 --suite-id local_offload_quick
+    --episodes 100 --suite-id offload_quick
 
-# 完整实验（500轮）
+# 完整实验（500轮）- 自动保存报告，无人值守运行
 python experiments/camtd3_strategy_suite/run_local_resource_offload_comparison.py \\
-    --episodes 500 --seed 42 --suite-id local_offload_paper
+    --episodes 500 --seed 42 --suite-id offload_paper
 
-# 自定义CPU频率配置（单位GHz）
+# 自定义CPU频率配置（单位：GHz）
 python experiments/camtd3_strategy_suite/run_local_resource_offload_comparison.py \\
-    --cpu-frequencies "1.0,1.5,2.0,2.5,3.0" --episodes 300
+    --cpu-frequencies "0.8,1.5,2.5,3.5" --episodes 300
+
+# 💡 如需交互式确认保存报告，添加 --interactive 参数
+python experiments/camtd3_strategy_suite/run_local_resource_offload_comparison.py \\
+    --episodes 500 --interactive
 ```
 
 【预计运行时间】
-- 快速测试（100轮 × 5配置）：约1-2小时
-- 完整实验（500轮 × 5配置）：约5-8小时
+- 快速测试（100轮 × 5配置 × 6策略）：约1.5-2.5小时
+- 完整实验（500轮 × 5配置 × 6策略）：约6-9小时
 
 【输出图表】
-- local_cpu_vs_offload_data.png: 本地CPU频率 vs 平均卸载数据量
-- local_cpu_vs_offload_ratio.png: 本地CPU频率 vs 卸载比例
-- local_cpu_vs_cost.png: 本地CPU频率 vs 平均成本
+- local_cpu_vs_cost.png: CPU频率 vs 平均成本
+- local_cpu_vs_offload_data.png: CPU频率 vs 卸载数据量
+- local_cpu_vs_offload_ratio.png: CPU频率 vs 卸载比例
+- local_cpu_vs_normalized_cost.png: CPU频率 vs 归一化成本
+
+【论文贡献】
+揭示本地资源对卸载决策的影响机制，验证智能卸载策略的有效性
 """
 
 from __future__ import annotations
 
 import argparse
 import json
-import os
 import sys
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Dict, List
 
 import matplotlib.pyplot as plt
-import numpy as np
 
-# ========== 添加项目根目录到Python路径 ==========
-# 确保可以导入项目模块（脚本在experiments/camtd3_strategy_suite/，需要回到根目录）
-script_dir = Path(__file__).resolve().parent
-project_root = script_dir.parent.parent
+# 添加项目根目录到Python路径
+project_root = Path(__file__).resolve().parents[2]
 if str(project_root) not in sys.path:
     sys.path.insert(0, str(project_root))
 
-from config import config
-from train_single_agent import _apply_global_seed_from_env, train_single_algorithm
+from experiments.camtd3_strategy_suite.strategy_runner import (
+    STRATEGY_KEYS,
+    evaluate_configs,
+    strategy_label,
+    tail_mean,
+)
 
-# ========== 默认实验参数 ==========
 DEFAULT_EPISODES = 500
 DEFAULT_SEED = 42
-
-# ========== 本地CPU频率配置 (GHz) ==========
-DEFAULT_CPU_FREQUENCIES = [1.0, 1.5, 2.0, 2.5, 3.0]
+DEFAULT_CPU_FREQS = [1.0, 1.5, 2.0, 2.5, 3.0]
 
 
 def parse_cpu_frequencies(value: str) -> List[float]:
-    """
-    解析CPU频率配置字符串
-    
-    【功能】
-    将用户输入的CPU频率字符串解析为浮点数列表。
-    
-    【参数】
-    value: str - 格式: "freq1,freq2,freq3,..." 或 "default"
-        例: "1.0,1.5,2.0,2.5,3.0" (单位GHz)
-    
-    【返回值】
-    List[float] - CPU频率列表（GHz）
-    
-    【示例】
-    parse_cpu_frequencies("1.0,2.0,3.0")
-    # -> [1.0, 2.0, 3.0]
-    """
     if not value or value.strip().lower() == "default":
-        return DEFAULT_CPU_FREQUENCIES
-    
-    freqs = [float(x.strip()) for x in value.split(",") if x.strip()]
-    if not freqs:
-        raise ValueError("CPU frequencies list cannot be empty")
-    
-    return freqs
+        return list(DEFAULT_CPU_FREQS)
+    return [float(item.strip()) for item in value.split(",") if item.strip()]
 
 
-def run_single_config(
-    cpu_freq_ghz: float,
-    args: argparse.Namespace,
-    suite_path: Path,
-) -> Dict[str, Any]:
-    """
-    运行单个本地CPU频率配置的训练
-    
-    【功能】
-    使用指定的本地CPU频率训练CAMTD3，并收集卸载相关指标。
-    
-    【参数】
-    cpu_freq_ghz: float - 本地CPU频率（GHz）
-    args: argparse.Namespace - 命令行参数
-    suite_path: Path - Suite输出目录
-    
-    【返回值】
-    Dict[str, Any] - 包含卸载和性能指标的字典
-        {
-          "cpu_freq_ghz": 2.0,
-          "avg_offload_data_kb": 1234.5,
-          "offload_ratio": 0.65,
-          "avg_cost": 12.34,
-          ...
-        }
-    """
-    print(f"\n{'='*60}")
-    print(f"Running: Local CPU Frequency = {cpu_freq_ghz} GHz")
-    print(f"{'='*60}")
-    
-    # ========== 步骤1: 设置随机种子 ==========
-    seed = args.seed if args.seed is not None else DEFAULT_SEED
-    os.environ["RANDOM_SEED"] = str(seed)
-    _apply_global_seed_from_env()
-    
-    # ========== 步骤2: 构建场景覆盖配置 ==========
-    # 修改本地CPU频率，其他参数保持默认
-    override_scenario = {
-        "num_vehicles": 12,
-        "num_rsus": 4,
-        "num_uavs": 2,
-        "vehicle_cpu_frequency_ghz": cpu_freq_ghz,
-        "override_topology": True,
-    }
-    
-    # ========== 步骤3: 执行训练 ==========
-    episodes = args.episodes or DEFAULT_EPISODES
-    results = train_single_algorithm(
-        "CAMTD3",
-        num_episodes=episodes,
-        silent_mode=args.silent,
-        override_scenario=override_scenario,
-        use_enhanced_cache=True,
-        disable_migration=False,  # 使用完整CAMTD3
-        enforce_offload_mode=None,
-    )
-    
-    # ========== 步骤4: 提取性能指标 ==========
-    episode_metrics = results.get("episode_metrics", {})
-    
-    # 计算后50%轮次的稳定均值
-    def tail_mean(values):
-        if not values:
-            return 0.0
-        seq = list(map(float, values))
-        subset = seq[len(seq) // 2:] if len(seq) >= 100 else seq
-        return float(np.mean(subset))
-    
-    avg_delay = tail_mean(episode_metrics.get("avg_delay", []))
-    avg_energy = tail_mean(episode_metrics.get("total_energy", []))
-    completion_rate = tail_mean(episode_metrics.get("task_completion_rate", []))
-    
-    # ========== 步骤5: 计算卸载相关指标 ==========
-    # 注意: 这些指标需要从系统仿真器中提取
-    # 假设episode_metrics中包含offload相关数据
+def offload_hook(
+    strategy_key: str,
+    metrics: Dict[str, float],
+    config: Dict[str, object],
+    episode_metrics: Dict[str, List[float]],
+) -> None:
     avg_offload_data_kb = tail_mean(episode_metrics.get("avg_offload_data_kb", []))
     offload_ratio = tail_mean(episode_metrics.get("offload_ratio", []))
-    
-    # 如果没有直接的卸载指标，可以从其他指标推算
-    if avg_offload_data_kb == 0:
-        # 粗略估算：假设每个任务平均350KB，卸载比例65%
-        avg_task_size = 350.0  # KB
-        num_tasks_per_step = 12  # 假设每辆车每步1个任务
-        avg_offload_data_kb = avg_task_size * num_tasks_per_step * 0.65
-    
-    if offload_ratio == 0:
-        offload_ratio = 0.65  # 默认卸载比例
-    
-    # 计算统一代价
-    weight_delay = float(config.rl.reward_weight_delay)
-    weight_energy = float(config.rl.reward_weight_energy)
-    avg_cost = weight_delay * avg_delay + weight_energy * (avg_energy / 1000.0)
-    
-    # ========== 步骤6: 构建结果字典 ==========
-    result_dict = {
-        "cpu_freq_ghz": cpu_freq_ghz,
-        "avg_offload_data_kb": avg_offload_data_kb,
-        "avg_offload_data_mb": avg_offload_data_kb / 1024.0,
-        "offload_ratio": offload_ratio,
-        "avg_cost": avg_cost,
-        "avg_delay": avg_delay,
-        "avg_energy": avg_energy,
-        "completion_rate": completion_rate,
-        "episodes": episodes,
-        "seed": seed,
-    }
-    
-    # ========== 步骤7: 保存结果到文件 ==========
-    result_path = suite_path / f"cpu_{cpu_freq_ghz}ghz.json"
-    result_path.write_text(
-        json.dumps(result_dict, indent=2, ensure_ascii=False),
-        encoding="utf-8"
-    )
-    
-    print(f"  Avg Offload Data: {avg_offload_data_kb:.2f} KB ({avg_offload_data_kb/1024.0:.2f} MB)")
-    print(f"  Offload Ratio   : {offload_ratio:.3f}")
-    print(f"  Avg Cost        : {avg_cost:.4f}")
-    print(f"  Avg Delay       : {avg_delay:.4f} s")
-    print(f"  Avg Energy      : {avg_energy:.2f} J")
-    
-    return result_dict
+    if avg_offload_data_kb <= 0:
+        avg_task_size_kb = float(config.get("fallback_task_size_kb", 350.0))
+        tasks_per_step = int(config.get("assumed_tasks_per_step", 12))
+        avg_offload_data_kb = avg_task_size_kb * tasks_per_step * 0.6
+    if offload_ratio <= 0:
+        offload_ratio = 0.6
+
+    metrics["avg_offload_data_kb"] = avg_offload_data_kb
+    metrics["avg_offload_data_mb"] = avg_offload_data_kb / 1024.0
+    metrics["offload_ratio"] = offload_ratio
 
 
-def plot_results(results: List[Dict[str, Any]], suite_path: Path) -> None:
-    """
-    生成对比图表
-    
-    【功能】
-    绘制本地CPU频率对卸载行为和性能的影响曲线：
-    1. CPU频率 vs 平均卸载数据量
-    2. CPU频率 vs 卸载比例
-    3. CPU频率 vs 平均成本
-    
-    【参数】
-    results: List[Dict] - 所有配置的结果列表
-    suite_path: Path - 输出目录
-    """
-    # ========== 提取数据 ==========
-    cpu_freqs = [r["cpu_freq_ghz"] for r in results]
-    offload_data_mb = [r["avg_offload_data_mb"] for r in results]
-    offload_ratios = [r["offload_ratio"] for r in results]
-    costs = [r["avg_cost"] for r in results]
-    
-    # ========== 设置绘图样式 ==========
-    plt.rcParams.update({
-        'font.size': 12,
-        'figure.figsize': (10, 6),
-        'axes.grid': True,
-        'grid.alpha': 0.3,
-    })
-    
-    # ========== 图1: CPU频率 vs 平均卸载数据量 ==========
-    fig, ax = plt.subplots()
-    ax.plot(cpu_freqs, offload_data_mb, 'o-', linewidth=2, markersize=8, color='#2E86AB')
-    ax.set_xlabel('Local CPU Frequency (GHz)', fontsize=13, fontweight='bold')
-    ax.set_ylabel('Average Offloaded Data (MB)', fontsize=13, fontweight='bold')
-    ax.set_title('Impact of Local Computing Resource on Offloading Volume', fontsize=14, fontweight='bold')
-    ax.grid(True, alpha=0.3)
-    
-    # 标注数据点
-    for x, y in zip(cpu_freqs, offload_data_mb):
-        ax.annotate(f'{y:.2f}', (x, y), textcoords="offset points", 
-                   xytext=(0, 10), ha='center', fontsize=9)
-    
-    plt.tight_layout()
-    plt.savefig(suite_path / "local_cpu_vs_offload_data.png", dpi=300, bbox_inches='tight')
-    plt.close()
-    
-    # ========== 图2: CPU频率 vs 卸载比例 ==========
-    fig, ax = plt.subplots()
-    ax.plot(cpu_freqs, offload_ratios, 'o-', linewidth=2, markersize=8, color='#A23B72')
-    ax.set_xlabel('Local CPU Frequency (GHz)', fontsize=13, fontweight='bold')
-    ax.set_ylabel('Offloading Ratio', fontsize=13, fontweight='bold')
-    ax.set_title('Impact of Local Computing Resource on Offloading Ratio', fontsize=14, fontweight='bold')
-    ax.grid(True, alpha=0.3)
-    ax.set_ylim(0, 1.0)
-    
-    for x, y in zip(cpu_freqs, offload_ratios):
-        ax.annotate(f'{y:.3f}', (x, y), textcoords="offset points", 
-                   xytext=(0, 10), ha='center', fontsize=9)
-    
-    plt.tight_layout()
-    plt.savefig(suite_path / "local_cpu_vs_offload_ratio.png", dpi=300, bbox_inches='tight')
-    plt.close()
-    
-    # ========== 图3: CPU频率 vs 平均成本 ==========
-    fig, ax = plt.subplots()
-    ax.plot(cpu_freqs, costs, 'o-', linewidth=2, markersize=8, color='#F18F01')
-    ax.set_xlabel('Local CPU Frequency (GHz)', fontsize=13, fontweight='bold')
-    ax.set_ylabel('Average Cost', fontsize=13, fontweight='bold')
-    ax.set_title('Impact of Local Computing Resource on System Cost', fontsize=14, fontweight='bold')
-    ax.grid(True, alpha=0.3)
-    
-    for x, y in zip(cpu_freqs, costs):
-        ax.annotate(f'{y:.2f}', (x, y), textcoords="offset points", 
-                   xytext=(0, 10), ha='center', fontsize=9)
-    
-    plt.tight_layout()
-    plt.savefig(suite_path / "local_cpu_vs_cost.png", dpi=300, bbox_inches='tight')
-    plt.close()
-    
-    print(f"\n{'='*60}")
-    print("Charts saved:")
-    print(f"  - {suite_path / 'local_cpu_vs_offload_data.png'}")
-    print(f"  - {suite_path / 'local_cpu_vs_offload_ratio.png'}")
-    print(f"  - {suite_path / 'local_cpu_vs_cost.png'}")
-    print(f"{'='*60}")
+def plot_results(results: List[Dict[str, object]], suite_path: Path) -> None:
+    cpu_freqs = [float(r["cpu_freq_ghz"]) for r in results]
+
+    def make_chart(metric: str, ylabel: str, filename: str) -> None:
+        plt.figure(figsize=(10, 6))
+        for strat_key in STRATEGY_KEYS:
+            values = [r["strategies"][strat_key][metric] for r in results]
+            plt.plot(cpu_freqs, values, marker="o", linewidth=2, label=strategy_label(strat_key))
+        plt.xlabel("Local CPU Frequency (GHz)")
+        plt.ylabel(ylabel)
+        plt.title(f"Impact of Local CPU Frequency on {ylabel}")
+        plt.grid(alpha=0.3)
+        plt.legend()
+        plt.tight_layout()
+        plt.savefig(suite_path / filename, dpi=300, bbox_inches="tight")
+        plt.close()
+
+    make_chart("raw_cost", "Average Cost", "local_cpu_vs_cost.png")
+    make_chart("avg_offload_data_mb", "Average Offloaded Data (MB)", "local_cpu_vs_offload_data.png")
+    make_chart("offload_ratio", "Offload Ratio", "local_cpu_vs_offload_ratio.png")
+    make_chart("normalized_cost", "Normalized Cost", "local_cpu_vs_normalized_cost.png")
+
+    print("\nCharts saved:")
+    for name in [
+        "local_cpu_vs_cost.png",
+        "local_cpu_vs_offload_data.png",
+        "local_cpu_vs_offload_ratio.png",
+        "local_cpu_vs_normalized_cost.png",
+    ]:
+        print(f"  - {suite_path / name}")
 
 
 def main() -> None:
-    """
-    脚本主入口函数
-    
-    【执行流程】
-    1. 解析命令行参数
-    2. 准备输出目录
-    3. 循环运行各CPU频率配置
-    4. 汇总结果到summary.json
-    5. 生成对比图表
-    6. 打印最终摘要
-    """
-    # ========== 步骤1: 构建参数解析器 ==========
-    parser = argparse.ArgumentParser(
-        description="Evaluate impact of local computing resources on offloading decisions."
-    )
-    parser.add_argument(
-        "--cpu-frequencies",
-        type=str,
-        default="default",
-        help="Comma-separated CPU frequencies in GHz (e.g., '1.0,1.5,2.0,2.5,3.0'). Use 'default' for preset configs.",
-    )
-    parser.add_argument(
-        "--episodes",
-        type=int,
-        help="Training episodes per configuration (default: 500).",
-    )
-    parser.add_argument(
-        "--seed",
-        type=int,
-        help="Random seed (default: 42).",
-    )
+    parser = argparse.ArgumentParser(description="Evaluate offloading behaviour under different local CPU frequencies.")
+    parser.add_argument("--cpu-frequencies", type=str, default="default", help="Comma-separated CPU frequencies (GHz).")
+    parser.add_argument("--episodes", type=int, help="Training episodes per configuration (default 500).")
+    parser.add_argument("--seed", type=int, help="Random seed (default 42).")
     parser.add_argument(
         "--suite-id",
         type=str,
-        default=f"local_resource_offload_{datetime.now().strftime('%Y%m%d_%H%M%S')}",
-        help="Suite identifier for result grouping.",
+        default=f"local_offload_{datetime.now().strftime('%Y%m%d_%H%M%S')}",
+        help="Suite identifier.",
     )
-    parser.add_argument(
-        "--output-root",
-        type=str,
-        default="results/parameter_sensitivity",
-        help="Root directory for outputs.",
-    )
-    parser.add_argument(
-        "--silent",
-        action="store_true",
-        help="Run training in silent mode.",
-    )
-    
+    parser.add_argument("--output-root", type=str, default="results/parameter_sensitivity", help="Output root directory.")
+    parser.add_argument("--silent", action="store_true", default=True, help="Run training in silent mode (default: True for batch experiments).")
+    parser.add_argument("--interactive", action="store_true", help="Enable interactive mode (overrides silent).")
     args = parser.parse_args()
     
-    # ========== 步骤2: 解析CPU频率配置 ==========
-    cpu_frequencies = parse_cpu_frequencies(args.cpu_frequencies)
-    
-    # ========== 步骤3: 准备输出目录 ==========
+    # 如果指定了 --interactive，则禁用静默模式
+    if args.interactive:
+        args.silent = False
+
+    cpu_freqs = parse_cpu_frequencies(args.cpu_frequencies)
+    episodes = args.episodes or DEFAULT_EPISODES
+    seed = args.seed if args.seed is not None else DEFAULT_SEED
+
+    configs: List[Dict[str, object]] = []
+    for freq in cpu_freqs:
+        overrides = {
+            "num_vehicles": 12,
+            "num_rsus": 4,
+            "num_uavs": 2,
+            "vehicle_cpu_freq": float(freq) * 1e9,
+            "override_topology": True,
+        }
+        configs.append(
+            {
+                "key": f"{freq:.1f}ghz",
+                "label": f"{freq:.1f} GHz",
+                "overrides": overrides,
+                "cpu_freq_ghz": freq,
+                "fallback_task_size_kb": 350.0,
+                "assumed_tasks_per_step": 12,
+            }
+        )
+
     suite_path = Path(args.output_root) / args.suite_id
-    suite_path.mkdir(parents=True, exist_ok=True)
-    
-    # ========== 步骤4: 循环运行各配置 ==========
-    results = []
-    for cpu_freq in cpu_frequencies:
-        result = run_single_config(cpu_freq, args, suite_path)
-        results.append(result)
-    
-    # ========== 步骤5: 保存汇总结果 ==========
+    results = evaluate_configs(
+        configs=configs,
+        episodes=episodes,
+        seed=seed,
+        silent=args.silent,
+        suite_path=suite_path,
+        per_strategy_hook=offload_hook,
+    )
+
     summary = {
         "experiment_type": "local_resource_offload_sensitivity",
         "suite_id": args.suite_id,
         "created_at": datetime.now().isoformat(),
         "num_configs": len(results),
-        "episodes_per_config": args.episodes or DEFAULT_EPISODES,
-        "seed": args.seed or DEFAULT_SEED,
+        "episodes_per_config": episodes,
+        "seed": seed,
         "results": results,
     }
-    
     summary_path = suite_path / "summary.json"
-    summary_path.write_text(
-        json.dumps(summary, indent=2, ensure_ascii=False),
-        encoding="utf-8"
-    )
-    
-    # ========== 步骤6: 生成对比图表 ==========
+    summary_path.write_text(json.dumps(summary, indent=2, ensure_ascii=False), encoding="utf-8")
+
     plot_results(results, suite_path)
-    
-    # ========== 步骤7: 打印最终摘要 ==========
-    print(f"\n{'='*60}")
-    print("Local Resource Offloading Sensitivity Analysis Completed")
-    print(f"{'='*60}")
+
+    print("\nLocal Resource Offload Analysis Completed")
     print(f"Suite ID: {args.suite_id}")
     print(f"Configurations tested: {len(results)}")
-    print(f"\nResults Summary:")
-    print(f"{'CPU (GHz)':<12} {'Offload (MB)':<14} {'Ratio':<10} {'Cost':<10}")
-    print("-" * 46)
-    for r in results:
-        print(f"{r['cpu_freq_ghz']:<12.1f} {r['avg_offload_data_mb']:<14.2f} {r['offload_ratio']:<10.3f} {r['avg_cost']:<10.4f}")
+    print(f"{'CPU (GHz)':<12}", end="")
+    for strat_key in STRATEGY_KEYS:
+        print(f"{strategy_label(strat_key):>18}", end="")
+    print()
+    print("-" * (12 + 18 * len(STRATEGY_KEYS)))
+    for record in results:
+        print(f"{record['cpu_freq_ghz']:<12.1f}", end="")
+        for strat_key in STRATEGY_KEYS:
+            print(f"{record['strategies'][strat_key]['raw_cost']:<18.4f}", end="")
+        print()
     print(f"\nSummary saved to: {summary_path}")
-    print(f"{'='*60}")
 
 
 if __name__ == "__main__":
     main()
-

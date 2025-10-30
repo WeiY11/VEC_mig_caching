@@ -11,7 +11,7 @@ CAMTD3消融实验训练运行器，用于系统地评估各决策模块的独�
 - 消融实验（Ablation Study）：评估系统各模块的必要性
 - 对比以下6种策略配置：
   1. local-only: 仅本地执行（无卸载）
-  2. remote-only: 强制卸载到单个RSU
+  2. remote-only（单RSU远程执行）
   3. offloading-only: 卸载决策（本地vs单RSU）
   4. resource-only: 多节点资源分配（无迁移）
   5. comprehensive-no-migration: 完整系统（无迁移）
@@ -44,10 +44,16 @@ import argparse
 import json
 import os
 import shutil
+import sys
 from collections import OrderedDict
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, Optional
+
+# 添加项目根目录到Python路径
+project_root = Path(__file__).resolve().parents[2]
+if str(project_root) not in sys.path:
+    sys.path.insert(0, str(project_root))
 
 from config import config
 from train_single_agent import _apply_global_seed_from_env, train_single_algorithm
@@ -131,7 +137,7 @@ STRATEGY_PRESETS: "OrderedDict[str, StrategyPreset]" = OrderedDict(
         (
             "remote-only",
             {
-                "description": "Every task is forced to offload to a single RSU; local computing and migration are disabled.",
+                "description": "Edge-Only (single RSU offload)",
                 "algorithm": "CAMTD3",
                 "episodes": DEFAULT_EPISODES,
                 "use_enhanced_cache": False,      # 无缓存协作
@@ -480,7 +486,7 @@ def run_strategy(strategy: str, args: argparse.Namespace) -> None:
     results = train_single_algorithm(
         preset["algorithm"],
         num_episodes=episodes,
-        silent_mode=args.silent,
+        silent_mode=True,  # 批量实验强制使用静默模式，避免交互卡住
         override_scenario=preset["override_scenario"],
         use_enhanced_cache=preset["use_enhanced_cache"],
         disable_migration=preset["disable_migration"],
@@ -564,18 +570,24 @@ def build_argument_parser() -> argparse.ArgumentParser:
     
     --silent: bool (可选)
         - 静默模式，减少训练过程的输出
+        - ✅ 注意：批量实验脚本默认已启用静默模式，无需手动交互
     
     【使用示例】
+    # ✅ 默认静默运行（无需手动交互，推荐）
     # 基本用法
     python run_strategy_training.py --strategy local-only
     
-    # 指定参数
+    # 指定参数 - 自动保存报告，无人值守运行
     python run_strategy_training.py --strategy comprehensive-migration \\
         --episodes 1000 --seed 123 --suite-id exp_ablation_v1
     
-    # 快速测试
+    # 快速测试（已默认静默）
     python run_strategy_training.py --strategy offloading-only \\
-        --episodes 50 --silent
+        --episodes 50
+    
+    # 💡 如需交互式确认保存报告，添加 --interactive 参数
+    python run_strategy_training.py --strategy camtd3-full \\
+        --episodes 500 --interactive
     """
     parser = argparse.ArgumentParser(
         description="Run CAMTD3 under a specific strategy baseline and collect results."
