@@ -150,13 +150,12 @@ class WirelessCommunicationModel:
         rx_antenna_gain_db = rx_gain_map.get(rx_node_type, self.antenna_gain_rsu)
         
         # 转换为线性值
-        path_loss_linear = db_to_linear(path_loss_db)
-        shadowing_linear = db_to_linear(abs(shadowing_db))  # 阴影衰落取绝对值
-        tx_antenna_gain_linear = db_to_linear(tx_antenna_gain_db)
-        rx_antenna_gain_linear = db_to_linear(rx_antenna_gain_db)
+        total_path_loss_db = path_loss_db + shadowing_db
+        path_loss_linear = max(db_to_linear(total_path_loss_db), 1e-9)
+        antenna_gain_linear = db_to_linear(tx_antenna_gain_db + rx_antenna_gain_db)
         
         # 总信道增益
-        channel_gain = (tx_antenna_gain_linear * rx_antenna_gain_linear * self.fast_fading_factor) / (path_loss_linear * shadowing_linear)
+        channel_gain = (antenna_gain_linear * self.fast_fading_factor) / path_loss_linear
         
         return channel_gain
     
