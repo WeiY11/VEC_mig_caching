@@ -26,6 +26,7 @@ python train_single_agent.py --compare --episodes 200  # 比较所有算法
 🚀 增强缓存模式 (默认启用 - 分层L1/L2 + 自适应热度策略 + RSU协作):
 python train_single_agent.py --algorithm TD3 --episodes 1600 --num-vehicles 8
 python train_single_agent.py --algorithm TD3 --episodes 800 --num-vehicles 12
+python train_single_agent.py --algorithm TD3 --episodes 800 --num-vehicles 12 --silent-mode  # 静默保存结果
 python train_single_agent.py --algorithm TD3 --episodes 1600 --num-vehicles 16
 python train_single_agent.py --algorithm TD3 --episodes 1600 --num-vehicles 20
 python train_single_agent.py --algorithm TD3 --episodes 1600 --num-vehicles 24
@@ -65,7 +66,7 @@ train_single_agent.py (主入口)
 │   │   └─ TD3学习更新
 │   └─ 评估性能
 └─ 保存结果:
-    ├─ 模型: results/single_agent/td3/models/
+    ├─ 模型: results/models/single_agent/td3/
     ├─ 训练数据: results/single_agent/td3/training_results_*.json
     └─ 图表: results/single_agent/td3/training_chart_*.png
 """ 
@@ -186,12 +187,12 @@ def _maybe_apply_reward_smoothing_from_env():
 def _build_scenario_config() -> Dict[str, Any]:
     """构建模拟环境配置，允许通过环境变量覆盖默认值"""
     scenario = {
-        "num_vehicles": 12,
-        "num_rsus": 4,
-        "num_uavs": 2,
-        "task_arrival_rate": 1.8,
-        "time_slot": 0.2,
-        "simulation_time": 1000,
+        "num_vehicles": getattr(config, "num_vehicles", 12),
+        "num_rsus": getattr(config, "num_rsus", 4),
+        "num_uavs": getattr(config, "num_uavs", 2),
+        "task_arrival_rate": getattr(getattr(config, "task", None), "arrival_rate", 1.8),
+        "time_slot": getattr(config, "time_slot", 0.2),
+        "simulation_time": getattr(config, "simulation_time", 1000),
         "computation_capacity": 800,
         "bandwidth": 15,
         "coverage_radius": 300,
@@ -420,6 +421,7 @@ class SingleAgentTrainingEnvironment:
         # 性能追踪器
         self.performance_tracker = {
             'recent_rewards': MovingAverage(100),
+            'recent_step_rewards': MovingAverage(100),
             'recent_delays': MovingAverage(100),
             'recent_energy': MovingAverage(100),
             'recent_completion': MovingAverage(100)
@@ -1365,6 +1367,8 @@ def train_single_algorithm(algorithm: str, num_episodes: Optional[int] = None, e
         
         # 更新性能追踪器
         training_env.performance_tracker['recent_rewards'].update(episode_result['avg_reward'])
+        per_step_reward = episode_result['avg_reward'] / max(1, episode_steps)
+        training_env.performance_tracker['recent_step_rewards'].update(per_step_reward)
         
         system_metrics = episode_result['system_metrics']
         training_env.performance_tracker['recent_delays'].update(system_metrics.get('avg_task_delay', 0))
@@ -1423,12 +1427,12 @@ def train_single_algorithm(algorithm: str, num_episodes: Optional[int] = None, e
         
         # 定期输出进度
         if episode % 10 == 0:
-            avg_reward = training_env.performance_tracker['recent_rewards'].get_average()
+            avg_reward_step = training_env.performance_tracker['recent_step_rewards'].get_average()
             avg_delay = training_env.performance_tracker['recent_delays'].get_average()
             avg_completion = training_env.performance_tracker['recent_completion'].get_average()
             
             print(f"轮次 {episode:4d}/{num_episodes}:")
-            print(f"  Per-Step奖励: {avg_reward:8.3f}")
+            print(f"  平均每步奖励: {avg_reward_step:8.3f}")
             print(f"  平均时延: {avg_delay:8.3f}s")
             print(f"  完成率:   {avg_completion:8.1%}")
             print(f"  轮次用时: {episode_time:6.3f}s")
@@ -1984,6 +1988,8 @@ def main():
                         help='阶段一算法（offloading 头）：heuristic|greedy|cache_first|distance_first')
     parser.add_argument('--stage2-alg', type=str, default=None,
                         help='阶段二算法（缓存/迁移控制的RL）：TD3|SAC|DDPG|PPO|DQN|TD3-LE')
+    parser.add_argument('--silent-mode', action='store_true',
+                        help='启用静默模式，跳过训练结束后的交互提示')
     
     args = parser.parse_args()
 
@@ -2040,7 +2046,8 @@ def main():
             vis_port=args.vis_port,
             override_scenario=override_scenario,  # 🔧 新增：传递覆盖参数
             use_enhanced_cache=not args.no_enhanced_cache,  # 🚀 默认启用增强缓存
-            enforce_offload_mode=enforce_mode
+            enforce_offload_mode=enforce_mode,
+            silent_mode=args.silent_mode
         )
     else:
         print("请指定 --algorithm 或使用 --compare 标志")
@@ -2456,7 +2463,7 @@ Episode结束后:
 📌 阶段5: 训练结束与保存 (800个episode完成后)
 保存结果:
 ├─ 1) 模型权重
-│  └─ results/single_agent/td3/models/
+│  └─ results/models/single_agent/td3/
 │     ├─ actor_final.pth
 │     ├─ critic1_final.pth
 │     ├─ critic2_final.pth

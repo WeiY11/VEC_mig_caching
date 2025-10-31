@@ -1029,7 +1029,15 @@ class SystemConfig:
     
     def __init__(self):
         # 基本系统配置
-        self.device = 'cuda' if os.environ.get('CUDA_AVAILABLE', 'false').lower() == 'true' else 'cpu'
+        cuda_flag = os.environ.get('CUDA_AVAILABLE')
+        if cuda_flag is not None:
+            self.device = 'cuda' if cuda_flag.lower() == 'true' else 'cpu'
+        else:
+            try:
+                import torch  # type: ignore
+                self.device = 'cuda' if torch.cuda.is_available() else 'cpu'
+            except Exception:
+                self.device = 'cpu'
         self.num_threads = int(os.environ.get('NUM_THREADS', '4'))
         self.random_seed = int(os.environ.get('RANDOM_SEED', '42'))
         
