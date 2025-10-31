@@ -16,6 +16,7 @@ import os
 from typing import Dict, List, Tuple, Any, Optional
 import json
 from datetime import datetime
+from collections import deque, defaultdict
 
 # 🔑 修复：导入统一时间管理器
 # Unified time manager for consistent simulation timing
@@ -305,6 +306,7 @@ class CompleteSystemSimulator:
         except Exception:
             pass
 
+        self._init_mm1_predictor()
         self._refresh_spatial_index(update_static=True, update_vehicle=True)
     
     def _setup_scenario(self):
@@ -390,15 +392,153 @@ class CompleteSystemSimulator:
             vehicle['device_cache'] = {}
             vehicle['device_cache_capacity'] = vehicle.get('device_cache_capacity', 32.0)
 
-        for rsu in self.rsus:
+        for idx, rsu in enumerate(self.rsus):
             rsu.setdefault('cache', {})
             rsu['computation_queue'] = []
             rsu['energy_consumed'] = 0.0
 
-        for uav in self.uavs:
+        for idx, uav in enumerate(self.uavs):
             uav.setdefault('cache', {})
             uav['computation_queue'] = []
             uav['energy_consumed'] = 0.0
+
+        if hasattr(self, 'mm1_prediction_window'):
+            self._build_mm1_trackers()
+            self._reset_mm1_step_buffers()
+            self._mm1_last_prediction_step = -self.mm1_prediction_interval
+
+    def _init_mm1_predictor(self):
+        """Initialize M/M/1 queue performance predictor settings and buffers."""
+        if getattr(self, 'queue_config', None) is not None:
+            window_cfg = getattr(self.queue_config, 'prediction_window', None)
+            interval_cfg = getattr(self.queue_config, 'prediction_interval', None)
+        else:
+            window_cfg = None
+            interval_cfg = None
+
+        window = self.config.get('mm1_prediction_window', window_cfg if window_cfg is not None else 12)
+        interval = self.config.get('mm1_prediction_interval', interval_cfg if interval_cfg is not None else 5)
+
+        try:
+            window = int(window)
+        except (TypeError, ValueError):
+            window = 12
+        window = max(3, window)
+
+        try:
+            interval = int(interval)
+        except (TypeError, ValueError):
+            interval = 5
+        interval = max(1, interval)
+
+        self.mm1_prediction_window = window
+        self.mm1_prediction_interval = interval
+        self._mm1_last_prediction_step = -self.mm1_prediction_interval
+        self._build_mm1_trackers()
+        self._reset_mm1_step_buffers()
+
+    def _mm1_node_key(self, node_type: str, node_idx: int) -> str:
+        return f"{node_type}_{int(node_idx)}"
+
+    def _build_mm1_trackers(self):
+        """Create rolling buffers for each node participating in remote processing."""
+        self._mm1_trackers: Dict[str, Dict[str, deque]] = {}
+        node_keys = [self._mm1_node_key('RSU', idx) for idx, _ in enumerate(self.rsus)]
+        node_keys.extend(self._mm1_node_key('UAV', idx) for idx, _ in enumerate(self.uavs))
+
+        for key in node_keys:
+            self._mm1_trackers[key] = {
+                'arrivals': deque(maxlen=self.mm1_prediction_window),
+                'services': deque(maxlen=self.mm1_prediction_window),
+                'queue_lengths': deque(maxlen=self.mm1_prediction_window),
+                'delays': deque(maxlen=self.mm1_prediction_window),
+            }
+
+    def _reset_mm1_step_buffers(self):
+        """Reset per-step accumulation buffers for MM1 metrics."""
+        if not hasattr(self, '_mm1_trackers'):
+            return
+        self._mm1_step_arrivals: defaultdict[str, int] = defaultdict(int)
+        self._mm1_step_services: defaultdict[str, int] = defaultdict(int)
+        self._mm1_step_delays: defaultdict[str, List[float]] = defaultdict(list)
+        self._mm1_step_queue_lengths: Dict[str, int] = {}
+
+    def _record_mm1_arrival(self, node_type: str, node_idx: int):
+        if not hasattr(self, '_mm1_trackers'):
+            return
+        key = self._mm1_node_key(node_type, node_idx)
+        self._mm1_step_arrivals[key] += 1
+
+    def _record_mm1_service(self, node_type: str, node_idx: int, delay: float):
+        if not hasattr(self, '_mm1_trackers'):
+            return
+        key = self._mm1_node_key(node_type, node_idx)
+        self._mm1_step_services[key] += 1
+        if delay is not None and delay >= 0.0:
+            self._mm1_step_delays[key].append(float(delay))
+
+    def _record_mm1_queue_length(self, node_type: str, node_idx: int, queue_len: int):
+        if not hasattr(self, '_mm1_trackers'):
+            return
+        key = self._mm1_node_key(node_type, node_idx)
+        self._mm1_step_queue_lengths[key] = int(queue_len)
+
+    def _finalize_mm1_step(self, step: int) -> Dict[str, Any]:
+        """Update rolling statistics and return predictions when scheduled."""
+        if not hasattr(self, '_mm1_trackers'):
+            return {}
+
+        for key, tracker in self._mm1_trackers.items():
+            tracker['arrivals'].append(self._mm1_step_arrivals.get(key, 0))
+            tracker['services'].append(self._mm1_step_services.get(key, 0))
+            tracker['queue_lengths'].append(self._mm1_step_queue_lengths.get(key, 0))
+            delays = self._mm1_step_delays.get(key)
+            avg_delay = float(np.mean(delays)) if delays else 0.0
+            tracker['delays'].append(avg_delay)
+
+        predictions: Dict[str, Any] = {}
+        if step - self._mm1_last_prediction_step < self.mm1_prediction_interval:
+            return predictions
+
+        for key, tracker in self._mm1_trackers.items():
+            window_steps = max(1, len(tracker['arrivals']))
+            time_horizon = max(window_steps * float(self.time_slot), 1e-6)
+            total_arrivals = sum(tracker['arrivals'])
+            total_services = sum(tracker['services'])
+
+            arrival_rate = total_arrivals / time_horizon
+            service_rate = total_services / time_horizon
+            if service_rate > 1e-6:
+                rho = arrival_rate / service_rate
+            else:
+                rho = float('inf') if arrival_rate > 0.0 else 0.0
+            stable = service_rate > arrival_rate and service_rate > 1e-6
+
+            theoretical_queue = None
+            theoretical_delay = None
+            if stable:
+                denom = max(1e-6, 1.0 - rho)
+                theoretical_queue = (rho * rho) / denom
+                theoretical_delay = 1.0 / max(1e-6, service_rate - arrival_rate)
+
+            queue_samples = list(tracker['queue_lengths'])
+            actual_queue = float(sum(queue_samples) / len(queue_samples)) if queue_samples else 0.0
+            delay_samples = [d for d in tracker['delays'] if d > 0.0]
+            actual_delay = float(sum(delay_samples) / len(delay_samples)) if delay_samples else 0.0
+
+            predictions[key] = {
+                'arrival_rate': arrival_rate,
+                'service_rate': service_rate,
+                'rho': rho,
+                'stable': stable,
+                'theoretical_queue': theoretical_queue,
+                'actual_queue': actual_queue,
+                'theoretical_delay': theoretical_delay,
+                'actual_delay': actual_delay,
+            }
+
+        self._mm1_last_prediction_step = step
+        return predictions
     
     def _get_realistic_content_size(self, content_id: str) -> float:
         """
@@ -714,15 +854,15 @@ class CompleteSystemSimulator:
         Process tasks in RSU and UAV queues to prevent task accumulation.
         """
         # 处理所有RSU队列
-        for rsu in self.rsus:
-            self._process_single_node_queue(rsu, 'RSU')
+        for idx, rsu in enumerate(self.rsus):
+            self._process_single_node_queue(rsu, 'RSU', idx)
         
         # 处理所有UAV队列
-        for uav in self.uavs:
-            self._process_single_node_queue(uav, 'UAV')
+        for idx, uav in enumerate(self.uavs):
+            self._process_single_node_queue(uav, 'UAV', idx)
     
 
-    def _process_single_node_queue(self, node: Dict, node_type: str) -> None:
+    def _process_single_node_queue(self, node: Dict, node_type: str, node_idx: int) -> None:
         """
         处理单个节点的计算队列
         
@@ -740,6 +880,7 @@ class CompleteSystemSimulator:
         queue = node.get('computation_queue', [])
         queue_len = len(queue)
         if queue_len == 0:
+            self._record_mm1_queue_length(node_type, node_idx, 0)
             return
 
         # 根据节点类型获取处理能力配置
@@ -807,6 +948,7 @@ class CompleteSystemSimulator:
             actual_delay = current_time - task.get('arrival_time', current_time)
             actual_delay = max(0.001, min(actual_delay, 20.0))
             self.stats['total_delay'] += actual_delay
+            self._record_mm1_service(node_type, node_idx, actual_delay)
 
             vehicle_id = task.get('vehicle_id', 'V_0')
             vehicle = next((v for v in self.vehicles if v['id'] == vehicle_id), None)
@@ -838,6 +980,7 @@ class CompleteSystemSimulator:
             task['completed'] = True
 
         node['computation_queue'] = new_queue
+        self._record_mm1_queue_length(node_type, node_idx, len(new_queue))
 
 
     def find_nearest_rsu(self, vehicle_pos: np.ndarray) -> Dict:
@@ -1789,6 +1932,7 @@ class CompleteSystemSimulator:
         Execute remote offloading with cache checking and queue management.
         """
         actions = actions or {}
+        self._reset_mm1_step_buffers()
         cache_hit = False
 
         # 检查缓存命中
@@ -1844,6 +1988,7 @@ class CompleteSystemSimulator:
         queue = node.setdefault('computation_queue', [])
         queue.append(task_entry)
         self._append_active_task(task_entry)
+        self._record_mm1_arrival(node_type, node_idx)
         return True
 
     def _handle_local_processing(self, vehicle: Dict, task: Dict, step_summary: Dict):
@@ -2255,6 +2400,8 @@ class CompleteSystemSimulator:
         stability_metrics = self._monitor_queue_stability()
         step_summary.update(stability_metrics)
         step_summary.update(self._summarize_task_types())
+        mm1_predictions = self._finalize_mm1_step(self.current_step)
+        step_summary['mm1_predictions'] = mm1_predictions
 
         cumulative_stats = dict(self.stats)
         cumulative_stats.update(step_summary)

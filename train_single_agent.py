@@ -40,13 +40,10 @@ python train_single_agent.py --algorithm TD3 --episodes 1600 --num-vehicles 20 -
 python train_single_agent.py --algorithm TD3 --episodes 200 --realtime-vis
 python train_single_agent.py --algorithm DDPG --episodes 100 --realtime-vis --vis-port 8080
 
-📊 批量实验脚本:
-python experiments/run_td3_seed_sweep.py --seeds 42 2025 3407 --episodes 200
-python experiments/run_td3_vehicle_sweep.py --vehicles 8 12 16 --episodes 200
-python experiments/run_td3_vehicle_sweep.py --vehicles 8 12 16 20 24 --episodes 800
 🐍 生成学术图表:
 python generate_academic_charts.py results/single_agent/td3/training_results_20251007_220900.json
 
+到达率对比：python experiments/arrival_rate_analysis/run_td3_arrival_rate_sweep_silent.py --rates 1.0 1.5 2.0 2.5 3.0 3.5 --episodes 800
 
 train_single_agent.py (主入口)
     ↓
@@ -424,7 +421,9 @@ class SingleAgentTrainingEnvironment:
             'rsu_hotspot_mean': [],
             'rsu_hotspot_peak': [],
             'rsu_hotspot_mean_series': [],
-            'rsu_hotspot_peak_series': []
+            'rsu_hotspot_peak_series': [],
+            'mm1_queue_error': [],
+            'mm1_delay_error': []
         }
         
         # 性能追踪器
@@ -630,6 +629,8 @@ class SingleAgentTrainingEnvironment:
         hotspot_peak = float(system_metrics.get('rsu_hotspot_peak', 0.0))
         self.episode_metrics['rsu_hotspot_mean_series'].append(hotspot_mean)
         self.episode_metrics['rsu_hotspot_peak_series'].append(hotspot_peak)
+        self.episode_metrics['mm1_queue_error'].append(float(system_metrics.get('mm1_queue_error', 0.0)))
+        self.episode_metrics['mm1_delay_error'].append(float(system_metrics.get('mm1_delay_error', 0.0)))
         
         # 判断是否结束
         done = False  # 单智能体环境通常不会提前结束
@@ -707,6 +708,66 @@ class SingleAgentTrainingEnvironment:
         queue_warning_nodes = step_stats.get('queue_warning_nodes', {}) or {}
         queue_overload_events_total = int(step_stats.get('queue_overload_events', 0) or 0)
         queue_overload_events = max(0, queue_overload_events_total - getattr(self, '_episode_queue_overload_events_base', 0))
+
+        mm1_predictions_raw = step_stats.get('mm1_predictions', {}) or {}
+        mm1_predictions: Dict[str, Dict[str, float]] = {}
+        mm1_queue_errors: List[float] = []
+        mm1_delay_errors: List[float] = []
+        if isinstance(mm1_predictions_raw, dict):
+            for node_key, pred in mm1_predictions_raw.items():
+                if not isinstance(pred, dict):
+                    continue
+                arrival_rate = float(pred.get('arrival_rate', 0.0) or 0.0)
+                service_rate = float(pred.get('service_rate', 0.0) or 0.0)
+                rho_val = pred.get('rho')
+                if rho_val is None:
+                    rho = np.inf if service_rate <= 0.0 and arrival_rate > 0.0 else 0.0
+                else:
+                    try:
+                        rho = float(rho_val)
+                    except (TypeError, ValueError):
+                        rho = np.inf
+                stable = bool(pred.get('stable', False))
+                rho_storable = float(rho) if np.isfinite(rho) else float('inf')
+                theoretical_queue = pred.get('theoretical_queue')
+                actual_queue = float(pred.get('actual_queue', 0.0) or 0.0)
+                theoretical_delay = pred.get('theoretical_delay')
+                actual_delay_obs = float(pred.get('actual_delay', 0.0) or 0.0)
+
+                if theoretical_queue is not None:
+                    try:
+                        theo_queue_val = float(theoretical_queue)
+                    except (TypeError, ValueError):
+                        theo_queue_val = None
+                else:
+                    theo_queue_val = None
+
+                if theoretical_delay is not None:
+                    try:
+                        theo_delay_val = float(theoretical_delay)
+                    except (TypeError, ValueError):
+                        theo_delay_val = None
+                else:
+                    theo_delay_val = None
+
+                mm1_predictions[node_key] = {
+                    'arrival_rate': arrival_rate,
+                    'service_rate': service_rate,
+                    'rho': rho_storable,
+                    'stable': bool(stable),
+                    'theoretical_queue': theo_queue_val,
+                    'actual_queue': actual_queue,
+                    'theoretical_delay': theo_delay_val,
+                    'actual_delay': actual_delay_obs,
+                }
+
+                if theo_queue_val is not None:
+                    mm1_queue_errors.append(abs(actual_queue - theo_queue_val))
+                if theo_delay_val is not None:
+                    mm1_delay_errors.append(abs(actual_delay_obs - theo_delay_val))
+
+        mm1_queue_error = float(np.mean(mm1_queue_errors)) if mm1_queue_errors else 0.0
+        mm1_delay_error = float(np.mean(mm1_delay_errors)) if mm1_delay_errors else 0.0
 
         
         # 计算本episode增量能耗（防止负值与异常）
@@ -856,6 +917,9 @@ class SingleAgentTrainingEnvironment:
             'queue_rho_by_node': queue_rho_by_node,
             'queue_overloaded_nodes': queue_overloaded_nodes,
             'queue_warning_nodes': queue_warning_nodes,
+            'mm1_queue_error': mm1_queue_error,
+            'mm1_delay_error': mm1_delay_error,
+            'mm1_predictions': mm1_predictions,
             'rsu_hotspot_intensity_list': hotspot_list,
             'rsu_hotspot_mean': rsu_hotspot_mean,
             'rsu_hotspot_peak': rsu_hotspot_peak
