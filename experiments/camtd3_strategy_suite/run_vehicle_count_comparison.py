@@ -17,11 +17,11 @@ CAMTD3 车辆数量对比实验（六策略版本）
 
 【实验设计】
 扫描参数: num_vehicles (车辆数量)
-- 小规模: 6 辆（基础场景）
-- 中小规模: 9 辆
+- 小规模: 8 辆（基础场景）
+- 中小规模: 10 辆
 - 标准规模: 12 辆（默认配置）
-- 中大规模: 15 辆
-- 大规模: 18 辆（高密度场景）
+- 中大规模: 14 辆
+- 大规模: 16 辆（高密度场景）
 
 固定参数:
 - RSU数: 4
@@ -92,7 +92,7 @@ from experiments.camtd3_strategy_suite.strategy_runner import (
 
 DEFAULT_EPISODES = 500
 DEFAULT_SEED = 42
-DEFAULT_VEHICLE_COUNTS = [6, 9, 12, 15, 18]
+DEFAULT_VEHICLE_COUNTS = [8, 10, 12, 14, 16]
 
 
 def parse_vehicle_counts(value: str) -> List[int]:

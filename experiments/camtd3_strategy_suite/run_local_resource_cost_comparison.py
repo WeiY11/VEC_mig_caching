@@ -17,11 +17,11 @@ CAMTD3 本地计算资源对成本影响实验（六策略版本）
 
 【实验设计】
 扫描参数: vehicle_cpu_freq (车辆CPU频率 GHz)
-- 低性能: 0.8, 1.2 GHz（低端设备）
-- 中低性能: 1.6 GHz
+- 入门性能: 1.2 GHz（轻量设备）
+- 均衡性能: 1.6 GHz
 - 标准性能: 2.0 GHz（默认配置）
-- 中高性能: 2.4 GHz
-- 高性能: 2.8, 3.2 GHz（高端设备）
+- 强化性能: 2.4 GHz
+- 高性能: 2.8 GHz（高端设备）
 
 固定参数:
 - 车辆数: 12
@@ -94,7 +94,7 @@ from experiments.camtd3_strategy_suite.strategy_runner import (
 
 DEFAULT_EPISODES = 500
 DEFAULT_SEED = 42
-DEFAULT_CPU_FREQS = [0.8, 1.2, 1.6, 2.0, 2.4, 2.8, 3.2]
+DEFAULT_CPU_FREQS = [1.2, 1.6, 2.0, 2.4, 2.8]
 
 
 def parse_cpu_frequencies(value: str) -> List[float]:

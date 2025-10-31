@@ -16,13 +16,12 @@ CAMTD3 边缘节点配置对比实验（六策略版本）
 - 验证CAMTD3对边缘节点配置的适应性
 
 【实验设计】
-扫描参数: (num_rsus, num_uavs)
-- 最小配置: (2, 0) - 仅2个RSU，无UAV
-- 轻量配置: (2, 1) - 2个RSU + 1个UAV
-- 基础配置: (4, 0) - 仅4个RSU
-- 标准配置: (4, 2) - 4个RSU + 2个UAV（默认）
-- 增强配置: (6, 2) - 6个RSU + 2个UAV
-- 最大配置: (6, 4) - 6个RSU + 4个UAV
+Sweep parameter: (num_rsus, num_uavs)
+- Minimal: (2, 0) - RSU only
+- Balanced: (3, 1) - 3 RSUs + 1 UAV
+- Standard: (4, 2) - default mix
+- Mid-High: (5, 2) - extra RSU coverage
+- High-end: (6, 3) - added aerial support
 
 固定参数:
 - 车辆数: 12
@@ -94,11 +93,10 @@ DEFAULT_EPISODES = 500
 DEFAULT_SEED = 42
 DEFAULT_CONFIGS: List[Tuple[int, int, str]] = [
     (2, 0, "2 RSU, 0 UAV"),
-    (2, 1, "2 RSU, 1 UAV"),
-    (4, 0, "4 RSU, 0 UAV"),
+    (3, 1, "3 RSU, 1 UAV"),
     (4, 2, "4 RSU, 2 UAV"),
-    (6, 2, "6 RSU, 2 UAV"),
-    (6, 4, "6 RSU, 4 UAV"),
+    (5, 2, "5 RSU, 2 UAV"),
+    (6, 3, "6 RSU, 3 UAV"),
 ]
 
 

@@ -17,11 +17,11 @@ CAMTD3 本地计算资源对卸载量影响实验（六策略版本）
 
 【实验设计】
 扫描参数: vehicle_cpu_freq (车辆CPU频率 GHz)
-- 低性能: 1.0 GHz（强制卸载场景）
-- 中低性能: 1.5 GHz
+- 入门性能: 1.2 GHz（轻量设备）
+- 均衡性能: 1.6 GHz
 - 标准性能: 2.0 GHz（默认配置）
-- 中高性能: 2.5 GHz
-- 高性能: 3.0 GHz（本地优先场景）
+- 强化性能: 2.4 GHz
+- 高性能: 2.8 GHz（本地优先场景）
 
 固定参数:
 - 车辆数: 12
@@ -94,7 +94,7 @@ from experiments.camtd3_strategy_suite.strategy_runner import (
 
 DEFAULT_EPISODES = 500
 DEFAULT_SEED = 42
-DEFAULT_CPU_FREQS = [1.0, 1.5, 2.0, 2.5, 3.0]
+DEFAULT_CPU_FREQS = [1.2, 1.6, 2.0, 2.4, 2.8]
 
 
 def parse_cpu_frequencies(value: str) -> List[float]:

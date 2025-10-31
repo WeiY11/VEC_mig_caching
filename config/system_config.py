@@ -224,15 +224,17 @@ class RLConfig:
         # ⚠️ 已弃用参数（保留以兼容旧代码）
         self.reward_weight_loss = 0.0      # 已移除：data_loss是时延的衍生指标
         self.reward_weight_completion = 0.0  # 已集成到dropped_penalty
-        # 🔧 缓存权重大幅提升：0.35→1.2（使其与能耗权重相当，激活缓存策略）
-        self.reward_weight_cache = 1.2  # 提高3.4倍，让缓存对总奖励有显著影响
+        # 🔧 修复v2：缓存权重大幅降低（1.2→0.15）
+        # 缓存是手段不是目标，权重过高会扭曲优化方向
+        self.reward_weight_cache = 0.15  # 降低到合理水平，提供温和引导
         self.reward_weight_migration = 0.0
 
         # 🎯 延时-能耗优化目标阈值（供算法动态调整）
+        # 🔧 修复v2：根据实际测量值调整（实际能耗约4000J/episode）
         self.latency_target = 0.40  # Target average latency (seconds)
         self.latency_upper_tolerance = 0.80  # Upper latency tolerance before penalty
-        self.energy_target = 1200.0  # Target energy consumption (joules)
-        self.energy_upper_tolerance = 1800.0  # Upper energy tolerance before penalty
+        self.energy_target = 3500.0  # 🔧 修复v2：基于实际4000J设定合理目标
+        self.energy_upper_tolerance = 5000.0  # 🔧 修复v2：容忍上限
 
 class QueueConfig:
     """
@@ -920,8 +922,9 @@ class MigrationConfig:
         self.migration_cost_factor = 0.1
         
         # 🔑 调整：合理的迁移触发阈值
-        self.rsu_overload_threshold = 0.85   # 恢复到85%，更合理的触发点
-        self.uav_overload_threshold = 0.85  # UAV 75%负载触发，略早于RSU
+        # 🔧 修复v2：降低到75%，更早触发迁移，减少队列过载
+        self.rsu_overload_threshold = 0.75   # 75%负载即触发迁移
+        self.uav_overload_threshold = 0.75   # UAV同样75%
         self.rsu_underload_threshold = 0.3
         # 队列/切换阈值（用于车辆跟随与过载切换）
         self.follow_handover_distance = 30.0  # meters，车辆跟随触发的最小距离改善

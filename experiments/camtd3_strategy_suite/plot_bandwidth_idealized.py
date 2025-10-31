@@ -36,7 +36,7 @@ STRATEGY_LABELS = {
     "comprehensive-migration": "Comprehensive (CAMTD3)",
 }
 
-BANDWIDTHS = [10, 20, 40, 60, 80]
+BANDWIDTHS = [10, 20, 30, 40, 50]
 
 
 @dataclass
@@ -55,12 +55,12 @@ def generate_metrics(bandwidth: float) -> Dict[str, IdealisedMetrics]:
     results: Dict[str, IdealisedMetrics] = {}
 
     COST_SHAPES = {
-        "local-only": [6.3, 6.35, 6.45, 6.5, 6.55],
-        "remote-only": [9.4, 8.2, 6.6, 5.4, 3.6],
-        "offloading-only": [6.8, 6.1, 5.2, 4.7, 3.8],
-        "resource-only": [6.5, 5.7, 4.9, 4.3, 3.3],
-        "comprehensive-no-migration": [5.9, 5.4, 4.2, 3.4, 2.5],
-        "comprehensive-migration": [5.4, 4.6, 3.6, 2.8, 1.9],
+        "local-only": [6.3, 6.35, 6.4, 6.45, 6.475],
+        "remote-only": [9.4, 8.2, 7.4, 6.6, 6.0],
+        "offloading-only": [6.8, 6.1, 5.65, 5.2, 4.95],
+        "resource-only": [6.5, 5.7, 5.3, 4.9, 4.6],
+        "comprehensive-no-migration": [5.9, 5.4, 4.8, 4.2, 3.8],
+        "comprehensive-migration": [5.4, 4.6, 4.1, 3.6, 3.2],
     }
 
     def metrics_from_cost(cost: float) -> IdealisedMetrics:

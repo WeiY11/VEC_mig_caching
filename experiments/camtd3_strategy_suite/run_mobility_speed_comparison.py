@@ -16,15 +16,12 @@ CAMTD3 车辆移动速度对比实验
 - 验证CAMTD3对移动性的适应能力
 
 【实验设计】
-扫描参数: vehicle_speed (车辆移动速度 m/s)
-- 静止/低速: 5 m/s  (~18 km/h, 城市慢速)
-- 城市: 10 m/s       (~36 km/h, 城市正常)
-- 标准: 15 m/s       (~54 km/h, 默认配置)
-- 快速: 20 m/s       (~72 km/h, 城市快速)
-- 高速: 25 m/s       (~90 km/h, 高速公路)
-- 超高速: 30 m/s     (~108 km/h, 高速公路快速)
-
-固定参数:
+Sweep parameter: vehicle_speed (m/s)
+- City cruise: 10 m/s       (~36 km/h, urban commute)
+- Standard: 15 m/s        (~54 km/h, default)
+- Fast: 20 m/s            (~72 km/h, arterial fast lane)
+- Highway: 25 m/s         (~90 km/h, highway)
+- Express: 30 m/s         (~108 km/h, expressway)
 - 车辆数: 12
 - RSU数: 4
 - UAV数: 2
@@ -93,7 +90,7 @@ DEFAULT_EPISODES = 500
 DEFAULT_SEED = 42
 
 # ========== 车辆速度配置 (m/s) ==========
-DEFAULT_SPEEDS = [5, 10, 15, 20, 25, 30]
+DEFAULT_SPEEDS = [10, 15, 20, 25, 30]
 
 
 def parse_speeds(value: str) -> List[float]:
@@ -401,4 +398,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

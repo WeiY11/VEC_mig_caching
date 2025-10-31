@@ -1,66 +1,25 @@
 #!/usr/bin/env python3
 """
-CAMTD3 带宽资源对成本影响实验（六策略版本）
-==========================================
+CAMTD3 Bandwidth Sensitivity Experiment (six strategies)
+========================================================
 
-【功能】
-评估不同通信带宽对系统性能的影响，对比六种策略在不同带宽条件下的表现。
-通过扫描不同的信道带宽配置，分析：
-- 带宽资源如何影响系统总成本（时延+能耗）
-- 各策略对带宽变化的敏感度
-- 通信瓶颈对卸载决策的影响
+Purpose:
+- Compare six CAMTD3 strategies under varied channel bandwidth.
+- Produce average cost, delay, throughput, and normalized plots.
 
-【论文对应】
-- 参数敏感性分析（Parameter Sensitivity Analysis）
-- 通信资源约束下的性能评估
-- 验证CAMTD3在带宽受限场景下的鲁棒性
+Default sweep (MHz): 10, 20, 30, 40, 50
 
-【实验设计】
-扫描参数: bandwidth (信道带宽 MHz)
-- 低带宽: 5, 10 MHz（拥塞场景）
-- 中等带宽: 15, 20 MHz（正常场景）
-- 高带宽: 40, 80, 100 MHz（理想场景）
+Default setup: 12 vehicles, 4 RSUs, 2 UAVs, 500 episodes per configuration.
 
-固定参数:
-- 车辆数: 12
-- RSU数: 4
-- UAV数: 2
-- 训练轮数: 可配置（默认500）
-
-【核心指标】
-- 平均总成本（时延+能耗）
-- 平均时延（受带宽影响）
-- 平均吞吐量（Mbps）
-- 归一化成本（便于对比）
-
-【使用示例】
-```bash
-# 快速测试（100轮）- 默认静默模式
-python experiments/camtd3_strategy_suite/run_bandwidth_cost_comparison.py \\
+Usage:
+python experiments/camtd3_strategy_suite/run_bandwidth_cost_comparison.py \
     --episodes 100 --suite-id bandwidth_quick
+python experiments/camtd3_strategy_suite/run_bandwidth_cost_comparison.py \
+    --bandwidths "10,20,30,40,50" --episodes 300
 
-# 完整实验（500轮）- 默认静默模式
-python experiments/camtd3_strategy_suite/run_bandwidth_cost_comparison.py \\
-    --episodes 500 --seed 42 --suite-id bandwidth_paper
-
-# 自定义带宽配置（单位：MHz）
-python experiments/camtd3_strategy_suite/run_bandwidth_cost_comparison.py \\
-    --bandwidths "5,10,20,40,80" --episodes 300
-
-# 如果需要交互模式（保存报告时询问）
-python experiments/camtd3_strategy_suite/run_bandwidth_cost_comparison.py \\
-    --episodes 500 --interactive
-```
-
-【预计运行时间】
-- 快速测试（100轮 × 7配置 × 6策略）：约2-3小时
-- 完整实验（500轮 × 7配置 × 6策略）：约8-12小时
-
-【输出图表】
-- bandwidth_vs_total_cost.png: 带宽 vs 平均成本
-- bandwidth_vs_delay.png: 带宽 vs 平均时延
-- bandwidth_vs_throughput.png: 带宽 vs 吞吐量
-- bandwidth_vs_normalized_cost.png: 带宽 vs 归一化成本
+Estimated runtime (six strategies):
+- 100 episodes x 5 configs: ~1.5-2 hours
+- 500 episodes x 5 configs: ~6-8 hours
 """
 
 from __future__ import annotations
@@ -87,7 +46,7 @@ from experiments.camtd3_strategy_suite.strategy_runner import (
 
 DEFAULT_EPISODES = 500
 DEFAULT_SEED = 42
-DEFAULT_BANDWIDTHS = [5, 10, 15, 20, 40, 80, 100]
+DEFAULT_BANDWIDTHS = [10, 20, 30, 40, 50]
 
 
 def parse_bandwidths(value: str) -> List[int]:
@@ -132,7 +91,7 @@ def bandwidth_hook(
     
     【算法说明】
     1. 优先使用训练记录中的吞吐量数据（取后半段均值）
-    2. 如果无记录，使用估算公式：吞吐量 = (任务大小 × 任务数) / 平均时延
+    2. 如果无记录，使用估算公式：吞吐量 = (任务大小 x 任务数) / 平均时延
     3. 确保吞吐量为非负值
     """
     # ========== 步骤1：从训练记录提取吞吐量 ==========

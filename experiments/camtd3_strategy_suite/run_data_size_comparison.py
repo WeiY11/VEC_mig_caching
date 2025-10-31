@@ -17,11 +17,11 @@ CAMTD3 任务数据大小对比实验（六策略版本）
 
 【实验设计】
 扫描参数: task_data_size (任务数据大小 KB)
-- 小任务: 50-150 KB（轻量级任务）
-- 中小任务: 100-300 KB（常规任务）
-- 中等任务: 200-500 KB（标准配置）
-- 中大任务: 300-800 KB（数据密集型）
-- 大任务: 500-1000 KB（重负载场景）
+- 小任务: 100-200 KB（轻量级任务）
+- 中小任务: 150-300 KB（常规任务）
+- 中等任务: 200-400 KB（标准配置）
+- 中大任务: 300-500 KB（数据密集型）
+- 大任务: 400-600 KB（重负载场景）
 
 固定参数:
 - 车辆数: 12
@@ -48,7 +48,7 @@ python experiments/camtd3_strategy_suite/run_data_size_comparison.py \\
 
 # 自定义数据大小配置（格式：min,max; ...）
 python experiments/camtd3_strategy_suite/run_data_size_comparison.py \\
-    --data-sizes "100,200;200,400;400,800" --episodes 300
+    --data-sizes "150,300;300,450;400,600" --episodes 300
 
 # 💡 如需交互式确认保存报告，添加 --interactive 参数
 python experiments/camtd3_strategy_suite/run_data_size_comparison.py \\
@@ -93,11 +93,11 @@ DEFAULT_EPISODES = 500
 DEFAULT_SEED = 42
 
 DEFAULT_DATA_SIZE_CONFIGS: List[Tuple[int, int, str]] = [
-    (50, 150, "Small (50-150KB)"),
-    (100, 300, "Medium-Small (100-300KB)"),
-    (200, 500, "Medium (200-500KB)"),
-    (300, 800, "Medium-Large (300-800KB)"),
-    (500, 1000, "Large (500-1000KB)"),
+    (100, 200, "Light (100-200KB)"),
+    (150, 300, "Light-Mid (150-300KB)"),
+    (200, 400, "Standard (200-400KB)"),
+    (300, 500, "Heavy (300-500KB)"),
+    (400, 600, "Very Heavy (400-600KB)"),
 ]
 
 
@@ -115,7 +115,7 @@ def parse_data_sizes(value: str) -> List[Tuple[int, int, str]]:
     List[Tuple[int, int, str]] - (最小值, 最大值, 标签)元组列表
     
     【示例】
-    "100,300;500,800" -> [(100, 300, "100-300KB"), (500, 800, "500-800KB")]
+    "150,300;300,450" -> [(150, 300, "150-300KB"), (300, 450, "300-450KB")]
     """
     if not value or value.strip().lower() == "default":
         return [tuple(cfg) for cfg in DEFAULT_DATA_SIZE_CONFIGS]

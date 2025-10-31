@@ -222,6 +222,7 @@ class AdaptiveCacheController:
         if total_requests == 0:
             return {
                 'hit_rate': 0.0,
+                'miss_rate': 0.0,  # 🔧 修复：添加miss_rate字段
                 'effectiveness': 0.0,
                 'utilization': 0.0,
                 'total_requests': 0,
@@ -231,12 +232,14 @@ class AdaptiveCacheController:
             }
 
         hit_rate = self.cache_stats['cache_hits'] / total_requests
+        miss_rate = 1.0 - hit_rate  # 🔧 修复：计算miss_rate
         utilization = self.cache_stats['current_utilization']
 
         effectiveness = hit_rate * min(1.0, utilization)
 
         return {
             'hit_rate': hit_rate,
+            'miss_rate': miss_rate,  # 🔧 修复：添加miss_rate到返回值
             'effectiveness': effectiveness,
             'utilization': utilization,
             'total_requests': total_requests,

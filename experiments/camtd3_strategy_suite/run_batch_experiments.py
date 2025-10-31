@@ -79,38 +79,38 @@ EXPERIMENTS = {
         "name": "本地资源对成本影响",
         "script": "run_local_resource_cost_comparison.py",
         "priority": "中",
-        "time_estimate_100ep": "2-3h",
-        "configs": 7,
+        "time_estimate_100ep": "1.5-2h",
+        "configs": 5,
     },
     5: {
         "name": "带宽对成本影响",
         "script": "run_bandwidth_cost_comparison.py",
         "priority": "中",
-        "time_estimate_100ep": "2-3h",
-        "configs": 7,
+        "time_estimate_100ep": "1.5-2h",
+        "configs": 5,
     },
     6: {
         "name": "边缘节点配置对比",
         "script": "run_edge_node_comparison.py",
         "priority": "高",
-        "time_estimate_100ep": "1.8-2.5h",
-        "configs": 6,
+        "time_estimate_100ep": "1.4-2.2h",
+        "configs": 5,
         "new": True,
     },
     7: {
         "name": "任务到达率对比",
         "script": "run_task_arrival_comparison.py",
         "priority": "高",
-        "time_estimate_100ep": "1.8-2.5h",
-        "configs": 6,
+        "time_estimate_100ep": "1.4-2.2h",
+        "configs": 5,
         "new": True,
     },
     8: {
         "name": "移动速度对比",
         "script": "run_mobility_speed_comparison.py",
         "priority": "高",
-        "time_estimate_100ep": "1.8-2.5h",
-        "configs": 6,
+        "time_estimate_100ep": "1.4-2.2h",
+        "configs": 5,
         "new": True,
     },
 }
@@ -595,4 +595,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-

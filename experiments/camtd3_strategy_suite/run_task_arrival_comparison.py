@@ -14,12 +14,15 @@ CAMTD3 任务到达率对比实验（六策略版本）
 - 参数敏感性分析（Parameter Sensitivity Analysis）
 - 系统可扩展性评估
 - 高负载场景下的性能对比
+Experiment design:
+Sweep parameter: task_arrival_rate (tasks/s)
+- Light load: 0.8 tasks/s
+- Balanced load: 1.0 tasks/s
+- Standard load: 1.2 tasks/s (default)
+- High load: 1.4 tasks/s
+- Stress load: 1.6 tasks/s
 
-【实验设计】
-扫描参数: task_arrival_rate (任务到达率 tasks/s)
-- 低负载: 0.3, 0.6 tasks/s（轻量场景）
-- 中负载: 0.9, 1.2 tasks/s（标准场景）
-- 高负载: 1.5, 1.8 tasks/s（压力场景）
+
 
 固定参数:
 - 车辆数: 12
@@ -44,7 +47,8 @@ python experiments/camtd3_strategy_suite/run_task_arrival_comparison.py \\
 python experiments/camtd3_strategy_suite/run_task_arrival_comparison.py \\
     --episodes 500 --seed 42 --suite-id arrival_paper
 
-# 自定义到达率配置（单位：tasks/s）
+# ????????????tasks/s?
+
 python experiments/camtd3_strategy_suite/run_task_arrival_comparison.py \\
     --arrival-rates "0.5,1.0,1.5,2.0" --episodes 300
 
@@ -88,7 +92,7 @@ from experiments.camtd3_strategy_suite.strategy_runner import (
 
 DEFAULT_EPISODES = 500
 DEFAULT_SEED = 42
-DEFAULT_ARRIVAL_RATES = [0.3, 0.6, 0.9, 1.2, 1.5, 1.8]
+DEFAULT_ARRIVAL_RATES = [0.8, 1.0, 1.2, 1.4, 1.6]
 
 
 def parse_arrival_rates(value: str) -> List[float]:
