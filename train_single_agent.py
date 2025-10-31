@@ -186,11 +186,20 @@ def _maybe_apply_reward_smoothing_from_env():
 
 def _build_scenario_config() -> Dict[str, Any]:
     """构建模拟环境配置，允许通过环境变量覆盖默认值"""
+    # 🔧 支持从环境变量覆盖任务到达率（用于参数敏感性分析）
+    task_arrival_rate = getattr(getattr(config, "task", None), "arrival_rate", 1.8)
+    if os.environ.get('TASK_ARRIVAL_RATE'):
+        try:
+            task_arrival_rate = float(os.environ.get('TASK_ARRIVAL_RATE'))
+            print(f"🔧 从环境变量覆盖任务到达率: {task_arrival_rate} tasks/s")
+        except ValueError:
+            print(f"⚠️  环境变量TASK_ARRIVAL_RATE无效，使用默认值")
+    
     scenario = {
         "num_vehicles": getattr(config, "num_vehicles", 12),
         "num_rsus": getattr(config, "num_rsus", 4),
         "num_uavs": getattr(config, "num_uavs", 2),
-        "task_arrival_rate": getattr(getattr(config, "task", None), "arrival_rate", 1.8),
+        "task_arrival_rate": task_arrival_rate,
         "time_slot": getattr(config, "time_slot", 0.2),
         "simulation_time": getattr(config, "simulation_time", 1000),
         "computation_capacity": 800,
