@@ -129,7 +129,7 @@ from utils.html_report_generator import HTMLReportGenerator
 
 # 🌐 导入实时可视化模块
 try:
-    from realtime_visualization import create_visualizer
+    from scripts.visualize.realtime_visualization import create_visualizer
     REALTIME_AVAILABLE = True
 except ImportError:
     REALTIME_AVAILABLE = False
