@@ -57,8 +57,21 @@ if str(project_root) not in sys.path:
 
 from config import config
 from train_single_agent import _apply_global_seed_from_env, train_single_algorithm
+from utils.unified_reward_calculator import UnifiedRewardCalculator
 
 StrategyPreset = Dict[str, Any]  # 策略预设配置类型
+
+# ========== 初始化统一奖励计算器 ==========
+# 使用统一奖励计算器确保与训练时的奖励函数一致
+_reward_calculator = None
+
+
+def _get_reward_calculator() -> UnifiedRewardCalculator:
+    """获取全局奖励计算器实例（延迟初始化）"""
+    global _reward_calculator
+    if _reward_calculator is None:
+        _reward_calculator = UnifiedRewardCalculator(algorithm="general")
+    return _reward_calculator
 
 # ========== 默认实验参数 ==========
 DEFAULT_EPISODES = 800   # 默认训练轮数（平衡收敛质量与时间成本）
@@ -242,8 +255,8 @@ def compute_raw_cost(delay_mean: float, energy_mean: float) -> float:
     计算统一代价函数的原始值
     
     【功能】
-    近似计算奖励函数中使用的统一代价，用于策略间的公平对比。
-    该函数复现了utils.unified_reward_calculator中的核心计算逻辑。
+    使用统一奖励计算器计算代价，确保与训练时使用的奖励函数完全一致。
+    该函数用于策略间的公平对比。
     
     【参数】
     delay_mean: float - 平均时延（秒）
@@ -263,11 +276,19 @@ def compute_raw_cost(delay_mean: float, energy_mean: float) -> float:
     【论文对应】
     优化目标：minimize ω_T·时延 + ω_E·能耗
     该指标越小，系统性能越好
+    
+    【修复说明】
+    ✅ 修复后：使用unified_reward_calculator，确保与训练一致
+    ✅ 复用统一模块，遵循DRY原则
     """
     weight_delay = float(config.rl.reward_weight_delay)      # ω_T = 2.0
     weight_energy = float(config.rl.reward_weight_energy)    # ω_E = 1.2
-    delay_normalizer = 0.2                                   # 时延归一化：200ms
-    energy_normalizer = 1000.0                               # 能耗归一化：1000J
+    
+    # 使用与统一奖励计算器相同的归一化因子
+    calc = _get_reward_calculator()
+    delay_normalizer = calc.delay_normalizer  # 0.2
+    energy_normalizer = calc.energy_normalizer  # 1000.0
+    
     return (
         weight_delay * (delay_mean / max(delay_normalizer, 1e-6))
         + weight_energy * (energy_mean / max(energy_normalizer, 1e-6))
@@ -483,12 +504,12 @@ def run_strategy(strategy: str, args: argparse.Namespace) -> None:
     _apply_global_seed_from_env()
 
     # ========== 步骤4: 执行训练 ==========
-    silent_mode = getattr(args, "silent", True)
-
+    # 使用args.silent参数控制静默模式（批量实验推荐开启）
+    silent = getattr(args, 'silent', True)  # 默认静默模式，避免交互卡住
     results = train_single_algorithm(
         preset["algorithm"],
         num_episodes=episodes,
-        silent_mode=silent_mode,
+        silent_mode=silent,
         override_scenario=preset["override_scenario"],
         use_enhanced_cache=preset["use_enhanced_cache"],
         disable_migration=preset["disable_migration"],
@@ -622,24 +643,10 @@ def build_argument_parser() -> argparse.ArgumentParser:
         default="results/camtd3_strategy_suite",
         help="Root folder where per-strategy results will be stored.",
     )
-    silent_group = parser.add_mutually_exclusive_group()
-    silent_group.add_argument(
-        "--silent",
-        dest="silent",
-        action="store_true",
-        help="Run training in silent mode (default).",
-    )
-    silent_group.add_argument(
-        "--no-silent",
-        dest="silent",
-        action="store_false",
-        help="Disable silent mode to observe detailed logs.",
-    )
-    parser.set_defaults(silent=True)
     parser.add_argument(
-        "--interactive",
-        action="store_true",
-        help="Alias for --no-silent to keep backwards compatibility.",
+        "--silent", 
+        action="store_true", 
+        help="Run training in silent mode."
     )
     return parser
 
@@ -663,8 +670,6 @@ def main() -> None:
     """
     parser = build_argument_parser()
     args = parser.parse_args()
-    if getattr(args, "interactive", False):
-        args.silent = False
     run_strategy(args.strategy, args)
 
 
