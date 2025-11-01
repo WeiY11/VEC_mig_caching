@@ -1,72 +1,13 @@
 #!/usr/bin/env python3
 """
-CAMTD3 本地计算资源对卸载量影响实验（六策略版本）
-==========================================
+CAMTD3 本地资源对卸载行为影响实验
+===============================
 
-【功能】
-评估车辆本地计算能力对任务卸载决策的影响，对比六种策略的卸载行为。
-通过扫描不同的车辆CPU频率，分析：
-- 本地计算能力如何影响卸载比例
-- 本地执行与远程卸载的动态平衡
-- 各策略对本地资源变化的响应机制
-
-【论文对应】
-- 参数敏感性分析（Parameter Sensitivity Analysis）
-- 卸载决策行为分析
-- 本地-边缘协同优化
-
-【实验设计】
-扫描参数: vehicle_cpu_freq (车辆CPU频率 GHz)
-- 入门性能: 1.2 GHz（轻量设备）
-- 均衡性能: 1.6 GHz
-- 标准性能: 2.0 GHz（默认配置）
-- 强化性能: 2.4 GHz
-- 高性能: 2.8 GHz（本地优先场景）
-
-固定参数:
-- 车辆数: 12
-- RSU数: 4
-- UAV数: 2
-- 训练轮数: 可配置（默认500）
-
-【核心指标】
-- 平均总成本
-- 平均卸载数据量（MB）：衡量卸载行为
-- 卸载比例（offload_ratio）：卸载任务占比
-- 归一化成本
-
-【使用示例】
-```bash
-# ✅ 默认静默运行（无需手动交互，推荐）
-# 快速测试（100轮）
-python experiments/camtd3_strategy_suite/run_local_resource_offload_comparison.py \\
-    --episodes 100 --suite-id offload_quick
-
-# 完整实验（500轮）- 自动保存报告，无人值守运行
-python experiments/camtd3_strategy_suite/run_local_resource_offload_comparison.py \\
-    --episodes 500 --seed 42 --suite-id offload_paper
-
-# 自定义CPU频率配置（单位：GHz）
-python experiments/camtd3_strategy_suite/run_local_resource_offload_comparison.py \\
-    --cpu-frequencies "0.8,1.5,2.5,3.5" --episodes 300
-
-# 💡 如需交互式确认保存报告，添加 --interactive 参数
-python experiments/camtd3_strategy_suite/run_local_resource_offload_comparison.py \\
-    --episodes 500 --interactive
-```
-
-【预计运行时间】
-- 快速测试（100轮 × 5配置 × 6策略）：约1.5-2.5小时
-- 完整实验（500轮 × 5配置 × 6策略）：约6-9小时
-
-【输出图表】
-- local_cpu_vs_cost.png: CPU频率 vs 平均成本
-- local_cpu_vs_offload_data.png: CPU频率 vs 卸载数据量
-- local_cpu_vs_offload_ratio.png: CPU频率 vs 卸载比例
-- local_cpu_vs_normalized_cost.png: CPU频率 vs 归一化成本
-
-【论文贡献】
-揭示本地资源对卸载决策的影响机制，验证智能卸载策略的有效性
+关注焦点
+--------
+- 通过调整车辆 CPU 频率，观察各策略的卸载数据量与卸载比例变化
+- 分析本地-边缘协同的平衡点
+- 支持策略子集快速验证
 """
 
 from __future__ import annotations
@@ -80,16 +21,23 @@ from typing import Dict, List
 
 import matplotlib.pyplot as plt
 
-# 添加项目根目录到Python路径
-project_root = Path(__file__).resolve().parents[2]
+# ========== 添加项目根目录到Python路径 ==========
+script_dir = Path(__file__).resolve().parent
+project_root = script_dir.parent.parent
 if str(project_root) not in sys.path:
     sys.path.insert(0, str(project_root))
 
 from experiments.camtd3_strategy_suite.strategy_runner import (
-    STRATEGY_KEYS,
     evaluate_configs,
     strategy_label,
     tail_mean,
+)
+from experiments.camtd3_strategy_suite.suite_cli import (
+    add_common_experiment_args,
+    format_strategy_list,
+    resolve_common_args,
+    resolve_strategy_keys,
+    suite_path as build_suite_path,
 )
 
 DEFAULT_EPISODES = 500
@@ -111,6 +59,7 @@ def offload_hook(
 ) -> None:
     avg_offload_data_kb = tail_mean(episode_metrics.get("avg_offload_data_kb", []))
     offload_ratio = tail_mean(episode_metrics.get("offload_ratio", []))
+
     if avg_offload_data_kb <= 0:
         avg_task_size_kb = float(config.get("fallback_task_size_kb", 350.0))
         tasks_per_step = int(config.get("assumed_tasks_per_step", 12))
@@ -123,13 +72,13 @@ def offload_hook(
     metrics["offload_ratio"] = offload_ratio
 
 
-def plot_results(results: List[Dict[str, object]], suite_path: Path) -> None:
-    cpu_freqs = [float(r["cpu_freq_ghz"]) for r in results]
+def plot_results(results: List[Dict[str, object]], suite_dir: Path, strategy_keys: List[str]) -> None:
+    cpu_freqs = [float(record["cpu_freq_ghz"]) for record in results]
 
     def make_chart(metric: str, ylabel: str, filename: str) -> None:
         plt.figure(figsize=(10, 6))
-        for strat_key in STRATEGY_KEYS:
-            values = [r["strategies"][strat_key][metric] for r in results]
+        for strat_key in strategy_keys:
+            values = [record["strategies"][strat_key][metric] for record in results]
             plt.plot(cpu_freqs, values, marker="o", linewidth=2, label=strategy_label(strat_key))
         plt.xlabel("Local CPU Frequency (GHz)")
         plt.ylabel(ylabel)
@@ -137,7 +86,7 @@ def plot_results(results: List[Dict[str, object]], suite_path: Path) -> None:
         plt.grid(alpha=0.3)
         plt.legend()
         plt.tight_layout()
-        plt.savefig(suite_path / filename, dpi=300, bbox_inches="tight")
+        plt.savefig(suite_dir / filename, dpi=300, bbox_inches="tight")
         plt.close()
 
     make_chart("raw_cost", "Average Cost", "local_cpu_vs_cost.png")
@@ -152,33 +101,40 @@ def plot_results(results: List[Dict[str, object]], suite_path: Path) -> None:
         "local_cpu_vs_offload_ratio.png",
         "local_cpu_vs_normalized_cost.png",
     ]:
-        print(f"  - {suite_path / name}")
+        print(f"  - {suite_dir / name}")
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Evaluate offloading behaviour under different local CPU frequencies.")
-    parser.add_argument("--cpu-frequencies", type=str, default="default", help="Comma-separated CPU frequencies (GHz).")
-    parser.add_argument("--episodes", type=int, help="Training episodes per configuration (default 500).")
-    parser.add_argument("--seed", type=int, help="Random seed (default 42).")
-    parser.add_argument(
-        "--suite-id",
-        type=str,
-        default=f"local_offload_{datetime.now().strftime('%Y%m%d_%H%M%S')}",
-        help="Suite identifier.",
+    parser = argparse.ArgumentParser(
+        description="Evaluate offloading behaviour under different local CPU frequencies."
     )
-    parser.add_argument("--output-root", type=str, default="results/parameter_sensitivity", help="Output root directory.")
-    parser.add_argument("--silent", action="store_true", default=True, help="Run training in silent mode (default: True for batch experiments).")
-    parser.add_argument("--interactive", action="store_true", help="Enable interactive mode (overrides silent).")
+    parser.add_argument(
+        "--cpu-frequencies",
+        type=str,
+        default="default",
+        help="Comma-separated CPU frequencies (GHz) or 'default'.",
+    )
+    add_common_experiment_args(
+        parser,
+        default_suite_prefix="local_offload",
+        default_output_root="results/parameter_sensitivity",
+        default_episodes=DEFAULT_EPISODES,
+        default_seed=DEFAULT_SEED,
+        allow_strategies=True,
+    )
+
     args = parser.parse_args()
-    
-    # 如果指定了 --interactive，则禁用静默模式
-    if args.interactive:
-        args.silent = False
+    common = resolve_common_args(
+        args,
+        default_suite_prefix="local_offload",
+        default_output_root="results/parameter_sensitivity",
+        default_episodes=DEFAULT_EPISODES,
+        default_seed=DEFAULT_SEED,
+        allow_strategies=True,
+    )
+    strategy_keys = resolve_strategy_keys(common.strategies)
 
     cpu_freqs = parse_cpu_frequencies(args.cpu_frequencies)
-    episodes = args.episodes or DEFAULT_EPISODES
-    seed = args.seed if args.seed is not None else DEFAULT_SEED
-
     configs: List[Dict[str, object]] = []
     for freq in cpu_freqs:
         overrides = {
@@ -199,41 +155,44 @@ def main() -> None:
             }
         )
 
-    suite_path = Path(args.output_root) / args.suite_id
+    suite_dir = build_suite_path(common)
     results = evaluate_configs(
         configs=configs,
-        episodes=episodes,
-        seed=seed,
-        silent=args.silent,
-        suite_path=suite_path,
+        episodes=common.episodes,
+        seed=common.seed,
+        silent=common.silent,
+        suite_path=suite_dir,
+        strategies=strategy_keys,
         per_strategy_hook=offload_hook,
     )
 
     summary = {
         "experiment_type": "local_resource_offload_sensitivity",
-        "suite_id": args.suite_id,
+        "suite_id": common.suite_id,
         "created_at": datetime.now().isoformat(),
         "num_configs": len(results),
-        "episodes_per_config": episodes,
-        "seed": seed,
+        "episodes_per_config": common.episodes,
+        "seed": common.seed,
+        "strategy_keys": strategy_keys,
         "results": results,
     }
-    summary_path = suite_path / "summary.json"
+    summary_path = suite_dir / "summary.json"
     summary_path.write_text(json.dumps(summary, indent=2, ensure_ascii=False), encoding="utf-8")
 
-    plot_results(results, suite_path)
+    plot_results(results, suite_dir, strategy_keys)
 
     print("\nLocal Resource Offload Analysis Completed")
-    print(f"Suite ID: {args.suite_id}")
+    print(f"Suite ID             : {common.suite_id}")
+    print(f"Strategies           : {format_strategy_list(common.strategies)}")
     print(f"Configurations tested: {len(results)}")
     print(f"{'CPU (GHz)':<12}", end="")
-    for strat_key in STRATEGY_KEYS:
+    for strat_key in strategy_keys:
         print(f"{strategy_label(strat_key):>18}", end="")
     print()
-    print("-" * (12 + 18 * len(STRATEGY_KEYS)))
+    print("-" * (12 + 18 * len(strategy_keys)))
     for record in results:
         print(f"{record['cpu_freq_ghz']:<12.1f}", end="")
-        for strat_key in STRATEGY_KEYS:
+        for strat_key in strategy_keys:
             print(f"{record['strategies'][strat_key]['raw_cost']:<18.4f}", end="")
         print()
     print(f"\nSummary saved to: {summary_path}")

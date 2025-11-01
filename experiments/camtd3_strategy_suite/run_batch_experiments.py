@@ -161,7 +161,7 @@ def print_experiments_table():
     print("-" * 90)
     
     for exp_id, exp in EXPERIMENTS.items():
-        new_tag = colored("⭐NEW", "yellow") if exp.get("new") else ""
+        new_tag = colored("[NEW]", "yellow") if exp.get("new") else ""
         priority_color = "green" if exp["priority"] == "高" else "yellow"
         priority = colored(exp["priority"], priority_color)
         
@@ -256,13 +256,24 @@ def run_single_experiment(
     if silent:
         cmd.append("--silent")
     
+    # 设置环境变量，确保子进程能找到项目模块
+    import os
+    env = os.environ.copy()
+    env['PYTHONPATH'] = str(project_root)
+    
     # 运行实验
     start_time = time.time()
     
     try:
+        # ========== 实时输出模式 ==========
+        # 不使用 capture_output，而是实时显示输出
+        print(f"\n{'='*70}")
+        print(f"开始训练: {exp['name']}")
+        print(f"{'='*70}")
+        
         result = subprocess.run(
             cmd,
-            capture_output=True,
+            env=env,  # 传递PYTHONPATH
             text=True,
             encoding='utf-8',  # 修复Windows编码问题
             errors='replace',   # 替换无法解码的字符
@@ -271,14 +282,18 @@ def run_single_experiment(
         
         elapsed = time.time() - start_time
         
+        print(f"\n{'='*70}")
+        print(f"完成: {exp['name']} (用时: {elapsed/60:.1f} 分钟)")
+        print(f"{'='*70}\n")
+        
         status = {
             "exp_id": exp_id,
             "name": exp["name"],
             "success": result.returncode == 0,
             "elapsed_time": elapsed,
             "returncode": result.returncode,
-            "stdout": result.stdout if not silent else "",
-            "stderr": result.stderr if result.returncode != 0 else "",
+            "stdout": "",  # 已经实时输出，不需要保存
+            "stderr": "",
         }
         
         if output_queue:
@@ -330,23 +345,44 @@ def run_experiments_sequential(
     
     print_banner("开始顺序运行实验")
     
+    # 显示实验计划
+    print(f"\n{'='*70}")
+    print(f"[计划] 实验计划总览")
+    print(f"{'='*70}")
+    for idx, exp_id in enumerate(exp_ids, 1):
+        exp = EXPERIMENTS[exp_id]
+        print(f"  {idx}. {exp['name']} ({exp['configs']}个配置 x {mode['episodes']}轮)")
+    print(f"{'='*70}\n")
+    
     for i, exp_id in enumerate(exp_ids, 1):
         exp = EXPERIMENTS[exp_id]
         
-        print(f"\n[{i}/{total}] 运行实验: {colored(exp['name'], 'cyan')}")
-        print(f"  脚本: {exp['script']}")
-        print(f"  配置数: {exp['configs']}, 每配置轮数: {mode['episodes']}")
-        print(f"  预计时间: {exp['time_estimate_100ep']} (基于100轮)")
-        print("-" * 70)
+        print(f"\n{'#'*70}")
+        print(f"[进度] [{i}/{total}] - {colored(exp['name'], 'cyan')}")
+        print(f"{'#'*70}")
+        print(f"  [脚本] {exp['script']}")
+        print(f"  [配置] {exp['configs']}个配置, 每配置{mode['episodes']}轮")
+        print(f"  [时间] 预计: {exp['time_estimate_100ep']} (基于100轮)")
+        print(f"  [种子] {seed}")
+        print(f"{'#'*70}\n")
         
         result = run_single_experiment(exp_id, mode, suite_id, seed, silent)
         results.append(result)
         
         # 打印结果
+        print(f"\n{'='*70}")
         if result["success"]:
-            print(colored(f"[OK] 完成! 用时: {result['elapsed_time']/60:.1f} 分钟", "green"))
+            print(colored(f"[OK] [{i}/{total}] 实验完成: {exp['name']}", "green"))
+            print(colored(f"     用时: {result['elapsed_time']/60:.1f} 分钟", "green"))
         else:
-            print(colored(f"[FAIL] 失败! 错误: {result.get('error', result.get('stderr', 'Unknown'))}", "red"))
+            print(colored(f"[FAIL] [{i}/{total}] 实验失败: {exp['name']}", "red"))
+            print(colored(f"       错误: {result.get('error', 'Unknown')}", "red"))
+        print(f"{'='*70}\n")
+        
+        # 显示剩余进度
+        remaining = total - i
+        if remaining > 0:
+            print(colored(f"[进度] 还剩 {remaining} 个实验待运行...\n", "yellow"))
     
     return results
 

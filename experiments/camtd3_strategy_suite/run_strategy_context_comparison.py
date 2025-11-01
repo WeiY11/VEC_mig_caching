@@ -1,66 +1,13 @@
 #!/usr/bin/env python3
 """
-CAMTD3 策略多场景对比实验（六策略版本）
-==========================================
+CAMTD3 策略多场景鲁棒性对比
+==========================
 
-【功能】
-在多个典型VEC场景下对比六种策略的综合性能，评估策略的鲁棒性和适应能力。
-通过在不同系统压力和资源条件下测试，全面分析：
-- 各策略在不同场景下的相对优势
-- 策略对环境变化的鲁棒性
-- 最佳策略的选择依据
-
-【论文对应】
-- 综合性能评估（Comprehensive Performance Evaluation）
-- 鲁棒性分析（Robustness Analysis）
-- 场景适应性对比
-
-【实验设计】
-测试场景（可自定义）：
-1. Baseline：标准配置场景
-2. High Load：高负载场景（λ=3.0 tasks/s）
-3. Low Bandwidth：低带宽场景（10 MHz）
-4. Large Tasks：大任务场景（300-800 KB）
-5. High Mobility：高移动性场景（30 m/s）
-6. Dense Network：密集网络场景（18辆车）
-
-【核心指标】
-- 各场景下的平均成本
-- 归一化成本（便于跨场景对比）
-- 时延、能耗等详细指标
-- 统计显著性分析
-
-【使用示例】
-```bash
-# ✅ 默认静默运行（无需手动交互，推荐）
-# 快速测试（100轮）
-python experiments/camtd3_strategy_suite/run_strategy_context_comparison.py \\
-    --episodes 100 --suite-id context_quick
-
-# 完整实验（500轮）- 自动保存报告，无人值守运行
-python experiments/camtd3_strategy_suite/run_strategy_context_comparison.py \\
-    --episodes 500 --seed 42 --suite-id context_paper
-
-# 自定义场景配置
-python experiments/camtd3_strategy_suite/run_strategy_context_comparison.py \\
-    --scenarios "baseline,high_load,low_bandwidth" --episodes 300
-
-# 💡 如需交互式确认保存报告，添加 --interactive 参数
-python experiments/camtd3_strategy_suite/run_strategy_context_comparison.py \\
-    --episodes 500 --interactive
-```
-
-【预计运行时间】
-- 快速测试（100轮 × 6场景 × 6策略）：约2-3小时
-- 完整实验（500轮 × 6场景 × 6策略）：约8-12小时
-
-【输出图表】
-- strategy_vs_scenarios_heatmap.png: 策略-场景热力图
-- strategy_performance_radar.png: 雷达图对比
-- scenario_cost_comparison.png: 各场景成本对比
-
-【论文贡献】
-全面展示CAMTD3在各种场景下的优势，证明其良好的适应性和鲁棒性
+目标
+----
+- 在多种 VEC 场景下评估策略组合的鲁棒性与适应能力
+- 支持自定义场景列表与策略子集
+- 生成跨场景归一化成本对比图与详细 JSON 报告
 """
 
 from __future__ import annotations
@@ -74,17 +21,27 @@ from typing import Dict, List, Optional
 
 import matplotlib.pyplot as plt
 
-# 添加项目根目录到Python路径
-project_root = Path(__file__).resolve().parents[2]
+# ========== 添加项目根目录到Python路径 ==========
+script_dir = Path(__file__).resolve().parent
+project_root = script_dir.parent.parent
 if str(project_root) not in sys.path:
     sys.path.insert(0, str(project_root))
 
 from experiments.camtd3_strategy_suite.strategy_runner import (
-    STRATEGY_KEYS,
     enrich_with_normalized_costs,
     run_strategy_suite,
     strategy_label,
 )
+from experiments.camtd3_strategy_suite.suite_cli import (
+    add_common_experiment_args,
+    format_strategy_list,
+    resolve_common_args,
+    resolve_strategy_keys,
+    suite_path as build_suite_path,
+)
+
+DEFAULT_EPISODES = 500
+DEFAULT_SEED = 42
 
 DEFAULT_SCENARIOS: List[Dict[str, object]] = [
     {"key": "baseline", "label": "Baseline", "overrides": {}},
@@ -94,6 +51,16 @@ DEFAULT_SCENARIOS: List[Dict[str, object]] = [
         "key": "large_tasks",
         "label": "Large Data (300-800KB)",
         "overrides": {"task_data_size_min_kb": 300, "task_data_size_max_kb": 800},
+    },
+    {
+        "key": "high_mobility",
+        "label": "High Mobility (30 m/s)",
+        "overrides": {"vehicle_speed": 30.0},
+    },
+    {
+        "key": "dense_network",
+        "label": "Dense Network (18 vehicles)",
+        "overrides": {"num_vehicles": 18},
     },
 ]
 
@@ -106,6 +73,7 @@ def parse_scenarios_argument(value: Optional[str]) -> List[Dict[str, object]]:
         data = json.loads(path_obj.read_text(encoding="utf-8"))
     else:
         data = json.loads(value)
+
     scenarios: List[Dict[str, object]] = []
     for item in data:
         key = str(item.get("key") or item.get("label", "")).strip()
@@ -121,7 +89,7 @@ def plot_comparison(
     scenarios: List[Dict[str, object]],
     strategy_keys: List[str],
     normalized_costs: Dict[str, Dict[str, float]],
-    suite_path: Path,
+    suite_dir: Path,
 ) -> Path:
     labels = [str(sc.get("label", sc["key"])) for sc in scenarios]
     scenario_keys = [str(sc["key"]) for sc in scenarios]
@@ -140,65 +108,67 @@ def plot_comparison(
     plt.ylabel("Normalized Average Cost")
     plt.xlabel("Scenario")
     plt.title("Strategy Performance Across Scenarios")
-    plt.ylim(-0.05, 1.05)
-    plt.grid(alpha=0.3, linestyle="--", axis="y")
+    plt.grid(alpha=0.3)
     plt.legend()
     plt.tight_layout()
 
-    chart_path = suite_path / "strategy_vs_scenarios_cost.png"
-    plt.savefig(chart_path, dpi=300)
+    chart_path = suite_dir / "strategy_context_comparison.png"
+    plt.savefig(chart_path, dpi=300, bbox_inches="tight")
     plt.close()
     return chart_path
 
 
 def save_summary(
-    suite_path: Path,
+    suite_dir: Path,
     scenarios: List[Dict[str, object]],
     strategy_keys: List[str],
     scenario_results: Dict[str, Dict[str, Dict[str, float]]],
 ) -> Path:
     summary = {
-        "suite_id": suite_path.name,
+        "suite_id": suite_dir.name,
         "created_at": datetime.now().isoformat(),
         "strategies": strategy_keys,
         "scenarios": scenarios,
         "results": scenario_results,
     }
-    summary_path = suite_path / "summary.json"
+    summary_path = suite_dir / "summary.json"
     summary_path.write_text(json.dumps(summary, indent=2, ensure_ascii=False), encoding="utf-8")
     return summary_path
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Compare six CAMTD3 strategies across multiple scenarios.",
+        description="Compare CAMTD3 strategies across multiple deployment scenarios.",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
-    parser.add_argument("--scenarios", type=str, help="JSON file or inline JSON describing the scenarios.")
-    parser.add_argument("--strategies", type=str, default="all", help="Comma-separated strategy keys (default: all six).")
-    parser.add_argument("--episodes", type=int, default=500, help="Training episodes for each strategy in each scenario.")
-    parser.add_argument("--seed", type=int, default=42, help="Random seed.")
-    parser.add_argument("--suite-id", type=str, default=f"strategy_context_{datetime.now().strftime('%Y%m%d_%H%M%S')}", help="Suite identifier.")
-    parser.add_argument("--output-root", type=str, default="results/camtd3_strategy_suite", help="Root directory for outputs.")
-    parser.add_argument("--silent", action="store_true", default=True, help="Run training in silent mode (default: True for batch experiments).")
-    parser.add_argument("--interactive", action="store_true", help="Enable interactive mode (overrides silent).")
+    parser.add_argument(
+        "--scenarios",
+        type=str,
+        help="JSON file path or inline JSON describing scenarios. Defaults to built-in list.",
+    )
+    add_common_experiment_args(
+        parser,
+        default_suite_prefix="strategy_context",
+        default_output_root="results/camtd3_strategy_suite",
+        default_episodes=DEFAULT_EPISODES,
+        default_seed=DEFAULT_SEED,
+        allow_strategies=True,
+    )
+
     args = parser.parse_args()
-    
-    # 如果指定了 --interactive，则禁用静默模式
-    if args.interactive:
-        args.silent = False
+    common = resolve_common_args(
+        args,
+        default_suite_prefix="strategy_context",
+        default_output_root="results/camtd3_strategy_suite",
+        default_episodes=DEFAULT_EPISODES,
+        default_seed=DEFAULT_SEED,
+        allow_strategies=True,
+    )
+    strategy_keys = resolve_strategy_keys(common.strategies)
 
     scenarios = parse_scenarios_argument(args.scenarios)
-    if args.strategies.lower() == "all":
-        strategy_keys = list(STRATEGY_KEYS)
-    else:
-        strategy_keys = [item.strip() for item in args.strategies.split(",") if item.strip()]
-        unknown = [key for key in strategy_keys if key not in STRATEGY_KEYS]
-        if unknown:
-            raise ValueError(f"Unknown strategy keys: {', '.join(unknown)}")
-
-    suite_path = Path(args.output_root) / args.suite_id
-    suite_path.mkdir(parents=True, exist_ok=True)
+    suite_dir = build_suite_path(common)
+    suite_dir.mkdir(parents=True, exist_ok=True)
 
     scenario_results: Dict[str, Dict[str, Dict[str, float]]] = {}
     normalized_costs: Dict[str, Dict[str, float]] = {}
@@ -214,9 +184,9 @@ def main() -> None:
 
         raw_outcomes = run_strategy_suite(
             override_scenario=overrides,
-            episodes=args.episodes,
-            seed=args.seed,
-            silent=args.silent,
+            episodes=common.episodes,
+            seed=common.seed,
+            silent=common.silent,
             strategies=strategy_keys,
         )
 
@@ -224,7 +194,7 @@ def main() -> None:
         scenario_results[sc_key] = enriched
         normalized_costs[sc_key] = {k: v["normalized_cost"] for k, v in enriched.items()}
 
-        scenario_dir = suite_path / sc_key
+        scenario_dir = suite_dir / sc_key
         scenario_dir.mkdir(parents=True, exist_ok=True)
         scenario_dir.joinpath("scenario_summary.json").write_text(
             json.dumps(
@@ -253,19 +223,21 @@ def main() -> None:
         scenarios=scenarios,
         strategy_keys=strategy_keys,
         normalized_costs=normalized_costs,
-        suite_path=suite_path,
+        suite_dir=suite_dir,
     )
     summary_path = save_summary(
-        suite_path=suite_path,
+        suite_dir=suite_dir,
         scenarios=scenarios,
         strategy_keys=strategy_keys,
         scenario_results=scenario_results,
     )
 
     print("\n=== Completed Strategy Context Comparison ===")
-    print(f"Suite directory : {suite_path}")
-    print(f"Summary JSON    : {summary_path}")
-    print(f"Comparison plot : {chart_path}")
+    print(f"Suite ID       : {common.suite_id}")
+    print(f"Strategies     : {format_strategy_list(common.strategies)}")
+    print(f"Scenario count : {len(scenarios)}")
+    print(f"Summary JSON   : {summary_path}")
+    print(f"Comparison plot: {chart_path}")
 
 
 if __name__ == "__main__":

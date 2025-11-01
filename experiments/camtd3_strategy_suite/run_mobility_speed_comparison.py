@@ -84,6 +84,18 @@ if str(project_root) not in sys.path:
 
 from config import config
 from train_single_agent import _apply_global_seed_from_env, train_single_algorithm
+from utils.unified_reward_calculator import UnifiedRewardCalculator
+
+# ========== 初始化统一奖励计算器 ==========
+_reward_calculator = None
+
+
+def _get_reward_calculator() -> UnifiedRewardCalculator:
+    """获取全局奖励计算器实例（延迟初始化）"""
+    global _reward_calculator
+    if _reward_calculator is None:
+        _reward_calculator = UnifiedRewardCalculator(algorithm="general")
+    return _reward_calculator
 
 # ========== 默认实验参数 ==========
 DEFAULT_EPISODES = 500
@@ -171,10 +183,19 @@ def run_single_config(
     avg_energy = tail_mean(episode_metrics.get("total_energy", []))
     completion_rate = tail_mean(episode_metrics.get("task_completion_rate", []))
     
-    # 计算统一代价
+    # 计算统一代价（使用归一化）
     weight_delay = float(config.rl.reward_weight_delay)
     weight_energy = float(config.rl.reward_weight_energy)
-    avg_cost = weight_delay * avg_delay + weight_energy * (avg_energy / 1000.0)
+    
+    # ✅ 修复：使用与unified_reward_calculator一致的归一化
+    calc = _get_reward_calculator()
+    delay_normalizer = calc.delay_normalizer  # 0.2
+    energy_normalizer = calc.energy_normalizer  # 1000.0
+    
+    avg_cost = (
+        weight_delay * (avg_delay / max(delay_normalizer, 1e-6))
+        + weight_energy * (avg_energy / max(energy_normalizer, 1e-6))
+    )
     
     # ========== 步骤5: 构建结果字典 ==========
     result_dict = {

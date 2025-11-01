@@ -1,5 +1,7 @@
 """
-
+对比实验本地训练命令：
+cd D:\VEC_mig_caching
+python experiments/camtd3_strategy_suite/run_batch_experiments.py --mode full --all --non-interactive --silent
 
 平滑时延能耗”和“注意力权衡距离与缓存”的优化
 python train_single_agent.py --algorithm TD3 --episodes 800 --num-vehicles 12 --two-stage

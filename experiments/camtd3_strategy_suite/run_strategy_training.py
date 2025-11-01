@@ -483,10 +483,12 @@ def run_strategy(strategy: str, args: argparse.Namespace) -> None:
     _apply_global_seed_from_env()
 
     # ========== 步骤4: 执行训练 ==========
+    silent_mode = getattr(args, "silent", True)
+
     results = train_single_algorithm(
         preset["algorithm"],
         num_episodes=episodes,
-        silent_mode=True,  # 批量实验强制使用静默模式，避免交互卡住
+        silent_mode=silent_mode,
         override_scenario=preset["override_scenario"],
         use_enhanced_cache=preset["use_enhanced_cache"],
         disable_migration=preset["disable_migration"],
@@ -620,10 +622,24 @@ def build_argument_parser() -> argparse.ArgumentParser:
         default="results/camtd3_strategy_suite",
         help="Root folder where per-strategy results will be stored.",
     )
+    silent_group = parser.add_mutually_exclusive_group()
+    silent_group.add_argument(
+        "--silent",
+        dest="silent",
+        action="store_true",
+        help="Run training in silent mode (default).",
+    )
+    silent_group.add_argument(
+        "--no-silent",
+        dest="silent",
+        action="store_false",
+        help="Disable silent mode to observe detailed logs.",
+    )
+    parser.set_defaults(silent=True)
     parser.add_argument(
-        "--silent", 
-        action="store_true", 
-        help="Run training in silent mode."
+        "--interactive",
+        action="store_true",
+        help="Alias for --no-silent to keep backwards compatibility.",
     )
     return parser
 
@@ -647,6 +663,8 @@ def main() -> None:
     """
     parser = build_argument_parser()
     args = parser.parse_args()
+    if getattr(args, "interactive", False):
+        args.silent = False
     run_strategy(args.strategy, args)
 
 

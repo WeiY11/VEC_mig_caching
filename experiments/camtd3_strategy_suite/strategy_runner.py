@@ -21,8 +21,21 @@ if str(project_root) not in sys.path:
 from config import config  # noqa: E402
 from train_single_agent import _apply_global_seed_from_env, train_single_algorithm  # noqa: E402
 from experiments.camtd3_strategy_suite.run_strategy_training import STRATEGY_PRESETS  # noqa: E402
+from utils.unified_reward_calculator import UnifiedRewardCalculator  # noqa: E402
 
 STRATEGY_KEYS: List[str] = list(STRATEGY_PRESETS.keys())
+
+# ========== 初始化统一奖励计算器 ==========
+# 使用统一奖励计算器确保与训练时的奖励函数一致
+_reward_calculator = None
+
+
+def _get_reward_calculator() -> UnifiedRewardCalculator:
+    """获取全局奖励计算器实例（延迟初始化）"""
+    global _reward_calculator
+    if _reward_calculator is None:
+        _reward_calculator = UnifiedRewardCalculator(algorithm="general")
+    return _reward_calculator
 
 
 def tail_mean(values: Iterable[float]) -> float:
@@ -35,9 +48,44 @@ def tail_mean(values: Iterable[float]) -> float:
 
 
 def compute_cost(avg_delay: float, avg_energy: float) -> float:
+    """
+    计算统一代价函数值（与训练时的奖励函数一致）
+    
+    【功能】
+    使用统一奖励计算器计算归一化的加权代价，确保与训练时使用的
+    奖励函数完全一致。该函数用于策略对比实验的性能评估。
+    
+    【参数】
+    avg_delay: float - 平均任务时延（秒）
+    avg_energy: float - 平均总能耗（焦耳）
+    
+    【返回值】
+    float - 归一化的加权代价（越小越好）
+    
+    【计算公式】
+    Cost = ω_T · (T / T_norm) + ω_E · (E / E_norm)
+    其中：
+    - ω_T = 2.0（时延权重）
+    - ω_E = 1.2（能耗权重）
+    - T_norm = 0.2s（时延归一化因子）
+    - E_norm = 1000J（能耗归一化因子）
+    
+    【修复说明】
+    ✅ 修复前：直接使用avg_delay，未归一化，导致cost值偏大
+    ✅ 修复后：使用unified_reward_calculator，确保与训练一致
+    """
     weight_delay = float(config.rl.reward_weight_delay)
     weight_energy = float(config.rl.reward_weight_energy)
-    return weight_delay * avg_delay + weight_energy * (avg_energy / 1000.0)
+    
+    # 使用与统一奖励计算器相同的归一化因子
+    calc = _get_reward_calculator()
+    delay_normalizer = calc.delay_normalizer  # 0.2
+    energy_normalizer = calc.energy_normalizer  # 1000.0
+    
+    return (
+        weight_delay * (avg_delay / max(delay_normalizer, 1e-6))
+        + weight_energy * (avg_energy / max(energy_normalizer, 1e-6))
+    )
 
 
 def normalize_costs(cost_map: Dict[str, float]) -> Dict[str, float]:
