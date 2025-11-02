@@ -44,12 +44,19 @@ class AdaptiveCacheController:
             'current_utilization': 0.0,
             'hit_rate_history': [],
             'evicted_items': 0,
-            'collaborative_writes': 0
+            'collaborative_writes': 0,
+            'prefetch_events': 0
         }
 
         # 热度计算
         self.content_heat = defaultdict(float)
         self.access_history = defaultdict(list)
+
+        # 联动控制参数（由策略协调器/智能体动态调整）
+        self.joint_params = {
+            'prefetch_lead_time': 0.4,  # 秒，更保守的预取窗口
+            'migration_backoff': 0.2,   # 初始退避系数，逐步放开
+        }
 
         print(f"🤖 自适应缓存控制器初始化完成")
 
@@ -228,7 +235,9 @@ class AdaptiveCacheController:
                 'total_requests': 0,
                 'evicted_items': 0,
                 'collaborative_writes': 0,
-                'agent_params': dict(self.agent_params)
+                'prefetch_events': self.cache_stats['prefetch_events'],
+                'agent_params': dict(self.agent_params),
+                'joint_params': dict(self.joint_params)
             }
 
         hit_rate = self.cache_stats['cache_hits'] / total_requests
@@ -245,8 +254,36 @@ class AdaptiveCacheController:
             'total_requests': total_requests,
             'evicted_items': self.cache_stats['evicted_items'],
             'collaborative_writes': self.cache_stats['collaborative_writes'],
-            'agent_params': dict(self.agent_params)
+            'prefetch_events': self.cache_stats['prefetch_events'],
+            'agent_params': dict(self.agent_params),
+            'joint_params': dict(self.joint_params)
         }
+
+    def apply_joint_params(self, joint_params: Dict[str, float]) -> None:
+        """应用策略协调器下发的联动参数（如预取窗口）。"""
+        if not isinstance(joint_params, dict):
+            return
+        lead_time = joint_params.get('prefetch_lead_time')
+        if lead_time is not None:
+            lead_time = float(np.clip(lead_time, 0.0, 10.0))
+            self.joint_params['prefetch_lead_time'] = lead_time
+
+        backoff = joint_params.get('migration_backoff')
+        if backoff is not None:
+            backoff = float(np.clip(backoff, 0.0, 1.0))
+            self.joint_params['migration_backoff'] = backoff
+
+    def register_prefetch_event(self, count: int = 1) -> None:
+        """记录一次预取事件，供监控和奖励计算使用。"""
+        try:
+            count = int(max(0, count))
+        except Exception:
+            count = 0
+        self.cache_stats['prefetch_events'] += count
+
+    def get_joint_params_snapshot(self) -> Dict[str, float]:
+        """返回当前缓存侧的联动参数配置。"""
+        return dict(self.joint_params)
 class AdaptiveMigrationController:
     """
     自适应迁移控制器
@@ -289,6 +326,11 @@ class AdaptiveMigrationController:
         self.node_load_history = defaultdict(list)
         self.last_migration_time = defaultdict(float)
 
+        # 联动控制状态
+        self.joint_backoff_factor = 0.2
+        self.dynamic_threshold_scale = 1.0
+        self.cache_feedback = {'hit_rate': 0.0, 'miss_rate': 0.0}
+
         print(f"🤖 自适应迁移控制器初始化完成")
 
     def update_agent_params(self, agent_actions: Dict[str, float]):
@@ -321,6 +363,26 @@ class AdaptiveMigrationController:
                 # 更新参数
                 self.agent_params[param_name] = param_value
 
+    def apply_joint_params(self, joint_params: Dict[str, float]) -> None:
+        """应用联合策略参数（如迁移退避系数）。"""
+        if not isinstance(joint_params, dict):
+            return
+        backoff = joint_params.get('migration_backoff')
+        if backoff is not None:
+            backoff = float(np.clip(backoff, 0.0, 1.0))
+            self.joint_backoff_factor = backoff
+
+    def ingest_cache_feedback(self, hit_rate: float, miss_rate: float) -> None:
+        """根据缓存命中率动态调整迁移阈值."""
+        hit_rate = float(np.clip(hit_rate, 0.0, 1.0))
+        miss_rate = float(np.clip(miss_rate, 0.0, 1.0))
+        self.cache_feedback = {'hit_rate': hit_rate, 'miss_rate': miss_rate}
+
+        # 命中率越高，迁移阈值越宽松；命中率下降则收紧
+        # 线性缩放到 [0.85, 1.15] 区间
+        scale = 1.0 + 0.3 * (0.5 - miss_rate)
+        self.dynamic_threshold_scale = float(np.clip(scale, 0.7, 1.2))
+
     def get_current_params(self) -> Dict[str, float]:
         """🔧 获取当前DRL控制的迁移参数（用于监控和调试）"""
         return {
@@ -328,6 +390,14 @@ class AdaptiveMigrationController:
             'bandwidth_threshold': self.agent_params.get('bandwidth_overload_threshold', 0.85),
             'load_diff_threshold': self.agent_params.get('load_diff_threshold', 0.20),
             'uav_battery_threshold': self.agent_params.get('uav_battery_threshold', 0.25),
+        }
+
+    def get_joint_params_snapshot(self) -> Dict[str, float]:
+        """返回迁移侧联动参数。"""
+        return {
+            'migration_backoff': self.joint_backoff_factor,
+            'threshold_scale': self.dynamic_threshold_scale,
+            'cache_feedback': dict(self.cache_feedback)
         }
 
     def update_node_load(self, node_id: str, load_factor: float, battery_level: float = 1.0):
@@ -361,8 +431,9 @@ class AdaptiveMigrationController:
         current_time = get_simulation_time()
 
         # 🔧 用户要求：缩短冷却期到1秒，实现每秒触发迁移决策
+        cooldown = 1.0 + 4.0 * float(np.clip(self.joint_backoff_factor, 0.0, 1.0))
         if (node_id in self.last_migration_time and 
-            current_time - self.last_migration_time[node_id] < 1.0):  # 1秒冷却期，每秒可触发
+            current_time - self.last_migration_time[node_id] < cooldown):  # 联动冷却期
             return False, "冷却期内", 0.0
 
         # 获取节点状态
@@ -385,6 +456,14 @@ class AdaptiveMigrationController:
             cpu_threshold = self.agent_params.get('cpu_overload_threshold', 0.85)
             bw_threshold = self.agent_params.get('bandwidth_overload_threshold', 0.85)
             load_diff_threshold = self.agent_params.get('load_diff_threshold', 0.20)
+
+            scale = float(np.clip(self.dynamic_threshold_scale, 0.7, 1.2))
+            cpu_bounds = self.param_bounds['cpu_overload_threshold']
+            bw_bounds = self.param_bounds['bandwidth_overload_threshold']
+            diff_bounds = self.param_bounds['load_diff_threshold']
+            cpu_threshold = float(np.clip(cpu_threshold * scale, cpu_bounds[0], cpu_bounds[1]))
+            bw_threshold = float(np.clip(bw_threshold * scale, bw_bounds[0], bw_bounds[1]))
+            load_diff_threshold = float(np.clip(load_diff_threshold * scale, diff_bounds[0], diff_bounds[1]))
 
             if hotspot_intensity > 0.0:
                 cpu_threshold = max(
@@ -454,7 +533,7 @@ class AdaptiveMigrationController:
                     migration_reason = f"负载差过大({max_load_diff:.1%})"
 
             # 🔧 优化：更积极的迁移策略，敢于尝试有风险的迁移
-            if urgency_score > 0.05:  # 降低触发阈值，更积极地尝试迁移
+            if urgency_score > 0.1:  # 阈值更保守，避免早期过度迁移
                 self.migration_stats['total_triggers'] += 1
                 self.last_migration_time[node_id] = current_time
                 return True, migration_reason, urgency_score
@@ -476,7 +555,11 @@ class AdaptiveMigrationController:
 
             # 2️⃣ 负载过载触发（🔧 使用DRL可调整的CPU阈值）
             # UAV使用稍低的阈值（-5%），因为UAV资源更有限
-            uav_cpu_threshold = max(0.70, cpu_threshold - 0.05)
+            scale = float(np.clip(self.dynamic_threshold_scale, 0.7, 1.2))
+            uav_cpu_threshold_base = self.agent_params.get('cpu_overload_threshold', 0.85)
+            uav_cpu_threshold_base = float(np.clip(uav_cpu_threshold_base * scale, self.param_bounds['cpu_overload_threshold'][0], self.param_bounds['cpu_overload_threshold'][1]))
+            uav_cpu_threshold = max(0.70, uav_cpu_threshold_base - 0.05)
+            load_diff_threshold = float(np.clip(load_diff_threshold * scale, self.param_bounds['load_diff_threshold'][0], self.param_bounds['load_diff_threshold'][1]))
             if cpu_load > uav_cpu_threshold:
                 load_urgency = (cpu_load - uav_cpu_threshold) / (1.0 - uav_cpu_threshold)
                 urgency_score += load_urgency * 2.0
@@ -504,7 +587,7 @@ class AdaptiveMigrationController:
                         migration_reason = f"与RSU负载差过大({max_load_diff:.1%})"
 
                 # 🔧 优化：UAV也采用更积极的迁移策略
-                if urgency_score > 0.08:  # 降低UAV触发阈值，更积极地平衡负载
+                if urgency_score > 0.12:  # 阈值更保守，避免早期过度迁移
                     self.migration_stats['total_triggers'] += 1
                     self.last_migration_time[node_id] = current_time
                     return True, migration_reason, urgency_score
@@ -553,8 +636,9 @@ class AdaptiveMigrationController:
                 'effectiveness': 0.0,
                 'avg_cost': 0.0,
                 'total_triggers': 0,
-            'avg_delay_saved': self.migration_stats['avg_delay_saved'],
-                'agent_params': dict(self.agent_params)
+                'avg_delay_saved': self.migration_stats['avg_delay_saved'],
+                'agent_params': dict(self.agent_params),
+                'joint_params': self.get_joint_params_snapshot()
             }
 
         success_rate = self.migration_stats['successful_migrations'] / total_triggers
@@ -569,27 +653,40 @@ class AdaptiveMigrationController:
             'effectiveness': effectiveness,
             'avg_cost': avg_cost,
             'total_triggers': total_triggers,
-            'agent_params': dict(self.agent_params)
+            'agent_params': dict(self.agent_params),
+            'joint_params': self.get_joint_params_snapshot()
         }
 
 
-def map_agent_actions_to_params(agent_actions: np.ndarray) -> Tuple[Dict, Dict]:
-    """Map continuous actions to semantic cache/migration parameters."""
-    if len(agent_actions) < 8:
-        agent_actions = np.pad(agent_actions, (0, 8 - len(agent_actions)), mode='constant', constant_values=0.0)
+def map_agent_actions_to_params(agent_actions: np.ndarray) -> Tuple[Dict, Dict, Dict]:
+    """Map continuous actions to semantic cache/migration/joint parameters."""
+    if len(agent_actions) < 10:
+        agent_actions = np.pad(agent_actions, (0, 10 - len(agent_actions)), mode='constant', constant_values=0.0)
+
+    clipped_actions = np.clip(agent_actions, -1.0, 1.0)
+    scaled_actions = clipped_actions * 0.6  # 压缩幅度，减弱极端联动动作
+
+    def _map_to_range(value: float, low: float, high: float) -> float:
+        value = np.clip(value, -1.0, 1.0)
+        return low + ((value + 1.0) * 0.5) * (high - low)
 
     cache_params = {
-        'heat_threshold_high': np.clip(agent_actions[0], -1.0, 1.0),
-        'heat_threshold_medium': np.clip(agent_actions[1], -1.0, 1.0),
-        'prefetch_ratio': np.clip(agent_actions[2], -1.0, 1.0),
-        'collaboration_weight': np.clip(agent_actions[3], -1.0, 1.0),
+        'heat_threshold_high': scaled_actions[0],
+        'heat_threshold_medium': scaled_actions[1],
+        'prefetch_ratio': scaled_actions[2],
+        'collaboration_weight': scaled_actions[3],
     }
 
     migration_params = {
-        'cpu_overload_threshold': np.clip(agent_actions[4], -1.0, 1.0),
-        'bandwidth_overload_threshold': np.clip(agent_actions[5], -1.0, 1.0),
-        'uav_battery_threshold': np.clip(agent_actions[6], -1.0, 1.0),
-        'load_diff_threshold': np.clip(agent_actions[7], -1.0, 1.0),
+        'cpu_overload_threshold': scaled_actions[4],
+        'bandwidth_overload_threshold': scaled_actions[5],
+        'uav_battery_threshold': scaled_actions[6],
+        'load_diff_threshold': scaled_actions[7],
     }
 
-    return cache_params, migration_params
+    joint_params = {
+        'prefetch_lead_time': _map_to_range(scaled_actions[8], 0.0, 5.0),
+        'migration_backoff': _map_to_range(scaled_actions[9], 0.0, 1.0)
+    }
+
+    return cache_params, migration_params, joint_params

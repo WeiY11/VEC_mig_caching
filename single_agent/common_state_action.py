@@ -32,8 +32,8 @@ class UnifiedStateActionSpace:
         返回:
             total_action_dim
         """
-        # 3(任务分配) + num_rsus(RSU选择) + num_uavs(UAV选择) + 8(缓存/迁移控制参数)
-        return 3 + num_rsus + num_uavs + 8
+        # 3(任务分配) + num_rsus(RSU选择) + num_uavs(UAV选择) + 10(缓存/迁移/联动控制参数)
+        return 3 + num_rsus + num_uavs + 10
     
     @staticmethod
     def build_global_state(node_states: Dict, system_metrics: Dict, 

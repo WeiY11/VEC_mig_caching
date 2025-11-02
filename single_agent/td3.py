@@ -51,8 +51,8 @@ class TD3Config:
     noise_clip: float = 0.2
     
     # 探索参数
-    exploration_noise: float = 0.2
-    noise_decay: float = 0.9997  # 🔧 放慢噪声衰减，避免后期探索不足
+    exploration_noise: float = 0.15
+    noise_decay: float = 0.999  # 🔧 略快衰减，减轻早期激进探索
     min_noise: float = 0.05  # 🔧 提高最小噪声，保持长期探索
     
     # 🔧 新增：梯度裁剪防止过拟合
@@ -110,7 +110,7 @@ class TD3Config:
     
     # 训练频率
     update_freq: int = 1
-    warmup_steps: int = 1000
+    warmup_steps: int = 4000
 
 
 class GraphFeatureExtractor(nn.Module):

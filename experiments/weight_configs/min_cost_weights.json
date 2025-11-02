@@ -1,0 +1,12 @@
+{
+  "name": "min_cost",
+  "description": "最小成本 - 平衡权重+合理目标",
+  "weights": {
+    "reward_weight_delay": 1.8,
+    "reward_weight_energy": 1.5,
+    "reward_weight_cache": 0.12,
+    "reward_penalty_dropped": 0.04,
+    "energy_target": 2500.0,
+    "latency_target": 0.38
+  }
+}

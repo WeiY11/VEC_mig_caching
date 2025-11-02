@@ -1,0 +1,12 @@
+{
+  "name": "energy_priority",
+  "description": "能耗优先 - 能耗权重加倍",
+  "weights": {
+    "reward_weight_delay": 1.5,
+    "reward_weight_energy": 2.0,
+    "reward_weight_cache": 0.15,
+    "reward_penalty_dropped": 0.05,
+    "energy_target": 1200.0,
+    "latency_target": 0.4
+  }
+}

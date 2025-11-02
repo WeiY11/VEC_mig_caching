@@ -1,0 +1,12 @@
+{
+  "name": "comprehensive",
+  "description": "综合最优 - 基于经验的综合配置",
+  "weights": {
+    "reward_weight_delay": 2.2,
+    "reward_weight_energy": 1.5,
+    "reward_weight_cache": 0.2,
+    "reward_penalty_dropped": 0.06,
+    "energy_target": 1800.0,
+    "latency_target": 0.38
+  }
+}

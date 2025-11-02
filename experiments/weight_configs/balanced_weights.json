@@ -1,0 +1,12 @@
+{
+  "name": "balanced",
+  "description": "平衡配置 - 时延能耗归一化后等权重",
+  "weights": {
+    "reward_weight_delay": 2.0,
+    "reward_weight_energy": 1.2,
+    "reward_weight_cache": 0.15,
+    "reward_penalty_dropped": 0.05,
+    "energy_target": 3500.0,
+    "latency_target": 0.4
+  }
+}

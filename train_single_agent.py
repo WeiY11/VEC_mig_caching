@@ -113,6 +113,7 @@ except ImportError:
 from utils import MovingAverage
 # 🤖 导入自适应控制组件
 from utils.adaptive_control import AdaptiveCacheController, AdaptiveMigrationController, map_agent_actions_to_params
+from decision.strategy_coordinator import StrategyCoordinator
 
 # 导入各种单智能体算法
 from single_agent.ddpg import DDPGEnvironment
@@ -330,6 +331,13 @@ class SingleAgentTrainingEnvironment:
             print("🤖 自适应缓存已启用；迁移控制已禁用（DISABLE_MIGRATION 模式）")
         else:
             print(f"🤖 已启用自适应缓存和迁移控制功能")
+
+        self.strategy_coordinator = StrategyCoordinator(
+            self.adaptive_cache_controller,
+            None if self.disable_migration else self.adaptive_migration_controller
+        )
+        self.strategy_coordinator.register_simulator(self.simulator)
+        setattr(self.simulator, 'strategy_coordinator', self.strategy_coordinator)
         
         # 从仿真器获取实际网络拓扑参数
         num_vehicles = len(self.simulator.vehicles)
@@ -613,6 +621,16 @@ class SingleAgentTrainingEnvironment:
         # 🔧 增强：计算包含子系统指标的奖励
         cache_metrics = self.adaptive_cache_controller.get_cache_metrics()
         migration_metrics = self.adaptive_migration_controller.get_migration_metrics()
+        if hasattr(self, 'strategy_coordinator') and self.strategy_coordinator is not None:
+            try:
+                self.strategy_coordinator.observe_step(
+                    system_metrics,
+                    cache_metrics,
+                    migration_metrics,
+                    step_stats,
+                )
+            except Exception as exc:
+                print(f"⚠️ 联合策略协调器观测异常: {exc}")
         
         reward = self.agent_env.calculate_reward(system_metrics, cache_metrics, migration_metrics)
         
@@ -1115,9 +1133,10 @@ class SingleAgentTrainingEnvironment:
 
     def _build_simulator_actions(self, actions_dict: Optional[Dict]) -> Optional[Dict]:
         """将算法动作字典转换为仿真器可消费的简单控制信号。
-        🤖 扩展支持18维动作空间：
-        - vehicle_agent 前11维 → 原有任务分配和节点选择
-        - vehicle_agent 后8维 → 缓存迁移参数控制
+        🤖 扩展支持联合动作空间：
+        - vehicle_agent 前3维 → 原有任务分配偏好
+        - 中间 num_rsus/num_uavs 维 → 节点选择权重
+        - 末尾10维 → 缓存、迁移及联动控制参数
         """
         if not isinstance(actions_dict, dict):
             return None
@@ -1127,7 +1146,7 @@ class SingleAgentTrainingEnvironment:
         try:
             import numpy as np
             
-            # =============== 原有11维动作逻辑 (保持兼容) ===============
+            # =============== 原有任务分配逻辑 (保持兼容) ===============
             # 取前三维，映射到[0,1]并softmax为概率
             raw = np.array(vehicle_action[:3], dtype=np.float32).reshape(-1)
             # 数值安全
@@ -1160,35 +1179,38 @@ class SingleAgentTrainingEnvironment:
                 uav_probs = uav_exp / np.sum(uav_exp)
                 sim_actions['uav_selection_probs'] = [float(x) for x in uav_probs]
             
-            # 🤖 =============== 新增7维缓存迁移控制 ===============
+            # 🤖 =============== 新增联合缓存-迁移控制参数 ===============
             if isinstance(vehicle_action, (list, tuple, np.ndarray)):
                 vehicle_action_array = np.array(vehicle_action, dtype=np.float32)
                 control_start = 3 + num_rsus + num_uavs
-                control_end = control_start + 8
+                control_end = control_start + 10
                 if vehicle_action_array.size >= control_end:
                     cache_migration_actions = vehicle_action_array[control_start:control_end]
                 elif vehicle_action_array.size > control_start:
-                    # 若长度不足7维，做安全补零
-                    cache_migration_actions = np.zeros(8, dtype=np.float32)
+                    # 若长度不足则补零
+                    cache_migration_actions = np.zeros(10, dtype=np.float32)
                     available = vehicle_action_array[control_start:]
-                    cache_migration_actions[:min(available.size, 8)] = available[:8]
+                    cache_migration_actions[:min(available.size, 10)] = available[:10]
                 else:
-                    cache_migration_actions = np.zeros(8, dtype=np.float32)
+                    cache_migration_actions = np.zeros(10, dtype=np.float32)
 
                 cache_migration_actions = np.clip(cache_migration_actions, -1.0, 1.0)
 
                 # 映射为参数字典
-                cache_params, migration_params = map_agent_actions_to_params(cache_migration_actions)
+                cache_params, migration_params, joint_params = map_agent_actions_to_params(cache_migration_actions)
 
                 # 更新自适应控制器参数
                 self.adaptive_cache_controller.update_agent_params(cache_params)
                 if not self.disable_migration:
                     self.adaptive_migration_controller.update_agent_params(migration_params)
+                if hasattr(self, 'strategy_coordinator') and self.strategy_coordinator is not None:
+                    self.strategy_coordinator.update_joint_params(joint_params)
 
                 # ������Ӧ�������ݸ�������
                 payload = {
                     'adaptive_cache_params': cache_params,
                     'cache_controller': self.adaptive_cache_controller,
+                    'joint_strategy_params': joint_params,
                 }
                 if not self.disable_migration:
                     payload.update({

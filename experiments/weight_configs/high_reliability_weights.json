@@ -1,0 +1,12 @@
+{
+  "name": "high_reliability",
+  "description": "高可靠性 - 强调任务完成率",
+  "weights": {
+    "reward_weight_delay": 2.0,
+    "reward_weight_energy": 1.2,
+    "reward_weight_cache": 0.15,
+    "reward_penalty_dropped": 0.1,
+    "energy_target": 1200.0,
+    "latency_target": 0.4
+  }
+}

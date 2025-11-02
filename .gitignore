@@ -27,6 +27,7 @@ MANIFEST
 
 # Training results and models
 results/
+results_from_server/
 models/
 logs/
 checkpoints/

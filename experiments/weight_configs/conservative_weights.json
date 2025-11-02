@@ -1,0 +1,12 @@
+{
+  "name": "conservative",
+  "description": "保守配置 - 平滑权重，易于收敛",
+  "weights": {
+    "reward_weight_delay": 1.5,
+    "reward_weight_energy": 1.0,
+    "reward_weight_cache": 0.1,
+    "reward_penalty_dropped": 0.03,
+    "energy_target": 1200.0,
+    "latency_target": 0.4
+  }
+}

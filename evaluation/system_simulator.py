@@ -2047,6 +2047,8 @@ class CompleteSystemSimulator:
             return
         
         migration_controller = agents_actions['migration_controller']
+        coordinator = getattr(self, 'strategy_coordinator', None)
+        joint_params = agents_actions.get('joint_strategy_params', {}) if isinstance(agents_actions, dict) else {}
         
         hotspot_map: Dict[str, float] = {}
         collaborative_system = getattr(self, 'collaborative_cache', None)
@@ -2125,14 +2127,28 @@ class CompleteSystemSimulator:
             if should_migrate:
                 self.stats['migrations_executed'] = self.stats.get('migrations_executed', 0) + 1
                 print(f"馃幆 {node_id} 瑙﹀彂杩佺Щ: {reason} (绱ф€ュ害:{urgency:.3f})")
+                if coordinator is not None:
+                    try:
+                        coordinator.notify_migration_triggered(node_id, reason, urgency, current_state)
+                    except Exception as exc:
+                        print(f"⚠️ 联合策略协调器记录RSU迁移异常: {exc}")
                 
                 # 鎵цRSU闂磋縼绉?
-                result = self.execute_rsu_migration(i, urgency)
+                result = self.execute_rsu_migration(i, urgency, coordinator=coordinator, joint_params=joint_params)
                 if result.get('success'):
                     self.stats['migrations_successful'] = self.stats.get('migrations_successful', 0) + 1
                     migration_controller.record_migration_result(True, cost=result.get('cost', 0.0), delay_saved=result.get('delay_saved', 0.0))
                 else:
                     migration_controller.record_migration_result(False)
+                if coordinator is not None:
+                    try:
+                        coordinator.notify_migration_result(
+                            node_id,
+                            bool(result.get('success')),
+                            {'type': 'rsu', 'metadata': result}
+                        )
+                    except Exception as exc:
+                        print(f"⚠️ 联合策略协调器记录RSU迁移结果异常: {exc}")
         
         # 馃殎 UAV杩佺Щ妫€鏌?
         for i, uav in enumerate(self.uavs):
@@ -2150,14 +2166,28 @@ class CompleteSystemSimulator:
             if should_migrate:
                 self.stats['migrations_executed'] = self.stats.get('migrations_executed', 0) + 1
                 print(f"馃幆 {node_id} 瑙﹀彂杩佺Щ: {reason} (绱ф€ュ害:{urgency:.3f})")
+                if coordinator is not None:
+                    try:
+                        coordinator.notify_migration_triggered(node_id, reason, urgency, current_state)
+                    except Exception as exc:
+                        print(f"⚠️ 联合策略协调器记录UAV迁移异常: {exc}")
                 
                 # UAV杩佺Щ鍒癛SU
-                result = self.execute_uav_migration(i, urgency)
+                result = self.execute_uav_migration(i, urgency, coordinator=coordinator, joint_params=joint_params)
                 if result.get('success'):
                     self.stats['migrations_successful'] = self.stats.get('migrations_successful', 0) + 1
                     migration_controller.record_migration_result(True, cost=result.get('cost', 0.0), delay_saved=result.get('delay_saved', 0.0))
                 else:
                     migration_controller.record_migration_result(False)
+                if coordinator is not None:
+                    try:
+                        coordinator.notify_migration_result(
+                            node_id,
+                            bool(result.get('success')),
+                            {'type': 'uav', 'metadata': result}
+                        )
+                    except Exception as exc:
+                        print(f"⚠️ 联合策略协调器记录UAV迁移结果异常: {exc}")
         
         # 馃殫 杞﹁締璺熼殢杩佺Щ妫€鏌?
         self._check_vehicle_handover_migration(migration_controller)
@@ -2444,7 +2474,9 @@ class CompleteSystemSimulator:
         # Fallback: legacy selection
         return self._dispatch_task(vehicle, task, actions, step_summary)
     
-    def execute_rsu_migration(self, source_rsu_idx: int, urgency: float) -> Dict[str, float]:
+    def execute_rsu_migration(self, source_rsu_idx: int, urgency: float,
+                              coordinator: Optional['StrategyCoordinator'] = None,
+                              joint_params: Optional[Dict] = None) -> Dict[str, float]:
         """
         执行RSU到RSU的迁移并返回成本/延迟指标
         
@@ -2472,8 +2504,6 @@ class CompleteSystemSimulator:
         if not source_queue:
             return {'success': False, 'cost': 0.0, 'delay_saved': 0.0}
 
-        # 寻找候选目标RSU
-        # Find candidate target RSUs
         candidates = []
         for i, rsu in enumerate(self.rsus):
             if i == source_rsu_idx:
@@ -2486,28 +2516,30 @@ class CompleteSystemSimulator:
         if not candidates:
             return {'success': False, 'cost': 0.0, 'delay_saved': 0.0}
 
-        # 选择负载最轻的目标RSU
-        # Select the least loaded target RSU
         target_idx, target_queue_len, target_cpu_load, _ = min(candidates, key=lambda x: x[3])
         source_queue_len = len(source_queue)
         queue_diff = target_queue_len - source_queue_len
 
-        # 动态迁移容忍度：根据系统队列方差调整
-        # Dynamic migration tolerance based on system queue variance
         all_queue_lens = [len(rsu.get('computation_queue', [])) for rsu in self.rsus]
         system_queue_variance = np.var(all_queue_lens)
         if system_queue_variance > 50:
-            migration_tolerance = 8  # 高方差：允许更大的队列差异
+            migration_tolerance = 8
         elif system_queue_variance > 20:
             migration_tolerance = 5
         else:
-            migration_tolerance = 3  # 低方差：严格控制迁移
+            migration_tolerance = 3
         if queue_diff > migration_tolerance:
             return {'success': False, 'cost': 0.0, 'delay_saved': 0.0}
 
-        # 根据紧急度确定迁移比例
-        # Determine migration ratio based on urgency
-        migration_ratio = max(0.1, min(0.5, urgency))
+        backoff = 0.0
+        if joint_params:
+            try:
+                backoff = float(joint_params.get('migration_backoff', 0.0) or 0.0)
+            except (TypeError, ValueError):
+                backoff = 0.0
+        backoff = float(np.clip(backoff, 0.0, 1.0))
+
+        migration_ratio = max(0.1, min(0.5, urgency * (1.0 - 0.4 * backoff) + 0.05))
         tasks_to_migrate = max(1, int(source_queue_len * migration_ratio))
         tasks_to_migrate = min(tasks_to_migrate, source_queue_len)
         if tasks_to_migrate <= 0:
@@ -2523,6 +2555,12 @@ class CompleteSystemSimulator:
         total_data_size = tasks_to_migrate * avg_task_size
 
         migrated_tasks = source_queue[:tasks_to_migrate]
+        if coordinator is not None and migrated_tasks:
+            try:
+                coordinator.prepare_prefetch(source_rsu, target_rsu, migrated_tasks, urgency)
+            except Exception as exc:
+                print(f"⚠️ 迁移前预取协调失败({source_rsu_id}->{target_rsu_id}): {exc}")
+
         source_rsu['computation_queue'] = source_queue[tasks_to_migrate:]
         target_rsu['computation_queue'].extend(migrated_tasks)
 
@@ -2539,9 +2577,17 @@ class CompleteSystemSimulator:
         except Exception:
             migration_cost = total_data_size * 0.2
 
-        return {'success': True, 'cost': migration_cost, 'delay_saved': delay_saved}
+        return {
+            'success': True,
+            'cost': migration_cost,
+            'delay_saved': delay_saved,
+            'target_node': target_rsu_id,
+            'tasks_migrated': tasks_to_migrate
+        }
     
-    def execute_uav_migration(self, source_uav_idx: int, urgency: float) -> Dict[str, float]:
+    def execute_uav_migration(self, source_uav_idx: int, urgency: float,
+                              coordinator: Optional['StrategyCoordinator'] = None,
+                              joint_params: Optional[Dict] = None) -> Dict[str, float]:
         """
         执行UAV到RSU的迁移并返回成本/延迟指标
         执行UAV到RSU的迁移并返回成本/延迟指标
@@ -2591,10 +2637,16 @@ class CompleteSystemSimulator:
         if 'computation_queue' not in target_rsu:
             target_rsu['computation_queue'] = []
 
-        # UAV迁移更激进（比例更高）
-        # UAV migration is more aggressive (higher ratio)
+        # UAV迁移更激进（比例更高），并结合迁移退避参数
         source_queue_len = len(source_queue)
-        migration_ratio = max(0.2, min(0.6, urgency + 0.1))
+        backoff = 0.0
+        if joint_params:
+            try:
+                backoff = float(joint_params.get('migration_backoff', 0.0) or 0.0)
+            except (TypeError, ValueError):
+                backoff = 0.0
+        backoff = float(np.clip(backoff, 0.0, 1.0))
+        migration_ratio = max(0.2, min(0.6, (urgency + 0.1) * (1.0 - 0.3 * backoff)))
         tasks_to_migrate = max(1, int(source_queue_len * migration_ratio))
         tasks_to_migrate = min(tasks_to_migrate, source_queue_len)
         if tasks_to_migrate <= 0:
@@ -2615,6 +2667,11 @@ class CompleteSystemSimulator:
         migrated_tasks = source_queue[:tasks_to_migrate]
         source_uav['computation_queue'] = source_queue[tasks_to_migrate:]
         target_rsu['computation_queue'].extend(migrated_tasks)
+        if coordinator is not None and migrated_tasks:
+            try:
+                coordinator.prepare_prefetch(source_uav, target_rsu, migrated_tasks, urgency)
+            except Exception as exc:
+                print(f"⚠️ UAV迁移前预取协调失败(UAV_{source_uav_idx}->{target_rsu.get('id')}): {exc}")
 
         total_data_size = sum(task.get('data_size', 1.0) for task in migrated_tasks) or (tasks_to_migrate * 1.0)
         # Estimate wireless transfer characteristics
@@ -2627,6 +2684,12 @@ class CompleteSystemSimulator:
         self.stats['uav_migration_count'] = self.stats.get('uav_migration_count', 0) + 1
 
         migration_cost = wireless_energy + wireless_delay * 800.0
-        return {'success': True, 'cost': migration_cost, 'delay_saved': delay_saved}
+        return {
+            'success': True,
+            'cost': migration_cost,
+            'delay_saved': delay_saved,
+            'target_node': target_rsu.get('id'),
+            'tasks_migrated': tasks_to_migrate
+        }
 
 

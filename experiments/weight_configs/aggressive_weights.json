@@ -1,0 +1,12 @@
+{
+  "name": "aggressive",
+  "description": "激进配置 - 同时优化所有目标",
+  "weights": {
+    "reward_weight_delay": 3.0,
+    "reward_weight_energy": 2.0,
+    "reward_weight_cache": 0.25,
+    "reward_penalty_dropped": 0.08,
+    "energy_target": 1200.0,
+    "latency_target": 0.35
+  }
+}

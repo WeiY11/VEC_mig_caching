@@ -1,0 +1,12 @@
+{
+  "name": "strict_latency",
+  "description": "严格时延 - 更严格的时延目标",
+  "weights": {
+    "reward_weight_delay": 3.5,
+    "reward_weight_energy": 1.0,
+    "reward_weight_cache": 0.15,
+    "reward_penalty_dropped": 0.05,
+    "energy_target": 1200.0,
+    "latency_target": 0.35
+  }
+}

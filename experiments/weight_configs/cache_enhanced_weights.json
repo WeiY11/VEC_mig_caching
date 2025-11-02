@@ -1,0 +1,12 @@
+{
+  "name": "cache_enhanced",
+  "description": "缓存增强 - 提高缓存权重",
+  "weights": {
+    "reward_weight_delay": 2.0,
+    "reward_weight_energy": 1.2,
+    "reward_weight_cache": 0.35,
+    "reward_penalty_dropped": 0.05,
+    "energy_target": 1200.0,
+    "latency_target": 0.4
+  }
+}

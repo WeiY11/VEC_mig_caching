@@ -1,0 +1,12 @@
+{
+  "name": "energy_saver",
+  "description": "节能优先v2 - 极低能耗目标",
+  "weights": {
+    "reward_weight_delay": 1.5,
+    "reward_weight_energy": 2.5,
+    "reward_weight_cache": 0.15,
+    "reward_penalty_dropped": 0.05,
+    "energy_target": 800.0,
+    "latency_target": 0.4
+  }
+}

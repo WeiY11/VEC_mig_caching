@@ -47,6 +47,7 @@ class UnifiedRewardCalculator:
         self.penalty_dropped = float(config.rl.reward_penalty_dropped)  # 任务丢弃惩罚
         self.weight_cache = float(getattr(config.rl, "reward_weight_cache", 0.0))  # 缓存权重
         self.weight_migration = float(getattr(config.rl, "reward_weight_migration", 0.0))  # 迁移权重
+        self.weight_joint = float(getattr(config.rl, "reward_weight_joint", 0.05))  # 缓存-迁移联动权重
         self.latency_target = float(getattr(config.rl, "latency_target", 0.4))
         self.energy_target = float(getattr(config.rl, "energy_target", 1200.0))
         self.latency_tolerance = float(getattr(config.rl, "latency_upper_tolerance", self.latency_target * 2.0))
@@ -236,6 +237,27 @@ class UnifiedRewardCalculator:
         if migration_metrics and self.weight_migration > 0:
             migration_cost = self._safe_float(migration_metrics.get("migration_cost"), 0.0)
             total_cost += self.weight_migration * migration_cost
+
+        if cache_metrics and migration_metrics and self.weight_joint > 0:
+            hit_rate = np.clip(self._safe_float(cache_metrics.get("hit_rate"), 0.0), 0.0, 1.0)
+            effectiveness = np.clip(self._safe_float(migration_metrics.get("effectiveness"), 0.0), 0.0, 1.0)
+            joint_bonus = hit_rate * effectiveness
+
+            cache_joint = cache_metrics.get("joint_params", {}) if isinstance(cache_metrics, dict) else {}
+            migration_joint = migration_metrics.get("joint_params", {}) if isinstance(migration_metrics, dict) else {}
+            prefetch_lead = self._safe_float(cache_joint.get("prefetch_lead_time"), 0.0)
+            backoff_factor = np.clip(self._safe_float(migration_joint.get("migration_backoff"), 0.0), 0.0, 1.0)
+
+            total_requests = max(1.0, self._safe_float(cache_metrics.get("total_requests"), 1.0))
+            prefetch_events = max(0.0, self._safe_float(cache_metrics.get("prefetch_events"), 0.0))
+            prefetch_ratio = np.clip(prefetch_events / total_requests, 0.0, 1.0)
+
+            coupling_penalty = max(0.0, 0.3 - prefetch_ratio) * 0.5
+            coupling_penalty += abs(prefetch_lead - 1.5) * 0.05
+            coupling_penalty += backoff_factor * 0.1
+
+            total_cost -= self.weight_joint * joint_bonus
+            total_cost += self.weight_joint * coupling_penalty
 
         # ========== 计算最终奖励 ==========
         # 奖励 = -成本（成本越低，奖励越高）
