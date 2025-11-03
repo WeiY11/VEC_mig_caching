@@ -22,6 +22,7 @@ from config import config  # noqa: E402
 from train_single_agent import _apply_global_seed_from_env, train_single_algorithm  # noqa: E402
 from experiments.camtd3_strategy_suite.run_strategy_training import STRATEGY_PRESETS  # noqa: E402
 from utils.unified_reward_calculator import UnifiedRewardCalculator  # noqa: E402
+from experiments.camtd3_strategy_suite.strategy_model_cache import get_global_cache  # noqa: E402
 
 STRATEGY_KEYS: List[str] = list(STRATEGY_PRESETS.keys())
 
@@ -151,12 +152,44 @@ def _run_strategy_suite_internal(
 ) -> Dict[str, Dict[str, float]]:
     keys = list(strategies) if strategies is not None else STRATEGY_KEYS
     results: Dict[str, Dict[str, float]] = {}
+    
+    # 获取全局缓存实例
+    cache = get_global_cache()
+    
     for key in keys:
         preset = STRATEGY_PRESETS[key]
         merged_override = copy.deepcopy(preset.get("override_scenario", {}))
         merged_override.update(override_scenario or {})
         merged_override.setdefault("override_topology", True)
 
+        # ========== 检查缓存 ==========
+        cached_data = cache.get_cached_model(key, episodes, seed, merged_override)
+        
+        if cached_data is not None:
+            # 使用缓存的训练结果
+            cached_metrics = cached_data["metrics"]
+            episode_metrics = cached_metrics.get("episode_metrics", {})
+            
+            avg_delay = tail_mean(episode_metrics.get("avg_delay", []))
+            avg_energy = tail_mean(episode_metrics.get("total_energy", []))
+            completion_rate = tail_mean(episode_metrics.get("task_completion_rate", []))
+            raw_cost = compute_cost(avg_delay, avg_energy)
+
+            results[key] = {
+                "avg_delay": avg_delay,
+                "avg_energy": avg_energy,
+                "completion_rate": completion_rate,
+                "raw_cost": raw_cost,
+                "episodes": episodes,
+                "seed": seed,
+                "from_cache": True,  # 标记为缓存数据
+            }
+            if include_episode_metrics:
+                results[key]["episode_metrics"] = episode_metrics
+            
+            continue  # 跳过训练
+        
+        # ========== 没有缓存，执行训练 ==========
         os.environ["RANDOM_SEED"] = str(seed)
         _apply_global_seed_from_env()
 
@@ -183,9 +216,26 @@ def _run_strategy_suite_internal(
             "raw_cost": raw_cost,
             "episodes": episodes,
             "seed": seed,
+            "from_cache": False,  # 标记为新训练数据
         }
         if include_episode_metrics:
             results[key]["episode_metrics"] = episode_metrics
+        
+        # ========== 保存到缓存 ==========
+        try:
+            cache.save_model(
+                strategy_key=key,
+                episodes=episodes,
+                seed=seed,
+                overrides=merged_override,
+                outcome=outcome,
+                model_state=None,  # 暂不保存模型参数（仅保存metrics）
+            )
+        except Exception as e:
+            # 缓存保存失败不影响训练结果
+            if not silent:
+                print(f"⚠️ 缓存保存失败: {e}")
+    
     return results
 
 

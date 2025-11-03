@@ -286,6 +286,80 @@ class SimulatedAnnealingPolicy(HeuristicPolicy):
         return self._choice_to_action(self.current_choice)
 
 
+class WeightedPreferencePolicy(HeuristicPolicy):
+    """Weighted multi-objective heuristic that reacts to queue, cache and energy metrics."""
+
+    def __init__(
+        self,
+        queue_weight: float = 1.6,
+        energy_weight: float = 1.0,
+        cache_weight: float = 0.6,
+        jitter: float = 0.05,
+        seed: Optional[int] = None,
+    ) -> None:
+        super().__init__("WeightedPreference", seed=seed)
+        self.queue_weight = float(queue_weight)
+        self.energy_weight = float(energy_weight)
+        self.cache_weight = float(cache_weight)
+        self.jitter = max(float(jitter), 0.0)
+
+    @staticmethod
+    def _mean_col(arr: np.ndarray, idx: int, default: float) -> float:
+        if arr.size == 0 or arr.ndim != 2 or arr.shape[1] <= idx:
+            return default
+        return float(np.mean(arr[:, idx]))
+
+    @staticmethod
+    def _value_col(arr: np.ndarray, row: int, idx: int, default: float) -> float:
+        if arr.size == 0 or arr.ndim != 2 or arr.shape[1] <= idx:
+            return default
+        row = max(0, min(arr.shape[0] - 1, row))
+        return float(arr[row, idx])
+
+    def _score(self, kind: str, idx: Optional[int], veh: np.ndarray, rsu: np.ndarray, uav: np.ndarray) -> float:
+        if kind == "local":
+            queue = self._mean_col(veh, 3, 0.6)
+            energy = self._mean_col(veh, 4, 0.6)
+            cache = self._mean_col(veh, 2, 0.5)
+        elif kind == "rsu":
+            index = 0 if idx is None else int(idx)
+            queue = self._value_col(rsu, index, 3, 0.7)
+            energy = self._value_col(rsu, index, 4, 0.7)
+            cache = self._value_col(rsu, index, 2, 0.4)
+        else:  # "uav"
+            index = 0 if idx is None else int(idx)
+            queue = self._value_col(uav, index, 3, 0.75)
+            energy = self._value_col(uav, index, 4, 0.8)
+            cache = self._value_col(uav, index, 2, 0.35)
+
+        penalty = self.queue_weight * queue + self.energy_weight * energy - self.cache_weight * cache
+        if self.jitter > 0.0:
+            penalty += float(self.rng.normal(0.0, self.jitter))
+        return penalty
+
+    def select_action(self, state) -> np.ndarray:
+        veh, rsu, uav = self._structured_state(state)
+        snap = self._ensure_snapshot()
+
+        candidates: list[Tuple[str, Optional[int]]] = [("local", None)]
+        if rsu.size:
+            candidates.extend(("rsu", idx) for idx in range(min(snap.num_rsus, rsu.shape[0])))
+        if uav.size:
+            candidates.extend(("uav", idx) for idx in range(min(snap.num_uavs, uav.shape[0])))
+
+        scores = [
+            (self._score(kind, idx, veh, rsu, uav), kind, idx)
+            for kind, idx in candidates
+        ]
+        _, best_kind, best_idx = min(scores, key=lambda item: item[0])
+
+        if best_kind == "local":
+            return self._action_from_preference(local_score=4.0, rsu_score=-1.5, uav_score=-1.5)
+        if best_kind == "rsu":
+            return self._action_from_preference(local_score=-1.0, rsu_score=4.0, uav_score=-1.0, rsu_index=best_idx)
+        return self._action_from_preference(local_score=-0.5, rsu_score=-0.5, uav_score=4.0, uav_index=best_idx)
+
+
 class GreedyPolicy(HeuristicPolicy):
     """Greedy baseline: pick the least-loaded compute target.
 
@@ -345,6 +419,14 @@ def create_baseline_algorithm(name: str, **kwargs):
             cooling_rate=kwargs.get("cooling_rate", 0.95),
             seed=kwargs.get("seed"),
         )
+    if key in {"weighted", "hybrid", "multiobjective"}:
+        return WeightedPreferencePolicy(
+            queue_weight=kwargs.get("queue_weight", 1.6),
+            energy_weight=kwargs.get("energy_weight", 1.0),
+            cache_weight=kwargs.get("cache_weight", 0.6),
+            jitter=kwargs.get("jitter", 0.05),
+            seed=kwargs.get("seed"),
+        )
     raise ValueError(f"Unsupported baseline algorithm '{name}'.")
 
 
@@ -355,5 +437,5 @@ __all__ = [
     "RSUOnlyPolicy",
     "RoundRobinPolicy",
     "SimulatedAnnealingPolicy",
+    "WeightedPreferencePolicy",
 ]
-

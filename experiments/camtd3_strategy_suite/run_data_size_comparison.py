@@ -44,12 +44,10 @@ DEFAULT_EPISODES = 500
 DEFAULT_SEED = 42
 
 DEFAULT_DATA_SIZE_CONFIGS: List[Tuple[int, int, str]] = [
-    (100, 200, "Light (100-200KB)"),
-    (150, 300, "Light-Mid (150-300KB)"),
-    (200, 400, "Standard (200-400KB)"),
-    (300, 500, "Heavy (300-500KB)"),
-    (400, 600, "Very Heavy (400-600KB)"),
-]
+    (100, 200, "Light (100-200KB)"),      # 优化: 轻量任务
+    (200, 400, "Standard (200-400KB)"),   # 优化: 标准任务 (基准)
+    (400, 600, "Heavy (400-600KB)"),      # 优化: 重型任务
+]  # 优化: 5配置→3配置
 
 
 def parse_data_sizes(value: str) -> List[Tuple[int, int, str]]:

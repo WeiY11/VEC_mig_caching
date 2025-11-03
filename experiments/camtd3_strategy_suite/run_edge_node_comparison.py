@@ -42,12 +42,10 @@ from experiments.camtd3_strategy_suite.suite_cli import (
 DEFAULT_EPISODES = 500
 DEFAULT_SEED = 42
 DEFAULT_CONFIGS: List[Tuple[int, int, str]] = [
-    (2, 0, "2 RSU, 0 UAV"),
-    (3, 1, "3 RSU, 1 UAV"),
-    (4, 2, "4 RSU, 2 UAV"),
-    (5, 2, "5 RSU, 2 UAV"),
-    (6, 3, "6 RSU, 3 UAV"),
-]
+    (2, 0, "2 RSU, 0 UAV"),      # 优化: 小规模
+    (4, 2, "4 RSU, 2 UAV"),      # 优化: 中规模 (基准)
+    (6, 3, "6 RSU, 3 UAV"),      # 优化: 大规模
+]  # 优化: 5配置→3配置
 
 
 def parse_configurations(value: str) -> List[Tuple[int, int, str]]:

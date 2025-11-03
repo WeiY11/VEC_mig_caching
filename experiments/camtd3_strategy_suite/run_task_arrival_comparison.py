@@ -41,7 +41,7 @@ from experiments.camtd3_strategy_suite.suite_cli import (
 
 DEFAULT_EPISODES = 500
 DEFAULT_SEED = 42
-DEFAULT_ARRIVAL_RATES = [0.8, 1.0, 1.2, 1.4, 1.6]
+DEFAULT_ARRIVAL_RATES = [0.8, 1.2, 1.6]
 
 
 def parse_arrival_rates(value: str) -> List[float]:

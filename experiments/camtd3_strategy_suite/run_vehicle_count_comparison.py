@@ -41,7 +41,7 @@ from experiments.camtd3_strategy_suite.suite_cli import (
 
 DEFAULT_EPISODES = 500
 DEFAULT_SEED = 42
-DEFAULT_VEHICLE_COUNTS = [8, 10, 12, 14, 16]
+DEFAULT_VEHICLE_COUNTS = [8, 12, 16]
 
 
 def parse_vehicle_counts(value: str) -> List[int]:
