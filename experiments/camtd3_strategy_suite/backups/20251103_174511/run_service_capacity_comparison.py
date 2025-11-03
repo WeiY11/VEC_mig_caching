@@ -1,19 +1,20 @@
 #!/usr/bin/env python3
 """
-CAMTD3 任务复杂度对比实验
-========================
+CAMTD3 边缘服务能力对比实验
+==========================
 
 研究目标
 --------
-- 通过调整任务复杂度（计算密度与复杂度乘子），评估各策略在高计算压力下的表现
-- 观察平均成本、时延、能耗与任务完成率的变化趋势
-- 支撑论文中关于“不同任务计算强度”场景的性能对比
+- 调整 RSU/UAV 的服务处理能力，观察各策略在排队压力下的表现差异
+- 关注平均成本、时延、队列负载 (ρ) 以及过载事件等关键指标
+- 帮助确定部署时的节点算力配置与冗余度
 """
 
 from __future__ import annotations
 
 import argparse
 import json
+import math
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -32,10 +33,6 @@ from experiments.camtd3_strategy_suite.strategy_runner import (
     strategy_label,
     tail_mean,
 )
-from experiments.camtd3_strategy_suite.visualization_utils import (
-    add_line_charts,
-    print_chart_summary,
-)
 from experiments.camtd3_strategy_suite.suite_cli import (
     add_common_experiment_args,
     format_strategy_list,
@@ -46,12 +43,12 @@ from experiments.camtd3_strategy_suite.suite_cli import (
 
 DEFAULT_EPISODES = 500
 DEFAULT_SEED = 42
-DEFAULT_COMPLEXITY_LEVELS = [0.8, 1.2, 1.8]
+DEFAULT_SERVICE_FACTORS = [0.6, 1.0, 1.4]  # 优化: 5配置→3配置 (低/基准/高)
 
 
-def parse_complexity_levels(value: str) -> List[float]:
+def parse_service_factors(value: str) -> List[float]:
     if not value or value.strip().lower() == "default":
-        return list(DEFAULT_COMPLEXITY_LEVELS)
+        return list(DEFAULT_SERVICE_FACTORS)
     parsed: List[float] = []
     for item in value.split(","):
         item = item.strip()
@@ -59,71 +56,88 @@ def parse_complexity_levels(value: str) -> List[float]:
             continue
         parsed.append(float(item))
     if not parsed:
-        raise ValueError("Complexity level list cannot be empty.")
+        raise ValueError("Service factor list cannot be empty.")
     return parsed
 
 
-def clamp_density(value: float) -> float:
-    return max(200.0, min(value, 800.0))
+def _scale_capacity(base: float, factor: float, minimum: float) -> float:
+    return max(minimum, base * factor)
 
 
-def complexity_metrics_hook(
+def derive_service_parameters(factor: float) -> Dict[str, float]:
+    rsu_base = max(1, int(round(4 * factor)))
+    rsu_max = max(rsu_base + 1, int(round(9 * factor)))
+    uav_base = max(1, int(round(3 * factor)))
+    uav_max = max(uav_base + 1, int(round(6 * factor)))
+    rsu_work_capacity = _scale_capacity(2.5, factor, 1.0)
+    uav_work_capacity = _scale_capacity(1.7, factor, 0.5)
+    return {
+        "rsu_base_service": rsu_base,
+        "rsu_max_service": rsu_max,
+        "uav_base_service": uav_base,
+        "uav_max_service": uav_max,
+        "rsu_work_capacity": rsu_work_capacity,
+        "uav_work_capacity": uav_work_capacity,
+    }
+
+
+def service_metrics_hook(
     strategy_key: str,
     metrics: Dict[str, float],
     config: Dict[str, object],
     episode_metrics: Dict[str, List[float]],
 ) -> None:
+    metrics["queue_rho_max"] = max(tail_mean(episode_metrics.get("queue_rho_max", [])), 0.0)
+    metrics["queue_overload_events"] = max(tail_mean(episode_metrics.get("queue_overload_events", [])), 0.0)
     metrics["avg_delay"] = metrics.get("avg_delay", 0.0)
-    metrics["avg_energy"] = metrics.get("avg_energy", 0.0)
     metrics["completion_rate"] = metrics.get("completion_rate", 0.0)
-    metrics["data_loss_ratio"] = max(tail_mean(episode_metrics.get("data_loss_ratio_bytes", [])), 0.0)
 
 
 def plot_results(results: List[Dict[str, object]], suite_dir: Path, strategy_keys: List[str]) -> None:
-    levels = [float(record["complexity_level"]) for record in results]
+    factors = [float(record["service_factor"]) for record in results]
 
     def make_chart(metric: str, ylabel: str, filename: str) -> None:
         plt.figure(figsize=(10, 6))
         for strat_key in strategy_keys:
             values = [record["strategies"][strat_key][metric] for record in results]
-            plt.plot(levels, values, marker="o", linewidth=2, label=strategy_label(strat_key))
-        plt.xlabel("Task Complexity Multiplier")
+            plt.plot(factors, values, marker="o", linewidth=2, label=strategy_label(strat_key))
+        plt.xlabel("Service Capacity Scaling Factor")
         plt.ylabel(ylabel)
-        plt.title(f"Impact of Task Complexity on {ylabel}")
+        plt.title(f"Impact of Service Capacity on {ylabel}")
         plt.grid(alpha=0.3)
         plt.legend()
         plt.tight_layout()
         plt.savefig(suite_dir / filename, dpi=300, bbox_inches="tight")
         plt.close()
 
-    make_chart("raw_cost", "Average Cost", "task_complexity_vs_cost.png")
-    make_chart("avg_delay", "Average Delay (s)", "task_complexity_vs_delay.png")
-    make_chart("avg_energy", "Average Energy (J)", "task_complexity_vs_energy.png")
-    make_chart("completion_rate", "Task Completion Rate", "task_complexity_vs_completion.png")
+    make_chart("raw_cost", "Average Cost", "service_capacity_vs_cost.png")
+    make_chart("avg_delay", "Average Delay (s)", "service_capacity_vs_delay.png")
+    make_chart("queue_rho_max", "Peak Queue Utilisation (ρ)", "service_capacity_vs_queue_rho.png")
+    make_chart("completion_rate", "Task Completion Rate", "service_capacity_vs_completion.png")
 
     print("\nCharts saved:")
     for name in [
-        "task_complexity_vs_cost.png",
-        "task_complexity_vs_delay.png",
-        "task_complexity_vs_energy.png",
-        "task_complexity_vs_completion.png",
+        "service_capacity_vs_cost.png",
+        "service_capacity_vs_delay.png",
+        "service_capacity_vs_queue_rho.png",
+        "service_capacity_vs_completion.png",
     ]:
         print(f"  - {suite_dir / name}")
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Compare CAMTD3 strategies under different task complexity levels."
+        description="Evaluate how RSU/UAV service capacity scaling affects CAMTD3 strategy performance."
     )
     parser.add_argument(
-        "--complexity-levels",
+        "--service-factors",
         type=str,
         default="default",
-        help="Comma-separated complexity multipliers or 'default'.",
+        help="Comma-separated scaling factors (e.g., '0.8,1.0,1.2') or 'default'.",
     )
     add_common_experiment_args(
         parser,
-        default_suite_prefix="task_complexity",
+        default_suite_prefix="service_capacity",
         default_output_root="results/parameter_sensitivity",
         default_episodes=DEFAULT_EPISODES,
         default_seed=DEFAULT_SEED,
@@ -133,7 +147,7 @@ def main() -> None:
     args = parser.parse_args()
     common = resolve_common_args(
         args,
-        default_suite_prefix="task_complexity",
+        default_suite_prefix="service_capacity",
         default_output_root="results/parameter_sensitivity",
         default_episodes=DEFAULT_EPISODES,
         default_seed=DEFAULT_SEED,
@@ -141,14 +155,12 @@ def main() -> None:
     )
     strategy_keys = resolve_strategy_keys(common.strategies)
 
-    complexity_levels = parse_complexity_levels(args.complexity_levels)
+    service_factors = parse_service_factors(args.service_factors)
     configs: List[Dict[str, object]] = []
-    for level in complexity_levels:
-        density = clamp_density(400.0 * level)
+    for factor in service_factors:
+        params = derive_service_parameters(factor)
         overrides = {
-            "task_complexity_multiplier": float(level),
-            "task_compute_density": float(density),
-            "high_load_mode": True,
+            **params,
             "override_topology": True,
             "num_vehicles": 12,
             "num_rsus": 4,
@@ -156,11 +168,11 @@ def main() -> None:
         }
         configs.append(
             {
-                "key": f"complex_{level:.2f}",
-                "label": f"{level:.2f}× Complexity",
+                "key": f"svc_{factor:.2f}",
+                "label": f"{factor:.2f}× Capacity",
                 "overrides": overrides,
-                "complexity_level": float(level),
-                "task_compute_density": density,
+                "service_factor": float(factor),
+                "service_parameters": params,
             }
         )
 
@@ -172,18 +184,18 @@ def main() -> None:
         silent=common.silent,
         suite_path=suite_dir,
         strategies=strategy_keys,
-        per_strategy_hook=complexity_metrics_hook,
+        per_strategy_hook=service_metrics_hook,
     )
 
     summary = {
-        "experiment_type": "task_complexity_sensitivity",
+        "experiment_type": "service_capacity_scaling",
         "suite_id": common.suite_id,
         "created_at": datetime.now().isoformat(),
         "num_configs": len(results),
         "episodes_per_config": common.episodes,
         "seed": common.seed,
         "strategy_keys": strategy_keys,
-        "complexity_levels": complexity_levels,
+        "service_factors": service_factors,
         "results": results,
     }
     summary_path = suite_dir / "summary.json"
@@ -191,17 +203,17 @@ def main() -> None:
 
     plot_results(results, suite_dir, strategy_keys)
 
-    print("\nTask Complexity Sensitivity Analysis Completed")
+    print("\nService Capacity Scaling Analysis Completed")
     print(f"Suite ID             : {common.suite_id}")
     print(f"Strategies           : {format_strategy_list(common.strategies)}")
     print(f"Configurations tested: {len(results)}")
-    print(f"{'Multiplier':<12}", end="")
+    print(f"{'Factor':<10}", end="")
     for strat_key in strategy_keys:
         print(f"{strategy_label(strat_key):>18}", end="")
     print()
-    print("-" * (12 + 18 * len(strategy_keys)))
+    print("-" * (10 + 18 * len(strategy_keys)))
     for record in results:
-        print(f"{record['complexity_level']:<12.2f}", end="")
+        print(f"{record['service_factor']:<10.2f}", end="")
         for strat_key in strategy_keys:
             print(f"{record['strategies'][strat_key]['raw_cost']:<18.4f}", end="")
         print()

@@ -324,6 +324,131 @@ def plot_results(results: List[Dict[str, object]], suite_dir: Path, strategy_key
     plt.savefig(suite_dir / "edge_infra_efficiency_radar.png", dpi=300, bbox_inches="tight")
     plt.close()
     
+    # ========== 新增：离散折线对比图 ==========
+    
+    # 图6: 时延折线对比
+    fig, ax = plt.subplots(figsize=(12, 7))
+    for i, strat_key in enumerate(strategy_keys):
+        delays = [record["strategies"][strat_key]["avg_delay"] for record in results]
+        ax.plot(x, delays, marker='o', linewidth=2.5, markersize=8, 
+                label=strategy_label(strat_key), color=colors[i], alpha=0.8)
+    
+    ax.set_xlabel("Infrastructure Scenario", fontsize=13, fontweight='bold')
+    ax.set_ylabel("Average Delay (s)", fontsize=13, fontweight='bold')
+    ax.set_title("Average Delay Across Edge Infrastructure Scenarios", fontsize=15, fontweight='bold')
+    ax.set_xticks(x)
+    ax.set_xticklabels(scenario_labels, rotation=20, ha='right', fontsize=10)
+    ax.legend(fontsize=10, loc='best', framealpha=0.9)
+    ax.grid(alpha=0.3, linestyle='--', linewidth=0.8)
+    plt.tight_layout()
+    plt.savefig(suite_dir / "edge_infra_delay_line.png", dpi=300, bbox_inches="tight")
+    plt.close()
+    
+    # 图7: 能耗折线对比
+    fig, ax = plt.subplots(figsize=(12, 7))
+    for i, strat_key in enumerate(strategy_keys):
+        energies = [record["strategies"][strat_key]["avg_energy"] for record in results]
+        ax.plot(x, energies, marker='s', linewidth=2.5, markersize=8, 
+                label=strategy_label(strat_key), color=colors[i], alpha=0.8)
+    
+    ax.set_xlabel("Infrastructure Scenario", fontsize=13, fontweight='bold')
+    ax.set_ylabel("Average Energy (J)", fontsize=13, fontweight='bold')
+    ax.set_title("Average Energy Consumption Across Edge Infrastructure Scenarios", fontsize=15, fontweight='bold')
+    ax.set_xticks(x)
+    ax.set_xticklabels(scenario_labels, rotation=20, ha='right', fontsize=10)
+    ax.legend(fontsize=10, loc='best', framealpha=0.9)
+    ax.grid(alpha=0.3, linestyle='--', linewidth=0.8)
+    plt.tight_layout()
+    plt.savefig(suite_dir / "edge_infra_energy_line.png", dpi=300, bbox_inches="tight")
+    plt.close()
+    
+    # 图8: 总成本折线对比
+    fig, ax = plt.subplots(figsize=(12, 7))
+    for i, strat_key in enumerate(strategy_keys):
+        costs = [record["strategies"][strat_key].get("total_cost", record["strategies"][strat_key].get("raw_cost", 0)) for record in results]
+        ax.plot(x, costs, marker='^', linewidth=2.5, markersize=8, 
+                label=strategy_label(strat_key), color=colors[i], alpha=0.8)
+    
+    ax.set_xlabel("Infrastructure Scenario", fontsize=13, fontweight='bold')
+    ax.set_ylabel("Total Cost", fontsize=13, fontweight='bold')
+    ax.set_title("Total Cost Across Edge Infrastructure Scenarios", fontsize=15, fontweight='bold')
+    ax.set_xticks(x)
+    ax.set_xticklabels(scenario_labels, rotation=20, ha='right', fontsize=10)
+    ax.legend(fontsize=10, loc='best', framealpha=0.9)
+    ax.grid(alpha=0.3, linestyle='--', linewidth=0.8)
+    plt.tight_layout()
+    plt.savefig(suite_dir / "edge_infra_cost_line.png", dpi=300, bbox_inches="tight")
+    plt.close()
+    
+    # 图9: 任务完成率折线对比
+    fig, ax = plt.subplots(figsize=(12, 7))
+    for i, strat_key in enumerate(strategy_keys):
+        completion_rates = [record["strategies"][strat_key]["completion_rate"] * 100 for record in results]
+        ax.plot(x, completion_rates, marker='D', linewidth=2.5, markersize=8, 
+                label=strategy_label(strat_key), color=colors[i], alpha=0.8)
+    
+    ax.set_xlabel("Infrastructure Scenario", fontsize=13, fontweight='bold')
+    ax.set_ylabel("Task Completion Rate (%)", fontsize=13, fontweight='bold')
+    ax.set_title("Task Completion Rate Across Edge Infrastructure Scenarios", fontsize=15, fontweight='bold')
+    ax.set_xticks(x)
+    ax.set_xticklabels(scenario_labels, rotation=20, ha='right', fontsize=10)
+    ax.legend(fontsize=10, loc='best', framealpha=0.9)
+    ax.grid(alpha=0.3, linestyle='--', linewidth=0.8)
+    ax.set_ylim([0, 105])  # 完成率范围0-100%
+    plt.tight_layout()
+    plt.savefig(suite_dir / "edge_infra_completion_line.png", dpi=300, bbox_inches="tight")
+    plt.close()
+    
+    # 图10: 多指标综合折线对比（归一化）
+    fig, ax = plt.subplots(figsize=(14, 8))
+    
+    # 选择一个代表性策略（CAMTD3）
+    representative_strategy = strategy_keys[0] if strategy_keys else "comprehensive-migration"
+    
+    # 提取并归一化各指标
+    delays = [record["strategies"][representative_strategy]["avg_delay"] for record in results]
+    energies = [record["strategies"][representative_strategy]["avg_energy"] for record in results]
+    costs = [record["strategies"][representative_strategy].get("total_cost", record["strategies"][representative_strategy].get("raw_cost", 0)) for record in results]
+    completion = [record["strategies"][representative_strategy]["completion_rate"] for record in results]
+    offload = [record["strategies"][representative_strategy]["offload_ratio"] for record in results]
+    
+    # 归一化到[0, 1]
+    def normalize(data):
+        min_val, max_val = min(data), max(data)
+        if max_val - min_val < 1e-6:
+            return [0.5] * len(data)
+        return [(v - min_val) / (max_val - min_val) for v in data]
+    
+    norm_delay = normalize(delays)
+    norm_energy = normalize(energies)
+    norm_cost = normalize(costs)
+    
+    # 完成率和卸载率已经是[0, 1]范围
+    
+    ax.plot(x, norm_delay, marker='o', linewidth=2.5, markersize=8, 
+            label='Delay (norm)', alpha=0.8)
+    ax.plot(x, norm_energy, marker='s', linewidth=2.5, markersize=8, 
+            label='Energy (norm)', alpha=0.8)
+    ax.plot(x, norm_cost, marker='^', linewidth=2.5, markersize=8, 
+            label='Cost (norm)', alpha=0.8)
+    ax.plot(x, completion, marker='D', linewidth=2.5, markersize=8, 
+            label='Completion Rate', alpha=0.8)
+    ax.plot(x, offload, marker='v', linewidth=2.5, markersize=8, 
+            label='Offload Ratio', alpha=0.8)
+    
+    ax.set_xlabel("Infrastructure Scenario", fontsize=13, fontweight='bold')
+    ax.set_ylabel("Normalized Value / Rate", fontsize=13, fontweight='bold')
+    ax.set_title(f"Multi-metric Performance Profile: {strategy_label(representative_strategy)}", 
+                 fontsize=15, fontweight='bold')
+    ax.set_xticks(x)
+    ax.set_xticklabels(scenario_labels, rotation=20, ha='right', fontsize=10)
+    ax.legend(fontsize=11, loc='best', framealpha=0.9, ncol=2)
+    ax.grid(alpha=0.3, linestyle='--', linewidth=0.8)
+    ax.set_ylim([-0.05, 1.1])
+    plt.tight_layout()
+    plt.savefig(suite_dir / "edge_infra_multiline.png", dpi=300, bbox_inches="tight")
+    plt.close()
+    
     print("\n" + "="*70)
     print("图表已保存:")
     print("="*70)
@@ -333,6 +458,11 @@ def plot_results(results: List[Dict[str, object]], suite_dir: Path, strategy_key
         "edge_infra_delay_energy_tradeoff.png",
         "edge_infra_offload_ratio.png",
         "edge_infra_efficiency_radar.png",
+        "edge_infra_delay_line.png        (新增: 时延折线对比)",
+        "edge_infra_energy_line.png       (新增: 能耗折线对比)",
+        "edge_infra_cost_line.png         (新增: 成本折线对比)",
+        "edge_infra_completion_line.png   (新增: 完成率折线对比)",
+        "edge_infra_multiline.png         (新增: 多指标综合对比)",
     ]
     for name in chart_list:
         print(f"  - {suite_dir / name}")

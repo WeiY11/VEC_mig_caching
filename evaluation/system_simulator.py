@@ -119,6 +119,18 @@ class CompleteSystemSimulator:
         self._two_stage_planner: TwoStagePlanner | None = None
         self.spatial_index: Optional[SpatialIndex] = SpatialIndex()
         
+        # 🔧 读取资源配置参数（CPU频率、带宽等）
+        # Read resource configuration parameters (CPU frequency, bandwidth, etc.)
+        # 优先使用override_scenario中的参数，否则使用系统配置或默认值
+        if self.sys_config is not None and not self.override_topology:
+            self.rsu_cpu_freq = getattr(self.sys_config.compute, 'rsu_cpu_freq', 15e9)
+            self.uav_cpu_freq = getattr(self.sys_config.compute, 'uav_cpu_freq', 12e9)
+            self.bandwidth = getattr(self.sys_config.network, 'bandwidth', 20e6)
+        else:
+            self.rsu_cpu_freq = self.config.get('rsu_cpu_freq', 15e9)  # Hz
+            self.uav_cpu_freq = self.config.get('uav_cpu_freq', 12e9)  # Hz
+            self.bandwidth = self.config.get('bandwidth', 20e6)  # Hz
+        
         # 初始化组件（车辆、RSU、UAV等）
         # Initialize components (vehicles, RSUs, UAVs, etc.)
         self.initialize_components()
@@ -232,6 +244,7 @@ class CompleteSystemSimulator:
                 'cache': {},  # 缓存字典
                 'cache_capacity': self.config['cache_capacity'],  # 缓存容量(MB)
                 'cache_capacity_bytes': (getattr(self.sys_config.cache, 'rsu_cache_capacity', 10e9) if self.sys_config is not None else 10e9),
+                'cpu_freq': self.rsu_cpu_freq,  # 🆕 CPU频率(Hz)
                 'computation_queue': [],  # 计算任务队列
                 'energy_consumed': 0.0  # 累计能耗(J)
             }
@@ -266,6 +279,7 @@ class CompleteSystemSimulator:
                 'cache': {},  # 缓存字典
                 'cache_capacity': self.config['cache_capacity'],  # 缓存容量(MB)
                 'cache_capacity_bytes': (getattr(self.sys_config.cache, 'uav_cache_capacity', 2e9) if self.sys_config is not None else 2e9),
+                'cpu_freq': self.uav_cpu_freq,  # 🆕 CPU频率(Hz)
                 'computation_queue': [],  # 计算任务队列
                 'energy_consumed': 0.0  # 累计能耗(J)
             }
@@ -924,7 +938,21 @@ class CompleteSystemSimulator:
 
         new_queue: List[Dict] = []
         current_time = getattr(self, 'current_time', 0.0)
-        work_capacity = self.time_slot * work_capacity_cfg
+        
+        # 🔧 修复：work_capacity也应该考虑CPU频率
+        # 高频CPU每个时间槽能处理更多工作
+        reference_rsu_freq = 15e9
+        reference_uav_freq = 12e9
+        if node_type == 'RSU':
+            actual_freq = getattr(self, 'rsu_cpu_freq', reference_rsu_freq)
+            freq_ratio = actual_freq / reference_rsu_freq
+        elif node_type == 'UAV':
+            actual_freq = getattr(self, 'uav_cpu_freq', reference_uav_freq)
+            freq_ratio = actual_freq / reference_uav_freq
+        else:
+            freq_ratio = 1.0
+        
+        work_capacity = self.time_slot * work_capacity_cfg * freq_ratio
 
         for idx, task in enumerate(queue):
             if current_time - task.get('queued_at', -1e9) < self.time_slot:
@@ -1513,9 +1541,27 @@ class CompleteSystemSimulator:
         return str(np.random.choice(target_labels, p=probs))
 
     def _estimate_remote_work_units(self, task: Dict, node_type: str) -> float:
-        """估计远程节点的工作量单位（供队列调度使用）"""
+        """
+        估计远程节点的工作量单位（供队列调度使用）
+        
+        🔧 修复：使用实际CPU频率计算，而不是硬编码常量
+        """
         requirement = float(task.get('computation_requirement', 1500.0))
-        base_divisor = 1200.0 if node_type == 'RSU' else 1600.0
+        
+        # 使用实际CPU频率计算工作量
+        # base_divisor代表节点的计算能力，频率越高，divisor越大，work_units越小（执行更快）
+        reference_rsu_freq = 15e9  # RSU参考频率 15GHz
+        reference_uav_freq = 12e9  # UAV参考频率 12GHz
+        
+        if node_type == 'RSU':
+            actual_freq = getattr(self, 'rsu_cpu_freq', reference_rsu_freq)
+            # 基础divisor 1200，按频率比例缩放
+            base_divisor = 1200.0 * (actual_freq / reference_rsu_freq)
+        else:  # UAV
+            actual_freq = getattr(self, 'uav_cpu_freq', reference_uav_freq)
+            # 基础divisor 1600，按频率比例缩放
+            base_divisor = 1600.0 * (actual_freq / reference_uav_freq)
+        
         work_units = requirement / base_divisor
         return float(np.clip(work_units, 0.5, 12.0))
 
@@ -1538,15 +1584,25 @@ class CompleteSystemSimulator:
         return processing_time, energy
 
     def _estimate_transmission(self, data_size_bytes: float, distance: float, link: str) -> Tuple[float, float]:
-        """浼拌涓婁紶鑰楁椂涓庤兘鑰?"""
-        # 鏈夋晥鍚炲悙閲?(bit/s)
+        """
+        估计上传耗时与能耗
+        
+        🔧 修复：使用实际带宽参数，而不是硬编码值
+        """
+        # 🔧 使用实际带宽参数
+        # 参考带宽：20MHz
+        reference_bandwidth = 20e6
+        actual_bandwidth = getattr(self, 'bandwidth', reference_bandwidth)
+        
+        # 基础速率（bit/s）- 根据实际带宽按比例缩放
         if link == 'uav':
-            base_rate = 45e6
+            base_rate = 45e6 * (actual_bandwidth / reference_bandwidth)
             power_w = 0.12
-        else:
-            base_rate = 80e6
+        else:  # RSU
+            base_rate = 80e6 * (actual_bandwidth / reference_bandwidth)
             power_w = 0.18
 
+        # 考虑距离衰减
         attenuation = 1.0 + max(0.0, distance) / 800.0
         rate = base_rate / attenuation
         delay = (float(data_size_bytes) * 8.0) / max(rate, 1e6)

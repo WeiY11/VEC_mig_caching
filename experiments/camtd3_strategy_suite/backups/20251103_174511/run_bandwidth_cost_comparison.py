@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 """
-CAMTD3 任务到达率敏感性实验
-==========================
+CAMTD3 带宽敏感性对比实验
+========================
 
 目标
 ----
-- 对比不同任务到达率下各策略的成本、时延与完成率表现
-- 支持策略子集与自定义到达率配置
-- 生成可直接用于论文的折线图与汇总 JSON
+- 检验不同通信带宽设置下，各策略的成本、时延与吞吐表现
+- 生成论文可用的四类对比图（成本/时延/归一化成本/吞吐）
+- 允许快速子集实验以缩短调试时间
 """
 
 from __future__ import annotations
@@ -31,10 +31,6 @@ from experiments.camtd3_strategy_suite.strategy_runner import (
     evaluate_configs,
     strategy_label,
 )
-from experiments.camtd3_strategy_suite.visualization_utils import (
-    add_line_charts,
-    print_chart_summary,
-)
 from experiments.camtd3_strategy_suite.suite_cli import (
     add_common_experiment_args,
     format_strategy_list,
@@ -45,60 +41,85 @@ from experiments.camtd3_strategy_suite.suite_cli import (
 
 DEFAULT_EPISODES = 500
 DEFAULT_SEED = 42
-DEFAULT_ARRIVAL_RATES = [0.8, 1.2, 1.6]
+DEFAULT_BANDWIDTHS = [10, 20, 30, 40, 50]
 
 
-def parse_arrival_rates(value: str) -> List[float]:
+def parse_bandwidths(value: str) -> List[int]:
     if not value or value.strip().lower() == "default":
-        return list(DEFAULT_ARRIVAL_RATES)
-    return [float(item.strip()) for item in value.split(",") if item.strip()]
+        return list(DEFAULT_BANDWIDTHS)
+    return [int(item.strip()) for item in value.split(",") if item.strip()]
+
+
+def bandwidth_hook(
+    strategy_key: str,
+    metrics: Dict[str, float],
+    config: Dict[str, object],
+    episode_metrics: Dict[str, List[float]],
+) -> None:
+    throughput_series = episode_metrics.get("throughput_mbps") or episode_metrics.get("avg_throughput_mbps")
+    avg_throughput = 0.0
+    if throughput_series:
+        values = list(map(float, throughput_series))
+        if values:
+            half = values[len(values) // 2 :] if len(values) >= 100 else values
+            avg_throughput = float(sum(half) / max(len(half), 1))
+
+    if avg_throughput <= 0:
+        avg_task_size_mb = 0.35  # 约 350KB
+        num_tasks_per_step = config.get("assumed_tasks_per_step", 12)
+        avg_delay = metrics.get("avg_delay", 0.0)
+        if avg_delay > 0:
+            avg_throughput = (avg_task_size_mb * num_tasks_per_step) / avg_delay
+
+    metrics["avg_throughput_mbps"] = max(avg_throughput, 0.0)
 
 
 def plot_results(results: List[Dict[str, object]], suite_dir: Path, strategy_keys: List[str]) -> None:
-    arrival_rates = [float(record["arrival_rate"]) for record in results]
+    labels = [record["label"] for record in results]
+    x_positions = range(len(results))
 
     def make_chart(metric: str, ylabel: str, filename: str) -> None:
         plt.figure(figsize=(10, 6))
         for strat_key in strategy_keys:
             values = [record["strategies"][strat_key][metric] for record in results]
-            plt.plot(arrival_rates, values, marker="o", linewidth=2, label=strategy_label(strat_key))
-        plt.xlabel("Task Arrival Rate (tasks/s)")
+            plt.plot(x_positions, values, marker="o", linewidth=2, label=strategy_label(strat_key))
+        plt.xticks(x_positions, labels)
         plt.ylabel(ylabel)
-        plt.title(f"Impact of Arrival Rate on {ylabel}")
+        plt.title(f"Impact of Bandwidth on {ylabel}")
         plt.grid(alpha=0.3)
-        plt.legend()
+        plt.legend(fontsize=10)
         plt.tight_layout()
         plt.savefig(suite_dir / filename, dpi=300, bbox_inches="tight")
         plt.close()
 
-    make_chart("raw_cost", "Average Cost", "arrival_rate_vs_cost.png")
-    make_chart("avg_delay", "Average Delay (s)", "arrival_rate_vs_delay.png")
-    make_chart("completion_rate", "Completion Rate", "arrival_rate_vs_completion.png")
-    make_chart("normalized_cost", "Normalized Cost", "arrival_rate_vs_normalized_cost.png")
+    make_chart("raw_cost", "Average Cost", "bandwidth_vs_total_cost.png")
+    make_chart("avg_delay", "Average Delay (s)", "bandwidth_vs_delay.png")
+    make_chart("normalized_cost", "Normalized Cost", "bandwidth_vs_normalized_cost.png")
+    make_chart("avg_throughput_mbps", "Average Throughput (Mbps)", "bandwidth_vs_throughput.png")
 
     print("\nCharts saved:")
     for name in [
-        "arrival_rate_vs_cost.png",
-        "arrival_rate_vs_delay.png",
-        "arrival_rate_vs_completion.png",
-        "arrival_rate_vs_normalized_cost.png",
+        "bandwidth_vs_total_cost.png",
+        "bandwidth_vs_delay.png",
+        "bandwidth_vs_normalized_cost.png",
+        "bandwidth_vs_throughput.png",
     ]:
         print(f"  - {suite_dir / name}")
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Evaluate strategy performance across task arrival rates."
+        description="Compare CAMTD3 strategies under varied channel bandwidth."
     )
     parser.add_argument(
-        "--arrival-rates",
+        "--bandwidths",
         type=str,
         default="default",
-        help="Comma-separated arrival rates (tasks/s) or 'default'.",
+        help="Comma-separated bandwidth list in MHz or 'default'.",
     )
     add_common_experiment_args(
         parser,
-        default_suite_prefix="arrival_rate",
+        default_suite_prefix="bandwidth",
         default_output_root="results/parameter_sensitivity",
         default_episodes=DEFAULT_EPISODES,
         default_seed=DEFAULT_SEED,
@@ -108,7 +129,7 @@ def main() -> None:
     args = parser.parse_args()
     common = resolve_common_args(
         args,
-        default_suite_prefix="arrival_rate",
+        default_suite_prefix="bandwidth",
         default_output_root="results/parameter_sensitivity",
         default_episodes=DEFAULT_EPISODES,
         default_seed=DEFAULT_SEED,
@@ -116,22 +137,23 @@ def main() -> None:
     )
     strategy_keys = resolve_strategy_keys(common.strategies)
 
-    arrival_rates = parse_arrival_rates(args.arrival_rates)
+    bandwidths = parse_bandwidths(args.bandwidths)
     configs: List[Dict[str, object]] = []
-    for rate in arrival_rates:
+    for bw in bandwidths:
         overrides = {
+            "bandwidth": float(bw),
             "num_vehicles": 12,
             "num_rsus": 4,
             "num_uavs": 2,
-            "task_arrival_rate": float(rate),
             "override_topology": True,
         }
         configs.append(
             {
-                "key": f"{rate:.2f}",
-                "label": f"{rate:.2f} tasks/s",
+                "key": f"{bw}mhz",
+                "label": f"{bw} MHz",
                 "overrides": overrides,
-                "arrival_rate": rate,
+                "bandwidth_mhz": bw,
+                "assumed_tasks_per_step": 12,
             }
         )
 
@@ -143,10 +165,11 @@ def main() -> None:
         silent=common.silent,
         suite_path=suite_dir,
         strategies=strategy_keys,
+        per_strategy_hook=bandwidth_hook,
     )
 
     summary = {
-        "experiment_type": "task_arrival_sensitivity",
+        "experiment_type": "bandwidth_cost_sensitivity",
         "suite_id": common.suite_id,
         "created_at": datetime.now().isoformat(),
         "num_configs": len(results),
@@ -160,17 +183,17 @@ def main() -> None:
 
     plot_results(results, suite_dir, strategy_keys)
 
-    print("\nArrival Rate Sensitivity Analysis Completed")
+    print("\nBandwidth Sensitivity Analysis Completed")
     print(f"Suite ID             : {common.suite_id}")
     print(f"Strategies           : {format_strategy_list(common.strategies)}")
     print(f"Configurations tested: {len(results)}")
-    print(f"{'Arrival Rate':<18}", end="")
+    print(f"{'Bandwidth':<12}", end="")
     for strat_key in strategy_keys:
         print(f"{strategy_label(strat_key):>18}", end="")
     print()
-    print("-" * (18 + 18 * len(strategy_keys)))
+    print("-" * (12 + 18 * len(strategy_keys)))
     for record in results:
-        print(f"{record['arrival_rate']:<18.2f}", end="")
+        print(f"{record['bandwidth_mhz']:<12}", end="")
         for strat_key in strategy_keys:
             print(f"{record['strategies'][strat_key]['raw_cost']:<18.4f}", end="")
         print()

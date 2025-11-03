@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 """
-CAMTD3 任务到达率敏感性实验
+CAMTD3 边缘节点配置对比实验
 ==========================
 
-目标
-----
-- 对比不同任务到达率下各策略的成本、时延与完成率表现
-- 支持策略子集与自定义到达率配置
-- 生成可直接用于论文的折线图与汇总 JSON
+主要目标
+--------
+- 探索不同 RSU/UAV 组合对系统性能的影响
+- 对比六种策略（或指定子集）在基础设施扩展下的收益
+- 评估单位节点成本 (cost per node) 等衍生指标
 """
 
 from __future__ import annotations
@@ -17,7 +17,7 @@ import json
 import sys
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, List
+from typing import Dict, List, Tuple
 
 import matplotlib.pyplot as plt
 
@@ -31,10 +31,6 @@ from experiments.camtd3_strategy_suite.strategy_runner import (
     evaluate_configs,
     strategy_label,
 )
-from experiments.camtd3_strategy_suite.visualization_utils import (
-    add_line_charts,
-    print_chart_summary,
-)
 from experiments.camtd3_strategy_suite.suite_cli import (
     add_common_experiment_args,
     format_strategy_list,
@@ -45,60 +41,85 @@ from experiments.camtd3_strategy_suite.suite_cli import (
 
 DEFAULT_EPISODES = 500
 DEFAULT_SEED = 42
-DEFAULT_ARRIVAL_RATES = [0.8, 1.2, 1.6]
+DEFAULT_CONFIGS: List[Tuple[int, int, str]] = [
+    (2, 0, "2 RSU, 0 UAV"),      # 优化: 小规模
+    (4, 2, "4 RSU, 2 UAV"),      # 优化: 中规模 (基准)
+    (6, 3, "6 RSU, 3 UAV"),      # 优化: 大规模
+]  # 优化: 5配置→3配置
 
 
-def parse_arrival_rates(value: str) -> List[float]:
+def parse_configurations(value: str) -> List[Tuple[int, int, str]]:
     if not value or value.strip().lower() == "default":
-        return list(DEFAULT_ARRIVAL_RATES)
-    return [float(item.strip()) for item in value.split(",") if item.strip()]
+        return list(DEFAULT_CONFIGS)
+    configs: List[Tuple[int, int, str]] = []
+    for item in value.split(";"):
+        parts = [part.strip() for part in item.split(",") if part.strip()]
+        if len(parts) < 2:
+            raise ValueError(f"Invalid edge node specification: {item}")
+        num_rsus = int(parts[0])
+        num_uavs = int(parts[1])
+        label = parts[2] if len(parts) > 2 else f"{num_rsus} RSU, {num_uavs} UAV"
+        configs.append((num_rsus, num_uavs, label))
+    return configs
+
+
+def edge_hook(
+    strategy_key: str,
+    metrics: Dict[str, float],
+    config: Dict[str, object],
+    episode_metrics: Dict[str, List[float]],
+) -> None:
+    total_nodes = int(config["num_rsus"]) + int(config["num_uavs"])
+    metrics["total_nodes"] = total_nodes
+    metrics["cost_per_node"] = metrics["raw_cost"] / max(total_nodes, 1)
 
 
 def plot_results(results: List[Dict[str, object]], suite_dir: Path, strategy_keys: List[str]) -> None:
-    arrival_rates = [float(record["arrival_rate"]) for record in results]
+    labels = [record["label"] for record in results]
+    x_positions = range(len(results))
 
     def make_chart(metric: str, ylabel: str, filename: str) -> None:
         plt.figure(figsize=(10, 6))
         for strat_key in strategy_keys:
             values = [record["strategies"][strat_key][metric] for record in results]
-            plt.plot(arrival_rates, values, marker="o", linewidth=2, label=strategy_label(strat_key))
-        plt.xlabel("Task Arrival Rate (tasks/s)")
+            plt.plot(x_positions, values, marker="o", linewidth=2, label=strategy_label(strat_key))
+        plt.xticks(x_positions, labels, rotation=20, ha="right")
         plt.ylabel(ylabel)
-        plt.title(f"Impact of Arrival Rate on {ylabel}")
+        plt.title(f"Impact of Edge Node Configuration on {ylabel}")
         plt.grid(alpha=0.3)
         plt.legend()
         plt.tight_layout()
         plt.savefig(suite_dir / filename, dpi=300, bbox_inches="tight")
         plt.close()
 
-    make_chart("raw_cost", "Average Cost", "arrival_rate_vs_cost.png")
-    make_chart("avg_delay", "Average Delay (s)", "arrival_rate_vs_delay.png")
-    make_chart("completion_rate", "Completion Rate", "arrival_rate_vs_completion.png")
-    make_chart("normalized_cost", "Normalized Cost", "arrival_rate_vs_normalized_cost.png")
+    make_chart("raw_cost", "Average Cost", "edge_config_vs_cost.png")
+    make_chart("avg_delay", "Average Delay (s)", "edge_config_vs_delay.png")
+    make_chart("cost_per_node", "Cost per Node", "edge_config_vs_cost_per_node.png")
+    make_chart("normalized_cost", "Normalized Cost", "edge_config_vs_normalized_cost.png")
 
     print("\nCharts saved:")
     for name in [
-        "arrival_rate_vs_cost.png",
-        "arrival_rate_vs_delay.png",
-        "arrival_rate_vs_completion.png",
-        "arrival_rate_vs_normalized_cost.png",
+        "edge_config_vs_cost.png",
+        "edge_config_vs_delay.png",
+        "edge_config_vs_cost_per_node.png",
+        "edge_config_vs_normalized_cost.png",
     ]:
         print(f"  - {suite_dir / name}")
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Evaluate strategy performance across task arrival rates."
+        description="Evaluate strategy performance across edge node configurations."
     )
     parser.add_argument(
-        "--arrival-rates",
+        "--configurations",
         type=str,
         default="default",
-        help="Comma-separated arrival rates (tasks/s) or 'default'.",
+        help="Semicolon-separated list like '4,2,Label;6,2,Label'.",
     )
     add_common_experiment_args(
         parser,
-        default_suite_prefix="arrival_rate",
+        default_suite_prefix="edge_node",
         default_output_root="results/parameter_sensitivity",
         default_episodes=DEFAULT_EPISODES,
         default_seed=DEFAULT_SEED,
@@ -108,7 +129,7 @@ def main() -> None:
     args = parser.parse_args()
     common = resolve_common_args(
         args,
-        default_suite_prefix="arrival_rate",
+        default_suite_prefix="edge_node",
         default_output_root="results/parameter_sensitivity",
         default_episodes=DEFAULT_EPISODES,
         default_seed=DEFAULT_SEED,
@@ -116,22 +137,22 @@ def main() -> None:
     )
     strategy_keys = resolve_strategy_keys(common.strategies)
 
-    arrival_rates = parse_arrival_rates(args.arrival_rates)
+    node_configs = parse_configurations(args.configurations)
     configs: List[Dict[str, object]] = []
-    for rate in arrival_rates:
+    for num_rsus, num_uavs, label in node_configs:
         overrides = {
             "num_vehicles": 12,
-            "num_rsus": 4,
-            "num_uavs": 2,
-            "task_arrival_rate": float(rate),
+            "num_rsus": int(num_rsus),
+            "num_uavs": int(num_uavs),
             "override_topology": True,
         }
         configs.append(
             {
-                "key": f"{rate:.2f}",
-                "label": f"{rate:.2f} tasks/s",
+                "key": f"{num_rsus}rsu_{num_uavs}uav",
+                "label": label,
                 "overrides": overrides,
-                "arrival_rate": rate,
+                "num_rsus": int(num_rsus),
+                "num_uavs": int(num_uavs),
             }
         )
 
@@ -143,10 +164,11 @@ def main() -> None:
         silent=common.silent,
         suite_path=suite_dir,
         strategies=strategy_keys,
+        per_strategy_hook=edge_hook,
     )
 
     summary = {
-        "experiment_type": "task_arrival_sensitivity",
+        "experiment_type": "edge_node_configuration",
         "suite_id": common.suite_id,
         "created_at": datetime.now().isoformat(),
         "num_configs": len(results),
@@ -160,17 +182,18 @@ def main() -> None:
 
     plot_results(results, suite_dir, strategy_keys)
 
-    print("\nArrival Rate Sensitivity Analysis Completed")
+    print("\nEdge Node Configuration Analysis Completed")
     print(f"Suite ID             : {common.suite_id}")
     print(f"Strategies           : {format_strategy_list(common.strategies)}")
     print(f"Configurations tested: {len(results)}")
-    print(f"{'Arrival Rate':<18}", end="")
+    print(f"{'RSU/UAV':<12}", end="")
     for strat_key in strategy_keys:
         print(f"{strategy_label(strat_key):>18}", end="")
     print()
-    print("-" * (18 + 18 * len(strategy_keys)))
+    print("-" * (12 + 18 * len(strategy_keys)))
     for record in results:
-        print(f"{record['arrival_rate']:<18.2f}", end="")
+        label = f"{record['num_rsus']} / {record['num_uavs']}"
+        print(f"{label:<12}", end="")
         for strat_key in strategy_keys:
             print(f"{record['strategies'][strat_key]['raw_cost']:<18.4f}", end="")
         print()
