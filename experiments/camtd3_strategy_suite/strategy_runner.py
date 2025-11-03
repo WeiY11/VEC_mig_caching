@@ -64,24 +64,25 @@ def compute_cost(avg_delay: float, avg_energy: float) -> float:
     float - 归一化的加权代价（越小越好）
     
     【计算公式】
-    Cost = ω_T · (T / T_norm) + ω_E · (E / E_norm)
+    Cost = ω_T · (T / T_target) + ω_E · (E / E_target)
     其中：
     - ω_T = 2.0（时延权重）
     - ω_E = 1.2（能耗权重）
-    - T_norm = 0.2s（时延归一化因子）
-    - E_norm = 1000J（能耗归一化因子）
+    - T_target = 0.4s（时延目标值，用于归一化）
+    - E_target = 1200J（能耗目标值，用于归一化）
     
     【修复说明】
-    ✅ 修复前：直接使用avg_delay，未归一化，导致cost值偏大
-    ✅ 修复后：使用unified_reward_calculator，确保与训练一致
+    ✅ 修复后：使用latency_target和energy_target，与训练时的奖励计算完全一致
+    ✅ 修复前：错误使用了delay_normalizer(0.2)和energy_normalizer(1000)
+    ✅ 确保评估指标与训练指标可比
     """
     weight_delay = float(config.rl.reward_weight_delay)
     weight_energy = float(config.rl.reward_weight_energy)
     
-    # 使用与统一奖励计算器相同的归一化因子
+    # ✅ 修复：使用与训练时完全一致的归一化因子
     calc = _get_reward_calculator()
-    delay_normalizer = calc.delay_normalizer  # 0.2
-    energy_normalizer = calc.energy_normalizer  # 1000.0
+    delay_normalizer = calc.latency_target  # 0.4（与训练一致）
+    energy_normalizer = calc.energy_target  # 1200.0（与训练一致）
     
     return (
         weight_delay * (avg_delay / max(delay_normalizer, 1e-6))

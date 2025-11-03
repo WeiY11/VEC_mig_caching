@@ -266,28 +266,29 @@ def compute_raw_cost(delay_mean: float, energy_mean: float) -> float:
     float - 归一化后的加权代价
     
     【计算公式】
-    Raw Cost = ω_T · (T / T_norm) + ω_E · (E / E_norm)
+    Raw Cost = ω_T · (T / T_target) + ω_E · (E / E_target)
     其中：
     - ω_T = 2.0（时延权重）
     - ω_E = 1.2（能耗权重）
-    - T_norm = 0.2s（时延归一化因子）
-    - E_norm = 1000J（能耗归一化因子）
+    - T_target = 0.4s（时延目标值，用于归一化）
+    - E_target = 1200J（能耗目标值，用于归一化）
     
     【论文对应】
     优化目标：minimize ω_T·时延 + ω_E·能耗
     该指标越小，系统性能越好
     
     【修复说明】
-    ✅ 修复后：使用unified_reward_calculator，确保与训练一致
+    ✅ 修复后：使用latency_target和energy_target，与训练时的奖励计算完全一致
+    ✅ 修复前：错误使用了delay_normalizer(0.2)和energy_normalizer(1000)
     ✅ 复用统一模块，遵循DRY原则
     """
     weight_delay = float(config.rl.reward_weight_delay)      # ω_T = 2.0
     weight_energy = float(config.rl.reward_weight_energy)    # ω_E = 1.2
     
-    # 使用与统一奖励计算器相同的归一化因子
+    # ✅ 修复：使用与训练时完全一致的归一化因子
     calc = _get_reward_calculator()
-    delay_normalizer = calc.delay_normalizer  # 0.2
-    energy_normalizer = calc.energy_normalizer  # 1000.0
+    delay_normalizer = calc.latency_target  # 0.4（与训练一致）
+    energy_normalizer = calc.energy_target  # 1200.0（与训练一致）
     
     return (
         weight_delay * (delay_mean / max(delay_normalizer, 1e-6))

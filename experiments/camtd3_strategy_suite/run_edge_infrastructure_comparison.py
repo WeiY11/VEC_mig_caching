@@ -41,7 +41,7 @@ python experiments/camtd3_strategy_suite/run_edge_infrastructure_comparison.py \
     --episodes 10 --suite-id edge_infra_quick
 
 # 完整实验（500轮）
-python experiments/camtd3_strategy_suite/run_edge_infrastructure_comparison.py--episodes 500 --seed 42
+python experiments/camtd3_strategy_suite/run_edge_infrastructure_comparison.py --episodes 500 --seed 42
 ```
 """
 
@@ -389,7 +389,7 @@ def main() -> None:
             {
                 "key": scenario["key"],
                 "label": scenario["label"],
-                "override_scenario": overrides,
+                "overrides": overrides,
                 "scenario_label": scenario["label"],
                 "description": scenario["description"],
                 "rsu_compute_ghz": scenario["rsu_compute_ghz"],
@@ -400,25 +400,21 @@ def main() -> None:
             }
         )
     
+    # ========== 构建输出目录 ==========
+    suite_dir = build_suite_path(common)
+    
     # ========== 运行实验 ==========
     results = evaluate_configs(
         configs=configs,
         episodes=common.episodes,
         seed=common.seed,
-        suite_prefix=common.suite_prefix,
-        suite_id=common.suite_id,
-        output_root=common.output_root,
         silent=common.silent,
+        suite_path=suite_dir,
         strategies=strategy_keys,
-        metrics_hook=infrastructure_metrics_hook,
+        per_strategy_hook=infrastructure_metrics_hook,
     )
     
     # ========== 生成图表 ==========
-    suite_dir = build_suite_path(
-        output_root=common.output_root,
-        prefix=common.suite_prefix,
-        suite_id=common.suite_id,
-    )
     plot_results(results, suite_dir, strategy_keys)
     
     # ========== 保存详细结果 ==========

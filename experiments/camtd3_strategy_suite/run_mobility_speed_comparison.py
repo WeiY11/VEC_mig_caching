@@ -187,10 +187,10 @@ def run_single_config(
     weight_delay = float(config.rl.reward_weight_delay)
     weight_energy = float(config.rl.reward_weight_energy)
     
-    # ✅ 修复：使用与unified_reward_calculator一致的归一化
+    # ✅ 修复：使用与训练时完全一致的归一化因子
     calc = _get_reward_calculator()
-    delay_normalizer = calc.delay_normalizer  # 0.2
-    energy_normalizer = calc.energy_normalizer  # 1000.0
+    delay_normalizer = calc.latency_target  # 0.4（与训练一致）
+    energy_normalizer = calc.energy_target  # 1200.0（与训练一致）
     
     avg_cost = (
         weight_delay * (avg_delay / max(delay_normalizer, 1e-6))
