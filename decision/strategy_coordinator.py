@@ -27,6 +27,8 @@ class StrategyCoordinator:
         self._joint_params: Dict[str, float] = {
             "prefetch_lead_time": getattr(cache_controller, "joint_params", {}).get("prefetch_lead_time", 0.4),
             "migration_backoff": 0.2,
+            "sync_intensity": getattr(cache_controller, "joint_params", {}).get("sync_intensity", 0.5),
+            "cache_migration_tradeoff": getattr(cache_controller, "joint_params", {}).get("cache_migration_tradeoff", 0.5),
         }
         self.simulator = None
         self.migration_events: deque = deque(maxlen=history_size)
@@ -45,7 +47,7 @@ class StrategyCoordinator:
         if not isinstance(joint_params, dict):
             return
         updated = False
-        for key in ("prefetch_lead_time", "migration_backoff"):
+        for key in ("prefetch_lead_time", "migration_backoff", "sync_intensity", "cache_migration_tradeoff"):
             if key in joint_params:
                 try:
                     value = float(joint_params[key])
@@ -155,7 +157,10 @@ class StrategyCoordinator:
 
         prefetch_lead = max(0.0, float(self._joint_params.get("prefetch_lead_time", 0.4)))
         urgency_weight = min(1.0, max(0.2, urgency + 0.1))
-        budget = available * min(1.0, urgency_weight)
+        sync_intensity = float(max(0.0, min(1.0, self._joint_params.get("sync_intensity", 0.5))))
+        tradeoff = float(max(0.0, min(1.0, self._joint_params.get("cache_migration_tradeoff", 0.5))))
+        weight_factor = min(1.0, 0.5 + 0.5 * tradeoff)
+        budget = available * min(1.0, urgency_weight * (0.5 + sync_intensity * 0.5) * weight_factor)
 
         copied = 0
         consumed = 0.0

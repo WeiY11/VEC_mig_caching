@@ -33,7 +33,14 @@ class ProcessingOption:
     def weighted_cost(self) -> float:
         slot = max(1e-9, float(config.network.time_slot_duration))
         energy_norm = 1000.0
-        w_delay, w_energy, w_rel = 0.5, 0.4, 0.1
+        weights = getattr(ProcessingModeEvaluator, 'cost_weight_profile', {'delay': 0.5, 'energy': 0.4, 'reliability': 0.1})
+        w_delay = float(weights.get('delay', 0.5))
+        w_energy = float(weights.get('energy', 0.4))
+        w_rel = float(weights.get('reliability', 0.1))
+        total = max(1e-6, w_delay + w_energy + w_rel)
+        w_delay /= total
+        w_energy /= total
+        w_rel /= total
         norm_delay = (self.predicted_delay / slot) * max(0.1, self.latency_weight)
         norm_energy = self.energy_cost / max(1e-9, energy_norm)
         rel_pen = 1.0 - self.success_probability
@@ -138,9 +145,14 @@ class TaskClassifier:
 
 
 class ProcessingModeEvaluator:
+    cost_weight_profile: Dict[str, float] = {'delay': 0.5, 'energy': 0.4, 'reliability': 0.1}
+
     def __init__(self):
         self.communication_overhead = 0.0002
         self.cache_response_delay = 0.0001
+        self.scheduling_preferences = {'priority_bias': 0.5, 'deadline_bias': 0.5}
+        self.tradeoff_bias = 0.5
+        self._refresh_cost_weights()
 
     def evaluate_all_modes(self, task: Task, candidates: List[str], node_states: Dict,
                            node_positions: Dict[str, 'Position'], cache_states: Optional[Dict] = None) -> List[ProcessingOption]:
@@ -179,6 +191,65 @@ class ProcessingModeEvaluator:
         # 传给 weighted_cost 的“成本延迟”输入
         slot = max(1e-9, float(config.network.time_slot_duration))
         return delay * (0.15 / slot) * self._alpha(task)
+
+    def _refresh_cost_weights(self) -> None:
+        priority = float(self.scheduling_preferences.get('priority_bias', 0.5))
+        deadline = float(self.scheduling_preferences.get('deadline_bias', 0.5))
+        tradeoff = float(self.tradeoff_bias)
+        delay_weight = 0.35 + 0.45 * priority
+        energy_weight = max(0.1, 0.4 - 0.2 * priority)
+        reliability_weight = 0.2 + 0.3 * deadline
+        energy_weight *= (0.6 + 0.4 * (1.0 - tradeoff))
+        weights = {
+            'delay': max(1e-3, delay_weight),
+            'energy': max(1e-3, energy_weight),
+            'reliability': max(1e-3, reliability_weight),
+        }
+        total = sum(weights.values())
+        if total <= 0.0:
+            total = 1.0
+        for key in list(weights.keys()):
+            weights[key] = float(weights[key] / total)
+        ProcessingModeEvaluator.cost_weight_profile = weights
+
+    def update_scheduling_preferences(self, preferences: Dict[str, float]) -> None:
+        if not isinstance(preferences, dict):
+            return
+        priority = preferences.get('priority_bias')
+        if priority is not None:
+            try:
+                priority_val = float(priority)
+            except (TypeError, ValueError):
+                priority_val = None
+            else:
+                self.scheduling_preferences['priority_bias'] = min(max(priority_val, 0.0), 1.0)
+        deadline = preferences.get('deadline_bias')
+        if deadline is not None:
+            try:
+                deadline_val = float(deadline)
+            except (TypeError, ValueError):
+                deadline_val = None
+            else:
+                self.scheduling_preferences['deadline_bias'] = min(max(deadline_val, 0.0), 1.0)
+        self._refresh_cost_weights()
+
+    def update_joint_tradeoff(self, joint_params: Optional[Dict[str, float]] = None) -> None:
+        if joint_params is None:
+            return
+        if isinstance(joint_params, dict):
+            value = joint_params.get('cache_migration_tradeoff')
+            if value is None:
+                value = joint_params.get('tradeoff')
+        else:
+            value = joint_params
+        if value is None:
+            return
+        try:
+            tradeoff_val = float(value)
+        except (TypeError, ValueError):
+            return
+        self.tradeoff_bias = min(max(tradeoff_val, 0.0), 1.0)
+        self._refresh_cost_weights()
 
     def _eval_local(self, task: Task, vid: str, states: Dict) -> Optional[ProcessingOption]:
         st = states.get(vid)
@@ -341,7 +412,22 @@ class OffloadingDecisionMaker:
         self.decision_stats: Dict[ProcessingMode, int] = {m: 0 for m in ProcessingMode}
         self.total_decisions = 0
 
-    def make_offloading_decision(self, task: Task, node_states: Dict, node_positions: Dict[str, 'Position'], cache_states: Optional[Dict] = None) -> Optional[ProcessingOption]:
+    def make_offloading_decision(self, task: Task, node_states: Dict, node_positions: Dict[str, 'Position'], cache_states: Optional[Dict] = None, control_preferences: Optional[Dict[str, Dict[str, float]]] = None) -> Optional[ProcessingOption]:
+        if isinstance(control_preferences, dict):
+            scheduling_pref = control_preferences.get('scheduling')
+            if scheduling_pref:
+                self.evaluator.update_scheduling_preferences(scheduling_pref)
+            joint_pref = control_preferences.get('joint')
+            if joint_pref is not None:
+                self.evaluator.update_joint_tradeoff(joint_pref)
+        elif isinstance(cache_states, dict):
+            scheduling_pref = cache_states.get('scheduling_params')
+            if scheduling_pref:
+                self.evaluator.update_scheduling_preferences(scheduling_pref)
+            joint_pref = cache_states.get('joint_strategy_params')
+            if joint_pref is not None:
+                self.evaluator.update_joint_tradeoff(joint_pref)
+
         self.classifier.classify_task(task)
         cands = self.classifier.get_candidate_nodes(task, node_positions)
         options = self.evaluator.evaluate_all_modes(task, cands, node_states, node_positions, cache_states)

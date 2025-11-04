@@ -32,28 +32,28 @@ from .common_state_action import UnifiedStateActionSpace
 
 @dataclass
 class TD3Config:
-    """TD3算法配置 - 🎯 优化版v2.0（减少收敛后振荡）"""
+    """TD3算法配置 - 🎯 优化版v3.1（平衡收敛速度与稳定性）"""
     # 网络结构
     hidden_dim: int = 512  # 🔧 统一使用512，确保所有车辆数配置都有充足容量  
-    actor_lr: float = 1e-4  # 🔧 提高Actor学习率，增强策略更新力度
-    critic_lr: float = 8e-5  # 🔧 适度提高Critic学习率，追踪更精确
+    actor_lr: float = 1e-4  # 🔧 保持原学习率，确保充分学习
+    critic_lr: float = 8e-5  # 🔧 略微降低Critic学习率，平衡稳定性
     graph_embed_dim: int = 128  # 🔧 图编码器输出维度
     
     # 训练参数
-    batch_size: int = 256
+    batch_size: int = 256  # 🔧 保持原批次大小，灵活梯度更新
     buffer_size: int = 100000
-    tau: float = 0.005  # 🔧 回调至稳定值，平衡目标网络跟随速度
+    tau: float = 0.004  # 🔧 适中的tau，平衡跟踪速度和稳定性
     gamma: float = 0.99  
     
     # TD3特有参数
-    policy_delay: int = 2  # 🔧 缩短策略延迟，减少策略落后现象
-    target_noise: float = 0.05
-    noise_clip: float = 0.2
+    policy_delay: int = 2  # 🔧 保持2步延迟更新
+    target_noise: float = 0.04  # 🔧 适度目标策略噪声
+    noise_clip: float = 0.18  # 🔧 适度噪声裁剪
     
-    # 探索参数
-    exploration_noise: float = 0.15
-    noise_decay: float = 0.999  # 🔧 略快衰减，减轻早期激进探索
-    min_noise: float = 0.05  # 🔧 提高最小噪声，保持长期探索
+    # 探索参数 - 🔧 关键优化：平滑衰减曲线
+    exploration_noise: float = 0.15  # 🔧 保持初始探索噪声
+    noise_decay: float = 0.9992  # 🔧 温和加速衰减（800轮后~0.03）
+    min_noise: float = 0.03  # 🔧 适中最小噪声，保持必要探索
     
     # 🔧 新增：梯度裁剪防止过拟合
     gradient_clip_norm: float = 0.7  # 🔧 放宽梯度裁剪，允许适度更新
@@ -101,12 +101,12 @@ class TD3Config:
     per_beta_start: float = 0.4  # 🔧 回调IS起点，平衡样本权重
     per_beta_frames: int = 400000  # 🔧 放缓beta增长，稳定学习
 
-    # 后期稳定策略参数
-    late_stage_start_updates: int = 90000  # 🔧 约等于800轮更新步
-    late_stage_tau: float = 0.003
-    late_stage_policy_delay: int = 3
-    late_stage_noise_floor: float = 0.03
-    td_error_clip: float = 4.0
+    # 后期稳定策略参数 - 🔧 渐进式稳定
+    late_stage_start_updates: int = 70000  # 🔧 约580轮触发，适度延后
+    late_stage_tau: float = 0.003  # 🔧 适度减慢目标网络更新
+    late_stage_policy_delay: int = 3  # 🔧 延长策略更新间隔
+    late_stage_noise_floor: float = 0.025  # 🔧 保持适度探索
+    td_error_clip: float = 4.0  # 🔧 适度TD误差裁剪
     
     # 训练频率
     update_freq: int = 1
@@ -928,25 +928,41 @@ class TD3Agent:
         # 当前Q值
         current_q1, current_q2 = self.critic(states, actions)
         
-        # Critic损失 (两个Q网络的损失之和)
-        # TD误差
-        td_errors = (current_q1 - target_q)
-        # 加权MSE损失
-        critic_loss = (weights * td_errors.pow(2)).mean() + (weights * (current_q2 - target_q).pow(2)).mean()
+        # 🔧 计算TD误差（保持梯度用于反向传播）
+        td_error_q1 = current_q1 - target_q
+        td_error_q2 = current_q2 - target_q
+        
+        # 🔧 Huber Loss风格的误差裁剪（减少outliers影响，同时保持梯度）
+        if self.config.td_error_clip is not None:
+            # 对于|error| > clip的部分，使用线性损失而非平方损失
+            clip = self.config.td_error_clip
+            abs_error_q1 = td_error_q1.abs()
+            abs_error_q2 = td_error_q2.abs()
+            
+            # Huber loss: 0.5*x^2 if |x|<clip else clip*(|x|-0.5*clip)
+            huber_q1 = torch.where(abs_error_q1 <= clip,
+                                   0.5 * td_error_q1.pow(2),
+                                   clip * (abs_error_q1 - 0.5 * clip))
+            huber_q2 = torch.where(abs_error_q2 <= clip,
+                                   0.5 * td_error_q2.pow(2),
+                                   clip * (abs_error_q2 - 0.5 * clip))
+            
+            critic_loss = (weights * huber_q1).mean() + (weights * huber_q2).mean()
+        else:
+            # 标准MSE损失
+            critic_loss = (weights * td_error_q1.pow(2)).mean() + (weights * td_error_q2.pow(2)).mean()
         
         # 更新Critic
         self.critic_optimizer.zero_grad()
         critic_loss.backward()
-        # TD误差裁剪，防止极端值主导PER
-        if self.config.td_error_clip is not None:
-            td_errors = td_errors.clamp(-self.config.td_error_clip, self.config.td_error_clip)
-        # 🔧 使用配置的梯度裁剪参数
+        # 🔧 梯度裁剪
         if self.config.use_gradient_clip:
             torch.nn.utils.clip_grad_norm_(self.critic.parameters(), self.config.gradient_clip_norm)
         self.critic_optimizer.step()
         
         self.critic_losses.append(critic_loss.item())
-        return critic_loss.item(), td_errors.abs().squeeze()
+        # 返回TD误差用于PER优先级更新（detach后返回，避免影响梯度）
+        return critic_loss.item(), td_error_q1.detach().abs().squeeze()
     
     def _update_actor(self, states: torch.Tensor) -> float:
         """更新Actor网络"""

@@ -64,12 +64,27 @@ class CAMTD3Environment(TD3Environment):
     # ------------------------------------------------------------------ #
 
     def _extract_metric_distributions(self, state: np.ndarray) -> Dict[str, np.ndarray]:
-        """根据状态构造启发式分布。"""
-        vehicle_slice = state[:self.num_vehicles * 5].reshape(self.num_vehicles, 5)
-        rsu_offset = self.num_vehicles * 5
-        rsu_slice = state[rsu_offset:rsu_offset + self.num_rsus * 5].reshape(self.num_rsus, 5)
-        uav_offset = rsu_offset + self.num_rsus * 5
-        uav_slice = state[uav_offset:uav_offset + self.num_uavs * 5].reshape(self.num_uavs, 5)
+        """
+        根据状态构造启发式分布。
+        
+        状态结构: [vehicle×5] + [rsu×5] + [uav×5] + [global_state]
+        注意：必须正确计算偏移量，避免提取到global_state
+        """
+        # Vehicle状态 (12×5 = 60维)
+        vehicle_end = self.num_vehicles * 5
+        vehicle_slice = state[:vehicle_end].reshape(self.num_vehicles, 5)
+        
+        # RSU状态 (4×5 = 20维)
+        rsu_start = vehicle_end
+        rsu_end = rsu_start + self.num_rsus * 5
+        rsu_slice = state[rsu_start:rsu_end].reshape(self.num_rsus, 5)
+        
+        # UAV状态 (2×5 = 10维)
+        uav_start = rsu_end
+        uav_end = uav_start + self.num_uavs * 5
+        # ✅ 修复：确保不会越界到global_state
+        uav_end = min(uav_end, len(state))
+        uav_slice = state[uav_start:uav_end].reshape(-1, 5) if (uav_end - uav_start) >= 5 else state[uav_start:uav_end].reshape(self.num_uavs, 5)
 
         vehicle_queue = vehicle_slice[:, 3] if vehicle_slice.size else np.array([0.5])
         vehicle_energy = vehicle_slice[:, 4] if vehicle_slice.size else np.array([0.5])

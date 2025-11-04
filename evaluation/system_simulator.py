@@ -396,6 +396,11 @@ class CompleteSystemSimulator:
         self.task_counter = 0
         self.stats = self._fresh_stats_dict()
         self.active_tasks = []
+        self._scheduling_params = {
+            'priority_bias': 0.5,
+            'deadline_bias': 0.5,
+            'reorder_window': 3,
+        }
         self._last_app_name = 'unknown'
 
         # 閲嶇疆杞﹁締/鑺傜偣鐘舵€?
@@ -420,6 +425,35 @@ class CompleteSystemSimulator:
             self._build_mm1_trackers()
             self._reset_mm1_step_buffers()
             self._mm1_last_prediction_step = -self.mm1_prediction_interval
+
+    def _update_scheduling_params(self, params: Optional[Dict[str, float]]) -> None:
+        """??????????????????????"""
+        if not isinstance(params, dict):
+            return
+        bias = params.get('priority_bias')
+        if bias is not None:
+            try:
+                bias_val = float(bias)
+            except (TypeError, ValueError):
+                bias_val = None
+            else:
+                self._scheduling_params['priority_bias'] = float(np.clip(bias_val, 0.0, 1.0))
+        deadline_bias = params.get('deadline_bias')
+        if deadline_bias is not None:
+            try:
+                d_val = float(deadline_bias)
+            except (TypeError, ValueError):
+                d_val = None
+            else:
+                self._scheduling_params['deadline_bias'] = float(np.clip(d_val, 0.0, 1.0))
+        window = params.get('reorder_window')
+        if window is not None:
+            try:
+                window_val = int(round(float(window)))
+            except (TypeError, ValueError):
+                window_val = None
+            else:
+                self._scheduling_params['reorder_window'] = max(1, min(32, window_val))
 
     def _init_mm1_predictor(self):
         """Initialize M/M/1 queue performance predictor settings and buffers."""
@@ -2022,9 +2056,59 @@ class CompleteSystemSimulator:
 
         queue = node.setdefault('computation_queue', [])
         queue.append(task_entry)
+        self._apply_queue_scheduling(node, node_type)
         self._append_active_task(task_entry)
         self._record_mm1_arrival(node_type, node_idx)
         return True
+
+    def _apply_queue_scheduling(self, node: Dict, node_type: str) -> None:
+        """??????????????????"""
+        if node_type not in ('RSU', 'UAV'):
+            return
+        queue = node.get('computation_queue')
+        if not isinstance(queue, list) or len(queue) <= 1:
+            return
+        params = getattr(self, '_scheduling_params', None)
+        if not params:
+            return
+        priority_bias = float(np.clip(params.get('priority_bias', 0.5), 0.0, 1.0))
+        deadline_bias = float(np.clip(params.get('deadline_bias', 0.5), 0.0, 1.0))
+        window = int(max(1, params.get('reorder_window', 1)))
+        window = min(window, len(queue))
+        if window <= 1:
+            return
+        current_time = getattr(self, 'current_time', 0.0)
+        scored: List[Tuple[float, float, int]] = []
+        for idx, task in enumerate(queue):
+            try:
+                priority_raw = float(task.get('priority', 4.0))
+            except (TypeError, ValueError):
+                priority_raw = 4.0
+            priority_score = 1.0 - float(np.clip((priority_raw - 1.0) / 3.0, 0.0, 1.0))
+            deadline_value = float(task.get('deadline', current_time))
+            slack = deadline_value - current_time
+            slack_norm = float(np.clip(slack / max(self.time_slot * 8.0, 1e-6), 0.0, 1.0))
+            deadline_score = 1.0 - slack_norm
+            wait = current_time - float(task.get('queued_at', current_time))
+            wait_norm = float(np.clip(wait / max(self.time_slot * 8.0, 1e-6), 0.0, 1.0))
+            weight_delay = priority_bias
+            weight_deadline = deadline_bias
+            weight_wait = max(0.0, 1.0 - (weight_delay + weight_deadline))
+            total = weight_delay + weight_deadline + weight_wait
+            if total <= 0.0:
+                weight_delay, weight_deadline, weight_wait = 0.4, 0.4, 0.2
+                total = 1.0
+            weight_delay /= total
+            weight_deadline /= total
+            weight_wait /= total
+            score = (weight_delay * priority_score) + (weight_deadline * deadline_score) + (weight_wait * wait_norm)
+            scored.append((score, -wait, idx))
+        scored.sort(key=lambda item: (item[0], item[1]), reverse=True)
+        selected_indices = [entry[2] for entry in scored[:window]]
+        selected_set = set(selected_indices)
+        reordered = [queue[idx] for idx in selected_indices]
+        remainder = [queue[i] for i in range(len(queue)) if i not in selected_set]
+        queue[:] = reordered + remainder
 
     def _handle_local_processing(self, vehicle: Dict, task: Dict, step_summary: Dict):
         """
@@ -2336,6 +2420,7 @@ class CompleteSystemSimulator:
                 'deadline_relax_factor': task.get('deadline_relax_factor', 1.0)
             }
             best_new_node['computation_queue'].append(migrated_task)
+            self._apply_queue_scheduling(best_new_node, best_node_type)
             target_queue_after = len(best_new_node['computation_queue'])
 
             handover_count += 1
@@ -2391,6 +2476,7 @@ class CompleteSystemSimulator:
         Execute a single simulation step and return cumulative statistics.
         """
         actions = actions or {}
+        self._update_scheduling_params(actions.get('scheduling_params'))
 
         # 推进仿真时间
         advance_simulation_time()
