@@ -14,6 +14,12 @@ from .unified_reward_calculator import (
     calculate_enhanced_reward,  # 向后兼容
     calculate_sac_reward  # 向后兼容
 )
+from .common import (
+    dbm_to_watts,
+    watts_to_dbm,
+    linear_to_db,
+    calculate_distance
+)
 
 # 添加缺失的工具函数
 import numpy as np
@@ -173,4 +179,5 @@ __all__ = ['Logger', 'Metrics', 'MovingAverage', 'PerformanceTracker', 'DataProc
            'SystemMetricsValidator', 'EnergyValidator', 'validate_energy_consumption', 
            'calculate_unified_reward', 'calculate_simple_reward', 'calculate_enhanced_reward', 'calculate_sac_reward',
            'generate_poisson_arrivals', 'db_to_linear', 'sigmoid', 'calculate_3d_distance', 'ExponentialMovingAverage',
-           'calculate_zipf_probability', 'sample_zipf_content_id', 'sample_pareto', 'sample_heavy_tailed_task_size']
+           'calculate_zipf_probability', 'sample_zipf_content_id', 'sample_pareto', 'sample_heavy_tailed_task_size',
+           'dbm_to_watts', 'watts_to_dbm', 'linear_to_db', 'calculate_distance']

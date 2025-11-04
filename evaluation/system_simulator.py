@@ -85,11 +85,11 @@ class CompleteSystemSimulator:
         # Simulation parameters: time, time slot, task arrival rate
         if self.sys_config is not None and not self.config.get('override_topology', False):
             self.simulation_time = getattr(self.sys_config, 'simulation_time', 1000)
-            self.time_slot = getattr(self.sys_config.network, 'time_slot_duration', 0.2)  # 🚀 适应高负载时隙
+            self.time_slot = getattr(self.sys_config.network, 'time_slot_duration', 0.1)  # 🚀 适应高负载时隙
             self.task_arrival_rate = getattr(self.sys_config.task, 'arrival_rate', 2.5)  # 🚀 高负载到达率
         else:
             self.simulation_time = self.config.get('simulation_time', 1000)
-            self.time_slot = self.config.get('time_slot', 0.2)  # 🚀 高负载默认时隙
+            self.time_slot = self.config.get('time_slot', 0.1)  # 🚀 高负载默认时隙
             self.task_arrival_rate = self.config.get('task_arrival_rate', 2.5)  # 🚀 高负载默认到达率
         
         # 子配置对象引用
@@ -164,7 +164,7 @@ class CompleteSystemSimulator:
             'uav_base_service': 3,
             'uav_max_service': 6,
             'uav_work_capacity': 1.7,
-            'drop_log_interval': 200,
+            'drop_log_interval': 400,
             'task_report_interval': 100,
             'task_compute_density': 400,
         }
@@ -1618,7 +1618,7 @@ class CompleteSystemSimulator:
                 })
                 by_type = drop_stats.setdefault('by_type', {})
                 by_scenario = drop_stats.setdefault('by_scenario', {})
-                log_interval = self.stats_config.drop_log_interval if getattr(self, 'stats_config', None) else self.config.get('drop_log_interval', 200)
+                log_interval = self.stats_config.drop_log_interval if getattr(self, 'stats_config', None) else self.config.get('drop_log_interval', 400)
                 log_interval = max(1, int(log_interval))
                 for task in queue:
                     if self.current_time > task.get('deadline', float('inf')):

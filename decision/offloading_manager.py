@@ -6,6 +6,7 @@ from enum import Enum
 from typing import Dict, List, Optional
 
 from config import config
+from utils import dbm_to_watts
 from models.data_structures import Task, TaskType
 
 
@@ -66,7 +67,7 @@ class TaskClassifier:
             denom = max(data_size * 8.0, 1.0)
             compute_density = compute_cycles / denom
         system_load = self._estimate_system_load_hint()
-        slot_duration = getattr(config.network, 'time_slot_duration', 0.2)
+        slot_duration = getattr(config.network, 'time_slot_duration', 0.1)
         type_value = config.get_task_type(
             max_delay_slots,
             data_size=data_size,
@@ -167,7 +168,8 @@ class ProcessingModeEvaluator:
     def _slack_prob(self, delay: float, slots: int) -> float:
         slot = config.network.time_slot_duration
         slack = slots * slot - delay
-        if slack >= 0.2 * slot:
+        # Require at least ~40 ms of slack (previous threshold at 0.2 s slots)
+        if slack >= max(0.04, 0.2 * slot):
             return 0.9
         if slack >= 0:
             return 0.7
@@ -222,7 +224,12 @@ class ProcessingModeEvaluator:
             proc = task.compute_cycles / max(1e-9, st.cpu_frequency)
             wait = self._wait(st)
             total = up + wait + proc + down
-            energy = self._tx_energy(task.data_size + task.result_size, up + down)
+            comm_energy = self._tx_energy(task.data_size + task.result_size, up + down)
+            rsu_dynamic_power = config.compute.rsu_kappa2 * (st.cpu_frequency ** 3)
+            rsu_dynamic_energy = rsu_dynamic_power * proc
+            slot_duration = config.network.time_slot_duration
+            rsu_static_energy = config.compute.rsu_static_power * max(proc, slot_duration)
+            energy = comm_energy + rsu_dynamic_energy + rsu_static_energy
             out.append(ProcessingOption(
                 mode=ProcessingMode.RSU_OFFLOAD_NO_CACHE,
                 target_node_id=rid,
@@ -247,7 +254,8 @@ class ProcessingModeEvaluator:
             proc = task.compute_cycles / max(1e-9, tgt.cpu_frequency)
             wait = self._wait(tgt)
             total = mig + wait + proc
-            energy = config.communication.rsu_tx_power * mig
+            rsu_tx_power_w = dbm_to_watts(config.communication.rsu_tx_power)
+            energy = (rsu_tx_power_w + config.communication.circuit_power) * mig
             out.append(ProcessingOption(
                 mode=ProcessingMode.RSU_MIGRATION,
                 target_node_id=target,
@@ -272,7 +280,12 @@ class ProcessingModeEvaluator:
         proc = task.compute_cycles / max(1e-9, eff)
         wait = self._wait(uv)
         total = up + wait + proc + down
-        energy = self._tx_energy(task.data_size + task.result_size, up + down) + config.compute.uav_kappa3 * (uv.cpu_frequency ** 2) * proc
+        comm_energy = self._tx_energy(task.data_size + task.result_size, up + down)
+        dynamic_energy = config.compute.uav_kappa3 * (eff ** 2) * proc
+        slot_duration = config.network.time_slot_duration
+        static_energy = config.compute.uav_static_power * max(proc, slot_duration)
+        hover_energy = config.compute.uav_hover_power * total
+        energy = comm_energy + dynamic_energy + static_energy + hover_energy
         return ProcessingOption(
             mode=ProcessingMode.UAV_OFFLOAD,
             target_node_id=uid,
@@ -296,7 +309,8 @@ class ProcessingModeEvaluator:
         return bits / max(1e-9, rate) + self.communication_overhead
 
     def _tx_energy(self, bits: float, t: float) -> float:
-        return (config.communication.vehicle_tx_power + config.communication.circuit_power) * max(0.0, t)
+        tx_power_watts = dbm_to_watts(config.communication.vehicle_tx_power)
+        return (tx_power_watts + config.communication.circuit_power) * max(0.0, t)
 
     def _energy_local(self, task: Task, st) -> float:
         proc = task.compute_cycles / max(1e-9, (st.cpu_frequency * config.compute.parallel_efficiency))

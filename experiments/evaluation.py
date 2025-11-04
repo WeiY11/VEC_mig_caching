@@ -6,7 +6,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 import pandas as pd
 import time
-from typing import Dict, List, Tuple, Optional
+from typing import Dict, List, Tuple, Optional, Any
 from dataclasses import dataclass
 import json
 
@@ -117,9 +117,11 @@ class PerformanceMetrics:
     def __init__(self):
         self.metrics_history = []
         self.baseline_results = {}
+        self.default_comm_energy_ratio = 0.3
     
     def calculate_system_metrics(self, vehicles, rsus, uavs, cache_managers, 
-                               migration_manager, simulation_time) -> ExperimentResult:
+                               migration_manager, simulation_time,
+                               system_simulator: Optional[Any] = None) -> ExperimentResult:
         """计算系统综合性能指标"""
         
         # 1. 任务时延指标
@@ -149,19 +151,20 @@ class PerformanceMetrics:
         
         # 2. 能耗指标
         total_computation_energy = 0.0
-        total_communication_energy = 0.0
         
         for vehicle in vehicles:
-            total_computation_energy += sum(vehicle.energy_consumption_history)
+            total_computation_energy += sum(getattr(vehicle, 'energy_consumption_history', []))
         
         for rsu in rsus:
-            total_computation_energy += rsu.state.total_energy
+            total_computation_energy += getattr(rsu.state, 'total_energy', 0.0)
         
         for uav in uavs:
-            total_computation_energy += uav.state.total_energy
+            total_computation_energy += getattr(uav.state, 'total_energy', 0.0)
         
-        # 简化的通信能耗计算
-        total_communication_energy = total_computation_energy * 0.3
+        total_communication_energy = self._estimate_communication_energy(
+            vehicles, rsus, uavs, system_simulator)
+        if total_communication_energy <= 0 and total_computation_energy > 0:
+            total_communication_energy = total_computation_energy * self.default_comm_energy_ratio
         
         total_energy = total_computation_energy + total_communication_energy
         
@@ -225,6 +228,69 @@ class PerformanceMetrics:
             migration_energy=migration_energy
         )
     
+    def _estimate_communication_energy(self, vehicles, rsus, uavs, simulator: Optional[Any]) -> float:
+        """从节点或仿真器中提取通信能耗，若无则返回0"""
+        attr_candidates = (
+            'communication_energy_history',
+            'comm_energy_history',
+            'communication_energy',
+            'total_communication_energy'
+        )
+        total = 0.0
+        for node in list(vehicles) + list(rsus) + list(uavs):
+            total += self._extract_energy_value(node, attr_candidates)
+            state = getattr(node, 'state', None)
+            if state is not None:
+                total += self._extract_energy_value(state, attr_candidates)
+        if total > 0:
+            return total
+        
+        if simulator is not None:
+            total = self._extract_energy_value(simulator, attr_candidates)
+            if total > 0:
+                return total
+            metrics_history = getattr(simulator, 'metrics_history', None)
+            if metrics_history:
+                latest = metrics_history[-1]
+                if isinstance(latest, dict):
+                    candidate = self._normalize_energy_value(
+                        latest.get('total_communication_energy', 0.0))
+                    if candidate > 0:
+                        return candidate
+        return 0.0
+    
+    def _extract_energy_value(self, obj: Any, attr_candidates: Tuple[str, ...]) -> float:
+        if obj is None:
+            return 0.0
+        for attr in attr_candidates:
+            if hasattr(obj, attr):
+                value = getattr(obj, attr)
+                normalized = self._normalize_energy_value(value)
+                if normalized > 0:
+                    return normalized
+        return 0.0
+    
+    def _normalize_energy_value(self, value: Any) -> float:
+        if value is None:
+            return 0.0
+        if isinstance(value, (int, float)):
+            return float(value)
+        if isinstance(value, np.ndarray):
+            return float(np.sum(value))
+        if isinstance(value, (list, tuple, set)):
+            try:
+                return float(sum(value))
+            except TypeError:
+                return 0.0
+        if isinstance(value, dict):
+            for key in ('total', 'sum', 'total_energy', 'total_communication_energy'):
+                if key in value and isinstance(value[key], (int, float)):
+                    return float(value[key])
+            numeric_values = [v for v in value.values() if isinstance(v, (int, float))]
+            if numeric_values:
+                return float(sum(numeric_values))
+        return 0.0
+    
     def run_baseline_comparison(self, system_simulator, num_steps=100) -> Dict[str, ExperimentResult]:
         """运行基线算法对比实验"""
         baseline_methods = {
@@ -259,7 +325,8 @@ class PerformanceMetrics:
                 system_simulator.uavs,
                 system_simulator.cache_managers,
                 system_simulator.migration_manager,
-                time.time() - start_time
+                time.time() - start_time,
+                system_simulator
             )
             result.algorithm_name = method_name
             results[method_name] = result
@@ -502,7 +569,8 @@ class ExperimentRunner:
             self.simulator.uavs, 
             self.simulator.cache_managers,
             self.simulator.migration_manager,
-            num_steps * config.network.time_slot_duration
+            num_steps * config.network.time_slot_duration,
+            self.simulator
         )
         
         # 2. 运行基线算法对比

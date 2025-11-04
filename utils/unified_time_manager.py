@@ -15,7 +15,7 @@ class UnifiedTimeManager:
         self.simulation_time_elapsed = 0.0
         self.time_scale = 1.0  # 时间加速比例
         self.current_step = 0
-        self.time_slot_duration = 0.2  # 每个时隙0.2秒
+        self.time_slot_duration = 0.1  # 每个时隙0.1秒
         
     def reset(self):
         """重置时间管理器"""

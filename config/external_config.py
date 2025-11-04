@@ -12,15 +12,15 @@ from typing import Dict, Any
 # 默认配置参数
 DEFAULT_CONFIG = {
     "time_settings": {
-        "time_slot_duration": 0.2,  # seconds - 优化的时隙长度
+        "time_slot_duration": 0.1,  # seconds - 100 ms slot length
         "simulation_time": 1000     # seconds
     },
     
     "task_generation": {
-        "arrival_rate": 1.5,        # tasks/second - 调整为与0.2s时隙匹配
+        "arrival_rate": 1.5,        # tasks/second - tuned for 100 ms slots (0.15 tasks/slot)
         "data_size_range": [0.5e6/8, 15e6/8],  # 🔧 修复: 0.5-15 Mbits = 0.0625-1.875 MB
         "compute_density": 120,     # cycles/bit - 对应表IV基准
-        "deadline_range": [0.2, 0.8],  # seconds - 对应1-4个时隙
+        "deadline_range": [0.2, 0.8],  # seconds - corresponds to 2-8 slots @100 ms
         "output_ratio": 0.1         # 输出大小比例
     },
     

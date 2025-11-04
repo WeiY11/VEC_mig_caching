@@ -85,11 +85,12 @@ class TwoStagePlanner:
         dist = simulator.calculate_distance(vehicle_pos, uav['position'])
         return (dist <= cov), dist
 
-    def _estimate_queue_wait(self, queue_len: int, node_type: str) -> float:
-        # Rough mapping of queue length to expected waiting time (seconds)
-        # tuned to simulator time_slot ~0.2s and typical service capacities.
-        base_slots = 0.15 if node_type == 'RSU' else 0.22
-        return self._clip(queue_len * base_slots, 0.0, 3.0)
+    def _estimate_queue_wait(self, queue_len: int, node_type: str, slot: float) -> float:
+        # Rough mapping of queue length to expected waiting time (seconds).
+        # Scale with simulator slot to preserve behaviour after 0.1 s change.
+        slot = max(0.05, float(slot))
+        base_per_task = 0.75 * slot if node_type == 'RSU' else 1.1 * slot
+        return self._clip(queue_len * base_per_task, 0.0, 3.0)
 
     def _estimate_compute_time(self, comp_req_mips: float, node_type: str) -> float:
         # Convert MIPS-equivalent requirement to seconds using nominal capacities
@@ -132,7 +133,7 @@ class TwoStagePlanner:
                 cache_hit = bool(content_id and content_id in rsu.get('cache', {}))
                 queue_len = len(rsu.get('computation_queue', []))
                 up_t, up_e = self._estimate_tx(data_bytes, dist, 'rsu')
-                wait_t = 0.0 if cache_hit else self._estimate_queue_wait(queue_len, 'RSU')
+                wait_t = 0.0 if cache_hit else self._estimate_queue_wait(queue_len, 'RSU', simulator.time_slot)
                 comp_t = 0.0 if cache_hit else self._estimate_compute_time(comp_req, 'RSU')
                 total_delay = up_t + wait_t + comp_t
                 # Scoring: prefer cache hit and shorter delay; lightly penalize queue
@@ -147,7 +148,7 @@ class TwoStagePlanner:
                     continue
                 queue_len = len(uav.get('computation_queue', []))
                 up_t, up_e = self._estimate_tx(data_bytes, dist, 'uav')
-                wait_t = self._estimate_queue_wait(queue_len, 'UAV')
+                wait_t = self._estimate_queue_wait(queue_len, 'UAV', simulator.time_slot)
                 comp_t = self._estimate_compute_time(comp_req, 'UAV')
                 total_delay = up_t + wait_t + comp_t
                 score = total_delay + 0.04 * queue_len  # slightly harsher queue penalty

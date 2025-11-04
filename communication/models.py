@@ -177,7 +177,7 @@ class WirelessCommunicationModel:
         """
         计算信噪干扰比 - 3GPP标准式(16)
         SINR = (P_tx * h) / (I_ext + N_0 * B)
-        其中 N_0 = -174 dBm/Hz (3GPP标准热噪声密度)
+        其中 P_tx 以瓦特计，N_0 = -174 dBm/Hz (3GPP标准热噪声密度)
         """
         # 检查输入参数的有效性
         if tx_power <= 0 or channel_gain <= 0 or bandwidth <= 0:
@@ -250,6 +250,7 @@ class WirelessCommunicationModel:
             'channel_state': channel_state,
             'sinr_linear': sinr_linear,
             'sinr_db': linear_to_db(sinr_linear),
+            'tx_power_watts': tx_power,
             'data_rate': data_rate,
             'transmission_delay': transmission_delay,
             'propagation_delay': propagation_delay,
@@ -275,13 +276,16 @@ class ComputeEnergyModel:
         
         # RSU能耗参数 - 论文式(20)-(21)
         self.rsu_kappa2 = config.compute.rsu_kappa2
+        self.rsu_static_power = getattr(config.compute, 'rsu_static_power', 0.0)
         
         # UAV能耗参数 - 论文式(25)-(30)
         self.uav_kappa3 = config.compute.uav_kappa3
+        self.uav_static_power = getattr(config.compute, 'uav_static_power', 0.0)
         self.uav_hover_power = config.compute.uav_hover_power
         
         # 并行处理效率
         self.parallel_efficiency = config.compute.parallel_efficiency
+        self.time_slot_duration = getattr(config.network, 'time_slot_duration', 0.1)
     
     def calculate_vehicle_compute_energy(self, task: Task, cpu_frequency: float, 
                                        processing_time: float, time_slot_duration: float) -> Dict[str, float]:
@@ -328,6 +332,10 @@ class ComputeEnergyModel:
         if not is_active:
             return {
                 'processing_power': 0.0,
+                'processing_time': 0.0,
+                'dynamic_energy': 0.0,
+                'static_energy': 0.0,
+                'accounted_time': 0.0,
                 'compute_energy': 0.0,
                 'total_energy': 0.0
             }
@@ -336,12 +344,19 @@ class ComputeEnergyModel:
         processing_power = self.rsu_kappa2 * (cpu_frequency ** 3)
         
         # 计算能耗
-        compute_energy = processing_power * processing_time
+        dynamic_energy = processing_power * processing_time
+        accounted_time = max(processing_time, self.time_slot_duration)
+        static_energy = self.rsu_static_power * accounted_time
+        total_energy = dynamic_energy + static_energy
         
         return {
             'processing_power': processing_power,
-            'compute_energy': compute_energy,
-            'total_energy': compute_energy
+            'processing_time': processing_time,
+            'dynamic_energy': dynamic_energy,
+            'static_energy': static_energy,
+            'accounted_time': accounted_time,
+            'compute_energy': total_energy,
+            'total_energy': total_energy
         }
     
     def calculate_uav_compute_energy(self, task: Task, cpu_frequency: float, 
@@ -357,13 +372,20 @@ class ComputeEnergyModel:
         effective_frequency = cpu_frequency * battery_factor
         
         # UAV计算能耗 - 论文式(28)
-        compute_energy = self.uav_kappa3 * (effective_frequency ** 2) * processing_time
+        dynamic_energy = self.uav_kappa3 * (effective_frequency ** 2) * processing_time
+        accounted_time = max(processing_time, self.time_slot_duration)
+        static_energy = self.uav_static_power * accounted_time
+        total_energy = dynamic_energy + static_energy
         
         return {
             'effective_frequency': effective_frequency,
             'battery_factor': battery_factor,
-            'compute_energy': compute_energy,
-            'total_energy': compute_energy
+            'processing_time': processing_time,
+            'dynamic_energy': dynamic_energy,
+            'static_energy': static_energy,
+            'accounted_time': accounted_time,
+            'compute_energy': total_energy,
+            'total_energy': total_energy
         }
     
     def calculate_uav_hover_energy(self, time_duration: float) -> Dict[str, float]:
@@ -391,10 +413,13 @@ class CommunicationEnergyModel:
     """
     
     def __init__(self):
-        # 传输功率参数
-        self.vehicle_tx_power = config.communication.vehicle_tx_power
-        self.rsu_tx_power = config.communication.rsu_tx_power
-        self.uav_tx_power = config.communication.uav_tx_power
+        # 传输功率参数（配置为 dBm，这里统一转换为瓦特以便计算能耗）
+        self.vehicle_tx_power_dbm = config.communication.vehicle_tx_power
+        self.rsu_tx_power_dbm = config.communication.rsu_tx_power
+        self.uav_tx_power_dbm = config.communication.uav_tx_power
+        self.vehicle_tx_power = dbm_to_watts(self.vehicle_tx_power_dbm)
+        self.rsu_tx_power = dbm_to_watts(self.rsu_tx_power_dbm)
+        self.uav_tx_power = dbm_to_watts(self.uav_tx_power_dbm)
         
         # 电路功率
         self.circuit_power = config.communication.circuit_power
@@ -417,18 +442,22 @@ class CommunicationEnergyModel:
         Returns:
             传输能耗详细信息
         """
-        # 获取发射功率
+        # 获取发射功率（默认配置单位为 dBm，这里返回瓦特）
         if node_type == "vehicle":
-            tx_power = self.vehicle_tx_power
+            tx_power_dbm = self.vehicle_tx_power_dbm
+            tx_power_watts = self.vehicle_tx_power
         elif node_type == "rsu":
-            tx_power = self.rsu_tx_power
+            tx_power_dbm = self.rsu_tx_power_dbm
+            tx_power_watts = self.rsu_tx_power
         elif node_type == "uav":
-            tx_power = self.uav_tx_power
+            tx_power_dbm = self.uav_tx_power_dbm
+            tx_power_watts = self.uav_tx_power
         else:
-            tx_power = self.vehicle_tx_power  # 默认值
+            tx_power_dbm = self.vehicle_tx_power_dbm
+            tx_power_watts = self.vehicle_tx_power  # 默认值
         
         # 传输能耗
-        transmission_energy = tx_power * transmission_time
+        transmission_energy = tx_power_watts * transmission_time
         
         # 电路能耗
         if include_circuit:
@@ -439,7 +468,8 @@ class CommunicationEnergyModel:
         total_energy = transmission_energy + circuit_energy
         
         return {
-            'tx_power': tx_power,
+            'tx_power': tx_power_watts,
+            'tx_power_dbm': tx_power_dbm,
             'transmission_time': transmission_time,
             'transmission_energy': transmission_energy,
             'circuit_energy': circuit_energy,
@@ -455,14 +485,18 @@ class CommunicationEnergyModel:
         Returns:
             接收能耗详细信息
         """
-        # 获取对应的接收功率
+        # 获取对应的接收功率（默认配置是 dBm，这里使用瓦特）
         if node_type == "vehicle":
+            tx_power_dbm = self.vehicle_tx_power_dbm
             base_power = self.vehicle_tx_power
         elif node_type == "rsu":
+            tx_power_dbm = self.rsu_tx_power_dbm
             base_power = self.rsu_tx_power
         elif node_type == "uav":
+            tx_power_dbm = self.uav_tx_power_dbm
             base_power = self.uav_tx_power
         else:
+            tx_power_dbm = self.vehicle_tx_power_dbm
             base_power = self.vehicle_tx_power
         
         rx_power = base_power * self.rx_power_factor
@@ -475,6 +509,7 @@ class CommunicationEnergyModel:
         
         return {
             'rx_power': rx_power,
+            'rx_power_dbm': tx_power_dbm + linear_to_db(self.rx_power_factor),
             'reception_time': reception_time,
             'reception_energy': reception_energy,
             'circuit_energy': circuit_energy,
@@ -497,22 +532,22 @@ class CommunicationEnergyModel:
             总通信能耗信息
         """
         # 上传能耗 (数据上传)
-        upload_time = link_info.get('upload_delay', 0.0)
+        upload_time = link_info.get('upload_transmission_time', link_info.get('upload_delay', 0.0))
         upload_tx_energy = self.calculate_transmission_energy(
             task.data_size, upload_time, tx_node_type)
         upload_rx_energy = self.calculate_reception_energy(
             task.data_size, upload_time, rx_node_type)
         
         # 下载能耗 (结果下载)
-        download_time = link_info.get('download_delay', 0.0)
+        download_time = link_info.get('download_transmission_time', link_info.get('download_delay', 0.0))
         download_tx_energy = self.calculate_transmission_energy(
             task.result_size, download_time, rx_node_type)
         download_rx_energy = self.calculate_reception_energy(
             task.result_size, download_time, tx_node_type)
         
         # 总能耗
-        total_tx_energy = upload_tx_energy['total_energy'] + download_rx_energy['total_energy']
-        total_rx_energy = upload_rx_energy['total_energy'] + download_tx_energy['total_energy']
+        total_tx_energy = upload_tx_energy['total_energy'] + download_tx_energy['total_energy']
+        total_rx_energy = upload_rx_energy['total_energy'] + download_rx_energy['total_energy']
         total_energy = total_tx_energy + total_rx_energy
         
         return {
@@ -582,16 +617,22 @@ class IntegratedCommunicationComputeModel:
             # 远程处理 - 通信 + 计算
             
             # 1. 通信时延和能耗
+            vehicle_tx_power_watts = dbm_to_watts(config.communication.vehicle_tx_power)
             upload_delay, upload_details = self.comm_model.calculate_transmission_delay(
                 task.data_size, source_pos.distance_to(target_pos),
-                config.communication.vehicle_tx_power,
+                vehicle_tx_power_watts,
                 config.communication.total_bandwidth / 4,  # 分配带宽
                 source_pos, target_pos
             )
             
+            default_downlink_power_dbm = (config.communication.rsu_tx_power
+                                          if processing_mode == "rsu"
+                                          else config.communication.uav_tx_power)
+            download_tx_power_dbm = target_node_info.get('tx_power', default_downlink_power_dbm)
+            download_tx_power_watts = dbm_to_watts(download_tx_power_dbm)
             download_delay, download_details = self.comm_model.calculate_transmission_delay(
                 task.result_size, source_pos.distance_to(target_pos),
-                target_node_info.get('tx_power', config.communication.rsu_tx_power),
+                download_tx_power_watts,
                 config.communication.total_bandwidth / 4,
                 target_pos, source_pos
             )
@@ -599,7 +640,12 @@ class IntegratedCommunicationComputeModel:
             comm_delay = upload_delay + download_delay
             
             # 通信能耗
-            link_info = {'upload_delay': upload_delay, 'download_delay': download_delay}
+            link_info = {
+                'upload_delay': upload_delay,
+                'download_delay': download_delay,
+                'upload_transmission_time': upload_details.get('transmission_delay', upload_delay),
+                'download_transmission_time': download_details.get('transmission_delay', download_delay)
+            }
             comm_energy_info = self.comm_energy_model.calculate_communication_energy_total(
                 task, link_info, "vehicle", processing_mode)
             
@@ -618,7 +664,11 @@ class IntegratedCommunicationComputeModel:
                 # 添加悬停能耗
                 total_time = comm_delay + processing_time
                 hover_energy_info = self.compute_energy_model.calculate_uav_hover_energy(total_time)
-                compute_energy_info['total_energy'] += hover_energy_info['total_energy']
+                hover_energy = hover_energy_info['total_energy']
+                compute_energy_info['hover_energy'] = hover_energy
+                compute_energy_info['hover_details'] = hover_energy_info
+                compute_energy_info['total_energy'] += hover_energy
+                compute_energy_info['compute_energy'] = compute_energy_info.get('compute_energy', 0.0) + hover_energy
             
             # 汇总结果
             total_comm_energy = comm_energy_info['total_communication_energy']
