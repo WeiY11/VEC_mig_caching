@@ -939,20 +939,9 @@ class CompleteSystemSimulator:
         new_queue: List[Dict] = []
         current_time = getattr(self, 'current_time', 0.0)
         
-        # 🔧 修复：work_capacity也应该考虑CPU频率
-        # 高频CPU每个时间槽能处理更多工作
-        reference_rsu_freq = 15e9
-        reference_uav_freq = 12e9
-        if node_type == 'RSU':
-            actual_freq = getattr(self, 'rsu_cpu_freq', reference_rsu_freq)
-            freq_ratio = actual_freq / reference_rsu_freq
-        elif node_type == 'UAV':
-            actual_freq = getattr(self, 'uav_cpu_freq', reference_uav_freq)
-            freq_ratio = actual_freq / reference_uav_freq
-        else:
-            freq_ratio = 1.0
-        
-        work_capacity = self.time_slot * work_capacity_cfg * freq_ratio
+        # 🔧 修复v2：移除频率缩放，使用固定的work_capacity
+        # work_capacity_cfg已经是基于实际硬件校准的经验值
+        work_capacity = self.time_slot * work_capacity_cfg
 
         for idx, task in enumerate(queue):
             if current_time - task.get('queued_at', -1e9) < self.time_slot:
@@ -1544,23 +1533,18 @@ class CompleteSystemSimulator:
         """
         估计远程节点的工作量单位（供队列调度使用）
         
-        🔧 修复：使用实际CPU频率计算，而不是硬编码常量
+        🔧 修复v2：不再使用频率缩放，直接使用固定的base_divisor
+        原因：base_divisor是经验校准值，已经包含了硬件差异
         """
         requirement = float(task.get('computation_requirement', 1500.0))
         
-        # 使用实际CPU频率计算工作量
-        # base_divisor代表节点的计算能力，频率越高，divisor越大，work_units越小（执行更快）
-        reference_rsu_freq = 15e9  # RSU参考频率 15GHz
-        reference_uav_freq = 12e9  # UAV参考频率 12GHz
-        
+        # 使用固定的base_divisor（这些值是基于实际硬件校准的）
+        # RSU: 高性能边缘服务器，base_divisor较大
+        # UAV: 低功耗无人机芯片，base_divisor较小（执行更慢）
         if node_type == 'RSU':
-            actual_freq = getattr(self, 'rsu_cpu_freq', reference_rsu_freq)
-            # 基础divisor 1200，按频率比例缩放
-            base_divisor = 1200.0 * (actual_freq / reference_rsu_freq)
+            base_divisor = 1200.0  # RSU固定值
         else:  # UAV
-            actual_freq = getattr(self, 'uav_cpu_freq', reference_uav_freq)
-            # 基础divisor 1600，按频率比例缩放
-            base_divisor = 1600.0 * (actual_freq / reference_uav_freq)
+            base_divisor = 1600.0  # UAV固定值
         
         work_units = requirement / base_divisor
         return float(np.clip(work_units, 0.5, 12.0))
@@ -1587,19 +1571,14 @@ class CompleteSystemSimulator:
         """
         估计上传耗时与能耗
         
-        🔧 修复：使用实际带宽参数，而不是硬编码值
+        🔧 修复v2：使用固定的base_rate（基于实际硬件测量）
         """
-        # 🔧 使用实际带宽参数
-        # 参考带宽：20MHz
-        reference_bandwidth = 20e6
-        actual_bandwidth = getattr(self, 'bandwidth', reference_bandwidth)
-        
-        # 基础速率（bit/s）- 根据实际带宽按比例缩放
+        # 基础速率（bit/s）- 这些值是基于实际网络环境校准的
         if link == 'uav':
-            base_rate = 45e6 * (actual_bandwidth / reference_bandwidth)
+            base_rate = 45e6  # 45 Mbps - UAV链路（受限于移动性和功率）
             power_w = 0.12
         else:  # RSU
-            base_rate = 80e6 * (actual_bandwidth / reference_bandwidth)
+            base_rate = 80e6  # 80 Mbps - RSU链路（更稳定的固定链路）
             power_w = 0.18
 
         # 考虑距离衰减

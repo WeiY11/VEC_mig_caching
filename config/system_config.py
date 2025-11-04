@@ -122,7 +122,7 @@ class ExperimentConfig:
         self.save_interval = 100
         self.eval_interval = 50
         self.log_interval = 10
-        self.max_steps_per_episode = 200
+        self.max_steps_per_episode = 400  # 🔧 翻倍：保持相同仿真时长（400×0.1s=40s）
         self.warmup_episodes = 10
         self.use_timestamp = True
         self.timestamp_format = "%Y%m%d_%H%M%S"
@@ -246,19 +246,19 @@ class QueueConfig:
     【论文对应】Section 2.4 "Queue Management"
     
     【配置说明】
-    - max_lifetime: 任务最大生命周期（时隙数，与0.2s时隙同步）
+    - max_lifetime: 任务最大生命周期（时隙数，与0.1s时隙同步）
     - max_queue_size: 队列最大容量（任务数）
     - priority_levels: 优先级级别数（4级对应4种任务类型）
     - aging_factor: 老化因子（0.25表示每步强衰减，适合短时隙）
     
     【设计说明】
-    时隙同步设计：max_lifetime = 4 × 0.2s = 0.8s最大等待时间
+    时隙同步设计：max_lifetime = 8 × 0.1s = 0.8s最大等待时间
     强衰减策略：aging_factor = 0.25确保老任务优先处理
     """
     
     def __init__(self):
-        # 与0.2s时隙同步：生命周期格取4
-        self.max_lifetime = 4
+        # 🔧 与0.1s时隙同步：生命周期改为8（保持0.8s最大等待时间）
+        self.max_lifetime = 8
         self.max_queue_size = 100
         self.priority_levels = 4
         # Aging factor tuned for short slots (strong decay each step)
@@ -288,15 +288,15 @@ class TaskConfig:
     【任务参数设计】
     - data_size_range: 数据量范围 0.5-15 Mbits = 0.0625-1.875 MB
     - compute_cycles_range: 计算周期范围 1e8-1e10 cycles
-    - deadline_range: 截止时间范围 0.2-0.8s（对应1-4个时隙）
+    - deadline_range: 截止时间范围 0.2-0.8s（对应2-8个时隙@100ms）
     - task_output_ratio: 输出大小为输入的5%
     
-    【任务类型阈值】（基于12GHz RSU实际处理能力）
+    【任务类型阈值】（基于100ms时隙）
     - delay_thresholds:
-        * extremely_sensitive: 1个时隙 = 0.2s
-        * sensitive: 2个时隙 = 0.4s
-        * moderately_tolerant: 3个时隙 = 0.6s
-        * tolerant: 4个时隙 = 0.8s
+        * extremely_sensitive: 2个时隙 = 0.2s
+        * sensitive: 4个时隙 = 0.4s
+        * moderately_tolerant: 6个时隙 = 0.6s
+        * tolerant: 8个时隙 = 0.8s
     
     【时延成本权重】（对应论文Table IV）
     - latency_cost_weights: {1: 1.0, 2: 0.4, 3: 0.4, 4: 0.4}
@@ -319,15 +319,15 @@ class TaskConfig:
         self.compute_cycles_range = (1e8, 1e10)  # cycles
         
         # 截止时间配置
-        self.deadline_range = (0.2, 0.8)  # seconds，对应1-4个时隙        
+        self.deadline_range = (0.2, 0.8)  # seconds，对应2-8个时隙(100ms)
         # 输出比例配置
         self.task_output_ratio = 0.05  # 输出大小是输入大小的5%
         
-        # 🔑 重新设计：任务类型阈值 - 基于12GHz RSU实际处理能力
+        # 🔧 调整：任务类型阈值 - 基于100ms时隙
         self.delay_thresholds = {
-            'extremely_sensitive': 1,    # τ₁ = 1 个时隙 = 0.2s
-            'sensitive': 2,              # τ₂ = 2 个时隙 = 0.4s
-            'moderately_tolerant': 3,    # τ₃ = 3 个时隙 = 0.6s
+            'extremely_sensitive': 2,    # τ₁ = 2 个时隙 = 0.2s
+            'sensitive': 4,              # τ₂ = 4 个时隙 = 0.4s
+            'moderately_tolerant': 6,    # τ₃ = 6 个时隙 = 0.6s
         }
 
         # Latency cost weights (aligned with Table IV in the reference paper)
@@ -342,12 +342,12 @@ class TaskConfig:
         self.deadline_relax_default = 1.0
         self.deadline_relax_fallback = 1.0
 
-        # Task-type specific parameters (stored as dataclasses)
+        # 🔧 Task-type specific parameters - max_latency_slots翻倍（100ms时隙）
         self.task_profiles: Dict[int, TaskProfileSpec] = {
-            1: TaskProfileSpec(1, (0.5e6/8, 2e6/8), 60, 1, 1.0),
-            2: TaskProfileSpec(2, (1.5e6/8, 5e6/8), 90, 2, 0.4),
-            3: TaskProfileSpec(3, (4e6/8, 9e6/8), 120, 3, 0.4),
-            4: TaskProfileSpec(4, (7e6/8, 15e6/8), 150, 4, 0.4),
+            1: TaskProfileSpec(1, (0.5e6/8, 2e6/8), 60, 2, 1.0),   # 2×0.1s = 0.2s
+            2: TaskProfileSpec(2, (1.5e6/8, 5e6/8), 90, 4, 0.4),   # 4×0.1s = 0.4s
+            3: TaskProfileSpec(3, (4e6/8, 9e6/8), 120, 6, 0.4),    # 6×0.1s = 0.6s
+            4: TaskProfileSpec(4, (7e6/8, 15e6/8), 150, 8, 0.4),   # 8×0.1s = 0.8s
         }
         # Backwards-compatible dictionary view for legacy code
         self.task_type_specs = {
@@ -677,11 +677,11 @@ class ComputeConfig:
     - vehicle_cpu_freq_range = 8-25 GHz
     - vehicle_default_freq = 2.5 GHz
     
-    【RSU参数】（基于12GHz边缘服务器校准）
-    - rsu_kappa = 2.8e-31  # 12GHz高性能CPU功耗系数
+    【RSU参数】（基于15GHz边缘服务器校准）
+    - rsu_kappa = 2.8e-31  # 高性能CPU功耗系数
     - rsu_static_power = 25.0W  # 边缘服务器静态功耗
     - rsu_cpu_freq_range = 45-55 GHz
-    - rsu_default_freq = 12 GHz  # 高性能边缘计算
+    - rsu_default_freq = 15 GHz  # 高性能边缘计算（Intel Xeon等）
     
     【UAV参数】（基于实际UAV硬件校准）
     - uav_kappa = 8.89e-31  # 功耗受限的UAV芯片
@@ -726,10 +726,10 @@ class ComputeConfig:
         self.rsu_cpu_freq_range = (45e9, 55e9)  # 50 GHz左右
         self.uav_cpu_freq_range = (1.5e9, 9e9)  # 1.5-9 GHz，包含优化后的1.8GHz
         
-        # 🔑 修复：优化UAV计算能力以平衡系统负载
-        self.vehicle_default_freq = 2.5e9  # 2.5 GHz (保持车载芯片)
-        self.rsu_default_freq = 12e9  # 恢复12GHz - 高性能边缘计算
-        self.uav_default_freq = 1.8e9  # 🔑 优化至1.8GHz - 平衡负载与能耗
+        # 🔑 基于实际硬件的合理频率配置
+        self.vehicle_default_freq = 2.5e9   # 2.5 GHz - 车载移动芯片（高通骁龙等）
+        self.rsu_default_freq = 15e9        # 15 GHz - 高性能边缘服务器（Intel Xeon等）
+        self.uav_default_freq = 1.8e9       # 1.8 GHz - 低功耗无人机芯片（ARM Cortex等）
         
         # 节点CPU频率（用于初始化）
         self.vehicle_cpu_freq = self.vehicle_default_freq
@@ -752,7 +752,7 @@ class NetworkConfig:
     【论文对应】Section 2 "System Model"
     
     【时隙配置】
-    - time_slot_duration = 0.2s  # 优化为更合理的时隙长度
+    - time_slot_duration = 0.1s  # 🔧 改为100ms，更精细的控制粒度
     
     【带宽配置】（3GPP标准）
     - bandwidth = 20 MHz
@@ -779,7 +779,7 @@ class NetworkConfig:
     """
     
     def __init__(self):
-        self.time_slot_duration = 0.2  # seconds - 优化为更合理的时隙长度
+        self.time_slot_duration = 0.1  # seconds - 🔧 改为100ms，更精细的控制粒度
         self.bandwidth = 20e6  # Hz
         self.carrier_frequency = 2.4e9  # Hz
         self.noise_power = -174  # dBm/Hz
@@ -1050,7 +1050,7 @@ class SystemConfig:
         
         # 仿真配置
         self.simulation_time = 1000
-        self.time_slot = 0.2
+        self.time_slot = 0.1  # 🔧 改为100ms，与network.time_slot_duration一致
         
         # 性能配置
         self.enable_performance_optimization = True

@@ -68,9 +68,10 @@ class UnifiedRewardCalculator:
             # 默认所有任务类型权重相等
             self.task_priority_weights = {1: 0.25, 2: 0.25, 3: 0.25, 4: 0.25}
 
-        # 归一化因子（200毫秒时隙，约1000焦耳典型能耗）
-        # Normalisation factors (200 ms slot, ~1000 J typical energy).
-        self.delay_normalizer = 0.2  # 延迟归一化因子（秒）
+        # 归一化因子（基于典型延迟0.2s和能耗1000J）
+        # Normalisation factors (based on typical delay 0.2s and energy 1000J).
+        # 注：时隙已改为100ms，但归一化因子基于实际延迟范围，无需改变
+        self.delay_normalizer = 0.2  # 延迟归一化因子（秒）- 典型延迟参考值
         self.energy_normalizer = 1000.0  # 能耗归一化因子（焦耳）
         self.delay_bonus_scale = max(1e-6, self.latency_target)
         self.energy_bonus_scale = max(1e-6, self.energy_target)
