@@ -143,6 +143,7 @@ def main() -> None:
         silent=common.silent,
         suite_path=suite_dir,
         strategies=strategy_keys,
+        central_resource=common.central_resource,  # 🎯 传递中央资源分配参数
     )
 
     summary = {

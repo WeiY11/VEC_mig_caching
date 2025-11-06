@@ -1,4 +1,10 @@
 """
+
+🎯 中央资源分配架构（Phase 1决策 + Phase 2执行）:
+python train_single_agent.py --algorithm TD3 --episodes 200 --central-resource
+python train_single_agent.py --algorithm SAC --episodes 200 --central-resource
+# 特点：扩展状态空间（80维）+ 扩展动作空间（30维）+ 智能资源分配
+
 对比实验本地训练命令：
 cd D:\VEC_mig_caching
 python experiments/camtd3_strategy_suite/run_batch_experiments.py --mode full --all --non-interactive --silent
@@ -306,21 +312,53 @@ class SingleAgentTrainingEnvironment:
                     config.communication.total_bandwidth = float(bw_value)
                     print(f"🔧 [Override] 动态设置带宽: {float(bw_value)/1e6:.1f} MHz")
             
-            # CPU频率参数
-            if 'vehicle_cpu_freq' in override_scenario:
+            # 🎯 总资源池参数（优先级高于单节点频率）
+            if 'total_vehicle_compute' in override_scenario:
+                total_compute = float(override_scenario['total_vehicle_compute'])
+                config.compute.total_vehicle_compute = total_compute
+                # 自动计算每车平均频率
+                avg_freq = total_compute / config.num_vehicles
+                config.compute.vehicle_initial_freq = avg_freq
+                config.compute.vehicle_default_freq = avg_freq
+                config.compute.vehicle_cpu_freq = avg_freq
+                config.compute.vehicle_cpu_freq_range = (avg_freq, avg_freq)
+                print(f"🔧 [Override] 动态设置总本地计算: {total_compute/1e9:.1f} GHz (每车{avg_freq/1e9:.3f} GHz)")
+            
+            if 'total_rsu_compute' in override_scenario:
+                total_compute = float(override_scenario['total_rsu_compute'])
+                config.compute.total_rsu_compute = total_compute
+                avg_freq = total_compute / config.num_rsus
+                config.compute.rsu_initial_freq = avg_freq
+                config.compute.rsu_default_freq = avg_freq
+                config.compute.rsu_cpu_freq = avg_freq
+                config.compute.rsu_cpu_freq_range = (avg_freq, avg_freq)
+                print(f"🔧 [Override] 动态设置总RSU计算: {total_compute/1e9:.1f} GHz (每RSU{avg_freq/1e9:.1f} GHz)")
+            
+            if 'total_uav_compute' in override_scenario:
+                total_compute = float(override_scenario['total_uav_compute'])
+                config.compute.total_uav_compute = total_compute
+                avg_freq = total_compute / config.num_uavs
+                config.compute.uav_initial_freq = avg_freq
+                config.compute.uav_default_freq = avg_freq
+                config.compute.uav_cpu_freq = avg_freq
+                config.compute.uav_cpu_freq_range = (avg_freq, avg_freq)
+                print(f"🔧 [Override] 动态设置总UAV计算: {total_compute/1e9:.1f} GHz (每UAV{avg_freq/1e9:.1f} GHz)")
+            
+            # CPU频率参数（单节点频率，兼容旧代码）
+            if 'vehicle_cpu_freq' in override_scenario and 'total_vehicle_compute' not in override_scenario:
                 freq_value = override_scenario['vehicle_cpu_freq']
                 # 更新范围和默认值
                 config.compute.vehicle_cpu_freq_range = (freq_value, freq_value)
                 config.compute.vehicle_cpu_freq = freq_value
                 print(f"🔧 [Override] 动态设置车辆CPU频率: {float(freq_value)/1e9:.2f} GHz")
             
-            if 'rsu_cpu_freq' in override_scenario:
+            if 'rsu_cpu_freq' in override_scenario and 'total_rsu_compute' not in override_scenario:
                 freq_value = override_scenario['rsu_cpu_freq']
                 config.compute.rsu_cpu_freq_range = (freq_value, freq_value)
                 config.compute.rsu_cpu_freq = freq_value
                 print(f"🔧 [Override] 动态设置RSU CPU频率: {float(freq_value)/1e9:.2f} GHz")
             
-            if 'uav_cpu_freq' in override_scenario:
+            if 'uav_cpu_freq' in override_scenario and 'total_uav_compute' not in override_scenario:
                 freq_value = override_scenario['uav_cpu_freq']
                 config.compute.uav_cpu_freq_range = (freq_value, freq_value)
                 config.compute.uav_cpu_freq = freq_value
@@ -510,6 +548,19 @@ class SingleAgentTrainingEnvironment:
         else:
             raise ValueError(f"不支持的算法: {algorithm}")
 
+        # 🎯 中央资源分配架构（Phase 1 + Phase 2）
+        # 通过环境变量 CENTRAL_RESOURCE=1 启用
+        use_central_resource = os.environ.get('CENTRAL_RESOURCE', '').strip() in {'1', 'true', 'True'}
+        if use_central_resource:
+            try:
+                from utils.central_resource_env_wrapper import create_central_resource_env
+                self.agent_env = create_central_resource_env(self.agent_env)
+                print(f"🎯 启用中央资源分配架构：Phase 1(决策) + Phase 2(执行)")
+                print(f"   状态空间: {self.agent_env.extended_state_dim}维")
+                print(f"   动作空间: {self.agent_env.extended_action_dim}维")
+            except Exception as e:
+                print(f"⚠️ 中央资源分配封装失败，回退到标准模式: {e}")
+        
         # 🧠 若指定了阶段一算法（通过环境变量），用DualStage封装器组合两个阶段
         stage1_alg = os.environ.get('STAGE1_ALG', '').strip().lower()
         if stage1_alg:
@@ -2219,6 +2270,9 @@ def main():
                         help='阶段一算法（offloading 头）：heuristic|greedy|cache_first|distance_first')
     parser.add_argument('--stage2-alg', type=str, default=None,
                         help='阶段二算法（缓存/迁移控制的RL）：TD3|SAC|DDPG|PPO|DQN|TD3-LE')
+    # 🎯 中央资源分配架构（Phase 1 + Phase 2）
+    parser.add_argument('--central-resource', action='store_true',
+                        help='启用中央资源分配架构（Phase 1决策 + Phase 2执行），扩展状态/动作空间')
     parser.add_argument('--silent-mode', action='store_true',
                         help='启用静默模式，跳过训练结束后的交互提示')
     
@@ -2228,6 +2282,11 @@ def main():
         os.environ['RANDOM_SEED'] = str(args.seed)
         _apply_global_seed_from_env()
 
+    # 🎯 启用中央资源分配架构
+    if args.central_resource:
+        os.environ['CENTRAL_RESOURCE'] = '1'
+        print("🎯 启用中央资源分配架构（Phase 1 + Phase 2）")
+    
     # Toggle two-stage pipeline via environment for the simulator
     if args.two_stage:
         os.environ['TWO_STAGE_MODE'] = '1'

@@ -400,6 +400,7 @@ def main() -> None:
         suite_path=suite_dir,
         strategies=strategy_keys,
         per_strategy_hook=network_topology_metrics_hook,
+        central_resource=common.central_resource,  # 🎯 传递中央资源分配参数
     )
     
     # ========== 生成图表 ==========

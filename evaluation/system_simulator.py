@@ -28,6 +28,144 @@ from utils.realistic_content_generator import generate_realistic_content, get_re
 from utils.spatial_index import SpatialIndex
 from decision.two_stage_planner import TwoStagePlanner, PlanEntry
 
+
+class CentralResourcePool:
+    """
+    中央资源池管理器
+    
+    【功能】
+    Phase 1的核心组件：集中管理所有可分配资源（带宽、计算资源）
+    供中央智能体决策使用，实现全局资源优化
+    
+    【管理的资源】
+    1. 总带宽：50 MHz（上行+下行）
+    2. 总RSU计算：60 GHz（4个RSU共享）
+    3. 总UAV计算：8 GHz（2个UAV共享）
+    4. 总本地计算：2 GHz（12车辆共享）
+    
+    【Phase 1决策】
+    中央智能体生成资源分配向量：
+    - bandwidth_allocation[12]: 每个车辆的带宽分配比例
+    - rsu_compute_allocation[4]: 每个RSU的计算资源分配比例
+    - uav_compute_allocation[2]: 每个UAV的计算资源分配比例
+    - vehicle_compute_allocation[12]: 每个车辆的本地计算分配比例
+    
+    【Phase 2执行】
+    根据分配结果，各节点执行本地调度
+    """
+    
+    def __init__(self, config):
+        """
+        初始化中央资源池
+        
+        Args:
+            config: 系统配置对象
+        """
+        # 🎯 总资源池（从config读取）
+        self.total_bandwidth = getattr(config.network, 'bandwidth', 50e6)  # 50 MHz
+        self.total_vehicle_compute = getattr(config.compute, 'total_vehicle_compute', 2e9)  # 2 GHz
+        self.total_rsu_compute = getattr(config.compute, 'total_rsu_compute', 60e9)  # 60 GHz
+        self.total_uav_compute = getattr(config.compute, 'total_uav_compute', 8e9)  # 8 GHz
+        
+        # 节点数量
+        self.num_vehicles = getattr(config.network, 'num_vehicles', 12)
+        self.num_rsus = getattr(config.network, 'num_rsus', 4)
+        self.num_uavs = getattr(config.network, 'num_uavs', 2)
+        
+        # 🔄 当前分配状态（初始化为均匀分配）
+        self.bandwidth_allocation = np.ones(self.num_vehicles) / self.num_vehicles  # 均匀分配
+        self.vehicle_compute_allocation = np.ones(self.num_vehicles) / self.num_vehicles
+        self.rsu_compute_allocation = np.ones(self.num_rsus) / self.num_rsus
+        self.uav_compute_allocation = np.ones(self.num_uavs) / self.num_uavs
+        
+        # 📊 资源使用统计
+        self.bandwidth_usage = 0.0  # 当前带宽使用率
+        self.vehicle_compute_usage = np.zeros(self.num_vehicles)
+        self.rsu_compute_usage = np.zeros(self.num_rsus)
+        self.uav_compute_usage = np.zeros(self.num_uavs)
+        
+    def update_allocation(self, allocation_dict: Dict[str, np.ndarray]):
+        """
+        更新资源分配（Phase 1决策）
+        
+        Args:
+            allocation_dict: 包含各资源分配向量的字典
+                - 'bandwidth': [num_vehicles]
+                - 'vehicle_compute': [num_vehicles]
+                - 'rsu_compute': [num_rsus]
+                - 'uav_compute': [num_uavs]
+        """
+        if 'bandwidth' in allocation_dict:
+            self.bandwidth_allocation = self._normalize(allocation_dict['bandwidth'])
+        if 'vehicle_compute' in allocation_dict:
+            self.vehicle_compute_allocation = self._normalize(allocation_dict['vehicle_compute'])
+        if 'rsu_compute' in allocation_dict:
+            self.rsu_compute_allocation = self._normalize(allocation_dict['rsu_compute'])
+        if 'uav_compute' in allocation_dict:
+            self.uav_compute_allocation = self._normalize(allocation_dict['uav_compute'])
+    
+    def get_vehicle_bandwidth(self, vehicle_idx: int) -> float:
+        """获取指定车辆的分配带宽（Hz）"""
+        return self.bandwidth_allocation[vehicle_idx] * self.total_bandwidth
+    
+    def get_vehicle_compute(self, vehicle_idx: int) -> float:
+        """获取指定车辆的分配计算资源（Hz）"""
+        return self.vehicle_compute_allocation[vehicle_idx] * self.total_vehicle_compute
+    
+    def get_rsu_compute(self, rsu_idx: int) -> float:
+        """获取指定RSU的分配计算资源（Hz）"""
+        return self.rsu_compute_allocation[rsu_idx] * self.total_rsu_compute
+    
+    def get_uav_compute(self, uav_idx: int) -> float:
+        """获取指定UAV的分配计算资源（Hz）"""
+        return self.uav_compute_allocation[uav_idx] * self.total_uav_compute
+    
+    def update_usage_stats(self, vehicle_usage=None, rsu_usage=None, uav_usage=None):
+        """更新资源使用统计"""
+        if vehicle_usage is not None:
+            self.vehicle_compute_usage = vehicle_usage
+        if rsu_usage is not None:
+            self.rsu_compute_usage = rsu_usage
+        if uav_usage is not None:
+            self.uav_compute_usage = uav_usage
+    
+    def get_resource_state(self) -> Dict[str, Any]:
+        """
+        获取资源池状态（供智能体观测）
+        
+        Returns:
+            包含资源分配和使用情况的字典
+        """
+        return {
+            'total_bandwidth': self.total_bandwidth,
+            'total_vehicle_compute': self.total_vehicle_compute,
+            'total_rsu_compute': self.total_rsu_compute,
+            'total_uav_compute': self.total_uav_compute,
+            'bandwidth_allocation': self.bandwidth_allocation.copy(),
+            'vehicle_compute_allocation': self.vehicle_compute_allocation.copy(),
+            'rsu_compute_allocation': self.rsu_compute_allocation.copy(),
+            'uav_compute_allocation': self.uav_compute_allocation.copy(),
+            'vehicle_compute_usage': self.vehicle_compute_usage.copy(),
+            'rsu_compute_usage': self.rsu_compute_usage.copy(),
+            'uav_compute_usage': self.uav_compute_usage.copy(),
+            # 📊 资源利用率
+            'vehicle_utilization': np.mean(self.vehicle_compute_usage),
+            'rsu_utilization': np.mean(self.rsu_compute_usage),
+            'uav_utilization': np.mean(self.uav_compute_usage),
+        }
+    
+    @staticmethod
+    def _normalize(arr: np.ndarray) -> np.ndarray:
+        """归一化分配向量，确保总和为1"""
+        arr = np.clip(arr, 0, 1)  # 确保非负且<=1
+        total = np.sum(arr)
+        if total > 1e-6:
+            return arr / total
+        else:
+            # 如果全为0，返回均匀分配
+            return np.ones_like(arr) / len(arr)
+
+
 class CompleteSystemSimulator:
     """
     完整系统仿真器
@@ -119,17 +257,32 @@ class CompleteSystemSimulator:
         self._two_stage_planner: TwoStagePlanner | None = None
         self.spatial_index: Optional[SpatialIndex] = SpatialIndex()
         
+        # 🎯 中央资源池初始化（Phase 1核心组件）
+        # Central resource pool initialization (Phase 1 core component)
+        if self.sys_config is not None:
+            self.resource_pool = CentralResourcePool(self.sys_config)
+        else:
+            # 如果没有sys_config，使用默认配置创建一个临时config对象
+            from types import SimpleNamespace
+            temp_config = SimpleNamespace(
+                network=SimpleNamespace(bandwidth=50e6, num_vehicles=12, num_rsus=4, num_uavs=2),
+                compute=SimpleNamespace(total_vehicle_compute=2e9, total_rsu_compute=60e9, total_uav_compute=8e9)
+            )
+            self.resource_pool = CentralResourcePool(temp_config)
+        
         # 🔧 读取资源配置参数（CPU频率、带宽等）
         # Read resource configuration parameters (CPU frequency, bandwidth, etc.)
-        # 优先使用override_scenario中的参数，否则使用系统配置或默认值
+        # ⚠️ 注意：资源现在从中央资源池分配，这里保留兼容性
         if self.sys_config is not None and not self.override_topology:
-            self.rsu_cpu_freq = getattr(self.sys_config.compute, 'rsu_cpu_freq', 15e9)
-            self.uav_cpu_freq = getattr(self.sys_config.compute, 'uav_cpu_freq', 12e9)
-            self.bandwidth = getattr(self.sys_config.network, 'bandwidth', 20e6)
+            self.rsu_cpu_freq = getattr(self.sys_config.compute, 'rsu_default_freq', 15e9)
+            self.uav_cpu_freq = getattr(self.sys_config.compute, 'uav_default_freq', 4e9)
+            self.vehicle_cpu_freq = getattr(self.sys_config.compute, 'vehicle_default_freq', 0.167e9)
+            self.bandwidth = getattr(self.sys_config.network, 'bandwidth', 50e6)
         else:
             self.rsu_cpu_freq = self.config.get('rsu_cpu_freq', 15e9)  # Hz
-            self.uav_cpu_freq = self.config.get('uav_cpu_freq', 12e9)  # Hz
-            self.bandwidth = self.config.get('bandwidth', 20e6)  # Hz
+            self.uav_cpu_freq = self.config.get('uav_cpu_freq', 4e9)  # Hz
+            self.vehicle_cpu_freq = self.config.get('vehicle_cpu_freq', 0.167e9)  # Hz
+            self.bandwidth = self.config.get('bandwidth', 50e6)  # Hz
         
         # 初始化组件（车辆、RSU、UAV等）
         # Initialize components (vehicles, RSUs, UAVs, etc.)
@@ -209,7 +362,12 @@ class CompleteSystemSimulator:
                 'tasks': [],
                 'energy_consumed': 0.0,
                 'device_cache': {},  # 车载缓存
-                'device_cache_capacity': 32.0  # 车载缓存容量(MB)
+                'device_cache_capacity': 32.0,  # 车载缓存容量(MB)
+                # 🎯 Phase 2本地调度参数
+                'cpu_freq': self.vehicle_cpu_freq,  # 分配的CPU频率（Hz）
+                'allocated_bandwidth': 0.0,  # 分配的带宽（Hz）
+                'task_queue_by_priority': {1: [], 2: [], 3: [], 4: []},  # 按优先级分类的任务队列
+                'compute_usage': 0.0,  # 当前计算使用率
             }
             self.vehicles.append(vehicle)
         print("车辆初始化完成：主干道双路口场景")
@@ -246,7 +404,11 @@ class CompleteSystemSimulator:
                 'cache_capacity_bytes': (getattr(self.sys_config.cache, 'rsu_cache_capacity', 10e9) if self.sys_config is not None else 10e9),
                 'cpu_freq': self.rsu_cpu_freq,  # 🆕 CPU频率(Hz)
                 'computation_queue': [],  # 计算任务队列
-                'energy_consumed': 0.0  # 累计能耗(J)
+                'energy_consumed': 0.0,  # 累计能耗(J)
+                # 🎯 Phase 2资源调度参数
+                'allocated_compute': self.rsu_cpu_freq,  # 分配的计算资源（Hz）
+                'compute_usage': 0.0,  # 当前计算使用率
+                'connected_vehicles': [],  # 接入的车辆列表
             }
             self.rsus.append(rsu)
         
@@ -281,7 +443,12 @@ class CompleteSystemSimulator:
                 'cache_capacity_bytes': (getattr(self.sys_config.cache, 'uav_cache_capacity', 2e9) if self.sys_config is not None else 2e9),
                 'cpu_freq': self.uav_cpu_freq,  # 🆕 CPU频率(Hz)
                 'computation_queue': [],  # 计算任务队列
-                'energy_consumed': 0.0  # 累计能耗(J)
+                'energy_consumed': 0.0,  # 累计能耗(J)
+                # 🎯 Phase 2资源调度参数
+                'allocated_compute': self.uav_cpu_freq,  # 分配的计算资源（Hz）
+                'compute_usage': 0.0,  # 当前计算使用率
+                'battery_level': 1.0,  # 电量水平
+                'connected_vehicles': [],  # 服务的车辆列表
             }
             self.uavs.append(uav)
         
@@ -322,6 +489,195 @@ class CompleteSystemSimulator:
 
         self._init_mm1_predictor()
         self._refresh_spatial_index(update_static=True, update_vehicle=True)
+    
+    # ========== Phase 2本地调度逻辑 ==========
+    
+    def apply_resource_allocation(self, allocation_dict: Dict[str, np.ndarray]):
+        """
+        应用中央智能体的资源分配决策（Phase 1 → Phase 2）
+        
+        Args:
+            allocation_dict: 中央智能体生成的资源分配字典
+                - 'bandwidth': [num_vehicles]  带宽分配比例
+                - 'vehicle_compute': [num_vehicles]  车辆计算分配比例
+                - 'rsu_compute': [num_rsus]  RSU计算分配比例
+                - 'uav_compute': [num_uavs]  UAV计算分配比例
+        """
+        # 更新资源池
+        self.resource_pool.update_allocation(allocation_dict)
+        
+        # 应用到各节点
+        for i, vehicle in enumerate(self.vehicles):
+            vehicle['allocated_bandwidth'] = self.resource_pool.get_vehicle_bandwidth(i)
+            vehicle['cpu_freq'] = self.resource_pool.get_vehicle_compute(i)
+        
+        for i, rsu in enumerate(self.rsus):
+            rsu['allocated_compute'] = self.resource_pool.get_rsu_compute(i)
+        
+        for i, uav in enumerate(self.uavs):
+            uav['allocated_compute'] = self.resource_pool.get_uav_compute(i)
+    
+    def vehicle_priority_scheduling(self, vehicle: Dict):
+        """
+        车辆端优先级队列调度（Phase 2执行层）
+        
+        【策略】
+        1. 按任务优先级（类型1>2>3>4）排序
+        2. 优先分配计算资源给高优先级任务
+        3. 如果本地资源不足，标记为待卸载
+        
+        Args:
+            vehicle: 车辆对象字典
+        """
+        # 获取分配的计算资源
+        allocated_cpu = vehicle['cpu_freq']
+        time_slot = self.time_slot
+        
+        # 合并所有优先级队列到一个列表，按优先级排序
+        all_tasks = []
+        for priority in [1, 2, 3, 4]:  # 从高到低
+            all_tasks.extend(vehicle['task_queue_by_priority'][priority])
+        
+        if not all_tasks:
+            vehicle['compute_usage'] = 0.0
+            return
+        
+        # 计算本时隙可用的总计算周期
+        available_cycles = allocated_cpu * time_slot
+        used_cycles = 0.0
+        
+        for task in all_tasks:
+            if 'compute_cycles' in task:
+                task_cycles = task['compute_cycles']
+                if used_cycles + task_cycles <= available_cycles:
+                    # 本地可以处理
+                    task['processing_node'] = 'local'
+                    task['can_process_local'] = True
+                    used_cycles += task_cycles
+                else:
+                    # 本地资源不足，需要卸载
+                    task['processing_node'] = 'offload'
+                    task['can_process_local'] = False
+        
+        # 更新计算使用率
+        vehicle['compute_usage'] = used_cycles / max(available_cycles, 1e-9)
+    
+    def rsu_dynamic_resource_allocation(self, rsu: Dict, rsu_idx: int):
+        """
+        RSU端动态资源分配（Phase 2执行层）
+        
+        【策略】
+        1. 为接入的车辆动态分配带宽
+        2. 根据任务优先级分配计算时间片
+        3. 优先服务高优先级任务
+        
+        Args:
+            rsu: RSU对象字典
+            rsu_idx: RSU索引
+        """
+        # 获取分配的计算资源
+        allocated_compute = rsu['allocated_compute']
+        time_slot = self.time_slot
+        
+        # 计算本时隙可用的总计算周期
+        available_cycles = allocated_compute * time_slot
+        
+        # 获取所有待处理任务（从computation_queue）
+        tasks = rsu['computation_queue']
+        if not tasks:
+            rsu['compute_usage'] = 0.0
+            return
+        
+        # 按优先级排序（假设任务有task_type字段）
+        sorted_tasks = sorted(tasks, key=lambda t: t.get('task_type', 4))
+        
+        # 分配计算资源
+        used_cycles = 0.0
+        for task in sorted_tasks:
+            if 'compute_cycles' in task:
+                task_cycles = task['compute_cycles']
+                if used_cycles + task_cycles <= available_cycles:
+                    task['can_process'] = True
+                    used_cycles += task_cycles
+                else:
+                    task['can_process'] = False  # 资源不足，需等待下一时隙
+        
+        # 更新计算使用率
+        rsu['compute_usage'] = used_cycles / max(available_cycles, 1e-9)
+    
+    def uav_dynamic_resource_allocation(self, uav: Dict, uav_idx: int):
+        """
+        UAV端动态资源分配（Phase 2执行层）
+        
+        【策略】
+        1. 考虑电量水平调整服务能力
+        2. 优先服务信道质量好的车辆
+        3. 低电量时降低服务范围
+        
+        Args:
+            uav: UAV对象字典
+            uav_idx: UAV索引
+        """
+        # 获取分配的计算资源（考虑电量因子）
+        allocated_compute = uav['allocated_compute']
+        battery_factor = max(0.5, uav['battery_level'])  # 低电量时性能下降
+        effective_compute = allocated_compute * battery_factor
+        
+        time_slot = self.time_slot
+        available_cycles = effective_compute * time_slot
+        
+        # 获取所有待处理任务
+        tasks = uav['computation_queue']
+        if not tasks:
+            uav['compute_usage'] = 0.0
+            return
+        
+        # 按优先级排序
+        sorted_tasks = sorted(tasks, key=lambda t: t.get('task_type', 4))
+        
+        # 分配计算资源
+        used_cycles = 0.0
+        for task in sorted_tasks:
+            if 'compute_cycles' in task:
+                task_cycles = task['compute_cycles']
+                if used_cycles + task_cycles <= available_cycles:
+                    task['can_process'] = True
+                    used_cycles += task_cycles
+                else:
+                    task['can_process'] = False
+        
+        # 更新计算使用率
+        uav['compute_usage'] = used_cycles / max(available_cycles, 1e-9)
+    
+    def execute_phase2_scheduling(self):
+        """
+        执行Phase 2的所有本地调度逻辑
+        
+        【流程】
+        1. 车辆端：优先级调度
+        2. RSU端：动态资源分配
+        3. UAV端：动态资源分配
+        4. 更新资源使用统计
+        """
+        # 车辆端调度
+        for vehicle in self.vehicles:
+            self.vehicle_priority_scheduling(vehicle)
+        
+        # RSU端调度
+        for i, rsu in enumerate(self.rsus):
+            self.rsu_dynamic_resource_allocation(rsu, i)
+        
+        # UAV端调度
+        for i, uav in enumerate(self.uavs):
+            self.uav_dynamic_resource_allocation(uav, i)
+        
+        # 更新资源池统计
+        vehicle_usage = np.array([v['compute_usage'] for v in self.vehicles])
+        rsu_usage = np.array([r['compute_usage'] for r in self.rsus])
+        uav_usage = np.array([u['compute_usage'] for u in self.uavs])
+        self.resource_pool.update_usage_stats(vehicle_usage, rsu_usage, uav_usage)
+    
+    # ========== Phase 2结束 ==========
     
     def _setup_scenario(self):
         """

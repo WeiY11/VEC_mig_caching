@@ -723,19 +723,36 @@ class ComputeConfig:
         
         # 🎯 总资源池配置（中央智能体分配）
         # 设计理念：中央基站智能体负责资源分配，Phase 1决策，Phase 2执行
-        self.total_vehicle_compute = 2e9     # 总本地计算资源：2 GHz（12车辆共享）
-        self.total_rsu_compute = 60e9        # 总RSU计算资源：60 GHz（4个RSU共享）
-        self.total_uav_compute = 8e9         # 总UAV计算资源：8 GHz（2个UAV共享）
+        # 注意：这些是资源池总量，实际分配由中央智能体的动作决定
+        # 
+        # 📊 资源平衡设计（基于负载分析）：
+        # - 本地计算适度受限：促使部分任务卸载（而非全部）
+        # - 边缘计算充足：确保卸载任务能被处理
+        # - 带宽匹配通信需求：避免通信瓶颈
+        self.total_vehicle_compute = 6e9     # 总本地计算：6 GHz（12车辆共享，每车0.5GHz）
+        self.total_rsu_compute = 100e9       # 总RSU计算：100 GHz（4个RSU共享，每个25GHz）
+        self.total_uav_compute = 8e9         # 总UAV计算：8 GHz（2个UAV共享，每个4GHz）
         
-        # CPU频率范围 - 基于总资源池平均分配
-        self.vehicle_cpu_freq_range = (0.167e9, 0.167e9)  # 固定 2/12 ≈ 0.167 GHz
-        self.rsu_cpu_freq_range = (15e9, 15e9)  # 固定 60/4 = 15 GHz
-        self.uav_cpu_freq_range = (4e9, 4e9)    # 固定 8/2 = 4 GHz
+        # 🔑 初始CPU频率配置（仅用于节点初始化，运行时由中央智能体动态调整）
+        # 两种模式：
+        # 1. 标准模式：每个节点独立固定频率（旧设计，保留兼容性）
+        # 2. 中央资源池模式：初始均匀分配，运行时由智能体动态优化（新设计）
         
-        # 🔑 基于总资源池的合理频率配置（中央智能体动态分配）
-        self.vehicle_default_freq = 2e9 / 12   # 0.167 GHz - 极度受限，强制卸载
-        self.rsu_default_freq = 60e9 / 4       # 15 GHz - 主力边缘计算
-        self.uav_default_freq = 8e9 / 2        # 4 GHz - 辅助边缘计算
+        # 初始分配策略（均匀分配作为baseline）
+        self.vehicle_initial_freq = self.total_vehicle_compute / 12   # 0.167 GHz - 初始均分
+        self.rsu_initial_freq = self.total_rsu_compute / 4            # 15 GHz - 初始均分
+        self.uav_initial_freq = self.total_uav_compute / 2            # 4 GHz - 初始均分
+        
+        # CPU频率范围（保留兼容性，用于标准模式）
+        # 在中央资源池模式下，这些范围会被动态分配覆盖
+        self.vehicle_cpu_freq_range = (self.vehicle_initial_freq, self.vehicle_initial_freq)
+        self.rsu_cpu_freq_range = (self.rsu_initial_freq, self.rsu_initial_freq)
+        self.uav_cpu_freq_range = (self.uav_initial_freq, self.uav_initial_freq)
+        
+        # 默认频率（用于初始化，保留兼容性）
+        self.vehicle_default_freq = self.vehicle_initial_freq
+        self.rsu_default_freq = self.rsu_initial_freq
+        self.uav_default_freq = self.uav_initial_freq
         
         # 节点CPU频率（用于初始化）
         self.vehicle_cpu_freq = self.vehicle_default_freq
@@ -786,7 +803,7 @@ class NetworkConfig:
     
     def __init__(self):
         self.time_slot_duration = 0.1  # seconds - 🔧 改为100ms，更精细的控制粒度
-        self.bandwidth = 50e6  # Hz - 🎯 总带宽50MHz（资源受限场景，中央智能体分配）
+        self.bandwidth = 100e6  # Hz - 🎯 总带宽100MHz（5G NR高带宽，匹配卸载需求）
         self.carrier_frequency = 2.4e9  # Hz
         self.noise_power = -174  # dBm/Hz
         self.path_loss_exponent = 2.0
@@ -858,10 +875,10 @@ class CommunicationConfig:
         self.noise_figure = 9.0       # dB - 3GPP标准
         
         # 🎯 总带宽池配置（中央智能体动态分配）
-        self.total_bandwidth = 50e6   # 50 MHz - 资源受限场景（中央智能体统一调度）
-        self.channel_bandwidth = 2.5e6  # 2.5 MHz per channel
-        self.uplink_bandwidth = 25e6  # 25 MHz（边缘计算上行密集）
-        self.downlink_bandwidth = 25e6  # 25 MHz
+        self.total_bandwidth = 100e6   # 100 MHz - 5G NR高带宽（匹配卸载通信需求）
+        self.channel_bandwidth = 5e6  # 5 MHz per channel
+        self.uplink_bandwidth = 50e6  # 50 MHz（边缘计算上行密集，确保卸载通畅）
+        self.downlink_bandwidth = 50e6  # 50 MHz
         
         # 3GPP标准传播参数
         self.carrier_frequency = 2.0e9  # 2 GHz - 3GPP标准频率

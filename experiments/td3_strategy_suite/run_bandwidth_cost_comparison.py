@@ -45,7 +45,9 @@ from experiments.td3_strategy_suite.suite_cli import (
 
 DEFAULT_EPISODES = 500
 DEFAULT_SEED = 42
-DEFAULT_BANDWIDTHS = [10, 20, 30, 40, 50]
+# 🎯 基于当前配置（100MHz）调整范围
+# 对比：受限(50) vs 中等(75,100) vs 充裕(150,200)
+DEFAULT_BANDWIDTHS = [20, 30, 40, 50, 60]  # MHz
 
 
 def parse_bandwidths(value: str) -> List[int]:
@@ -172,6 +174,7 @@ def main() -> None:
         suite_path=suite_dir,
         strategies=strategy_keys,
         per_strategy_hook=bandwidth_hook,
+        central_resource=common.central_resource,  # 🎯 传递中央资源分配参数
     )
 
     summary = {

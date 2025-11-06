@@ -78,7 +78,10 @@ from utils.unified_reward_calculator import UnifiedRewardCalculator
 
 DEFAULT_EPISODES = 500
 DEFAULT_SEED = 42
-DEFAULT_CPU_FREQS = [1.2, 2.0, 2.8]  # 低/中/高频率 (GHz)
+# 🎯 基于当前资源池配置：总本地计算资源（12车辆共享）
+# 当前配置：6 GHz总本地计算
+# 对比：受限(4GHz) vs 当前(6GHz) vs 充裕(10GHz, 15GHz)
+DEFAULT_CPU_FREQS = [4.0, 6.0, 8.0, 10.0]  # 总本地计算资源 (GHz)
 
 _reward_calculator: UnifiedRewardCalculator | None = None
 
@@ -313,7 +316,7 @@ def main() -> None:
             "num_vehicles": 12,
             "num_rsus": 4,
             "num_uavs": 2,
-            "vehicle_cpu_freq": float(freq) * 1e9,  # 转换为Hz
+            "total_vehicle_compute": float(freq) * 1e9,  # 🎯 总本地计算资源(Hz)，12车辆共享
             "override_topology": True,
             "fallback_task_size_kb": 350.0,
             "assumed_tasks_per_step": 12,
@@ -337,6 +340,7 @@ def main() -> None:
         suite_path=suite_dir,
         strategies=strategy_keys,
         per_strategy_hook=comprehensive_metrics_hook,
+        central_resource=common.central_resource,  # 🎯 传递中央资源分配参数
     )
     
     # ========== 生成图表 ==========

@@ -24,6 +24,7 @@ class CommonArgs:
     output_root: Path
     silent: bool
     strategies: Optional[List[str]]
+    central_resource: bool = False  # 🎯 中央资源分配架构
 
 
 def _add_boolean_toggle(
@@ -110,6 +111,13 @@ def add_common_experiment_args(
                 "Defaults to all strategies defined in STRATEGY_PRESETS."
             ),
         )
+    
+    # 🎯 中央资源分配架构参数
+    parser.add_argument(
+        "--central-resource",
+        action="store_true",
+        help="启用中央资源分配架构（Phase 1决策 + Phase 2执行），对比分层模式 vs 标准模式",
+        )
 
 
 def parse_strategy_selection(value: Optional[str]) -> Optional[List[str]]:
@@ -163,6 +171,9 @@ def resolve_common_args(
     strategies: Optional[List[str]] = None
     if allow_strategies:
         strategies = parse_strategy_selection(getattr(args, "strategies", None))
+    
+    # 🎯 中央资源分配架构
+    central_resource = getattr(args, "central_resource", False)
 
     return CommonArgs(
         episodes=episodes,
@@ -171,6 +182,7 @@ def resolve_common_args(
         output_root=output_root,
         silent=silent,
         strategies=strategies,
+        central_resource=central_resource,
     )
 
 

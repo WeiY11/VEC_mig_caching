@@ -119,6 +119,7 @@ def run_strategy_suite(
     seed: int,
     silent: bool,
     strategies: Optional[Iterable[str]] = None,
+    central_resource: bool = False,
 ) -> Dict[str, Dict[str, float]]:
     return _run_strategy_suite_internal(
         override_scenario=override_scenario,
@@ -127,6 +128,7 @@ def run_strategy_suite(
         silent=silent,
         strategies=strategies,
         include_episode_metrics=False,
+        central_resource=central_resource,
     )
 
 
@@ -136,6 +138,7 @@ def run_strategy_suite_with_details(
     seed: int,
     silent: bool,
     strategies: Optional[Iterable[str]] = None,
+    central_resource: bool = False,
 ) -> Dict[str, Dict[str, object]]:
     return _run_strategy_suite_internal(
         override_scenario=override_scenario,
@@ -144,6 +147,7 @@ def run_strategy_suite_with_details(
         silent=silent,
         strategies=strategies,
         include_episode_metrics=True,
+        central_resource=central_resource,
     )
 
 
@@ -154,6 +158,7 @@ def _run_strategy_suite_internal(
     silent: bool,
     strategies: Optional[Iterable[str]],
     include_episode_metrics: bool,
+    central_resource: bool = False,
 ) -> Dict[str, Dict[str, float]]:
     keys = list(strategies) if strategies is not None else STRATEGY_KEYS
     results: Dict[str, Dict[str, float]] = {}
@@ -204,6 +209,12 @@ def _run_strategy_suite_internal(
         # ========== 每次都执行训练（缓存已禁用）==========
         os.environ["RANDOM_SEED"] = str(seed)
         _apply_global_seed_from_env()
+        
+        # 🎯 设置中央资源分配模式的环境变量
+        if central_resource:
+            os.environ['CENTRAL_RESOURCE'] = '1'
+        else:
+            os.environ.pop('CENTRAL_RESOURCE', None)  # 清除环境变量
 
         algorithm_kind = str(preset["algorithm"]).lower()
         if algorithm_kind == "heuristic":
@@ -286,6 +297,7 @@ def evaluate_configs(
     suite_path: Path,
     strategies: Optional[Iterable[str]] = None,
     per_strategy_hook: Optional[Callable[[str, Dict[str, float], Dict[str, object], Dict[str, List[float]]], None]] = None,
+    central_resource: bool = False,
 ) -> List[Dict[str, object]]:
     suite_path.mkdir(parents=True, exist_ok=True)
     evaluated: List[Dict[str, object]] = []
@@ -310,6 +322,7 @@ def evaluate_configs(
             seed=seed,
             silent=silent,
             strategies=keys,
+            central_resource=central_resource,
         )
         enriched = enrich_with_normalized_costs(raw)
 

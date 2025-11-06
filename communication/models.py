@@ -275,7 +275,8 @@ class ComputeEnergyModel:
         self.vehicle_idle_power = config.compute.vehicle_idle_power
         
         # RSU能耗参数 - 论文式(20)-(21)
-        self.rsu_kappa2 = config.compute.rsu_kappa2
+        # 🔧 修复：使用rsu_kappa而不是rsu_kappa2（避免混淆）
+        self.rsu_kappa = getattr(config.compute, 'rsu_kappa', config.compute.rsu_kappa2)
         self.rsu_static_power = getattr(config.compute, 'rsu_static_power', 0.0)
         
         # UAV能耗参数 - 论文式(25)-(30)
@@ -340,8 +341,9 @@ class ComputeEnergyModel:
                 'total_energy': 0.0
             }
         
-        # RSU处理功率 - 论文式(22)
-        processing_power = self.rsu_kappa2 * (cpu_frequency ** 3)
+        # RSU处理功率 - 论文式(544): P = κ × f³
+        # 🔧 修复：使用rsu_kappa而不是rsu_kappa2
+        processing_power = self.rsu_kappa * (cpu_frequency ** 3)
         
         # 计算能耗
         dynamic_energy = processing_power * processing_time
@@ -371,8 +373,10 @@ class ComputeEnergyModel:
         battery_factor = max(0.5, battery_level)
         effective_frequency = cpu_frequency * battery_factor
         
-        # UAV计算能耗 - 论文式(28)
-        dynamic_energy = self.uav_kappa3 * (effective_frequency ** 2) * processing_time
+        # UAV计算能耗 - 论文式(570): E = κ₃ × f³ × τ_active
+        # 🔧 修复：从 f² × time 改为 f³ × time（与论文一致）
+        processing_power = self.uav_kappa3 * (effective_frequency ** 3)
+        dynamic_energy = processing_power * processing_time
         accounted_time = max(processing_time, self.time_slot_duration)
         static_energy = self.uav_static_power * accounted_time
         total_energy = dynamic_energy + static_energy
