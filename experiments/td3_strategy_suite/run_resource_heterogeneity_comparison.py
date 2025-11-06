@@ -66,8 +66,53 @@ DEFAULT_SEED = 42
 
 # 资源异构性配置
 # 基准: RSU=10 GHz, UAV=8 GHz, Vehicle=2 GHz
-HETEROGENEITY_CONFIGS = [{
-        "key": "homogeneous", "uav_compute_range": (5.0, }]
+HETEROGENEITY_CONFIGS = [
+    {
+        "key": "homogeneous",
+        "label": "Homogeneous",
+        "description": "同构配置（理想情况）",
+        "rsu_compute_range": (10.0, 10.0),
+        "uav_compute_range": (8.0, 8.0),
+        "vehicle_compute_range": (2.0, 2.0),
+        "heterogeneity_level": 0.0,
+    },
+    {
+        "key": "light_hetero",
+        "label": "Light-Hetero",
+        "description": "轻度异构（±20%）",
+        "rsu_compute_range": (8.0, 12.0),
+        "uav_compute_range": (7.0, 9.0),
+        "vehicle_compute_range": (1.8, 2.2),
+        "heterogeneity_level": 0.2,
+    },
+    {
+        "key": "medium_hetero",
+        "label": "Medium-Hetero",
+        "description": "中度异构（±40%）",
+        "rsu_compute_range": (6.0, 14.0),
+        "uav_compute_range": (5.0, 11.0),
+        "vehicle_compute_range": (1.5, 2.5),
+        "heterogeneity_level": 0.4,
+    },
+    {
+        "key": "heavy_hetero",
+        "label": "Heavy-Hetero",
+        "description": "重度异构（±60%）",
+        "rsu_compute_range": (4.0, 16.0),
+        "uav_compute_range": (3.5, 12.5),
+        "vehicle_compute_range": (1.0, 3.0),
+        "heterogeneity_level": 0.6,
+    },
+    {
+        "key": "extreme_hetero",
+        "label": "Extreme-Hetero",
+        "description": "极端异构（2x~5x差异）",
+        "rsu_compute_range": (3.0, 20.0),
+        "uav_compute_range": (2.0, 15.0),
+        "vehicle_compute_range": (0.5, 4.0),
+        "heterogeneity_level": 0.8,
+    },
+]
 
 
 def hetero_metrics_hook(

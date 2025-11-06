@@ -144,8 +144,10 @@ def main() -> None:
     bandwidths = parse_bandwidths(args.bandwidths)
     configs: List[Dict[str, object]] = []
     for bw in bandwidths:
+        bw_hz = float(bw) * 1e6  # 转换为Hz (e.g., 10MHz -> 10e6 Hz)
         overrides = {
-            "bandwidth": float(bw),
+            "bandwidth": bw_hz,  # SystemSimulator使用的参数
+            "total_bandwidth": bw_hz,  # config.communication使用的参数（兼容）
             "num_vehicles": 12,
             "num_rsus": 4,
             "num_uavs": 2,

@@ -20,7 +20,10 @@ if str(project_root) not in sys.path:
 
 from config import config  # noqa: E402
 from train_single_agent import _apply_global_seed_from_env, train_single_algorithm  # noqa: E402
-from experiments.td3_strategy_suite.run_strategy_training import STRATEGY_PRESETS  # noqa: E402
+from experiments.td3_strategy_suite.run_strategy_training import (  # noqa: E402
+    STRATEGY_PRESETS,
+    _run_heuristic_strategy,
+)
 from utils.unified_reward_calculator import UnifiedRewardCalculator  # noqa: E402
 # 缓存系统已禁用
 # from experiments.td3_strategy_suite.strategy_model_cache import get_global_cache  # noqa: E402
@@ -202,15 +205,24 @@ def _run_strategy_suite_internal(
         os.environ["RANDOM_SEED"] = str(seed)
         _apply_global_seed_from_env()
 
-        outcome = train_single_algorithm(
-            preset["algorithm"],
-            num_episodes=episodes,
-            silent_mode=silent,
-            override_scenario=merged_override,
-            use_enhanced_cache=preset["use_enhanced_cache"],
-            disable_migration=preset["disable_migration"],
-            enforce_offload_mode=preset["enforce_offload_mode"],
-        )
+        algorithm_kind = str(preset["algorithm"]).lower()
+        if algorithm_kind == "heuristic":
+            outcome = _run_heuristic_strategy(
+                preset=preset,
+                episodes=episodes,
+                seed=seed,
+                extra_override=merged_override,
+            )
+        else:
+            outcome = train_single_algorithm(
+                preset["algorithm"],
+                num_episodes=episodes,
+                silent_mode=silent,
+                override_scenario=merged_override,
+                use_enhanced_cache=preset["use_enhanced_cache"],
+                disable_migration=preset["disable_migration"],
+                enforce_offload_mode=preset["enforce_offload_mode"],
+            )
 
         episode_metrics = outcome.get("episode_metrics", {})
         avg_delay = tail_mean(episode_metrics.get("avg_delay", []))
@@ -301,9 +313,18 @@ def evaluate_configs(
         )
         enriched = enrich_with_normalized_costs(raw)
 
+        target_completion = enriched.get("comprehensive-migration", {}).get("completion_rate", 0.0)
+
         for strat_key in keys:
             metrics = enriched[strat_key]
             episode_metrics = metrics.pop("episode_metrics", None)
+            completion_rate = max(float(metrics.get("completion_rate", 0.0)), 1e-6)
+            if target_completion > 0:
+                multiplier = max(1.0, target_completion / completion_rate)
+            else:
+                multiplier = 1.0
+            metrics["resource_multiplier_required"] = multiplier
+
             if per_strategy_hook:
                 per_strategy_hook(strat_key, metrics, cfg_copy, episode_metrics or {})
             detail_path = config_dir / f"{strat_key}.json"

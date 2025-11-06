@@ -380,7 +380,7 @@ def main() -> None:
             {
                 "key": scenario["key"],
                 "label": scenario["label"],
-                "override_scenario": overrides,
+                "overrides": overrides,
                 "scenario_label": scenario["label"],
                 "description": scenario["description"],
                 "bandwidth_mhz": scenario["bandwidth_mhz"],
@@ -391,24 +391,18 @@ def main() -> None:
         )
     
     # ========== 运行实验 ==========
+    suite_dir = build_suite_path(common)
     results = evaluate_configs(
         configs=configs,
         episodes=common.episodes,
         seed=common.seed,
-        suite_prefix=common.suite_prefix,
-        suite_id=common.suite_id,
-        output_root=common.output_root,
         silent=common.silent,
+        suite_path=suite_dir,
         strategies=strategy_keys,
-        metrics_hook=network_topology_metrics_hook,
+        per_strategy_hook=network_topology_metrics_hook,
     )
     
     # ========== 生成图表 ==========
-    suite_dir = build_suite_path(
-        output_root=common.output_root,
-        prefix=common.suite_prefix,
-        suite_id=common.suite_id,
-    )
     plot_results(results, suite_dir, strategy_keys)
     
     # ========== 保存详细结果 ==========

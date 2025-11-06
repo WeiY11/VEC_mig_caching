@@ -281,6 +281,140 @@ class SingleAgentTrainingEnvironment:
         if override_scenario:
             scenario_config.update(override_scenario)
             scenario_config['override_topology'] = True
+            
+            # 🔧 关键修复：动态修改全局config以支持参数覆盖
+            # 原因：Node类使用全局config而非scenario_config
+            
+            # 拓扑数量参数
+            if 'num_vehicles' in override_scenario:
+                num_vehicles_override = int(override_scenario['num_vehicles'])
+                config.num_vehicles = num_vehicles_override
+                print(f"🔧 [Override] 动态设置车辆数量: {num_vehicles_override}")
+            if 'num_rsus' in override_scenario:
+                num_rsus_override = int(override_scenario['num_rsus'])
+                config.num_rsus = num_rsus_override
+                print(f"🔧 [Override] 动态设置RSU数量: {num_rsus_override}")
+            if 'num_uavs' in override_scenario:
+                num_uav_override = int(override_scenario['num_uavs'])
+                config.num_uavs = num_uav_override
+                print(f"🔧 [Override] 动态设置UAV数量: {num_uav_override}")
+
+            # 带宽参数
+            if 'bandwidth' in override_scenario or 'total_bandwidth' in override_scenario:
+                bw_value = override_scenario.get('total_bandwidth') or override_scenario.get('bandwidth')
+                if bw_value:
+                    config.communication.total_bandwidth = float(bw_value)
+                    print(f"🔧 [Override] 动态设置带宽: {float(bw_value)/1e6:.1f} MHz")
+            
+            # CPU频率参数
+            if 'vehicle_cpu_freq' in override_scenario:
+                freq_value = override_scenario['vehicle_cpu_freq']
+                # 更新范围和默认值
+                config.compute.vehicle_cpu_freq_range = (freq_value, freq_value)
+                config.compute.vehicle_cpu_freq = freq_value
+                print(f"🔧 [Override] 动态设置车辆CPU频率: {float(freq_value)/1e9:.2f} GHz")
+            
+            if 'rsu_cpu_freq' in override_scenario:
+                freq_value = override_scenario['rsu_cpu_freq']
+                config.compute.rsu_cpu_freq_range = (freq_value, freq_value)
+                config.compute.rsu_cpu_freq = freq_value
+                print(f"🔧 [Override] 动态设置RSU CPU频率: {float(freq_value)/1e9:.2f} GHz")
+            
+            if 'uav_cpu_freq' in override_scenario:
+                freq_value = override_scenario['uav_cpu_freq']
+                config.compute.uav_cpu_freq_range = (freq_value, freq_value)
+                config.compute.uav_cpu_freq = freq_value
+                print(f"🔧 [Override] 动态设置UAV CPU频率: {float(freq_value)/1e9:.2f} GHz")
+            
+            # 任务数据大小参数
+            if 'task_data_size_min_kb' in override_scenario or 'task_data_size_max_kb' in override_scenario:
+                min_kb = override_scenario.get('task_data_size_min_kb')
+                max_kb = override_scenario.get('task_data_size_max_kb')
+                if min_kb is not None and max_kb is not None:
+                    # 转换为字节
+                    min_bytes = float(min_kb) * 1024
+                    max_bytes = float(max_kb) * 1024
+                    config.task.data_size_range = (min_bytes, max_bytes)
+                    config.task.task_data_size_range = (min_bytes, max_bytes)
+                    print(f"🔧 [Override] 动态设置任务数据大小: {min_kb}-{max_kb} KB")
+            
+            # 任务复杂度参数
+            if 'task_complexity_multiplier' in override_scenario:
+                multiplier = override_scenario['task_complexity_multiplier']
+                # 通过环境变量传递给TaskConfig
+                os.environ['TASK_COMPLEXITY_MULTIPLIER'] = str(multiplier)
+                print(f"🔧 [Override] 动态设置任务复杂度倍数: {multiplier}x")
+            
+            if 'task_compute_density' in override_scenario:
+                density = override_scenario['task_compute_density']
+                config.task.task_compute_density = float(density)
+                print(f"🔧 [Override] 动态设置任务计算密度: {density} cycles/bit")
+            
+            # 缓存容量参数
+            if 'cache_capacity' in override_scenario:
+                capacity_mb = override_scenario['cache_capacity']
+                # 通过环境变量传递（影响所有节点）
+                os.environ['CACHE_CAPACITY_MB'] = str(capacity_mb)
+                print(f"🔧 [Override] 动态设置缓存容量: {capacity_mb} MB")
+
+            # 服务能力参数
+            if 'rsu_base_service' in override_scenario:
+                value = int(override_scenario['rsu_base_service'])
+                config.service.rsu_base_service = value
+                print(f"🔧 [Override] 动态设置RSU基础服务能力: {value}")
+            if 'rsu_max_service' in override_scenario:
+                value = int(override_scenario['rsu_max_service'])
+                config.service.rsu_max_service = value
+                print(f"🔧 [Override] 动态设置RSU最大服务能力: {value}")
+            if 'rsu_work_capacity' in override_scenario:
+                value = float(override_scenario['rsu_work_capacity'])
+                config.service.rsu_work_capacity = value
+                print(f"🔧 [Override] 动态设置RSU工作容量: {value}")
+            if 'uav_base_service' in override_scenario:
+                value = int(override_scenario['uav_base_service'])
+                config.service.uav_base_service = value
+                print(f"🔧 [Override] 动态设置UAV基础服务能力: {value}")
+            if 'uav_max_service' in override_scenario:
+                value = int(override_scenario['uav_max_service'])
+                config.service.uav_max_service = value
+                print(f"🔧 [Override] 动态设置UAV最大服务能力: {value}")
+            if 'uav_work_capacity' in override_scenario:
+                value = float(override_scenario['uav_work_capacity'])
+                config.service.uav_work_capacity = value
+                print(f"🔧 [Override] 动态设置UAV工作容量: {value}")
+            
+            # 任务到达率参数
+            if 'task_arrival_rate' in override_scenario:
+                arrival_rate = override_scenario['task_arrival_rate']
+                config.task.arrival_rate = float(arrival_rate)
+                # 同时设置环境变量以兼容旧代码
+                os.environ['TASK_ARRIVAL_RATE'] = str(arrival_rate)
+                print(f"🔧 [Override] 动态设置任务到达率: {arrival_rate} tasks/s")
+            
+            # 单一任务数据大小参数（用于混合负载实验）
+            if 'task_data_size_kb' in override_scenario:
+                size_kb = override_scenario['task_data_size_kb']
+                size_bytes = float(size_kb) * 1024
+                config.task.data_size_range = (size_bytes, size_bytes)
+                config.task.task_data_size_range = (size_bytes, size_bytes)
+                print(f"🔧 [Override] 动态设置任务数据大小: {size_kb} KB")
+            
+            # 通信参数（噪声功率、路径损耗）
+            if 'noise_power_dbm' in override_scenario:
+                noise_power = override_scenario['noise_power_dbm']
+                config.communication.noise_power_dbm = float(noise_power)
+                print(f"🔧 [Override] 动态设置噪声功率: {noise_power} dBm")
+            
+            if 'path_loss_exponent' in override_scenario:
+                exponent = override_scenario['path_loss_exponent']
+                config.communication.path_loss_exponent = float(exponent)
+                print(f"🔧 [Override] 动态设置路径损耗指数: {exponent}")
+            
+            # 资源异构性参数
+            if 'heterogeneity_level' in override_scenario:
+                hetero_level = override_scenario['heterogeneity_level']
+                os.environ['HETEROGENEITY_LEVEL'] = str(hetero_level)
+                print(f"🔧 [Override] 动态设置资源异构性级别: {hetero_level}")
         
         mode_aliases = {
             'local': 'local_only',

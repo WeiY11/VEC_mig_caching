@@ -64,8 +64,53 @@ DEFAULT_EPISODES = 500
 DEFAULT_SEED = 42
 
 # 混合负载配置：(complexity, data_size_kb, arrival_rate, label)
-WORKLOAD_CONFIGS = [{
-        "key": "compute_intensive", "task_compute_density": 300.0, }]
+WORKLOAD_CONFIGS = [
+    {
+        "key": "compute_intensive",
+        "label": "Compute-Intensive",
+        "description": "High CPU density with lightweight payloads",
+        "task_complexity_multiplier": 1.8,
+        "task_compute_density": 650.0,
+        "task_data_size_kb": 180.0,
+        "task_arrival_rate": 1.2,
+    },
+    {
+        "key": "data_intensive",
+        "label": "Data-Intensive",
+        "description": "Large data payloads and moderate compute demand",
+        "task_complexity_multiplier": 1.3,
+        "task_compute_density": 420.0,
+        "task_data_size_kb": 580.0,
+        "task_arrival_rate": 1.0,
+    },
+    {
+        "key": "latency_critical",
+        "label": "Latency-Critical",
+        "description": "Burst arrival patterns requiring tight latency",
+        "task_complexity_multiplier": 1.1,
+        "task_compute_density": 360.0,
+        "task_data_size_kb": 240.0,
+        "task_arrival_rate": 1.8,
+    },
+    {
+        "key": "balanced",
+        "label": "Balanced Mix",
+        "description": "Even blend of latency-, compute-, and data-oriented tasks",
+        "task_complexity_multiplier": 1.4,
+        "task_compute_density": 470.0,
+        "task_data_size_kb": 360.0,
+        "task_arrival_rate": 1.4,
+    },
+    {
+        "key": "extreme",
+        "label": "Extreme Blend",
+        "description": "Simultaneous heavy compute, data, and arrival bursts",
+        "task_complexity_multiplier": 2.1,
+        "task_compute_density": 720.0,
+        "task_data_size_kb": 620.0,
+        "task_arrival_rate": 2.0,
+    },
+]
 
 
 def workload_metrics_hook(
@@ -224,6 +269,10 @@ def main() -> None:
                 "overrides": overrides,
                 "workload_label": workload_config["label"],
                 "workload_description": workload_config["description"],
+                "task_arrival_rate": workload_config["task_arrival_rate"],
+                "task_data_size_kb": workload_config["task_data_size_kb"],
+                "task_compute_density": workload_config["task_compute_density"],
+                "task_complexity_multiplier": workload_config["task_complexity_multiplier"],
             }
         )
 

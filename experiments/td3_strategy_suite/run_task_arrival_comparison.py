@@ -45,7 +45,7 @@ from experiments.td3_strategy_suite.suite_cli import (
 
 DEFAULT_EPISODES = 500
 DEFAULT_SEED = 42
-DEFAULT_ARRIVAL_RATES = [0.8, 1.2, 1.6]
+DEFAULT_ARRIVAL_RATES = [1.0, 1.5, 2.0, 2.5]
 
 
 def parse_arrival_rates(value: str) -> List[float]:

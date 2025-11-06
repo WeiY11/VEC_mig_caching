@@ -322,30 +322,24 @@ def main() -> None:
             {
                 "key": f"{freq:.1f}ghz",
                 "label": f"{freq:.1f} GHz",
-                "override_scenario": overrides,
+                "overrides": overrides,
                 "cpu_freq_ghz": freq,
             }
         )
     
     # ========== 运行实验 ==========
+    suite_dir = build_suite_path(common)
     results = evaluate_configs(
         configs=configs,
         episodes=common.episodes,
         seed=common.seed,
-        suite_prefix=common.suite_prefix,
-        suite_id=common.suite_id,
-        output_root=common.output_root,
         silent=common.silent,
+        suite_path=suite_dir,
         strategies=strategy_keys,
-        metrics_hook=comprehensive_metrics_hook,
+        per_strategy_hook=comprehensive_metrics_hook,
     )
     
     # ========== 生成图表 ==========
-    suite_dir = build_suite_path(
-        output_root=common.output_root,
-        prefix=common.suite_prefix,
-        suite_id=common.suite_id,
-    )
     plot_results(results, suite_dir, strategy_keys)
     
     # ========== 保存详细结果 ==========
