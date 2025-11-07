@@ -17,34 +17,25 @@ CAMTD3 = 基于中央资源分配的缓存感知任务迁移系统
 python train_single_agent.py --algorithm TD3 --episodes 200
 python train_single_agent.py --algorithm SAC --episodes 200
 
+✅ 方式1：启用所有通信增强（推荐）
+python train_single_agent.py --algorithm TD3 --episodes 200 --comm-enhancements
+✅ 方式2：单独启用某个功能
+# 只启用快衰落
+python train_single_agent.py --algorithm TD3 --episodes 200 --fast-fading
+# 只启用系统级干扰
+python train_single_agent.py --algorithm TD3 --episodes 200 --system-interference
+# 只启用动态带宽分配
+python train_single_agent.py --algorithm TD3 --episodes 200 --dynamic-bandwidth
+# 组合启用
+python train_single_agent.py --algorithm TD3 --episodes 200 --fast-fading --system-interference --dynamic-bandwidth
+
 # 如需禁用中央资源分配（不推荐，仅用于消融实验）
 python train_single_agent.py --algorithm TD3 --episodes 200 --no-central-resource
 
-对比实验本地训练命令：
-cd D:\VEC_mig_caching
-python experiments/camtd3_strategy_suite/run_batch_experiments.py --mode full --all --non-interactive --silent
-
-平滑时延能耗”和“注意力权衡距离与缓存”的优化
-python train_single_agent.py --algorithm TD3 --episodes 800 --num-vehicles 12 --two-stage
 🐍🖥️📚
-cd offloading_strategy_comparison
-# 1. 测试（1分钟）
-python test_offloading_strategies.py
-# 2. 快速实验（10分钟）
-python run_offloading_comparison.py --mode vehicle --episodes 5
-# 3. 完整实验（3-4小时，论文用）
-python run_offloading_comparison.py --mode all --episodes 50
-# 4. 生成图表
-python visualize_offloading_comparison.py --results all_experiments_*.json --mode all
 
 单智能体算法训练脚本
 支持DDPG、TD3、TD3-LE、DQN、PPO、SAC等算法的训练和比较
-使用方法:
-python train_single_agent.py --algorithm TD3 --episodes 200
-python train_single_agent.py --algorithm TD3 --episodes 200 --seed 123 --num-vehicles 16
-python train_single_agent.py --algorithm DDPG --episodes 200
-python train_single_agent.py --algorithm PPO --episodes 150 --seed 3407
-python train_single_agent.py --algorithm TD3-LE --episodes 200  # 延时-能耗协同优化
 python train_single_agent.py --compare --episodes 200  # 比较所有算法
 🚀 增强缓存模式 (默认启用 - 分层L1/L2 + 自适应热度策略 + RSU协作):
 python train_single_agent.py --algorithm TD3 --episodes 1600 --num-vehicles 8
@@ -56,11 +47,8 @@ python train_single_agent.py --algorithm TD3 --episodes 1600 --num-vehicles 24
 python train_single_agent.py --algorithm TD3-LE --episodes 1600 --num-vehicles 12
 python train_single_agent.py --algorithm SAC --episodes 800
 python train_single_agent.py --algorithm PPO --episodes 800
-🔧 禁用增强缓存 (如需baseline对比):
-python train_single_agent.py --algorithm TD3 --episodes 1600 --num-vehicles 20 --no-enhanced-cache
 
 🌐 实时可视化:
-python train_single_agent.py --algorithm TD3 --episodes 200 --realtime-vis
 python train_single_agent.py --algorithm DDPG --episodes 100 --realtime-vis --vis-port 8080
 
 🐍 生成学术图表:
@@ -68,27 +56,7 @@ python generate_academic_charts.py results/single_agent/td3/training_results_202
 
 到达率对比：python experiments/arrival_rate_analysis/run_td3_arrival_rate_sweep_silent.py --rates 1.0 1.5 2.0 2.5 3.0 3.5 --episodes 800
 
-train_single_agent.py (主入口)
-    ↓
-├─ 解析参数: --algorithm TD3, --episodes 800, --num-vehicles 12
-├─ 加载配置: config/
-├─ 初始化环境: TD3Environment (single_agent/td3.py)
-│   ├─ 创建仿真器: CompleteSystemSimulator (evaluation/system_simulator.py)
-│   ├─ 初始化拓扑: FixedTopologyOptimizer
-│   ├─ 设置车辆数: 12辆
-│   └─ 创建控制器: AdaptiveCacheController, AdaptiveMigrationController
-├─ 训练循环 (800轮):
-│   ├─ 重置环境 → system_simulator.initialize_components()
-│   ├─ 每一步:
-│   │   ├─ TD3选择动作
-│   │   ├─ 环境执行: system_simulator.run_simulation_step()
-│   │   ├─ 计算奖励: unified_reward_calculator.calculate_reward()
-│   │   └─ TD3学习更新
-│   └─ 评估性能
-└─ 保存结果:
-    ├─ 模型: results/models/single_agent/td3/
-    ├─ 训练数据: results/single_agent/td3/training_results_*.json
-    └─ 图表: results/single_agent/td3/training_chart_*.png
+
 """ 
 import os
 import sys
@@ -2485,6 +2453,16 @@ def main():
     parser.add_argument('--silent-mode', action='store_true',
                         help='启用静默模式，跳过训练结束后的交互提示')
     
+    # 🆕 通信模型优化参数（3GPP标准增强）
+    parser.add_argument('--comm-enhancements', action='store_true',
+                        help='启用所有通信模型优化（快衰落+系统级干扰+动态带宽）Enable all communication model enhancements')
+    parser.add_argument('--fast-fading', action='store_true',
+                        help='启用随机快衰落（Rayleigh/Rician）Enable fast fading')
+    parser.add_argument('--system-interference', action='store_true',
+                        help='启用系统级干扰计算 Enable system-level interference calculation')
+    parser.add_argument('--dynamic-bandwidth', action='store_true',
+                        help='启用动态带宽分配 Enable dynamic bandwidth allocation')
+    
     args = parser.parse_args()
 
     if args.seed is not None:
@@ -2498,6 +2476,44 @@ def main():
     else:
         os.environ.pop('CENTRAL_RESOURCE', None)
         print("⚠️  使用标准均匀资源分配模式（已通过 --no-central-resource 禁用中央资源）")
+    
+    # 🆕 通信模型优化配置
+    if args.comm_enhancements or args.fast_fading or args.system_interference or args.dynamic_bandwidth:
+        print("\n" + "="*70)
+        print("🌐 通信模型优化配置（3GPP标准增强）")
+        print("="*70)
+        
+        # 如果启用了--comm-enhancements，则启用所有优化
+        if args.comm_enhancements:
+            config.communication.enable_fast_fading = True
+            config.communication.use_system_interference = True
+            config.communication.use_bandwidth_allocator = True
+            config.communication.use_communication_enhancements = True
+            print("✅ 启用所有通信模型优化（完整3GPP标准模式）")
+        else:
+            # 单独配置各项优化
+            if args.fast_fading:
+                config.communication.enable_fast_fading = True
+                print("✅ 启用随机快衰落（Rayleigh/Rician分布）")
+            
+            if args.system_interference:
+                config.communication.use_system_interference = True
+                print("✅ 启用系统级干扰计算")
+            
+            if args.dynamic_bandwidth:
+                config.communication.use_bandwidth_allocator = True
+                print("✅ 启用动态带宽分配调度器")
+        
+        # 显示配置详情
+        print("\n配置详情：")
+        print(f"  - 快衰落: {'启用' if config.communication.enable_fast_fading else '禁用'}")
+        print(f"  - 系统级干扰: {'启用' if config.communication.use_system_interference else '禁用'}")
+        print(f"  - 动态带宽分配: {'启用' if config.communication.use_bandwidth_allocator else '禁用'}")
+        print(f"  - 载波频率: {config.communication.carrier_frequency/1e9:.1f} GHz")
+        print(f"  - 编码效率: {config.communication.coding_efficiency}")
+        if config.communication.enable_fast_fading:
+            print(f"  - 快衰落参数: σ={config.communication.fast_fading_std}, K={config.communication.rician_k_factor}dB")
+        print("="*70 + "\n")
     
     # Toggle two-stage pipeline via environment for the simulator
     if args.two_stage:

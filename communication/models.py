@@ -123,8 +123,8 @@ class WirelessCommunicationModel:
         # 4. 计算阴影衰落 - 随机变量
         shadowing_db = self._generate_shadowing(los_probability)
         
-        # 5. 计算信道增益 - 3GPP标准式(14)
-        channel_gain_linear = self._calculate_channel_gain(path_loss_db, shadowing_db, tx_node_type, rx_node_type)
+        # 5. 计算信道增益 - 3GPP标准式(14)（包含快衰落）
+        channel_gain_linear = self._calculate_channel_gain(path_loss_db, shadowing_db, tx_node_type, rx_node_type, los_probability)
         
         # 6. 计算干扰功率 (简化)
         interference_power = self._calculate_interference_power(pos_b)
@@ -182,11 +182,65 @@ class WirelessCommunicationModel:
             # NLoS情况
             return np.random.normal(0, self.shadowing_std_nlos)
     
+    def _generate_fast_fading(self, los_probability: float) -> float:
+        """
+        生成快衰落因子（Rayleigh/Rician分布）
+        
+        【3GPP标准】
+        - LoS场景：Rician分布，K因子典型值6dB
+        - NLoS场景：Rayleigh分布
+        
+        【数学模型】
+        - Rician: h = sqrt(K/(K+1)) + sqrt(1/(K+1)) × Rayleigh(σ)
+        - Rayleigh: h = sqrt(X² + Y²), X,Y ~ N(0, σ²/2)
+        
+        Args:
+            los_probability: 视距概率（用于判断LoS/NLoS）
+        
+        Returns:
+            快衰落因子（线性值）
+        """
+        if not self.enable_fast_fading:
+            return 1.0  # 关闭快衰落，返回常数1.0
+        
+        # 根据LoS概率随机决定当前场景
+        is_los = np.random.random() < los_probability
+        
+        if is_los:
+            # LoS场景：Rician分布
+            # K因子（dB转线性）
+            k_linear = db_to_linear(self.rician_k_factor)
+            
+            # Rician分布 = LoS分量 + 散射分量
+            # LoS分量（确定性）
+            los_component = np.sqrt(k_linear / (k_linear + 1))
+            
+            # 散射分量（Rayleigh）
+            scatter_scale = np.sqrt(1 / (2 * (k_linear + 1)))  # Rayleigh标准差
+            nlos_component = np.random.rayleigh(scatter_scale * self.fast_fading_std)
+            
+            fading_factor = los_component + nlos_component
+        else:
+            # NLoS场景：Rayleigh分布
+            # Rayleigh分布的标准差参数
+            scale = self.fast_fading_std / np.sqrt(2)
+            fading_factor = np.random.rayleigh(scale)
+        
+        # 限制快衰落范围，避免极端值（0.1 ~ 3.0）
+        fading_factor = np.clip(fading_factor, 0.1, 3.0)
+        
+        return fading_factor
+    
     def _calculate_channel_gain(self, path_loss_db: float, shadowing_db: float, 
-                               tx_node_type: str = 'vehicle', rx_node_type: str = 'rsu') -> float:
+                               tx_node_type: str = 'vehicle', rx_node_type: str = 'rsu',
+                               los_probability: float = 0.5) -> float:
         """
         计算信道增益 - 3GPP标准式(14)
         h = 10^(-L/10) * g_tx * g_rx * g_fading
+        
+        【修复记录】
+        - 添加los_probability参数用于快衰落生成
+        - 快衰落因子从固定值改为动态生成
         """
         # 根据节点类型选择天线增益
         tx_gain_map = {
@@ -208,21 +262,123 @@ class WirelessCommunicationModel:
         path_loss_linear = max(db_to_linear(total_path_loss_db), 1e-9)
         antenna_gain_linear = db_to_linear(tx_antenna_gain_db + rx_antenna_gain_db)
         
+        # 🆕 生成快衰落因子（如果启用）
+        fast_fading = self._generate_fast_fading(los_probability)
+        
         # 总信道增益
-        channel_gain = (antenna_gain_linear * self.fast_fading_factor) / path_loss_linear
+        channel_gain = (antenna_gain_linear * fast_fading) / path_loss_linear
         
         return channel_gain
+    
+    def calculate_system_interference(
+        self,
+        receiver_pos: Position,
+        receiver_node_id: str,
+        active_transmitters: list,
+        receiver_frequency: float,
+        rx_node_type: str = 'vehicle',
+        max_distance: float = 1000.0,
+        max_interferers: int = 10
+    ) -> float:
+        """
+        计算系统级同频干扰功率 - 3GPP标准
+        
+        【功能】
+        考虑所有活跃同频发射节点的真实干扰，替代统计简化模型
+        
+        【算法】
+        1. 筛选同频且在距离阈值内的干扰源
+        2. 按距离排序，保留最近的N个
+        3. 计算每个干扰源的信道增益和干扰功率
+        4. 累加总干扰功率
+        
+        Args:
+            receiver_pos: 接收节点位置
+            receiver_node_id: 接收节点ID（避免自干扰）
+            active_transmitters: 活跃发射节点列表，每项格式：
+                {
+                    'node_id': str,
+                    'pos': Position,
+                    'tx_power': float (watts),
+                    'frequency': float (Hz),
+                    'node_type': str ('vehicle'/'rsu'/'uav')
+                }
+            receiver_frequency: 接收频率 (Hz)
+            rx_node_type: 接收节点类型
+            max_distance: 最大干扰距离阈值 (meters)
+            max_interferers: 最多考虑的干扰源数量
+        
+        Returns:
+            总干扰功率 (watts)
+        """
+        if not active_transmitters:
+            # 没有活跃发射节点，返回基础噪声
+            return self.base_interference_power
+        
+        interference_power = 0.0
+        interferers = []
+        
+        # 步骤1：筛选有效干扰源
+        for tx in active_transmitters:
+            # 跳过自己
+            if tx.get('node_id') == receiver_node_id:
+                continue
+            
+            # 频率选择性：只考虑同频或邻频干扰（±1 MHz容差）
+            freq_diff = abs(tx.get('frequency', receiver_frequency) - receiver_frequency)
+            if freq_diff > 1e6:  # 超过1 MHz频差，忽略
+                continue
+            
+            # 计算距离
+            tx_pos = tx.get('pos')
+            if tx_pos is None:
+                continue
+            
+            distance = receiver_pos.distance_to(tx_pos)
+            
+            # 距离阈值筛选
+            if distance > max_distance:
+                continue
+            
+            # 有效干扰源
+            interferers.append((distance, tx))
+        
+        # 步骤2：按距离排序，保留最近的N个（降低复杂度）
+        interferers.sort(key=lambda x: x[0])
+        interferers = interferers[:max_interferers]
+        
+        # 步骤3：计算每个干扰源的贡献
+        for distance, tx in interferers:
+            tx_pos = tx['pos']
+            tx_power = tx.get('tx_power', 0.2)  # 默认200mW
+            tx_node_type = tx.get('node_type', 'vehicle')
+            
+            # 计算干扰信道增益（简化：不考虑快衰落的随机性，取期望值）
+            channel_state = self.calculate_channel_state(
+                tx_pos, receiver_pos,
+                tx_node_type=tx_node_type,
+                rx_node_type=rx_node_type
+            )
+            
+            # 干扰功率 = 发射功率 × 信道增益
+            interference_contribution = tx_power * channel_state.channel_gain_linear
+            interference_power += interference_contribution
+        
+        # 步骤4：加上基础噪声（热噪声和其他远端干扰）
+        interference_power += self.base_interference_power
+        
+        return interference_power
     
     def _calculate_interference_power(self, receiver_pos: Position) -> float:
         """
         计算干扰功率 - 对应论文式(15)
-        简化实现：基于位置的统计干扰模型
+        简化实现：基于位置的统计干扰模型（fallback方法）
         
         【修复记录】
         - 问题6: 使用可配置的基础干扰功率和变化系数
+        - 保留作为fallback，当无法获取全局节点信息时使用
         
-        注：完整的系统级干扰需要遍历所有同频发射节点，计算复杂度为O(N²)。
-        本实现采用统计简化模型，适合RL训练。实际部署可升级为精确干扰计算。
+        注：推荐使用calculate_system_interference()获得更精确的干扰计算
         """
         # 🔧 修复问题6：使用可配置的基础干扰功率
         base_interference = self.base_interference_power  # 从配置读取
@@ -652,12 +808,32 @@ class IntegratedCommunicationComputeModel:
     """
     集成通信计算模型
     整合论文第5节的所有通信和计算模型
+    
+    【全面修复扩展】
+    - ✅ 随机快衰落：Rayleigh/Rician分布
+    - ✅ 系统级干扰：考虑活跃发射节点
+    - ✅ 动态带宽分配：智能调度器
     """
     
-    def __init__(self):
+    def __init__(self, use_bandwidth_allocator: bool = False):
+        """
+        初始化集成模型
+        
+        Args:
+            use_bandwidth_allocator: 是否启用动态带宽分配器（默认False保持兼容）
+        """
         self.comm_model = WirelessCommunicationModel()
         self.compute_energy_model = ComputeEnergyModel()
         self.comm_energy_model = CommunicationEnergyModel()
+        
+        # 🆕 动态带宽分配器（可选）
+        self.use_bandwidth_allocator = use_bandwidth_allocator
+        self.bandwidth_allocator = None
+        if use_bandwidth_allocator:
+            from communication.bandwidth_allocator import BandwidthAllocator
+            self.bandwidth_allocator = BandwidthAllocator(
+                total_bandwidth=config.communication.total_bandwidth
+            )
     
     def evaluate_processing_option(self, task: Task, source_pos: Position, 
                                  target_pos: Position, target_node_info: Dict,

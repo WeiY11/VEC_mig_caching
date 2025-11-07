@@ -910,6 +910,11 @@ class CommunicationConfig:
         self.fast_fading_std = 1.0       # 快衰落标准差（Rayleigh/Rician）
         self.rician_k_factor = 6.0       # dB - LoS场景的莱斯K因子
         
+        # 🆕 通信模型优化主开关（集成所有优化功能）
+        self.use_communication_enhancements = False  # 是否启用所有通信模型优化（快衰落+系统级干扰+动态带宽）
+        self.use_system_interference = False         # 是否使用系统级干扰计算
+        self.use_bandwidth_allocator = False         # 是否使用动态带宽分配器
+        
         # 调制参数
         self.modulation_order = 4  # QPSK
         self.coding_rate = 0.5
