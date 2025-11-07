@@ -102,7 +102,7 @@ DEFAULT_EPISODES = 500
 DEFAULT_SEED = 42
 
 # ========== 车辆速度配置 (m/s) ==========
-DEFAULT_SPEEDS = [10, 20, 30]  # 优化: 5配置→3配置 (慢速/中速/快速)
+DEFAULT_SPEEDS = [10, 15, 20, 25, 30]  # m/s (慢速/低速/中速/高速/快速)
 
 
 def parse_speeds(value: str) -> List[float]:

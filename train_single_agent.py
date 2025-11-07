@@ -1,9 +1,24 @@
 """
+🎯 CAMTD3训练脚本（Cache-Aware Migration with Twin Delayed DDPG）
 
-🎯 中央资源分配架构（Phase 1决策 + Phase 2执行）:
-python train_single_agent.py --algorithm TD3 --episodes 200 --central-resource
-python train_single_agent.py --algorithm SAC --episodes 200 --central-resource
-# 特点：扩展状态空间（80维）+ 扩展动作空间（30维）+ 智能资源分配
+【系统架构】
+CAMTD3 = 基于中央资源分配的缓存感知任务迁移系统
+├── Phase 1: 中央智能体资源分配决策（核心创新）
+│   ├── 状态空间: 80维（车辆+RSU+UAV全局状态）
+│   ├── 动作空间: 30维（带宽+计算资源分配向量）
+│   └── 算法: TD3/SAC/DDPG/PPO
+├── Phase 2: 本地任务执行
+│   ├── 缓存决策（Cache-Aware）
+│   ├── 任务迁移（Migration）
+│   └── 任务调度
+
+【使用方法】
+# CAMTD3标准训练（默认模式）
+python train_single_agent.py --algorithm TD3 --episodes 200
+python train_single_agent.py --algorithm SAC --episodes 200
+
+# 如需禁用中央资源分配（不推荐，仅用于消融实验）
+python train_single_agent.py --algorithm TD3 --episodes 200 --no-central-resource
 
 对比实验本地训练命令：
 cd D:\VEC_mig_caching
@@ -267,7 +282,7 @@ class SingleAgentTrainingEnvironment:
     
     def __init__(self, algorithm: str, override_scenario: Optional[Dict[str, Any]] = None, 
                  use_enhanced_cache: bool = False, disable_migration: bool = False,
-                 enforce_offload_mode: Optional[str] = None):
+                 enforce_offload_mode: Optional[str] = None, fixed_offload_policy: Optional[str] = None):
         self.input_algorithm = algorithm
         normalized_algorithm = algorithm.upper().replace('-', '_')
         alias_map = {
@@ -284,6 +299,9 @@ class SingleAgentTrainingEnvironment:
         self.algorithm = alias_map.get(normalized_algorithm, alias_map.get(alias_key, normalized_algorithm))
         scenario_config = _build_scenario_config()
         # 应用外部覆盖
+        central_env_value = os.environ.get('CENTRAL_RESOURCE', '')
+        self.central_resource_enabled = central_env_value.strip() in {'1', 'true', 'True'}
+
         if override_scenario:
             scenario_config.update(override_scenario)
             scenario_config['override_topology'] = True
@@ -483,6 +501,42 @@ class SingleAgentTrainingEnvironment:
         elif self.enforce_offload_mode == 'remote_only':
             print("🧷 强制卸载模式: 全部远端执行（Remote-Only）")
         
+        # 🎯 固定卸载策略初始化
+        self.fixed_offload_policy = None
+        self.fixed_policy_name = None
+        if fixed_offload_policy:
+            try:
+                import sys
+                import importlib.util
+                from pathlib import Path
+                
+                # 动态添加 experiments 目录到 Python 路径
+                exp_path = Path(__file__).parent / 'experiments'
+                if str(exp_path) not in sys.path:
+                    sys.path.insert(0, str(exp_path))
+                
+                # 使用 importlib 动态导入模块（避免静态分析警告）
+                module_path = exp_path / 'fallback_baselines.py'
+                if module_path.exists():
+                    spec = importlib.util.spec_from_file_location("fallback_baselines", module_path)
+                    if spec and spec.loader:
+                        fallback_module = importlib.util.module_from_spec(spec)
+                        spec.loader.exec_module(fallback_module)
+                        create_baseline_algorithm = fallback_module.create_baseline_algorithm
+                    else:
+                        raise ImportError(f"无法加载模块 {module_path}")
+                else:
+                    raise ImportError(f"模块文件不存在: {module_path}")
+                
+                self.fixed_offload_policy = create_baseline_algorithm(fixed_offload_policy)
+                self.fixed_policy_name = fixed_offload_policy
+                print(f"🎲 固定卸载策略: {fixed_offload_policy} (卸载决策不由智能体学习)")
+                print(f"   其他决策（缓存、迁移、资源分配）仍由智能体学习")
+            except Exception as e:
+                print(f"⚠️  无法创建固定策略 '{fixed_offload_policy}': {e}")
+                print(f"   将使用智能体学习卸载决策")
+                self.fixed_offload_policy = None
+        
         # 选择仿真器类型
         self.use_enhanced_cache = use_enhanced_cache and ENHANCED_CACHE_AVAILABLE
         env_disable_migration = os.environ.get("DISABLE_MIGRATION", "").strip() == "1"
@@ -515,6 +569,26 @@ class SingleAgentTrainingEnvironment:
         num_vehicles = len(self.simulator.vehicles)
         num_rsus = len(self.simulator.rsus)
         num_uavs = len(self.simulator.uavs)
+        self.num_vehicles = num_vehicles
+        self.num_rsus = num_rsus
+        self.num_uavs = num_uavs
+        
+        # 🎯 更新固定策略的环境信息
+        if self.fixed_offload_policy is not None:
+            try:
+                # 创建一个简化的环境对象供固定策略使用
+                class SimpleEnv:
+                    def __init__(self, simulator):
+                        self.simulator = simulator
+                        self.agent_env = type('obj', (object,), {
+                            'action_dim': 18,  # 默认action维度
+                        })()
+                
+                simple_env = SimpleEnv(self.simulator)
+                self.fixed_offload_policy.update_environment(simple_env)
+                print(f"   固定策略已更新环境信息: {num_vehicles}车辆, {num_rsus}RSU, {num_uavs}UAV")
+            except Exception as e:
+                print(f"⚠️  固定策略更新环境失败: {e}")
         
         # 应用固定拓扑的参数优化（保持4 RSU + 2 UAV）
         if self.algorithm in {"TD3", "TD3_LATENCY_ENERGY"}:
@@ -534,7 +608,12 @@ class SingleAgentTrainingEnvironment:
         if self.algorithm == "DDPG":
             self.agent_env = DDPGEnvironment(num_vehicles, num_rsus, num_uavs)
         elif self.algorithm == "TD3":
-            self.agent_env = TD3Environment(num_vehicles, num_rsus, num_uavs)
+            self.agent_env = TD3Environment(
+                num_vehicles,
+                num_rsus,
+                num_uavs,
+                use_central_resource=self.central_resource_enabled,
+            )
         elif self.algorithm == "TD3_LATENCY_ENERGY":
             self.agent_env = TD3LatencyEnergyEnvironment(num_vehicles, num_rsus, num_uavs)
         elif self.algorithm == "CAM_TD3":
@@ -548,18 +627,25 @@ class SingleAgentTrainingEnvironment:
         else:
             raise ValueError(f"不支持的算法: {algorithm}")
 
-        # 🎯 中央资源分配架构（Phase 1 + Phase 2）
-        # 通过环境变量 CENTRAL_RESOURCE=1 启用
-        use_central_resource = os.environ.get('CENTRAL_RESOURCE', '').strip() in {'1', 'true', 'True'}
-        if use_central_resource:
-            try:
-                from utils.central_resource_env_wrapper import create_central_resource_env
-                self.agent_env = create_central_resource_env(self.agent_env)
-                print(f"🎯 启用中央资源分配架构：Phase 1(决策) + Phase 2(执行)")
-                print(f"   状态空间: {self.agent_env.extended_state_dim}维")
-                print(f"   动作空间: {self.agent_env.extended_action_dim}维")
-            except Exception as e:
-                print(f"⚠️ 中央资源分配封装失败，回退到标准模式: {e}")
+        # 🎯 中央资源分配模式日志
+        import sys
+        print(f"\n[资源分配模式检查]", file=sys.stderr)
+        print(f"  CENTRAL_RESOURCE 环境变量: '{central_env_value}'", file=sys.stderr)
+        print(f"  use_central_resource: {self.central_resource_enabled}", file=sys.stderr)
+        
+        self.central_resource_action_dim = getattr(self.agent_env, 'central_resource_action_dim', 0)
+        self.central_resource_state_dim = getattr(self.agent_env, 'central_state_dim', 0)
+        self.base_action_dim = getattr(self.agent_env, 'base_action_dim', getattr(self.agent_env, 'action_dim', 0) - self.central_resource_action_dim)
+        
+        if self.central_resource_enabled and self.central_resource_action_dim > 0:
+            print(f"✅ 启用中央资源分配架构：Phase 1(决策) + Phase 2(执行)", file=sys.stderr)
+            print(f"   环境类型: {type(self.agent_env).__name__}", file=sys.stderr)
+            print(f"   基础动作维度: {self.base_action_dim}", file=sys.stderr)
+            print(f"   中央资源动作维度: {self.central_resource_action_dim}", file=sys.stderr)
+            if self.central_resource_state_dim:
+                print(f"   状态扩展维度: +{self.central_resource_state_dim}", file=sys.stderr)
+        else:
+            print(f"  使用标准模式（均匀资源分配）", file=sys.stderr)
         
         # 🧠 若指定了阶段一算法（通过环境变量），用DualStage封装器组合两个阶段
         stage1_alg = os.environ.get('STAGE1_ALG', '').strip().lower()
@@ -746,18 +832,53 @@ class SingleAgentTrainingEnvironment:
             delattr(self, '_last_total_energy')
 
         self._initialize_episode_counters(getattr(self.simulator, 'stats', None))
-
-        state = self.agent_env.get_state_vector(node_states, system_metrics)
-
+        
+        resource_state = self._collect_resource_state()
+        state = self.agent_env.get_state_vector(node_states, system_metrics, resource_state)
+        
         return state
 
     def step(self, action, state, actions_dict: Optional[Dict] = None) -> Tuple[np.ndarray, float, bool, Dict]:
         """执行一步仿真，应用智能体动作到仿真器"""
+        # 🎯 使用固定卸载策略（如果设置）
+        if self.fixed_offload_policy is not None and actions_dict is not None:
+            try:
+                # 使用固定策略生成卸载决策
+                fixed_action = self.fixed_offload_policy.select_action(state)
+                
+                # 将固定策略的action转换为offload preference
+                # 固定策略返回的action格式: [local_score, rsu_score, uav_score, ...]
+                if isinstance(fixed_action, np.ndarray) and len(fixed_action) >= 3:
+                    local_pref = float(fixed_action[0])
+                    rsu_pref = float(fixed_action[1])
+                    uav_pref = float(fixed_action[2])
+                    
+                    # 归一化为概率分布
+                    total = abs(local_pref) + abs(rsu_pref) + abs(uav_pref)
+                    if total > 1e-6:
+                        local_pref = abs(local_pref) / total
+                        rsu_pref = abs(rsu_pref) / total
+                        uav_pref = abs(uav_pref) / total
+                    else:
+                        local_pref, rsu_pref, uav_pref = 0.33, 0.33, 0.34
+                    
+                    # 覆盖智能体的卸载决策，保留其他决策（缓存、迁移等）
+                    if 'offload_preference' in actions_dict:
+                        actions_dict['offload_preference'] = {
+                            'local': local_pref,
+                            'rsu': rsu_pref,
+                            'uav': uav_pref
+                        }
+            except Exception as e:
+                # 如果固定策略失败，回退到智能体决策
+                pass
+        
         # 构造传递给仿真器的动作（将连续动作映射为本地/RSU/UAV偏好）
         sim_actions = self._build_simulator_actions(actions_dict)
         
         # 执行仿真步骤（传入动作）
         step_stats = self.simulator.run_simulation_step(0, sim_actions)
+        resource_state = self._collect_resource_state()
         
         # 收集下一步状态
         node_states = {}
@@ -801,7 +922,7 @@ class SingleAgentTrainingEnvironment:
         system_metrics = self._calculate_system_metrics(step_stats)
         
         # 获取下一状态
-        next_state = self.agent_env.get_state_vector(node_states, system_metrics)
+        next_state = self.agent_env.get_state_vector(node_states, system_metrics, resource_state)
         
         # 🔧 增强：计算包含子系统指标的奖励
         cache_metrics = self.adaptive_cache_controller.get_cache_metrics()
@@ -1331,10 +1452,17 @@ class SingleAgentTrainingEnvironment:
         try:
             import numpy as np
             
+            vehicle_action_array = np.array(vehicle_action, dtype=np.float32).reshape(-1)
+            expected_dim = getattr(self.agent_env, 'action_dim', vehicle_action_array.size)
+            if vehicle_action_array.size < expected_dim:
+                padded = np.zeros(expected_dim, dtype=np.float32)
+                padded[:vehicle_action_array.size] = vehicle_action_array
+                vehicle_action_array = padded
+            else:
+                vehicle_action_array = vehicle_action_array[:expected_dim]
+            
             # =============== 原有任务分配逻辑 (保持兼容) ===============
-            # 取前三维，映射到[0,1]并softmax为概率
-            raw = np.array(vehicle_action[:3], dtype=np.float32).reshape(-1)
-            # 数值安全
+            raw = vehicle_action_array[:3]
             raw = np.clip(raw, -5.0, 5.0)
             exp = np.exp(raw - np.max(raw))
             probs = exp / np.sum(exp)
@@ -1346,64 +1474,74 @@ class SingleAgentTrainingEnvironment:
                 }
             }
             # RSU选择概率
-            num_rsus = len(getattr(self.simulator, 'rsus', []))
+            num_rsus = self.num_rsus
             rsu_action = actions_dict.get('rsu_agent')
             if isinstance(rsu_action, (list, tuple, np.ndarray)) and num_rsus > 0:
                 rsu_raw = np.array(rsu_action[:num_rsus], dtype=np.float32)
+            else:
+                rsu_raw = vehicle_action_array[3:3 + num_rsus]
+            if num_rsus > 0:
                 rsu_raw = np.clip(rsu_raw, -5.0, 5.0)
                 rsu_exp = np.exp(rsu_raw - np.max(rsu_raw))
                 rsu_probs = rsu_exp / np.sum(rsu_exp)
                 sim_actions['rsu_selection_probs'] = [float(x) for x in rsu_probs]
+            
             # UAV选择概率
-            num_uavs = len(getattr(self.simulator, 'uavs', []))
+            num_uavs = self.num_uavs
             uav_action = actions_dict.get('uav_agent')
             if isinstance(uav_action, (list, tuple, np.ndarray)) and num_uavs > 0:
                 uav_raw = np.array(uav_action[:num_uavs], dtype=np.float32)
+            else:
+                uav_raw = vehicle_action_array[3 + num_rsus:3 + num_rsus + num_uavs]
+            if num_uavs > 0:
                 uav_raw = np.clip(uav_raw, -5.0, 5.0)
                 uav_exp = np.exp(uav_raw - np.max(uav_raw))
                 uav_probs = uav_exp / np.sum(uav_exp)
                 sim_actions['uav_selection_probs'] = [float(x) for x in uav_probs]
             
             # 🤖 =============== 新增联合缓存-迁移控制参数 ===============
-            if isinstance(vehicle_action, (list, tuple, np.ndarray)):
-                vehicle_action_array = np.array(vehicle_action, dtype=np.float32)
-                control_start = 3 + num_rsus + num_uavs
-                control_end = control_start + 10
-                if vehicle_action_array.size >= control_end:
-                    cache_migration_actions = vehicle_action_array[control_start:control_end]
-                elif vehicle_action_array.size > control_start:
-                    # 若长度不足则补零
-                    cache_migration_actions = np.zeros(10, dtype=np.float32)
-                    available = vehicle_action_array[control_start:]
-                    cache_migration_actions[:min(available.size, 10)] = available[:10]
-                else:
-                    cache_migration_actions = np.zeros(10, dtype=np.float32)
+            control_start = 3 + num_rsus + num_uavs
+            control_end = control_start + 10
+            cache_migration_actions = vehicle_action_array[control_start:control_end]
+            if cache_migration_actions.size < 10:
+                padded = np.zeros(10, dtype=np.float32)
+                padded[:cache_migration_actions.size] = cache_migration_actions
+                cache_migration_actions = padded
+            cache_migration_actions = np.clip(cache_migration_actions, -1.0, 1.0)
 
-                cache_migration_actions = np.clip(cache_migration_actions, -1.0, 1.0)
+            cache_params, migration_params, joint_params = map_agent_actions_to_params(cache_migration_actions)
 
-                # 映射为参数字典
-                cache_params, migration_params, joint_params = map_agent_actions_to_params(cache_migration_actions)
+            self.adaptive_cache_controller.update_agent_params(cache_params)
+            if not self.disable_migration:
+                self.adaptive_migration_controller.update_agent_params(migration_params)
+            if getattr(self, 'strategy_coordinator', None) is not None:
+                self.strategy_coordinator.update_joint_params(joint_params)
 
-                # 更新自适应控制器参数
-                self.adaptive_cache_controller.update_agent_params(cache_params)
-                if not self.disable_migration:
-                    self.adaptive_migration_controller.update_agent_params(migration_params)
-                if hasattr(self, 'strategy_coordinator') and self.strategy_coordinator is not None:
-                    self.strategy_coordinator.update_joint_params(joint_params)
+            payload = {
+                'adaptive_cache_params': cache_params,
+                'cache_controller': self.adaptive_cache_controller,
+                'joint_strategy_params': joint_params,
+            }
+            if not self.disable_migration:
+                payload.update({
+                    'adaptive_migration_params': migration_params,
+                    'migration_controller': self.adaptive_migration_controller
+                })
+            sim_actions.update(payload)
 
-                # ������Ӧ�������ݸ�������
-                payload = {
-                    'adaptive_cache_params': cache_params,
-                    'cache_controller': self.adaptive_cache_controller,
-                    'joint_strategy_params': joint_params,
-                }
-                if not self.disable_migration:
-                    payload.update({
-                        'adaptive_migration_params': migration_params,
-                        'migration_controller': self.adaptive_migration_controller
-                    })
-                sim_actions.update(payload)
-
+            # 🎯 =============== 中央资源分配动作 (Phase 1) ===============
+            if self.central_resource_enabled and self.central_resource_action_dim > 0:
+                central_start = self.base_action_dim
+                central_end = central_start + self.central_resource_action_dim
+                central_vector = vehicle_action_array[central_start:central_end]
+                allocations = self._decode_central_resource_actions(central_vector)
+                if allocations:
+                    try:
+                        self.simulator.apply_resource_allocation(allocations)
+                        sim_actions['central_resource_allocation'] = allocations
+                    except Exception as exc:
+                        print(f"⚠️ 中央资源分配应用失败: {exc}")
+            
             forced_mode = getattr(self, 'enforce_offload_mode', '')
             if forced_mode == 'local_only':
                 sim_actions['vehicle_offload_pref'] = {'local': 1.0, 'rsu': 0.0, 'uav': 0.0}
@@ -1442,6 +1580,71 @@ class SingleAgentTrainingEnvironment:
         except Exception as e:
             print(f"⚠️ 动作构造异常: {e}")
             return None
+    
+    def _collect_resource_state(self) -> Optional[Dict[str, Any]]:
+        if not self.central_resource_enabled:
+            return None
+        resource_pool = getattr(self.simulator, 'resource_pool', None)
+        if resource_pool is None:
+            return None
+        try:
+            return resource_pool.get_resource_state()
+        except Exception:
+            return None
+    
+    @staticmethod
+    def _normalize_allocation(vector: np.ndarray, size: int) -> np.ndarray:
+        if size <= 0:
+            return np.zeros(0, dtype=np.float32)
+        vec = np.array(vector, dtype=np.float32).reshape(-1)
+        if vec.size < size:
+            vec = np.pad(vec, (0, size - vec.size), constant_values=0.0)
+        elif vec.size > size:
+            vec = vec[:size]
+        vec = np.clip(vec, 0.0, 1.0)
+        total = float(np.sum(vec))
+        if total <= 1e-6:
+            return np.full(size, 1.0 / size, dtype=np.float32)
+        return (vec / total).astype(np.float32)
+    
+    def _decode_central_resource_actions(
+        self, central_vector: np.ndarray
+    ) -> Optional[Dict[str, np.ndarray]]:
+        if not self.central_resource_enabled or self.central_resource_action_dim <= 0:
+            return None
+        vector = np.array(central_vector, dtype=np.float32).reshape(-1)
+        expected = self.central_resource_action_dim
+        if vector.size < expected:
+            padded = np.zeros(expected, dtype=np.float32)
+            padded[:vector.size] = vector
+            vector = padded
+        elif vector.size > expected:
+            vector = vector[:expected]
+        vector = np.clip(vector, 0.0, 1.0)
+        
+        idx = 0
+        bandwidth = self._normalize_allocation(
+            vector[idx:idx + self.num_vehicles], self.num_vehicles
+        )
+        idx += self.num_vehicles
+        vehicle_compute = self._normalize_allocation(
+            vector[idx:idx + self.num_vehicles], self.num_vehicles
+        )
+        idx += self.num_vehicles
+        rsu_compute = self._normalize_allocation(
+            vector[idx:idx + self.num_rsus], self.num_rsus
+        )
+        idx += self.num_rsus
+        uav_compute = self._normalize_allocation(
+            vector[idx:idx + self.num_uavs], self.num_uavs
+        )
+        
+        return {
+            'bandwidth': bandwidth,
+            'vehicle_compute': vehicle_compute,
+            'rsu_compute': rsu_compute,
+            'uav_compute': uav_compute,
+        }
     
     def _encode_continuous_action(self, actions_dict) -> np.ndarray:
         """
@@ -1544,7 +1747,7 @@ def train_single_algorithm(algorithm: str, num_episodes: Optional[int] = None, e
                           save_interval: Optional[int] = None, enable_realtime_vis: bool = False, 
                           vis_port: int = 5000, silent_mode: bool = False, override_scenario: Optional[Dict[str, Any]] = None,
                           use_enhanced_cache: bool = False, disable_migration: bool = False,
-                          enforce_offload_mode: Optional[str] = None) -> Dict:
+                          enforce_offload_mode: Optional[str] = None, fixed_offload_policy: Optional[str] = None) -> Dict:
     """训练单个算法
     
     Args:
@@ -1594,7 +1797,8 @@ def train_single_algorithm(algorithm: str, num_episodes: Optional[int] = None, e
         override_scenario=override_scenario,
         use_enhanced_cache=use_enhanced_cache,
         disable_migration=disable_migration,
-        enforce_offload_mode=enforce_offload_mode
+        enforce_offload_mode=enforce_offload_mode,
+        fixed_offload_policy=fixed_offload_policy
     )
     canonical_algorithm = training_env.algorithm
     if canonical_algorithm != algorithm:
@@ -2257,6 +2461,9 @@ def main():
     parser.add_argument('--num-vehicles', type=int, default=None, help='覆盖车辆数量用于实验')
     parser.add_argument('--force-offload', type=str, choices=['local', 'remote', 'local_only', 'remote_only'],
                         help='强制卸载模式：local/local_only 或 remote/remote_only')
+    parser.add_argument('--fixed-offload-policy', type=str, 
+                        choices=['random', 'greedy', 'local_only', 'rsu_only', 'round_robin', 'weighted'],
+                        help='固定卸载策略（不使用智能体学习）：random/greedy/local_only/rsu_only/round_robin/weighted')
     # 🌐 实时可视化参数
     parser.add_argument('--realtime-vis', action='store_true', help='启用实时可视化')
     parser.add_argument('--vis-port', type=int, default=5000, help='实时可视化服务器端口 (默认: 5000)')
@@ -2270,9 +2477,11 @@ def main():
                         help='阶段一算法（offloading 头）：heuristic|greedy|cache_first|distance_first')
     parser.add_argument('--stage2-alg', type=str, default=None,
                         help='阶段二算法（缓存/迁移控制的RL）：TD3|SAC|DDPG|PPO|DQN|TD3-LE')
-    # 🎯 中央资源分配架构（Phase 1 + Phase 2）
-    parser.add_argument('--central-resource', action='store_true',
-                        help='启用中央资源分配架构（Phase 1决策 + Phase 2执行），扩展状态/动作空间')
+    # 🎯 中央资源分配架构（Phase 1 + Phase 2）- 默认启用
+    parser.add_argument('--central-resource', action='store_true', default=True,
+                        help='启用中央资源分配架构（Phase 1决策 + Phase 2执行），扩展状态/动作空间 [默认启用]')
+    parser.add_argument('--no-central-resource', action='store_false', dest='central_resource',
+                        help='禁用中央资源分配架构，使用标准均匀资源分配')
     parser.add_argument('--silent-mode', action='store_true',
                         help='启用静默模式，跳过训练结束后的交互提示')
     
@@ -2282,10 +2491,13 @@ def main():
         os.environ['RANDOM_SEED'] = str(args.seed)
         _apply_global_seed_from_env()
 
-    # 🎯 启用中央资源分配架构
+    # 🎯 中央资源分配架构（默认启用）
     if args.central_resource:
         os.environ['CENTRAL_RESOURCE'] = '1'
-        print("🎯 启用中央资源分配架构（Phase 1 + Phase 2）")
+        print("🎯 启用中央资源分配架构（Phase 1 + Phase 2）[默认模式]")
+    else:
+        os.environ.pop('CENTRAL_RESOURCE', None)
+        print("⚠️  使用标准均匀资源分配模式（已通过 --no-central-resource 禁用中央资源）")
     
     # Toggle two-stage pipeline via environment for the simulator
     if args.two_stage:
@@ -2321,6 +2533,20 @@ def main():
     # 创建结果目录
     os.makedirs("results/single_agent", exist_ok=True)
     
+    # 🎯 显示CAMTD3系统信息
+    if args.algorithm and not args.compare:
+        print("\n" + "="*80)
+        print("🚀 CAMTD3 训练系统启动")
+        print("="*80)
+        print(f"系统名称: CAMTD3 (Cache-Aware Migration with Twin Delayed DDPG)")
+        print(f"使用算法: {args.algorithm}")
+        print(f"系统架构: Phase 1 (中央资源分配) + Phase 2 (任务执行)")
+        print(f"训练轮数: {args.episodes}")
+        if args.seed:
+            print(f"随机种子: {args.seed}")
+        print(f"完整名称: CAMTD3-{args.algorithm}")
+        print("="*80 + "\n")
+    
     if args.compare:
         # 比较所有算法
         algorithms = ['DDPG', 'TD3', 'TD3-LE', 'DQN', 'PPO', 'SAC']
@@ -2337,6 +2563,7 @@ def main():
             override_scenario=override_scenario,  # 🔧 新增：传递覆盖参数
             use_enhanced_cache=not args.no_enhanced_cache,  # 🚀 默认启用增强缓存
             enforce_offload_mode=enforce_mode,
+            fixed_offload_policy=getattr(args, 'fixed_offload_policy', None),  # 🎯 固定卸载策略
             silent_mode=args.silent_mode
         )
     else:

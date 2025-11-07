@@ -35,8 +35,8 @@ class TD3Config:
     """TD3算法配置 - 🎯 v2.0基线版本（稳定可靠）"""
     # 网络结构
     hidden_dim: int = 512  # 🔧 统一使用512，确保所有车辆数配置都有充足容量  
-    actor_lr: float = 1e-4  # Actor学习率
-    critic_lr: float = 8e-5  # Critic学习率
+    actor_lr: float = 2e-4  # 🔧 Actor学习率（提升以加快收敛）
+    critic_lr: float = 3e-4  # 🔧 Critic学习率（提升以更好评估）
     graph_embed_dim: int = 128  # 图编码器输出维度
     
     # 训练参数
@@ -50,10 +50,10 @@ class TD3Config:
     target_noise: float = 0.05  # 目标策略平滑噪声
     noise_clip: float = 0.2  # 噪声裁剪范围
     
-    # 探索参数
+    # 探索参数（优化：更快收敛到稳定策略）
     exploration_noise: float = 0.15  # 初始探索噪声
-    noise_decay: float = 0.999  # 噪声衰减率
-    min_noise: float = 0.05  # 最小探索噪声
+    noise_decay: float = 0.996  # 🔧 噪声衰减率（更快衰减，减少后期波动）
+    min_noise: float = 0.03  # 🔧 最小探索噪声（更低底限，提升稳定性）
     
     # 🔧 新增：梯度裁剪防止过拟合
     gradient_clip_norm: float = 0.7  # 🔧 放宽梯度裁剪，允许适度更新
@@ -1007,20 +1007,50 @@ class TD3Agent:
 class TD3Environment:
     """TD3训练环境"""
     
-    def __init__(self, num_vehicles: int = 12, num_rsus: int = 4, num_uavs: int = 2):
+    def __init__(
+        self,
+        num_vehicles: int = 12,
+        num_rsus: int = 4,
+        num_uavs: int = 2,
+        use_central_resource: bool = False,
+    ):
         self.config = TD3Config()
         self.num_vehicles = num_vehicles
         self.num_rsus = num_rsus
         self.num_uavs = num_uavs
+        self.use_central_resource = bool(use_central_resource)
         
         # 🔧 优化后的状态维度：所有节点统一为5维 + 全局状态16维（包含任务类型扩展）
         # 车辆状态: N×5维 + RSU状态: M×5维 + UAV状态: K×5维 + 全局: 16维
-        self.local_state_dim, self.global_state_dim, self.state_dim = \
-            UnifiedStateActionSpace.calculate_state_dim(num_vehicles, num_rsus, num_uavs)
+        (
+            self.local_state_dim,
+            self.global_state_dim,
+            base_state_dim,
+        ) = UnifiedStateActionSpace.calculate_state_dim(num_vehicles, num_rsus, num_uavs)
+        self.state_dim = base_state_dim
+        self.central_state_dim = 0
+        if self.use_central_resource:
+            # 车辆: 带宽/计算分配/使用率，各3*N
+            # RSU/UAV: 分配/使用率，各2*节点数 + 3个聚合指标
+            self.central_state_dim = (
+                3 * self.num_vehicles
+                + 2 * self.num_rsus
+                + 2 * self.num_uavs
+                + 3
+            )
+            self.state_dim += self.central_state_dim
         
         # 🔧 优化后的动作空间：动态适配网络拓扑
-        # 3(任务分配) + num_rsus(RSU选择) + num_uavs(UAV选择) + 8(控制参数)
-        self.action_dim = 3 + num_rsus + num_uavs + 8
+        # 3(任务分配) + num_rsus(RSU选择) + num_uavs(UAV选择) + 10(控制参数)
+        self.control_param_dim = 10
+        self.base_action_dim = 3 + num_rsus + num_uavs + self.control_param_dim
+        self.central_resource_action_dim = 0
+        if self.use_central_resource:
+            # 带宽(车辆) + 车辆计算 + RSU计算 + UAV计算
+            self.central_resource_action_dim = (
+                self.num_vehicles * 2 + self.num_rsus + self.num_uavs
+            )
+        self.action_dim = self.base_action_dim + self.central_resource_action_dim
         
         # 创建智能体
         self.agent = TD3Agent(
@@ -1039,12 +1069,31 @@ class TD3Environment:
         
         print(f"TD3环境初始化完成（优化版）")
         print(f"网络拓扑: {num_vehicles}辆车 + {num_rsus}个RSU + {num_uavs}个UAV")
-        print(f"状态维度: {self.state_dim} = 局部{self.local_state_dim} ({num_vehicles}×5 + {num_rsus}×5 + {num_uavs}×5) + 全局{self.global_state_dim}")
-        print(f"动作维度: {self.action_dim} (动态适配: 3+{num_rsus}+{num_uavs}+8)")
+        if self.use_central_resource:
+            print(
+                f"状态维度: {self.state_dim} = 基础{base_state_dim} + 中央资源{self.central_state_dim}"
+            )
+        else:
+            print(
+                f"状态维度: {self.state_dim} = 局部{self.local_state_dim} ({num_vehicles}×5 + {num_rsus}×5 + {num_uavs}×5) + 全局{self.global_state_dim}"
+            )
+        base_action_descr = f"3+{num_rsus}+{num_uavs}+{self.control_param_dim}"
+        if self.use_central_resource:
+            extra_descr = (
+                f" + 中央资源({self.num_vehicles}×2+{self.num_rsus}+{self.num_uavs})"
+            )
+        else:
+            extra_descr = ""
+        print(f"动作维度: {self.action_dim} (动态适配: {base_action_descr}{extra_descr})")
         print(f"策略延迟更新: {self.config.policy_delay}")
         print(f"优化特性: 移除控制参数冗余, 添加全局状态, 统一归一化")
     
-    def get_state_vector(self, node_states: Dict, system_metrics: Dict) -> np.ndarray:
+    def get_state_vector(
+        self,
+        node_states: Dict,
+        system_metrics: Dict,
+        resource_state: Optional[Dict] = None,
+    ) -> np.ndarray:
         """
         🔧 优化版状态向量构建
         状态组成: 车辆(N×5) + RSU(M×5) + UAV(K×5) + 全局(8) 维
@@ -1093,13 +1142,68 @@ class TD3Environment:
         # 维度不足时补齐
         if len(state_vector) < self.state_dim:
             padding_needed = self.state_dim - len(state_vector)
-            state_vector = np.pad(state_vector, (0, padding_needed), mode='constant', constant_values=0.5)
+            state_vector = np.pad(
+                state_vector, (0, padding_needed), mode='constant', constant_values=0.5
+            )
+        
+        if self.use_central_resource:
+            central_state = self._build_central_resource_state(resource_state)
+            state_vector[-self.central_state_dim :] = central_state
         
         # 数值安全检查
         state_vector = np.nan_to_num(state_vector, nan=0.5, posinf=1.0, neginf=0.0)
         state_vector = np.clip(state_vector, 0.0, 1.0)  # 确保所有值在[0,1]
         
         return state_vector
+    
+    def _build_central_resource_state(
+        self, resource_state: Optional[Dict]
+    ) -> np.ndarray:
+        if not self.use_central_resource or not resource_state:
+            return np.full(self.central_state_dim, 0.0, dtype=np.float32)
+        
+        def _safe_vector(key: str, expected_len: int) -> np.ndarray:
+            values = resource_state.get(key)
+            if values is None:
+                return np.full(expected_len, 1.0 / max(expected_len, 1), dtype=np.float32)
+            arr = np.array(values, dtype=np.float32).reshape(-1)
+            if arr.size < expected_len:
+                arr = np.pad(arr, (0, expected_len - arr.size), constant_values=0.0)
+            elif arr.size > expected_len:
+                arr = arr[:expected_len]
+            return np.clip(arr, 0.0, 1.0)
+        
+        segments = [
+            _safe_vector('bandwidth_allocation', self.num_vehicles),
+            _safe_vector('vehicle_compute_allocation', self.num_vehicles),
+            _safe_vector('vehicle_compute_usage', self.num_vehicles),
+            _safe_vector('rsu_compute_allocation', self.num_rsus),
+            _safe_vector('rsu_compute_usage', self.num_rsus),
+            _safe_vector('uav_compute_allocation', self.num_uavs),
+            _safe_vector('uav_compute_usage', self.num_uavs),
+        ]
+        
+        utilities = np.array(
+            [
+                float(resource_state.get('vehicle_utilization', 0.0)),
+                float(resource_state.get('rsu_utilization', 0.0)),
+                float(resource_state.get('uav_utilization', 0.0)),
+            ],
+            dtype=np.float32,
+        )
+        utilities = np.clip(np.nan_to_num(utilities, nan=0.0), 0.0, 1.0)
+        segments.append(utilities)
+        
+        central_state = np.concatenate(segments).astype(np.float32, copy=False)
+        if central_state.size < self.central_state_dim:
+            central_state = np.pad(
+                central_state,
+                (0, self.central_state_dim - central_state.size),
+                constant_values=0.0,
+            )
+        elif central_state.size > self.central_state_dim:
+            central_state = central_state[: self.central_state_dim]
+        return central_state
     
     def _build_global_state(self, node_states: Dict, system_metrics: Dict) -> np.ndarray:
         """构建包含任务类型统计的全局状态向量。"""

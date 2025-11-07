@@ -81,7 +81,7 @@ DEFAULT_SEED = 42
 # 🎯 基于当前资源池配置：总本地计算资源（12车辆共享）
 # 当前配置：6 GHz总本地计算
 # 对比：受限(4GHz) vs 当前(6GHz) vs 充裕(10GHz, 15GHz)
-DEFAULT_CPU_FREQS = [4.0, 6.0, 8.0, 10.0]  # 总本地计算资源 (GHz)
+DEFAULT_CPU_FREQS = [4.0, 6.0, 8.0, 10.0, 12.0]  # 总本地计算资源 (GHz)
 
 _reward_calculator: UnifiedRewardCalculator | None = None
 

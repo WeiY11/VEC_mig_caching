@@ -46,7 +46,7 @@ from experiments.td3_strategy_suite.suite_cli import (
 
 DEFAULT_EPISODES = 500
 DEFAULT_SEED = 42
-DEFAULT_CACHE_LEVELS_MB = [256, 512, 1024]  # 优化: 5配置→3配置 (小/中/大)
+DEFAULT_CACHE_LEVELS_MB = [256, 512, 768, 1024, 1536]  # MB (极小/小/中/大/极大)
 
 
 def parse_cache_levels(value: str) -> List[float]:

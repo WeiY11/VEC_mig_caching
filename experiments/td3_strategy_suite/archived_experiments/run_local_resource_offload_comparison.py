@@ -42,7 +42,7 @@ from experiments.camtd3_strategy_suite.suite_cli import (
 
 DEFAULT_EPISODES = 500
 DEFAULT_SEED = 42
-DEFAULT_CPU_FREQS = [1.2, 2.0, 2.8]  # 优化: 5配置→3配置 (低/中/高)
+DEFAULT_CPU_FREQS = [1.2, 1.6, 2.0, 2.4, 2.8]  # GHz (极低/低/中/高/极高)
 
 
 def parse_cpu_frequencies(value: str) -> List[float]:

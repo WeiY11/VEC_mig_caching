@@ -1,13 +1,16 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-三种方案核心对比实验
-===================
+CAMTD3核心对比实验（Cache-Aware Migration with TD3）
+===================================================
 
-【对比方案】
-1. CAMTD3(Avg)      - 固定均匀资源分配
-2. CAMTD3(Agent)    - 中央智能体动态资源分配
-3. CAMTD3 no mig    - 固定资源 + 禁用任务迁移（仅本地计算）
+【系统名称】CAMTD3 = Cache-Aware Migration with Twin Delayed Deep Deterministic Policy Gradient
+【架构】基于中央资源分配（Phase 1资源决策 + Phase 2任务执行）
+
+【对比方案】- 三种CAMTD3变体
+1. CAMTD3       - 标准版：中央资源分配 + 智能体学习资源策略（推荐）
+2. CAMTD3-Avg   - 简化版：中央资源分配 + 固定均匀分配
+3. CAMTD3-NoMig - 对比版：中央资源分配 + 禁用任务迁移（消融实验）
 
 【对比维度】
 - 不同任务到达率（1.5, 2.0, 2.5, 3.0 tasks/s/车）
@@ -55,43 +58,54 @@ if str(project_root) not in sys.path:
 from train_single_agent import train_single_algorithm, _apply_global_seed_from_env
 from config import config
 
-# ========== 三种运行模式配置 ==========
+# ========== CAMTD3三种变体配置 ==========
+# 🎯 CAMTD3 = Cache-Aware Migration with TD3
+# 核心架构：中央资源分配（Phase 1决策 + Phase 2执行）
 MODES = [
     {
-        "name": "CAMTD3(Avg)",
-        "key": "standard",
-        "description": "固定均匀资源分配",
-        "flags": [],  # 不加任何特殊参数
-        "disable_migration": False,
-        "color": "#1f77b4",
-        "marker": "o",
-    },
-    {
-        "name": "CAMTD3(Agent)",
-        "key": "central",
-        "description": "中央智能体动态资源分配",
-        "flags": ["--central-resource"],
+        "name": "CAMTD3",
+        "key": "camtd3",
+        "description": "CAMTD3标准版：智能体学习资源分配策略（推荐方案）",
+        "use_central_resource": True,  # 启用中央资源分配
+        "resource_init": "learned",     # 智能体学习资源分配（核心创新）
         "disable_migration": False,
         "color": "#ff7f0e",
         "marker": "s",
+        "linestyle": "-",
+        "linewidth": 2.5,
     },
     {
-        "name": "CAMTD3 no mig",
-        "key": "nomig",
-        "description": "固定资源 + 禁用任务迁移（仅本地计算）",
-        "flags": [],  # 资源分配和标准模式一样
-        "disable_migration": True,  # 只禁用迁移
+        "name": "CAMTD3-Avg",
+        "key": "camtd3_avg",
+        "description": "CAMTD3简化版：固定均匀资源分配",
+        "use_central_resource": True,  # 启用中央资源分配
+        "resource_init": "uniform",     # 均匀初始化资源
+        "disable_migration": False,
+        "color": "#1f77b4",
+        "marker": "o",
+        "linestyle": "--",
+        "linewidth": 2.0,
+    },
+    {
+        "name": "CAMTD3-NoMig",
+        "key": "camtd3_nomig",
+        "description": "CAMTD3对比版：禁用任务迁移（消融实验基线）",
+        "use_central_resource": True,  # 启用中央资源分配
+        "resource_init": "uniform",     # 均匀初始化
+        "disable_migration": True,      # 禁用迁移
         "color": "#2ca02c",
         "marker": "^",
+        "linestyle": "-.",
+        "linewidth": 2.0,
     },
 ]
 
 # ========== 实验配置 ==========
 # 任务到达率配置
-ARRIVAL_RATES = [1.5, 2.0, 2.5, 3.0]  # tasks/s/车
+ARRIVAL_RATES = [1.5, 2.0, 2.5, 3.0, 3.5]  # tasks/s/车
 
 # 本地计算资源配置
-COMPUTE_RESOURCES = [4.0, 6.0, 8.0, 10.0]  # GHz 总资源
+COMPUTE_RESOURCES = [4.0, 6.0, 8.0, 10.0, 12.0]  # GHz 总资源
 
 DEFAULT_EPISODES = 400
 DEFAULT_SEED = 42
@@ -120,11 +134,21 @@ def run_single_training(
     print(f"  运行: {mode['name']}")
     
     try:
-        # 🎯 设置环境变量（模式控制）
-        if "--central-resource" in mode["flags"]:
-            os.environ['CENTRAL_RESOURCE'] = '1'
+        # 🎯 所有模式都启用中央资源分配（默认架构）
+        os.environ['CENTRAL_RESOURCE'] = '1'
+        print(f"    [模式] 中央资源分配架构 ✓")
+        
+        # 设置资源初始化策略
+        if mode.get("resource_init") == "learned":
+            os.environ['RESOURCE_ALLOCATION_MODE'] = 'learned'
+            print(f"    [资源] 智能体学习资源分配策略")
         else:
-            os.environ.pop('CENTRAL_RESOURCE', None)
+            os.environ['RESOURCE_ALLOCATION_MODE'] = 'uniform'
+            print(f"    [资源] 均匀初始化资源分配")
+        
+        # 验证环境变量
+        print(f"    [验证] CENTRAL_RESOURCE = {os.environ.get('CENTRAL_RESOURCE')}")
+        print(f"    [验证] RESOURCE_ALLOCATION_MODE = {os.environ.get('RESOURCE_ALLOCATION_MODE', 'uniform')}")
         
         # 设置随机种子
         os.environ['RANDOM_SEED'] = str(seed)

@@ -219,15 +219,15 @@ class RLConfig:
         # 🏆 最优配置v3.0（2025-11-02）：基于14组权重对比实验的最优结果
         # 来源：aggressive配置在500轮×14组实验中取得最优综合成本（6.63）
         # 实际效果：能耗4892J↓、时延0.331s↓、缓存45.6%↑、完成率93%
-        self.reward_weight_delay = 3.0  # 🏆 最优：高时延权重（迫使降低时延）
-        self.reward_weight_energy = 2.0  # 🏆 最优：高能耗权重（迫使降低能耗）
+        self.reward_weight_delay = 2.0  # 🏆 标准：平衡的时延权重（目标≈0.3s）
+        self.reward_weight_energy = 1.2  # 🏆 标准：平衡的能耗权重（目标≈1000J）
         self.reward_penalty_dropped = 0.08  # 🏆 最优：适度惩罚（保证完成率）
         
         # ⚠️ 已弃用参数（保留以兼容旧代码）
         self.reward_weight_loss = 0.0      # 已移除：data_loss是时延的衍生指标
         self.reward_weight_completion = 0.0  # 已集成到dropped_penalty
         # 🏆 最优：缓存权重适度提升，激励智能缓存
-        self.reward_weight_cache = 0.25  # 🏆 最优：中等权重（实测缓存率提升至45.6%）
+        self.reward_weight_cache = 0.5  # 🏆 提升：更重视缓存策略学习（目标缓存率>65%）
         self.reward_weight_migration = 0.0
         self.reward_weight_joint = 0.02   # 联动奖励权重（限制激进联合动作）
 
@@ -880,8 +880,8 @@ class CommunicationConfig:
         self.uplink_bandwidth = 50e6  # 50 MHz（边缘计算上行密集，确保卸载通畅）
         self.downlink_bandwidth = 50e6  # 50 MHz
         
-        # 3GPP标准传播参数
-        self.carrier_frequency = 2.0e9  # 2 GHz - 3GPP标准频率
+        # 🔧 修复问题1：载波频率修正为3.5 GHz（符合论文要求和3GPP NR n78频段）
+        self.carrier_frequency = 3.5e9  # 3.5 GHz - 3GPP NR n78频段（论文要求3.3-3.8 GHz，典型3.5 GHz）
         self.speed_of_light = 3e8       # m/s
         self.thermal_noise_density = -174.0  # dBm/Hz - 3GPP标准
         
@@ -890,11 +890,25 @@ class CommunicationConfig:
         self.antenna_gain_uav = 5.0      # dBi
         self.antenna_gain_vehicle = 3.0  # dBi
         
-        # 3GPP标准路径损耗参数
-        self.los_threshold = 50.0        # m - 3GPP TS 38.901
-        self.los_decay_factor = 100.0    # m
-        self.shadowing_std_los = 4.0     # dB
-        self.shadowing_std_nlos = 8.0    # dB
+        # 🔧 修复问题2/3/9：完善3GPP标准路径损耗参数（从硬编码移到配置）
+        self.los_threshold = 50.0        # m - 3GPP TS 38.901视距临界距离
+        self.los_decay_factor = 100.0    # m - LoS概率衰减因子
+        self.shadowing_std_los = 3.0     # dB - LoS阴影衰落标准差（3GPP UMi场景）
+        self.shadowing_std_nlos = 4.0    # dB - NLoS阴影衰落标准差（3GPP UMi场景）
+        self.min_distance = 0.5          # m - 3GPP最小距离（UMi场景为0.5米）
+        
+        # 🔧 修复问题5：编码效率提升至5G NR标准（Polar/LDPC编码）
+        self.coding_efficiency = 0.9     # 5G NR编码效率（论文建议0.85-0.95）
+        self.processing_delay = 0.001    # s - 处理时延（1ms）
+        
+        # 🔧 修复问题6：可配置的干扰模型参数
+        self.base_interference_power = 1e-12  # W - 基础干扰功率（可调整）
+        self.interference_variation = 0.1     # 干扰变化系数（简化模型）
+        
+        # 🔧 修复问题7：快衰落模型参数（可选启用）
+        self.enable_fast_fading = False  # 是否启用快衰落（默认关闭保持简化）
+        self.fast_fading_std = 1.0       # 快衰落标准差（Rayleigh/Rician）
+        self.rician_k_factor = 6.0       # dB - LoS场景的莱斯K因子
         
         # 调制参数
         self.modulation_order = 4  # QPSK

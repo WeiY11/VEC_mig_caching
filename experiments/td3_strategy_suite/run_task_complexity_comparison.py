@@ -46,7 +46,7 @@ from experiments.td3_strategy_suite.suite_cli import (
 
 DEFAULT_EPISODES = 500
 DEFAULT_SEED = 42
-DEFAULT_COMPLEXITY_LEVELS = [0.8, 1.2, 1.8]
+DEFAULT_COMPLEXITY_LEVELS = [0.8, 1.0, 1.2, 1.5, 1.8]
 
 
 def parse_complexity_levels(value: str) -> List[float]:

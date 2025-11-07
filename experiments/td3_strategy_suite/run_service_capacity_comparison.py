@@ -47,7 +47,7 @@ from experiments.td3_strategy_suite.suite_cli import (
 
 DEFAULT_EPISODES = 500
 DEFAULT_SEED = 42
-DEFAULT_SERVICE_FACTORS = [0.6, 1.0, 1.4]  # 优化: 5配置→3配置 (低/基准/高)
+DEFAULT_SERVICE_FACTORS = [0.6, 0.8, 1.0, 1.2, 1.4]  # (极低/低/基准/高/极高)
 
 
 def parse_service_factors(value: str) -> List[float]:

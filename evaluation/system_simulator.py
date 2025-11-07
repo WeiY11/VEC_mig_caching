@@ -13,6 +13,7 @@ import numpy as np
 import torch
 import random
 import os
+import logging
 from typing import Dict, List, Tuple, Any, Optional
 import json
 from datetime import datetime
@@ -256,6 +257,7 @@ class CompleteSystemSimulator:
         self._two_stage_enabled = (os.environ.get('TWO_STAGE_MODE', '').strip() in {'1', 'true', 'True'})
         self._two_stage_planner: TwoStagePlanner | None = None
         self.spatial_index: Optional[SpatialIndex] = SpatialIndex()
+        self._central_resource_enabled = os.environ.get('CENTRAL_RESOURCE', '').strip() in {'1', 'true', 'True'}
         
         # 🎯 中央资源池初始化（Phase 1核心组件）
         # Central resource pool initialization (Phase 1 core component)
@@ -732,8 +734,44 @@ class CompleteSystemSimulator:
             'queue_rho_max': 0.0,
             'queue_overload_flag': False,
             'queue_overload_events': 0,
-            'queue_rho_by_node': {}
+            'queue_rho_by_node': {},
+            'central_scheduler_calls': 0,
+            'central_scheduler_last_decisions': 0,
+            'central_scheduler_migrations': 0,
         }
+
+    def _update_central_scheduler(self, step_summary: Dict[str, Any]) -> None:
+        scheduler = getattr(self, 'central_scheduler', None)
+        if scheduler is None:
+            return
+        try:
+            rsu_snapshots: List[Dict[str, Any]] = []
+            for idx, rsu in enumerate(self.rsus):
+                rsu_snapshots.append({
+                    'id': rsu.get('id', f'RSU_{idx}'),
+                    'position': np.array(rsu.get('position', [0.0, 0.0])),
+                    'computation_queue': rsu.get('computation_queue', []),
+                    'cpu_usage': float(rsu.get('compute_usage', 0.0)),
+                    'cpu_frequency': float(rsu.get('allocated_compute', rsu.get('cpu_freq', 0.0))),
+                    'cache_usage': float(rsu.get('cache_utilization', 0.0)),
+                    'cache_hit_rate': float(self.stats.get('cache_hit_rate', 0.0)),
+                    'cached_content': rsu.get('cache', {}),
+                    'served_vehicles': len(rsu.get('connected_vehicles', [])),
+                    'coverage_vehicles': len(rsu.get('coverage_list', [])),
+                    'bandwidth_usage': float(step_summary.get('remote_tasks', 0.0)) / max(1, len(self.vehicles)),
+                    'avg_response_time': float(self.stats.get('avg_task_delay', 0.0)),
+                    'task_completion_rate': float(self.stats.get('task_completion_rate', 0.0)),
+                    'energy_consumption': float(rsu.get('energy_consumed', 0.0)),
+                })
+            scheduler.collect_all_rsu_loads(rsu_snapshots)
+            incoming_tasks = max(1, int(step_summary.get('generated_tasks', 0)))
+            decisions = scheduler.global_load_balance_scheduling(incoming_task_count=incoming_tasks)
+            migrations = scheduler.intelligent_migration_coordination()
+            self.stats['central_scheduler_calls'] = self.stats.get('central_scheduler_calls', 0) + 1
+            self.stats['central_scheduler_last_decisions'] = len(decisions)
+            self.stats['central_scheduler_migrations'] = self.stats.get('central_scheduler_migrations', 0) + len(migrations)
+        except Exception as exc:
+            logging.debug("Central scheduler update failed: %s", exc)
 
     def _reset_runtime_states(self):
         """
@@ -2174,6 +2212,25 @@ class CompleteSystemSimulator:
             self._handle_local_processing(vehicle, task, step_summary)
             return
 
+        # 🔧 修复：remote_only模式的正确处理
+        if forced_mode == 'remote_only':
+            rsu_available = len(self.rsus) > 0
+            uav_available = len(self.uavs) > 0
+            
+            assigned = False
+            if rsu_available or uav_available:
+                target = self._choose_offload_target(actions, rsu_available, uav_available)
+                if target == 'rsu' and rsu_available:
+                    assigned = self._assign_to_rsu(vehicle, task, actions, step_summary)
+                elif target == 'uav' and uav_available:
+                    assigned = self._assign_to_uav(vehicle, task, actions, step_summary)
+            
+            if not assigned:
+                # remote_only模式下卸载失败，丢弃任务（不fallback到本地处理）
+                self._record_forced_drop(vehicle, task, step_summary, reason='remote_only_offload_failed')
+            return
+
+        # 正常模式：尝试卸载，失败则本地处理
         rsu_available = len(self.rsus) > 0
         uav_available = len(self.uavs) > 0
         target = self._choose_offload_target(actions, rsu_available, uav_available)
@@ -2833,6 +2890,11 @@ class CompleteSystemSimulator:
         """
         actions = actions or {}
         self._update_scheduling_params(actions.get('scheduling_params'))
+        if self._central_resource_enabled and hasattr(self, 'resource_pool'):
+            try:
+                self.execute_phase2_scheduling()
+            except Exception as exc:
+                logging.debug("Phase-2 scheduling execution failed: %s", exc)
 
         # 推进仿真时间
         advance_simulation_time()
@@ -2909,6 +2971,9 @@ class CompleteSystemSimulator:
         step_summary.update(self._summarize_task_types())
         mm1_predictions = self._finalize_mm1_step(self.current_step)
         step_summary['mm1_predictions'] = mm1_predictions
+
+        if self._central_resource_enabled:
+            self._update_central_scheduler(step_summary)
 
         cumulative_stats = dict(self.stats)
         cumulative_stats.update(step_summary)
@@ -3169,4 +3234,29 @@ class CompleteSystemSimulator:
             'tasks_migrated': tasks_to_migrate
         }
 
-
+    def get_central_scheduling_report(self) -> Dict[str, Any]:
+        scheduler = getattr(self, 'central_scheduler', None)
+        if scheduler is None:
+            return {'status': 'not_available', 'message': '中央调度器未启用'}
+        try:
+            status = scheduler.get_global_scheduling_status()
+            rsu_details: Dict[str, Dict[str, float]] = {}
+            for rsu_id, load_info in scheduler.rsu_loads.items():
+                rsu_details[rsu_id] = {
+                    'cpu_usage': float(getattr(load_info, 'cpu_usage', 0.0)),
+                    'queue_length': int(getattr(load_info, 'queue_length', 0)),
+                    'cache_usage': float(getattr(load_info, 'cache_usage', 0.0)),
+                    'served_vehicles': int(getattr(load_info, 'served_vehicles', 0)),
+                    'bandwidth_usage': float(getattr(load_info, 'network_bandwidth_usage', 0.0)),
+                }
+            return {
+                'status': 'ok',
+                'message': '中央调度器运行中',
+                'scheduling_calls': status.get('global_metrics', {}).get('scheduling_decisions_count', 0),
+                'central_scheduler_status': status,
+                'rsu_details': rsu_details,
+                'migrations_triggered': self.stats.get('central_scheduler_migrations', 0),
+            }
+        except Exception as exc:
+            logging.debug("Central scheduling report failed: %s", exc)
+            return {'status': 'error', 'message': str(exc)}

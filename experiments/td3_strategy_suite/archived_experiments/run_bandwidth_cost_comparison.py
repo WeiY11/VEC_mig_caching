@@ -41,7 +41,7 @@ from experiments.camtd3_strategy_suite.suite_cli import (
 
 DEFAULT_EPISODES = 500
 DEFAULT_SEED = 42
-DEFAULT_BANDWIDTHS = [10, 30, 50]  # 优化: 5配置→3配置 (窄带/标准/宽带)
+DEFAULT_BANDWIDTHS = [10, 20, 30, 40, 50]  # MHz (窄带/低带宽/标准/高带宽/宽带)
 
 
 def parse_bandwidths(value: str) -> List[int]:
