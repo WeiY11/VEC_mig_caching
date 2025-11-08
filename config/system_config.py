@@ -221,8 +221,14 @@ class RLConfig:
         # 实际效果：能耗4892J↓、时延0.331s↓、缓存45.6%↑、完成率93%
         self.reward_weight_delay = 2.0  # 🏆 标准：平衡的时延权重（目标≈0.3s）
         self.reward_weight_energy = 1.2  # 🏆 标准：平衡的能耗权重（目标≈1000J）
-        self.reward_penalty_dropped = 0.08  # 🏆 最优：适度惩罚（保证完成率）
-        
+        self.reward_penalty_dropped = 0.15  # 🆙 强化惩罚：防止通过大量丢弃获得低延迟
+        self.completion_target = 0.95  # ✅ 目标完成率（>95%视为达标）
+        self.reward_weight_completion_gap = 1.2  # 惩罚完成率低于目标的差值
+        self.reward_weight_loss_ratio = 3.0  # 数据丢失率权重（每增加10%损失≈0.3成本）
+        self.cache_pressure_threshold = 0.85  # 缓存利用率软阈值
+        self.reward_weight_cache_pressure = 0.8  # 缓存压力惩罚权重
+        self.reward_weight_queue_overload = 0.02  # 每次队列过载事件的惩罚权重
+
         # ⚠️ 已弃用参数（保留以兼容旧代码）
         self.reward_weight_loss = 0.0      # 已移除：data_loss是时延的衍生指标
         self.reward_weight_completion = 0.0  # 已集成到dropped_penalty
@@ -230,6 +236,7 @@ class RLConfig:
         self.reward_weight_cache = 0.5  # 🏆 提升：更重视缓存策略学习（目标缓存率>65%）
         self.reward_weight_migration = 0.0
         self.reward_weight_joint = 0.02   # 联动奖励权重（限制激进联合动作）
+        self.reward_weight_remote_reject = 0.5  # 远端拒绝惩罚
 
         # 🎯 延时-能耗优化目标阈值（供算法动态调整）
         # 🏆 最优：严格目标配合高权重，实现最佳性能
@@ -257,13 +264,14 @@ class QueueConfig:
     """
     
     def __init__(self):
-        # 🔧 收紧约束：生命周期改为6（0.6s最大等待，充分利用100ms精细时隙）
-        self.max_lifetime = 6
+        # 🔧 调整：允许更长的排队寿命（1.0s）以缓冲高负载
+        self.max_lifetime = 10
         self.max_queue_size = 100
         self.priority_levels = 4
         # Aging factor tuned for short slots (strong decay each step)
         self.aging_factor = 0.25
-        self.max_load_factor = 0.95
+        # 允许轻微超载，从而减少频繁的过载告警
+        self.max_load_factor = 1.1
         self.global_rho_threshold = float(os.environ.get('QUEUE_GLOBAL_RHO_THRESHOLD', '1.0'))
         self.stability_warning_ratio = float(os.environ.get('QUEUE_STABILITY_WARNING_RATIO', '0.9'))
         self.rsu_nominal_capacity = float(os.environ.get('QUEUE_RSU_NOMINAL_CAPACITY', '20.0'))
@@ -309,7 +317,7 @@ class TaskConfig:
     def __init__(self):
         self.num_priority_levels = 4
         self.task_compute_density = 120  # cycles per bit as default
-        self.arrival_rate = 2.5   # tasks per second (high-load 12-vehicle scenario)
+        self.arrival_rate = 1.0   # tasks per second (moderate-load scenario)
         
         # 🔑 重新设计：任务参数 - 分层设计不同复杂度任务
         self.data_size_range = (0.5e6/8, 15e6/8)  # 0.5-15 Mbits = 0.0625-1.875 MB
@@ -318,16 +326,16 @@ class TaskConfig:
         # 计算周期配置 (自动计算，确保一致性)
         self.compute_cycles_range = (1e8, 1e10)  # cycles
         
-        # 截止时间配置
-        self.deadline_range = (0.2, 0.6)  # seconds，对应2-6个时隙(100ms) - 收紧约束
+        # 截止时间配置（放宽上限，匹配增强的服务能力）
+        self.deadline_range = (0.25, 0.9)  # seconds，对应3-9个时隙(100ms)
         # 输出比例配置
         self.task_output_ratio = 0.05  # 输出大小是输入大小的5%
         
         # 🔧 收紧约束：任务类型阈值 - 充分利用100ms精细时隙
         self.delay_thresholds = {
-            'extremely_sensitive': 2,    # τ₁ = 2 个时隙 = 0.2s (不变，已经很紧)
-            'sensitive': 3,              # τ₂ = 3 个时隙 = 0.3s (收紧)
-            'moderately_tolerant': 4,    # τ₃ = 4 个时隙 = 0.4s (收紧)
+            'extremely_sensitive': 3,    # 0.3s
+            'sensitive': 4,              # 0.4s
+            'moderately_tolerant': 5,    # 0.5s
         }
 
         # Latency cost weights (aligned with Table IV in the reference paper)
@@ -344,10 +352,10 @@ class TaskConfig:
 
         # 🔧 收紧约束：max_latency_slots调整（充分利用100ms精细时隙）
         self.task_profiles: Dict[int, TaskProfileSpec] = {
-            1: TaskProfileSpec(1, (0.5e6/8, 2e6/8), 60, 2, 1.0),   # 2×0.1s = 0.2s (不变)
-            2: TaskProfileSpec(2, (1.5e6/8, 5e6/8), 90, 3, 0.4),   # 3×0.1s = 0.3s (收紧)
-            3: TaskProfileSpec(3, (4e6/8, 9e6/8), 120, 4, 0.4),    # 4×0.1s = 0.4s (收紧)
-            4: TaskProfileSpec(4, (7e6/8, 15e6/8), 150, 6, 0.4),   # 6×0.1s = 0.6s (收紧)
+            1: TaskProfileSpec(1, (0.5e6/8, 2e6/8), 60, 3, 1.0),   # 0.3s
+            2: TaskProfileSpec(2, (1.5e6/8, 5e6/8), 90, 4, 0.4),   # 0.4s
+            3: TaskProfileSpec(3, (4e6/8, 9e6/8), 110, 5, 0.4),    # 0.5s
+            4: TaskProfileSpec(4, (6e6/8, 15e6/8), 140, 8, 0.4),   # 0.8s
         }
         # Backwards-compatible dictionary view for legacy code
         self.task_type_specs = {
@@ -629,16 +637,16 @@ class ServiceConfig:
 
     def __init__(self):
         # RSU 服务能力
-        self.rsu_base_service = 4
-        self.rsu_max_service = 9
-        self.rsu_work_capacity = 2.5  # 相当于每个时隙的工作单位
+        self.rsu_base_service = 5
+        self.rsu_max_service = 12
+        self.rsu_work_capacity = 3.5  # 相当于每个时隙的工作单位
         self.rsu_queue_boost_divisor = 5.0
 
         # UAV 服务能力
-        self.uav_base_service = 3
-        self.uav_max_service = 6
-        self.uav_work_capacity = 1.7
-        self.uav_queue_boost_divisor = 4.0
+        self.uav_base_service = 4
+        self.uav_max_service = 8
+        self.uav_work_capacity = 2.2
+        self.uav_queue_boost_divisor = 3.5
 
 
 class StatsConfig:
@@ -730,7 +738,7 @@ class ComputeConfig:
         # - 边缘计算充足：确保卸载任务能被处理
         # - 带宽匹配通信需求：避免通信瓶颈
         self.total_vehicle_compute = 6e9     # 总本地计算：6 GHz（12车辆共享，每车0.5GHz）
-        self.total_rsu_compute = 100e9       # 总RSU计算：100 GHz（4个RSU共享，每个25GHz）
+        self.total_rsu_compute = 50e9        # 总RSU计算：50 GHz（4个RSU共享，每个12.5GHz）
         self.total_uav_compute = 8e9         # 总UAV计算：8 GHz（2个UAV共享，每个4GHz）
         
         # 🔑 初始CPU频率配置（仅用于节点初始化，运行时由中央智能体动态调整）
@@ -1036,6 +1044,46 @@ class CacheConfig:
         self.popularity_decay_factor = 0.9
         self.request_history_size = 100
 
+class NormalizationConfig:
+    """
+    统一控制状态特征与指标归一化的配置。
+
+    通过环境变量即可覆盖缩放范围，方便在不同拓扑/负载下快速调参。
+    """
+
+    def __init__(self):
+        # 数值稳定
+        self.metric_epsilon = float(os.environ.get('NORM_EPSILON', '1e-6'))
+        self.distribution_smoothing = float(os.environ.get('NORM_DISTRIBUTION_SMOOTHING', '1e-5'))
+
+        # 位置/速度尺度
+        self.vehicle_position_range = float(os.environ.get('NORM_VEHICLE_POSITION_RANGE', '1000.0'))
+        self.rsu_position_range = float(os.environ.get('NORM_RSU_POSITION_RANGE', '1000.0'))
+        self.uav_position_range = float(os.environ.get('NORM_UAV_POSITION_RANGE', '1000.0'))
+        self.uav_altitude_range = float(os.environ.get('NORM_UAV_ALTITUDE_RANGE', '200.0'))
+        self.vehicle_speed_range = float(os.environ.get('NORM_VEHICLE_SPEED_RANGE', '50.0'))
+
+        # 队列容量（任务数量）
+        self.vehicle_queue_capacity = float(os.environ.get('NORM_VEHICLE_QUEUE_CAPACITY', '20.0'))
+        self.rsu_queue_capacity = float(os.environ.get('NORM_RSU_QUEUE_CAPACITY', '20.0'))
+        self.uav_queue_capacity = float(os.environ.get('NORM_UAV_QUEUE_CAPACITY', '20.0'))
+
+        # 能耗参考（焦耳）
+        self.vehicle_energy_reference = float(os.environ.get('NORM_VEHICLE_ENERGY_REF', '1000.0'))
+        self.rsu_energy_reference = float(os.environ.get('NORM_RSU_ENERGY_REF', '1000.0'))
+        self.uav_energy_reference = float(os.environ.get('NORM_UAV_ENERGY_REF', '1000.0'))
+
+        # 奖励归一化参考
+        self.delay_normalizer_value = float(os.environ.get('NORM_DELAY_NORMALIZER', '0.2'))
+        self.energy_normalizer_value = float(os.environ.get('NORM_ENERGY_NORMALIZER', '1000.0'))
+
+        # 全局性能参考（供奖励/指标归一化使用）
+        self.delay_reference = float(os.environ.get('NORM_DELAY_REFERENCE', '0.4'))
+        self.delay_upper_reference = float(os.environ.get('NORM_DELAY_UPPER_REFERENCE', '0.8'))
+        self.energy_reference = float(os.environ.get('NORM_ENERGY_REFERENCE', '1200.0'))
+        self.energy_upper_reference = float(os.environ.get('NORM_ENERGY_UPPER_REFERENCE', '1800.0'))
+
+
 class SystemConfig:
     """
     系统配置容器类
@@ -1100,6 +1148,7 @@ class SystemConfig:
         self.parallel_environments = 6
         
         # 子配置模块
+        self.normalization = NormalizationConfig()
         self.queue = QueueConfig()
         self.task = TaskConfig()
         self.compute = ComputeConfig()

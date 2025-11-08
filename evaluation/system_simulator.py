@@ -247,6 +247,8 @@ class CompleteSystemSimulator:
         self.node_max_load_factor = float(getattr(queue_cfg, 'max_load_factor', 1.0)) if queue_cfg is not None else 1.0
         self.rsu_nominal_capacity = float(getattr(queue_cfg, 'rsu_nominal_capacity', 20.0)) if queue_cfg is not None else 20.0
         self.uav_nominal_capacity = float(getattr(queue_cfg, 'uav_nominal_capacity', 10.0)) if queue_cfg is not None else 10.0
+        self.cache_config = getattr(self.sys_config, 'cache', None)
+        self.cache_pressure_guard = float(getattr(self.cache_config, 'pressure_guard_ratio', 0.05)) if self.cache_config is not None else 0.05
         self._queue_overload_warning_active = False
         self._queue_warning_triggered = False
         self.active_tasks: List[Dict] = []  # 每项: {id, vehicle_id, arrival_time, deadline, work_remaining, node_type, node_idx}
@@ -728,7 +730,13 @@ class CompleteSystemSimulator:
                 'wait_time_sum': 0.0,
                 'queue_sum': 0,
                 'by_type': {},
-                'by_scenario': {}
+                'by_scenario': {},
+                'by_reason': {}
+            },
+            'remote_rejections': {
+                'total': 0,
+                'by_type': {'RSU': 0, 'UAV': 0},
+                'by_reason': {}
             },
             'queue_rho_sum': 0.0,
             'queue_rho_max': 0.0,
@@ -1303,6 +1311,39 @@ class CompleteSystemSimulator:
         for idx, uav in enumerate(self.uavs):
             self._process_single_node_queue(uav, 'UAV', idx)
     
+    def _get_node_capacity_scale(self, node: Dict, node_type: str) -> float:
+        """根据中央资源分配结果计算节点处理能力缩放因子。"""
+        if node_type == 'RSU':
+            baseline = float(getattr(self, 'rsu_cpu_freq', 15e9))
+        else:
+            baseline = float(getattr(self, 'uav_cpu_freq', 4e9))
+        allocated = float(node.get('allocated_compute', baseline))
+        if baseline <= 0:
+            return 1.0
+        scale = allocated / baseline
+        return float(np.clip(scale, 0.2, 3.0))
+
+    def _is_node_admissible(self, node: Dict, node_type: str) -> bool:
+        """检查节点是否允许新的卸载任务进入。"""
+        queue_len = len(node.get('computation_queue', []))
+        capacity = self.rsu_nominal_capacity if node_type == 'RSU' else self.uav_nominal_capacity
+        ratio = queue_len / max(1.0, capacity)
+        usage = float(node.get('compute_usage', 0.0))
+        threshold = max(0.5, self.node_max_load_factor)
+        return (ratio < threshold) and (usage < threshold or usage == 0.0)
+
+    def _record_offload_rejection(self, node_type: str, reason: str = 'unknown') -> None:
+        """记录由于拥塞/策略导致的远端卸载拒绝。"""
+        stats = self.stats.setdefault('remote_rejections', {
+            'total': 0,
+            'by_type': {'RSU': 0, 'UAV': 0},
+            'by_reason': {}
+        })
+        stats['total'] = stats.get('total', 0) + 1
+        by_type = stats.setdefault('by_type', {})
+        by_type[node_type] = by_type.get(node_type, 0) + 1
+        by_reason = stats.setdefault('by_reason', {})
+        by_reason[reason] = by_reason.get(reason, 0) + 1
 
     def _process_single_node_queue(self, node: Dict, node_type: str, node_idx: int) -> None:
         """
@@ -1354,6 +1395,11 @@ class CompleteSystemSimulator:
             max_service = 4
             boost_divisor = 5.0
             work_capacity_cfg = 1.2
+
+        capacity_scale = self._get_node_capacity_scale(node, node_type)
+        base_capacity = max(1, int(round(base_capacity * capacity_scale)))
+        max_service = max(base_capacity, int(round(max_service * capacity_scale)))
+        work_capacity_cfg *= capacity_scale
 
         if queue_len > base_capacity:
             dynamic_boost = int(np.ceil((queue_len - base_capacity) / boost_divisor))
@@ -1589,15 +1635,23 @@ class CompleteSystemSimulator:
                     node.get('cache', {}), capacity_limit
                 )
                 
-                # 调用智能控制器判断是否缓存
-                # Call intelligent controller to decide whether to cache
-                should_cache, reason, evictions = cache_controller.should_cache_content(
-                    content_id,
-                    data_size,
-                    available_capacity,
-                    node.get('cache', {}),
-                    capacity_limit
-                )
+                guard_ratio = getattr(self, 'cache_pressure_guard', 0.05)
+                pressure_ratio = available_capacity / max(1.0, capacity_limit)
+                severe_pressure = pressure_ratio < guard_ratio
+
+                # 调用智能控制器判断是否缓存（在极端压力下直接跳过写入）
+                if severe_pressure:
+                    should_cache = False
+                    reason = 'pressure_guard'
+                    evictions = []
+                else:
+                    should_cache, reason, evictions = cache_controller.should_cache_content(
+                        content_id,
+                        data_size,
+                        available_capacity,
+                        node.get('cache', {}),
+                        capacity_limit
+                    )
                 
                 # 如果决定缓存，执行淘汰和写入操作
                 if should_cache and cache_preference < 0.35:
@@ -2042,7 +2096,8 @@ class CompleteSystemSimulator:
                     'wait_time_sum': 0.0,
                     'queue_sum': 0,
                     'by_type': {},
-                    'by_scenario': {}
+                    'by_scenario': {},
+                    'by_reason': {}
                 })
                 by_type = drop_stats.setdefault('by_type', {})
                 by_scenario = drop_stats.setdefault('by_scenario', {})
@@ -2153,19 +2208,8 @@ class CompleteSystemSimulator:
         if agents_actions:
             cache_controller = agents_actions.get('cache_controller')
 
-        # 鎺ㄩ€佸埌瑕嗙洊鑼冨洿鍐呯殑杞﹁締
+        # 仅在RSU之间传播缓存
         coverage = rsu_node.get('coverage_radius', 300.0)
-        if getattr(self, 'spatial_index', None):
-            vehicles_in_range = self.spatial_index.query_vehicles_within_radius(rsu_node['position'], coverage * 0.8)
-            for _, vehicle_node, _ in vehicles_in_range:
-                self._store_in_vehicle_cache(vehicle_node, content_id, size_mb, cache_controller)
-        else:
-            for vehicle in self.vehicles:
-                distance = self.calculate_distance(vehicle.get('position', np.zeros(2)), rsu_node['position'])
-                if distance <= coverage * 0.8:
-                    self._store_in_vehicle_cache(vehicle, content_id, size_mb, cache_controller)
-
-        # ?????RSU
         if getattr(self, 'spatial_index', None):
             neighbor_candidates = self.spatial_index.query_rsus_within_radius(rsu_node['position'], coverage * 1.2)
             for _, neighbor, _ in neighbor_candidates:
@@ -2189,23 +2233,7 @@ class CompleteSystemSimulator:
             cache_controller = getattr(self, 'adaptive_cache_controller', None)
 
         content_id = task.get('content_id')
-        vehicle_cache = vehicle.setdefault('device_cache', {})
-        if content_id and content_id in vehicle_cache:
-            vehicle_cache[content_id]['timestamp'] = self.current_time
-            local_delay = 0.02
-            local_energy = 0.0
-            self.stats['processed_tasks'] += 1
-            self.stats['completed_tasks'] += 1
-            self.stats['total_delay'] += local_delay
-            self.stats['total_energy'] += local_energy
-            self.stats['cache_hits'] += 1
-            self.stats['local_cache_hits'] = self.stats.get('local_cache_hits', 0) + 1
-            vehicle['energy_consumed'] = vehicle.get('energy_consumed', 0.0) + local_energy
-            step_summary['local_cache_hits'] = step_summary.get('local_cache_hits', 0) + 1
-            if cache_controller is not None:
-                cache_controller.record_cache_result(content_id, True)
-                cache_controller.update_content_heat(content_id)
-            return
+        # 车辆端不再维护本地缓存，直接根据策略决定卸载或本地计算
 
         forced_mode = getattr(self, 'forced_offload_mode', '')
         if forced_mode == 'local_only':
@@ -2303,14 +2331,28 @@ class CompleteSystemSimulator:
             weights = np.ones_like(weights)
 
         weights = weights / weights.sum()
-        choice = int(np.random.choice(np.arange(len(candidate_indices)), p=weights))
-        rsu_idx = int(candidate_indices[choice])
-        distance = float(distances[choice])
-        node = self.rsus[rsu_idx]
-        success = self._handle_remote_assignment(vehicle, task, node, 'RSU', rsu_idx, distance, actions, step_summary)
-        if success:
-            step_summary['remote_tasks'] += 1
-        return success
+        ordered_choices = list(np.random.choice(
+            np.arange(len(candidate_indices)),
+            size=len(candidate_indices),
+            replace=False,
+            p=weights
+        ))
+        attempted = False
+        for choice in ordered_choices:
+            rsu_idx = int(candidate_indices[choice])
+            distance = float(distances[choice])
+            node = self.rsus[rsu_idx]
+            if not self._is_node_admissible(node, 'RSU'):
+                continue
+            attempted = True
+            success = self._handle_remote_assignment(vehicle, task, node, 'RSU', rsu_idx, distance, actions, step_summary)
+            if success:
+                step_summary['remote_tasks'] += 1
+                return True
+        reason = 'rsu_overloaded' if not attempted else 'assignment_failed'
+        self._record_offload_rejection('RSU', reason)
+        step_summary['remote_refusals'] = step_summary.get('remote_refusals', 0) + 1
+        return False
 
 
     def _assign_to_uav(self, vehicle: Dict, task: Dict, actions: Dict, step_summary: Dict) -> bool:
@@ -2368,14 +2410,28 @@ class CompleteSystemSimulator:
             weights = np.ones_like(weights)
 
         weights = weights / weights.sum()
-        choice = int(np.random.choice(np.arange(len(candidate_indices)), p=weights))
-        uav_idx = int(candidate_indices[choice])
-        distance = float(distances[choice])
-        node = self.uavs[uav_idx]
-        success = self._handle_remote_assignment(vehicle, task, node, 'UAV', uav_idx, distance, actions, step_summary)
-        if success:
-            step_summary['remote_tasks'] += 1
-        return success
+        ordered_choices = list(np.random.choice(
+            np.arange(len(candidate_indices)),
+            size=len(candidate_indices),
+            replace=False,
+            p=weights
+        ))
+        attempted = False
+        for choice in ordered_choices:
+            uav_idx = int(candidate_indices[choice])
+            distance = float(distances[choice])
+            node = self.uavs[uav_idx]
+            if not self._is_node_admissible(node, 'UAV'):
+                continue
+            attempted = True
+            success = self._handle_remote_assignment(vehicle, task, node, 'UAV', uav_idx, distance, actions, step_summary)
+            if success:
+                step_summary['remote_tasks'] += 1
+                return True
+        reason = 'uav_overloaded' if not attempted else 'assignment_failed'
+        self._record_offload_rejection('UAV', reason)
+        step_summary['remote_refusals'] = step_summary.get('remote_refusals', 0) + 1
+        return False
 
 
     def _handle_remote_assignment(
@@ -2557,7 +2613,8 @@ class CompleteSystemSimulator:
             'wait_time_sum': 0.0,
             'queue_sum': 0,
             'by_type': {},
-            'by_scenario': {}
+            'by_scenario': {},
+            'by_reason': {}
         })
         drop_stats['total'] = drop_stats.get('total', 0) + 1
         task_type = task.get('task_type', 'unknown')
@@ -2566,6 +2623,8 @@ class CompleteSystemSimulator:
         by_type[task_type] = by_type.get(task_type, 0) + 1
         by_scenario = drop_stats.setdefault('by_scenario', {})
         by_scenario[scenario_name] = by_scenario.get(scenario_name, 0) + 1
+        by_reason = drop_stats.setdefault('by_reason', {})
+        by_reason[reason] = by_reason.get(reason, 0) + 1
 
         step_summary['dropped_tasks'] = step_summary.get('dropped_tasks', 0) + 1
         forced_key = 'forced_drops'

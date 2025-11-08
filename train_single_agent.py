@@ -100,6 +100,12 @@ except ImportError:
     ENHANCED_CACHE_AVAILABLE = False
     print("[Warning] Enhanced cache system not available, using standard simulator")
 from utils import MovingAverage
+from utils.normalization_utils import (
+    normalize_distribution,
+    normalize_feature_vector,
+    normalize_ratio,
+    normalize_scalar,
+)
 # 🤖 导入自适应控制组件
 from utils.adaptive_control import AdaptiveCacheController, AdaptiveMigrationController, map_agent_actions_to_params
 from decision.strategy_coordinator import StrategyCoordinator
@@ -188,19 +194,19 @@ def _build_scenario_config() -> Dict[str, Any]:
         "num_vehicles": getattr(config, "num_vehicles", 12),
         "num_rsus": getattr(config, "num_rsus", 4),
         "num_uavs": getattr(config, "num_uavs", 2),
-        "task_arrival_rate": task_arrival_rate,
+        "task_arrival_rate": 1.0,
         "time_slot": getattr(config, "time_slot", 0.2),
         "simulation_time": getattr(config, "simulation_time", 1000),
         "computation_capacity": 800,
         "bandwidth": 15,
         "coverage_radius": 300,
-        "cache_capacity": 80,
+        "cache_capacity": 120,
         "transmission_power": 0.15,
         "computation_power": 1.2,
         "thermal_noise_density": -174.0,
         "noise_figure": 9.0,
-        "high_load_mode": True,
-        "task_complexity_multiplier": 1.5,
+        "high_load_mode": False,
+        "task_complexity_multiplier": 1.1,
         "rsu_load_divisor": 4.0,
         "uav_load_divisor": 2.0,
         "enhanced_task_generation": True,
@@ -728,6 +734,11 @@ class SingleAgentTrainingEnvironment:
         self._episode_dropped_base = int(stats_dict.get('dropped_tasks', 0) or 0)
         self._episode_generated_bytes_base = float(stats_dict.get('generated_data_bytes', 0.0) or 0.0)
         self._episode_dropped_bytes_base = float(stats_dict.get('dropped_data_bytes', 0.0) or 0.0)
+        remote_stats = stats_dict.get('remote_rejections', {})
+        if isinstance(remote_stats, dict):
+            self._episode_remote_reject_base = int(remote_stats.get('total', 0) or 0)
+        else:
+            self._episode_remote_reject_base = 0
 
         # Cache controllers keep their own cumulative counters; snapshot them as the new baseline
         if hasattr(self, 'adaptive_cache_controller'):
@@ -755,33 +766,33 @@ class SingleAgentTrainingEnvironment:
         # 车辆状态（与step保持一致的归一化方式）
         for i, vehicle in enumerate(self.simulator.vehicles):
             vehicle_state = np.array([
-                np.clip(vehicle['position'][0] / 1000, 0.0, 1.0),
-                np.clip(vehicle['position'][1] / 1000, 0.0, 1.0),
-                np.clip(vehicle['velocity'] / 50, 0.0, 1.0),
-                np.clip(len(vehicle.get('tasks', [])) / 20.0, 0.0, 1.0),
-                np.clip(vehicle.get('energy_consumed', 0) / 1000.0, 0.0, 1.0)
+                normalize_scalar(vehicle['position'][0], 'vehicle_position_range', 1000.0),
+                normalize_scalar(vehicle['position'][1], 'vehicle_position_range', 1000.0),
+                normalize_scalar(vehicle.get('velocity', 0.0), 'vehicle_speed_range', 50.0),
+                normalize_scalar(len(vehicle.get('tasks', [])), 'vehicle_queue_capacity', 20.0),
+                normalize_scalar(vehicle.get('energy_consumed', 0.0), 'vehicle_energy_reference', 1000.0),
             ])
             node_states[f'vehicle_{i}'] = vehicle_state
 
         # RSU状态（统一归一化/裁剪）
         for i, rsu in enumerate(self.simulator.rsus):
             rsu_state = np.array([
-                np.clip(rsu['position'][0] / 1000, 0.0, 1.0),
-                np.clip(rsu['position'][1] / 1000, 0.0, 1.0),
+                normalize_scalar(rsu['position'][0], 'rsu_position_range', 1000.0),
+                normalize_scalar(rsu['position'][1], 'rsu_position_range', 1000.0),
                 self._calculate_correct_cache_utilization(rsu.get('cache', {}), rsu.get('cache_capacity', 1000.0)),
-                np.clip(len(rsu.get('computation_queue', [])) / 20.0, 0.0, 1.0),
-                np.clip(rsu.get('energy_consumed', 0) / 1000.0, 0.0, 1.0)
+                normalize_scalar(len(rsu.get('computation_queue', [])), 'rsu_queue_capacity', 20.0),
+                normalize_scalar(rsu.get('energy_consumed', 0.0), 'rsu_energy_reference', 1000.0),
             ])
             node_states[f'rsu_{i}'] = rsu_state
 
         # UAV状态（统一归一化/裁剪）
         for i, uav in enumerate(self.simulator.uavs):
             uav_state = np.array([
-                np.clip(uav['position'][0] / 1000, 0.0, 1.0),
-                np.clip(uav['position'][1] / 1000, 0.0, 1.0),
-                np.clip(uav['position'][2] / 200, 0.0, 1.0),
+                normalize_scalar(uav['position'][0], 'uav_position_range', 1000.0),
+                normalize_scalar(uav['position'][1], 'uav_position_range', 1000.0),
+                normalize_scalar(uav['position'][2], 'uav_altitude_range', 200.0),
                 self._calculate_correct_cache_utilization(uav.get('cache', {}), uav.get('cache_capacity', 200.0)),
-                np.clip(uav.get('energy_consumed', 0) / 1000.0, 0.0, 1.0)
+                normalize_scalar(uav.get('energy_consumed', 0.0), 'uav_energy_reference', 1000.0),
             ])
             node_states[f'uav_{i}'] = uav_state
         
@@ -854,35 +865,35 @@ class SingleAgentTrainingEnvironment:
         # 车辆状态 (5维 - 统一归一化)
         for i, vehicle in enumerate(self.simulator.vehicles):
             vehicle_state = np.array([
-                np.clip(vehicle['position'][0] / 1000, 0.0, 1.0),  # 位置x
-                np.clip(vehicle['position'][1] / 1000, 0.0, 1.0),  # 位置y
-                np.clip(vehicle['velocity'] / 50, 0.0, 1.0),  # 速度
-                np.clip(len(vehicle.get('tasks', [])) / 20.0, 0.0, 1.0),  # 队列（扩大范围到20）
-                np.clip(vehicle.get('energy_consumed', 0) / 1000.0, 0.0, 1.0)  # 能耗
+                normalize_scalar(vehicle['position'][0], 'vehicle_position_range', 1000.0),  # 位置x
+                normalize_scalar(vehicle['position'][1], 'vehicle_position_range', 1000.0),  # 位置y
+                normalize_scalar(vehicle.get('velocity', 0.0), 'vehicle_speed_range', 50.0),  # 速度
+                normalize_scalar(len(vehicle.get('tasks', [])), 'vehicle_queue_capacity', 20.0),  # 队列
+                normalize_scalar(vehicle.get('energy_consumed', 0.0), 'vehicle_energy_reference', 1000.0),  # 能耗
             ])
             node_states[f'vehicle_{i}'] = vehicle_state
-        
+
         # RSU状态 (5维 - 清理版，移除控制参数)
         for i, rsu in enumerate(self.simulator.rsus):
             # 标准化归一化：确保所有值在[0,1]范围
             rsu_state = np.array([
-                np.clip(rsu['position'][0] / 1000, 0.0, 1.0),  # 位置x
-                np.clip(rsu['position'][1] / 1000, 0.0, 1.0),  # 位置y
+                normalize_scalar(rsu['position'][0], 'rsu_position_range', 1000.0),  # 位置x
+                normalize_scalar(rsu['position'][1], 'rsu_position_range', 1000.0),  # 位置y
                 self._calculate_correct_cache_utilization(rsu.get('cache', {}), rsu.get('cache_capacity', 1000.0)),  # 缓存利用率
-                np.clip(len(rsu.get('computation_queue', [])) / 20.0, 0.0, 1.0),  # 队列利用率（扩大范围到20）
-                np.clip(rsu.get('energy_consumed', 0) / 1000.0, 0.0, 1.0)  # 能耗
+                normalize_scalar(len(rsu.get('computation_queue', [])), 'rsu_queue_capacity', 20.0),  # 队列利用率
+                normalize_scalar(rsu.get('energy_consumed', 0.0), 'rsu_energy_reference', 1000.0),  # 能耗
             ])
             node_states[f'rsu_{i}'] = rsu_state
-        
+
         # UAV状态 (5维 - 清理版，移除控制参数)
         for i, uav in enumerate(self.simulator.uavs):
             # 标准化归一化：确保所有值在[0,1]范围
             uav_state = np.array([
-                np.clip(uav['position'][0] / 1000, 0.0, 1.0),  # 位置x
-                np.clip(uav['position'][1] / 1000, 0.0, 1.0),  # 位置y
-                np.clip(uav['position'][2] / 200, 0.0, 1.0),   # 位置z（高度）
+                normalize_scalar(uav['position'][0], 'uav_position_range', 1000.0),  # 位置x
+                normalize_scalar(uav['position'][1], 'uav_position_range', 1000.0),  # 位置y
+                normalize_scalar(uav['position'][2], 'uav_altitude_range', 200.0),   # 位置z（高度）
                 self._calculate_correct_cache_utilization(uav.get('cache', {}), uav.get('cache_capacity', 200.0)),  # 缓存利用率
-                np.clip(uav.get('energy_consumed', 0) / 1000.0, 0.0, 1.0)  # 能耗
+                normalize_scalar(uav.get('energy_consumed', 0.0), 'uav_energy_reference', 1000.0),  # 能耗
             ])
             node_states[f'uav_{i}'] = uav_state
         
@@ -965,12 +976,12 @@ class SingleAgentTrainingEnvironment:
         
         # 计算本episode任务总数和完成率（避免累积效应）
         episode_total = episode_processed + episode_dropped
-        completion_rate = episode_processed / max(1, episode_total) if episode_total > 0 else 0.5
+        completion_rate = normalize_ratio(episode_processed, episode_total, default=0.5)
         
         cache_hits = int(safe_get('cache_hits', 0))
         cache_misses = int(safe_get('cache_misses', 0))
-        cache_requests = max(1, cache_hits + cache_misses)
-        cache_hit_rate = cache_hits / cache_requests
+        cache_requests_total = cache_hits + cache_misses
+        cache_hit_rate = normalize_ratio(cache_hits, cache_requests_total)
         local_cache_hits = int(safe_get('local_cache_hits', 0))
         
         # 🔧 修复：安全计算平均延迟 - 使用累计统计
@@ -1002,6 +1013,10 @@ class SingleAgentTrainingEnvironment:
         queue_warning_nodes = step_stats.get('queue_warning_nodes', {}) or {}
         queue_overload_events_total = int(step_stats.get('queue_overload_events', 0) or 0)
         queue_overload_events = max(0, queue_overload_events_total - getattr(self, '_episode_queue_overload_events_base', 0))
+        remote_stats = step_stats.get('remote_rejections', {}) or {}
+        remote_total = int(remote_stats.get('total', 0) or 0)
+        episode_remote_rejects = max(0, remote_total - getattr(self, '_episode_remote_reject_base', 0))
+        remote_rejection_rate = normalize_ratio(episode_remote_rejects, episode_total, default=0.0)
 
         mm1_predictions_raw = step_stats.get('mm1_predictions', {}) or {}
         mm1_predictions: Dict[str, Dict[str, float]] = {}
@@ -1077,13 +1092,13 @@ class SingleAgentTrainingEnvironment:
         
         # 🔧 修复：使用episode级别数据丢失量，避免累积效应
         data_loss_bytes = max(0.0, episode_dropped_bytes)
-        data_generated_bytes = max(1.0, episode_generated_bytes)
-        data_loss_ratio_bytes = min(1.0, data_loss_bytes / data_generated_bytes) if data_generated_bytes > 0 else 0.0
+        data_generated_bytes = max(0.0, episode_generated_bytes)
+        data_loss_ratio_bytes = normalize_ratio(data_loss_bytes, data_generated_bytes)
         
         # 迁移成功率（来自仿真器统计）
         migrations_executed = int(safe_get('migrations_executed', 0))
         migrations_successful = int(safe_get('migrations_successful', 0))
-        migration_success_rate = (migrations_successful / migrations_executed) if migrations_executed > 0 else 0.0
+        migration_success_rate = normalize_ratio(migrations_successful, migrations_executed)
         
         # 🔧 调试迁移统计
         if migrations_executed > 0:
@@ -1101,27 +1116,15 @@ class SingleAgentTrainingEnvironment:
             0,
             cache_total_collab - getattr(self, '_episode_cache_collab_base', 0)
         )
-        cache_eviction_rate = (
-            episode_cache_evictions / episode_cache_requests
-            if episode_cache_requests > 0 else 0.0
-        )
+        cache_eviction_rate = normalize_ratio(episode_cache_evictions, episode_cache_requests)
 
         def _normalize_vector(key: str, length: int = 4, clip: bool = True) -> List[float]:
             raw = step_stats.get(key)
-            if isinstance(raw, np.ndarray):
-                values = raw.tolist()
-            elif isinstance(raw, (list, tuple)):
-                values = list(raw)
+            if isinstance(raw, (np.ndarray, list, tuple)):
+                values = raw
             else:
                 values = []
-            values = [float(v) for v in values[:length]]
-            if len(values) < length:
-                values.extend([0.0] * (length - len(values)))
-            if clip:
-                values = [float(np.clip(v, 0.0, 1.0)) for v in values]
-            else:
-                values = [float(max(0.0, v)) for v in values]
-            return values
+            return normalize_feature_vector(values, length, clip=clip)
 
         queue_distribution = _normalize_vector('task_type_queue_distribution')
         active_distribution = _normalize_vector('task_type_active_distribution')
@@ -1140,16 +1143,14 @@ class SingleAgentTrainingEnvironment:
         drop_stats = step_stats.get('drop_stats')
         drop_by_type = drop_stats.get('by_type', {}) if isinstance(drop_stats, dict) else {}
 
-        total_generated_by_type = sum(float(gen_by_type.get(t, 0.0)) for t in range(1, 5))
-        generated_share: List[float] = []
+        generated_counts: List[float] = []
         drop_rate: List[float] = []
         for task_type in range(1, 5):
             generated = float(gen_by_type.get(task_type, 0.0))
             dropped = float(drop_by_type.get(task_type, 0.0))
-            drop_rate.append(float(np.clip(dropped / generated, 0.0, 1.0)) if generated > 0.0 else 0.0)
-            generated_share.append(
-                float(np.clip(generated / total_generated_by_type, 0.0, 1.0)) if total_generated_by_type > 0.0 else 0.0
-            )
+            generated_counts.append(generated)
+            drop_rate.append(normalize_ratio(dropped, generated))
+        generated_share = normalize_distribution(generated_counts) if generated_counts else []
 
         # 🔍 调试日志：能耗与迁移敏感区间
         current_episode = getattr(self, '_current_episode', 0)
@@ -1157,7 +1158,8 @@ class SingleAgentTrainingEnvironment:
             print(
                 f"[调试] Episode {current_episode:04d}: 延迟 {avg_delay:.3f}s, 能耗 {total_energy:.2f}J, "
                 f"完成率 {completion_rate:.1%}, 迁移成功率 {migration_success_rate:.1%}, "
-                f"缓存命中 {cache_hit_rate:.1%}"
+                f"缓存命中 {cache_hit_rate:.1%}, 数据损失 {data_loss_ratio_bytes:.1%}, "
+                f"缓存淘汰率 {cache_eviction_rate:.1%}"
             )
 
         # 🤖 更新缓存控制器统计（如果有实际数据）
@@ -1216,7 +1218,9 @@ class SingleAgentTrainingEnvironment:
             'mm1_predictions': mm1_predictions,
             'rsu_hotspot_intensity_list': hotspot_list,
             'rsu_hotspot_mean': rsu_hotspot_mean,
-            'rsu_hotspot_peak': rsu_hotspot_peak
+            'rsu_hotspot_peak': rsu_hotspot_peak,
+            'remote_rejection_count': episode_remote_rejects,
+            'remote_rejection_rate': remote_rejection_rate
         }
     
     def run_episode(self, episode: int, max_steps: Optional[int] = None) -> Dict:

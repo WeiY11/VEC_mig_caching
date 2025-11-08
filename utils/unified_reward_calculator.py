@@ -48,6 +48,13 @@ class UnifiedRewardCalculator:
         self.weight_cache = float(getattr(config.rl, "reward_weight_cache", 0.0))  # 缓存权重
         self.weight_migration = float(getattr(config.rl, "reward_weight_migration", 0.0))  # 迁移权重
         self.weight_joint = float(getattr(config.rl, "reward_weight_joint", 0.05))  # 缓存-迁移联动权重
+        self.completion_target = float(getattr(config.rl, "completion_target", 0.95))
+        self.weight_completion_gap = float(getattr(config.rl, "reward_weight_completion_gap", 0.0))
+        self.weight_loss_ratio = float(getattr(config.rl, "reward_weight_loss_ratio", 0.0))
+        self.cache_pressure_threshold = float(getattr(config.rl, "cache_pressure_threshold", 0.85))
+        self.weight_cache_pressure = float(getattr(config.rl, "reward_weight_cache_pressure", 0.0))
+        self.weight_queue_overload = float(getattr(config.rl, "reward_weight_queue_overload", 0.0))
+        self.weight_remote_reject = float(getattr(config.rl, "reward_weight_remote_reject", 0.0))
         self.latency_target = float(getattr(config.rl, "latency_target", 0.4))
         self.energy_target = float(getattr(config.rl, "energy_target", 1200.0))
         self.latency_tolerance = float(getattr(config.rl, "latency_upper_tolerance", self.latency_target * 2.0))
@@ -80,6 +87,21 @@ class UnifiedRewardCalculator:
         if self.algorithm == "SAC":
             self.delay_normalizer = 0.25
             self.energy_normalizer = 1200.0
+
+        norm_cfg = getattr(config, "normalization", None)
+        if norm_cfg is not None:
+            self.latency_target = float(getattr(norm_cfg, "delay_reference", self.latency_target))
+            self.latency_tolerance = float(getattr(norm_cfg, "delay_upper_reference", self.latency_tolerance))
+            self.energy_target = float(getattr(norm_cfg, "energy_reference", self.energy_target))
+            self.energy_tolerance = float(getattr(norm_cfg, "energy_upper_reference", self.energy_tolerance))
+            self.delay_normalizer = float(
+                getattr(norm_cfg, "delay_normalizer_value", self.delay_normalizer)
+            )
+            self.energy_normalizer = float(
+                getattr(norm_cfg, "energy_normalizer_value", self.energy_normalizer)
+            )
+            self.delay_bonus_scale = max(1e-6, self.latency_target)
+            self.energy_bonus_scale = max(1e-6, self.energy_target)
 
         # 设置奖励裁剪范围，防止奖励值过大或过小
         if self.algorithm == "SAC":
@@ -209,6 +231,18 @@ class UnifiedRewardCalculator:
         completion_rate = max(
             0.0, self._safe_float(system_metrics.get("task_completion_rate"))
         )
+        data_loss_ratio = max(
+            0.0, self._safe_float(system_metrics.get("data_loss_ratio_bytes"))
+        )
+        cache_utilization = max(
+            0.0, self._safe_float(system_metrics.get("cache_utilization"))
+        )
+        queue_overload_events = max(
+            0.0, self._safe_float(system_metrics.get("queue_overload_events"))
+        )
+        remote_rejection_rate = max(
+            0.0, self._safe_float(system_metrics.get("remote_rejection_rate"))
+        )
 
         # ========== 核心归一化：统一使用目标值归一化 ==========
         # Objective = w_T × (delay/target) + w_E × (energy/target)
@@ -225,6 +259,26 @@ class UnifiedRewardCalculator:
         
         # 总成本
         total_cost = core_cost + drop_penalty
+
+        # 完成率差距惩罚
+        if self.weight_completion_gap > 0.0:
+            completion_gap = max(0.0, self.completion_target - completion_rate)
+            total_cost += self.weight_completion_gap * completion_gap
+
+        # 数据丢失率惩罚
+        if self.weight_loss_ratio > 0.0:
+            total_cost += self.weight_loss_ratio * data_loss_ratio
+
+        # 缓存压力惩罚（超过阈值才惩罚）
+        if self.weight_cache_pressure > 0.0 and cache_utilization > self.cache_pressure_threshold:
+            total_cost += self.weight_cache_pressure * (cache_utilization - self.cache_pressure_threshold)
+
+        # 队列过载事件惩罚
+        if self.weight_queue_overload > 0.0 and queue_overload_events > 0.0:
+            total_cost += self.weight_queue_overload * queue_overload_events
+
+        if self.weight_remote_reject > 0.0 and remote_rejection_rate > 0.0:
+            total_cost += self.weight_remote_reject * remote_rejection_rate
 
         # ========== 辅助指标（可选，权重较小）==========
         # 注意：缓存和迁移是手段，不是优化目标，所以权重设为0
