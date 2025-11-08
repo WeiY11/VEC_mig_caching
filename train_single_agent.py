@@ -189,26 +189,51 @@ def _build_scenario_config() -> Dict[str, Any]:
             print(f"🔧 从环境变量覆盖任务到达率: {task_arrival_rate} tasks/s")
         except ValueError:
             print(f"⚠️  环境变量TASK_ARRIVAL_RATE无效，使用默认值")
-    
+
+    def _get_or_default(obj: Optional[Any], attr: str, default: Any) -> Any:
+        return getattr(obj, attr, default) if obj is not None else default
+
+    network_cfg = getattr(config, "network", None)
+    vehicle_cfg = getattr(network_cfg, "vehicle_config", {}) if network_cfg else {}
+    rsu_cfg = getattr(network_cfg, "rsu_config", {}) if network_cfg else {}
+    uav_cfg = getattr(network_cfg, "uav_config", {}) if network_cfg else {}
+    comm_cfg = getattr(network_cfg, "communication_config", {}) if network_cfg else {}
+    compute_cfg = getattr(config, "compute", None)
+    service_cfg = getattr(config, "service", None)
+    communication_cfg = getattr(config, "communication", None)
+
+    def _normalize_bandwidth(value: Optional[float], fallback: float) -> float:
+        if value is None:
+            return fallback
+        bw = float(value)
+        if bw < 1e3:  # assume MHz → Hz
+            bw *= 1e6
+        return bw
+
     scenario = {
-        "num_vehicles": getattr(config, "num_vehicles", 12),
-        "num_rsus": getattr(config, "num_rsus", 4),
-        "num_uavs": getattr(config, "num_uavs", 2),
-        "task_arrival_rate": 1.0,
-        "time_slot": getattr(config, "time_slot", 0.2),
+        "num_vehicles": getattr(config, "num_vehicles", vehicle_cfg.get('num_vehicles', 12)),
+        "num_rsus": getattr(config, "num_rsus", rsu_cfg.get('num_rsus', 4)),
+        "num_uavs": getattr(config, "num_uavs", uav_cfg.get('num_uavs', 2)),
+        "task_arrival_rate": task_arrival_rate,
+        "time_slot": getattr(config, "time_slot", _get_or_default(network_cfg, 'time_slot_duration', 0.1)),
         "simulation_time": getattr(config, "simulation_time", 1000),
-        "computation_capacity": 800,
-        "bandwidth": 15,
-        "coverage_radius": 300,
-        "cache_capacity": 120,
-        "transmission_power": 0.15,
-        "computation_power": 1.2,
-        "thermal_noise_density": -174.0,
-        "noise_figure": 9.0,
-        "high_load_mode": False,
-        "task_complexity_multiplier": 1.1,
-        "rsu_load_divisor": 4.0,
-        "uav_load_divisor": 2.0,
+        "computation_capacity": float(vehicle_cfg.get('computation_capacity', 1000)),
+        "bandwidth": _normalize_bandwidth(
+            comm_cfg.get('bandwidth'),
+            _get_or_default(communication_cfg, 'total_bandwidth', 50e6),
+        ),
+        "coverage_radius": float(rsu_cfg.get('coverage_radius', 300)),
+        "cache_capacity": float(rsu_cfg.get('cache_capacity', 120)),
+        "transmission_power": float(vehicle_cfg.get('transmission_power', 0.15)),
+        "computation_power": float(_get_or_default(compute_cfg, 'vehicle_static_power', 1.2)),
+        "thermal_noise_density": float(comm_cfg.get('thermal_noise_density', -174.0)),
+        "noise_figure": float(_get_or_default(communication_cfg, 'noise_figure', 9.0)),
+        "high_load_mode": getattr(getattr(config, "task", None), "high_load_mode", False),
+        "task_complexity_multiplier": float(
+            getattr(getattr(config, "task", None), "complexity_multiplier", 1.1)
+        ),
+        "rsu_load_divisor": float(_get_or_default(service_cfg, 'rsu_queue_boost_divisor', 4.0)),
+        "uav_load_divisor": float(_get_or_default(service_cfg, 'uav_queue_boost_divisor', 2.0)),
         "enhanced_task_generation": True,
     }
 
@@ -282,19 +307,28 @@ class SingleAgentTrainingEnvironment:
             
             # 🔧 关键修复：动态修改全局config以支持参数覆盖
             # 原因：Node类使用全局config而非scenario_config
+            network_cfg = getattr(config, "network", None)
+
+            def _sync_topology(attr_name: str, component_attr: str, dict_key: str, value: int) -> None:
+                setattr(config, attr_name, value)
+                if network_cfg is not None:
+                    setattr(network_cfg, attr_name, value)
+                    component_cfg = getattr(network_cfg, component_attr, None)
+                    if isinstance(component_cfg, dict):
+                        component_cfg[dict_key] = value
             
             # 拓扑数量参数
             if 'num_vehicles' in override_scenario:
                 num_vehicles_override = int(override_scenario['num_vehicles'])
-                config.num_vehicles = num_vehicles_override
+                _sync_topology('num_vehicles', 'vehicle_config', 'num_vehicles', num_vehicles_override)
                 print(f"🔧 [Override] 动态设置车辆数量: {num_vehicles_override}")
             if 'num_rsus' in override_scenario:
                 num_rsus_override = int(override_scenario['num_rsus'])
-                config.num_rsus = num_rsus_override
+                _sync_topology('num_rsus', 'rsu_config', 'num_rsus', num_rsus_override)
                 print(f"🔧 [Override] 动态设置RSU数量: {num_rsus_override}")
             if 'num_uavs' in override_scenario:
                 num_uav_override = int(override_scenario['num_uavs'])
-                config.num_uavs = num_uav_override
+                _sync_topology('num_uavs', 'uav_config', 'num_uavs', num_uav_override)
                 print(f"🔧 [Override] 动态设置UAV数量: {num_uav_override}")
 
             # 带宽参数
@@ -302,6 +336,9 @@ class SingleAgentTrainingEnvironment:
                 bw_value = override_scenario.get('total_bandwidth') or override_scenario.get('bandwidth')
                 if bw_value:
                     config.communication.total_bandwidth = float(bw_value)
+                    network_comm_cfg = getattr(network_cfg, "communication_config", None)
+                    if isinstance(network_comm_cfg, dict):
+                        network_comm_cfg['bandwidth'] = float(bw_value)
                     print(f"🔧 [Override] 动态设置带宽: {float(bw_value)/1e6:.1f} MHz")
             
             # 🎯 总资源池参数（优先级高于单节点频率）
@@ -678,7 +715,10 @@ class SingleAgentTrainingEnvironment:
             'rsu_hotspot_mean_series': [],
             'rsu_hotspot_peak_series': [],
             'mm1_queue_error': [],
-            'mm1_delay_error': []
+            'mm1_delay_error': [],
+            'normalized_delay': [],
+            'normalized_energy': [],
+            'normalized_reward': []
         }
         
         # 性能追踪器
@@ -918,6 +958,10 @@ class SingleAgentTrainingEnvironment:
                 print(f"⚠️ 联合策略协调器观测异常: {exc}")
         
         reward = self.agent_env.calculate_reward(system_metrics, cache_metrics, migration_metrics)
+        try:
+            system_metrics['normalized_reward'] = self._normalize_reward_value(reward)
+        except Exception:
+            system_metrics['normalized_reward'] = 0.0
         
         task_type_queue = system_metrics.get('task_type_queue_distribution', [])
         task_type_deadline = system_metrics.get('task_type_deadline_remaining', [])
@@ -1177,6 +1221,9 @@ class SingleAgentTrainingEnvironment:
                 total_utilization / max(1, len(self.simulator.rsus))
             )
         
+        latency_target = max(1e-6, getattr(config.rl, 'latency_target', 0.4))
+        energy_target = max(1e-6, getattr(config.rl, 'energy_target', 1200.0))
+
         return {
             'avg_task_delay': avg_delay,
             'total_energy_consumption': total_energy,
@@ -1220,8 +1267,87 @@ class SingleAgentTrainingEnvironment:
             'rsu_hotspot_mean': rsu_hotspot_mean,
             'rsu_hotspot_peak': rsu_hotspot_peak,
             'remote_rejection_count': episode_remote_rejects,
-            'remote_rejection_rate': remote_rejection_rate
+            'remote_rejection_rate': remote_rejection_rate,
+            'normalized_delay': avg_delay / latency_target,
+            'normalized_energy': total_energy / energy_target,
         }
+
+    def _normalize_reward_value(self, reward: float) -> float:
+        """将奖励值转换为无量纲比例，便于与其他指标对比。"""
+        import numpy as np
+        rl_config = getattr(config, 'rl', None)
+        reward_scale = float(
+            getattr(
+                rl_config,
+                'reward_normalizer',
+                getattr(rl_config, 'reward_weight_delay', 1.0)
+                + getattr(rl_config, 'reward_weight_energy', 1.0)
+            )
+        )
+        reward_scale = max(reward_scale, 1e-6)
+        normalized = -reward / reward_scale
+        return float(np.clip(normalized, -5.0, 5.0))
+    
+    def _record_episode_metrics(self, system_metrics: Dict, episode_steps: Optional[int] = None) -> None:
+        """将系统指标写入episode_metrics，方便后续报告/可视化使用。"""
+        import numpy as np
+
+        metric_mapping = {
+            'avg_task_delay': 'avg_delay',
+            'total_energy_consumption': 'total_energy',
+            'data_loss_bytes': 'data_loss_bytes',
+            'data_loss_ratio_bytes': 'data_loss_ratio_bytes',
+            'task_completion_rate': 'task_completion_rate',
+            'cache_hit_rate': 'cache_hit_rate',
+            'cache_utilization': 'cache_utilization',
+            'cache_evictions': 'cache_evictions',
+            'cache_eviction_rate': 'cache_eviction_rate',
+            'cache_requests': 'cache_requests',
+            'cache_collaborative_writes': 'cache_collaborative_writes',
+            'local_cache_hits': 'local_cache_hits',
+            'migration_success_rate': 'migration_success_rate',
+            'queue_rho_sum': 'queue_rho_sum',
+            'queue_rho_max': 'queue_rho_max',
+            'queue_overload_flag': 'queue_overload_flag',
+            'queue_overload_events': 'queue_overload_events',
+            'migration_avg_cost': 'migration_avg_cost',
+            'migration_avg_delay_saved': 'migration_avg_delay_saved',
+            'rsu_hotspot_mean': 'rsu_hotspot_mean',
+            'rsu_hotspot_peak': 'rsu_hotspot_peak',
+            'normalized_delay': 'normalized_delay',
+            'normalized_energy': 'normalized_energy',
+            'normalized_reward': 'normalized_reward',
+        }
+
+        def _coerce_scalar(value: Any) -> Optional[float]:
+            if isinstance(value, (list, tuple, dict)):
+                return None
+            try:
+                return float(value)
+            except (TypeError, ValueError):
+                if isinstance(value, np.ndarray) and value.size == 1:
+                    return float(value.item())
+                return None
+
+        for system_key, episode_key in metric_mapping.items():
+            if episode_key not in self.episode_metrics:
+                continue
+            scalar_value = _coerce_scalar(system_metrics.get(system_key))
+            if scalar_value is None:
+                continue
+            self.episode_metrics[episode_key].append(scalar_value)
+
+        queue_distribution_ep = system_metrics.get('task_type_queue_distribution')
+        if isinstance(queue_distribution_ep, (list, tuple, np.ndarray)):
+            for idx, value in enumerate(queue_distribution_ep):
+                key = f'task_type_queue_share_ep_{idx+1}'
+                if key in self.episode_metrics:
+                    coerced = _coerce_scalar(value)
+                    if coerced is not None:
+                        self.episode_metrics[key].append(coerced)
+
+        if episode_steps is not None and 'episode_steps' in self.episode_metrics:
+            self.episode_metrics['episode_steps'].append(int(episode_steps))
     
     def run_episode(self, episode: int, max_steps: Optional[int] = None) -> Dict:
         """运行一个完整的训练轮次"""
@@ -1311,6 +1437,7 @@ class SingleAgentTrainingEnvironment:
         
         # 记录轮次统计
         system_metrics = info.get('system_metrics', {})
+        self._record_episode_metrics(system_metrics, episode_steps=step + 1)
         
         return {
             'episode_reward': episode_reward,
@@ -1819,9 +1946,7 @@ def train_single_algorithm(algorithm: str, num_episodes: Optional[int] = None, e
         # 记录训练数据
         training_env.episode_rewards.append(episode_result['avg_reward'])
         
-        # 🔧 新增：记录实际步数
         episode_steps = episode_result.get('steps', config.experiment.max_steps_per_episode)
-        training_env.episode_metrics['episode_steps'].append(episode_steps)
         
         # 更新性能追踪器
         training_env.performance_tracker['recent_rewards'].update(episode_result['avg_reward'])
@@ -1832,43 +1957,6 @@ def train_single_algorithm(algorithm: str, num_episodes: Optional[int] = None, e
         training_env.performance_tracker['recent_delays'].update(system_metrics.get('avg_task_delay', 0))
         training_env.performance_tracker['recent_energy'].update(system_metrics.get('total_energy_consumption', 0))
         training_env.performance_tracker['recent_completion'].update(system_metrics.get('task_completion_rate', 0))
-        
-        # 🔧 修复：记录指标 - 解决键名不匹配问题
-        metric_mapping = {
-            'avg_task_delay': 'avg_delay',
-            'total_energy_consumption': 'total_energy',
-            'data_loss_bytes': 'data_loss_bytes',
-            'data_loss_ratio_bytes': 'data_loss_ratio_bytes',
-            'task_completion_rate': 'task_completion_rate',
-            'cache_hit_rate': 'cache_hit_rate', 
-            'cache_utilization': 'cache_utilization',
-            'cache_evictions': 'cache_evictions',
-            'cache_eviction_rate': 'cache_eviction_rate',
-            'cache_requests': 'cache_requests',
-            'cache_collaborative_writes': 'cache_collaborative_writes',
-            'local_cache_hits': 'local_cache_hits',
-            'migration_success_rate': 'migration_success_rate',
-            'queue_rho_sum': 'queue_rho_sum',
-            'queue_rho_max': 'queue_rho_max',
-            'queue_overload_flag': 'queue_overload_flag',
-            'queue_overload_events': 'queue_overload_events',
-            'migration_avg_cost': 'migration_avg_cost',
-            'migration_avg_delay_saved': 'migration_avg_delay_saved',
-            'rsu_hotspot_mean': 'rsu_hotspot_mean',
-            'rsu_hotspot_peak': 'rsu_hotspot_peak'
-        }
-        
-        for system_key, episode_key in metric_mapping.items():
-            if system_key in system_metrics and episode_key in training_env.episode_metrics:
-                training_env.episode_metrics[episode_key].append(system_metrics[system_key])
-                # print(f"✅ 记录指标 {episode_key}: {system_metrics[system_key]:.3f}")  # 调试信息（减少输出）
-        
-        queue_distribution_ep = system_metrics.get('task_type_queue_distribution')
-        if isinstance(queue_distribution_ep, (list, tuple)):
-            for idx, value in enumerate(queue_distribution_ep):
-                key = f'task_type_queue_share_ep_{idx+1}'
-                if key in training_env.episode_metrics:
-                    training_env.episode_metrics[key].append(float(value))
         # 🌐 更新实时可视化
         if visualizer:
             vis_metrics = {
