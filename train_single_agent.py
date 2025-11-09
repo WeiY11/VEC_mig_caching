@@ -109,6 +109,7 @@ from utils.normalization_utils import (
 # 🤖 导入自适应控制组件
 from utils.adaptive_control import AdaptiveCacheController, AdaptiveMigrationController, map_agent_actions_to_params
 from decision.strategy_coordinator import StrategyCoordinator
+from utils.unified_reward_calculator import update_reward_targets
 
 # 导入各种单智能体算法
 from single_agent.ddpg import DDPGEnvironment
@@ -729,6 +730,26 @@ class SingleAgentTrainingEnvironment:
             'recent_energy': MovingAverage(100),
             'recent_completion': MovingAverage(100)
         }
+        self._reward_baseline: Dict[str, float] = {}
+        self._energy_target_per_vehicle = float(os.environ.get('ENERGY_TARGET_PER_VEHICLE', 220.0))
+        self._dynamic_energy_target = float(getattr(config.rl, 'energy_target', 1200.0))
+        heuristic_energy_target = max(
+            self._dynamic_energy_target,
+            self.num_vehicles * self._energy_target_per_vehicle
+        )
+        if heuristic_energy_target > self._dynamic_energy_target * 1.05:
+            self._dynamic_energy_target = heuristic_energy_target
+            update_reward_targets(energy_target=heuristic_energy_target)
+            print(
+                f"⚖️ 动态调整能耗目标: {heuristic_energy_target:.1f}J "
+                f"(车辆数={self.num_vehicles}, 每车预算={self._energy_target_per_vehicle:.1f}J)"
+            )
+        self._energy_target_ema = self._dynamic_energy_target
+        self._energy_target_warmup = max(40, int(config.experiment.num_episodes * 0.1))
+        self._last_energy_target_update = 0
+        self._reward_smoothing_alpha = float(getattr(config.rl, 'reward_smooth_alpha', 0.35))
+        self._reward_ema_delay: Optional[float] = None
+        self._reward_ema_energy: Optional[float] = None
         self._episode_counters_initialized = False
         
         print(f"✓ {self.algorithm}训练环境初始化完成")
@@ -803,6 +824,117 @@ class SingleAgentTrainingEnvironment:
         self._episode_queue_overflow_base = int(stats_dict.get('queue_overflow_drops', 0) or 0)
         self._episode_counters_initialized = True
 
+    def _reset_reward_baseline(self, stats: Optional[Dict[str, Any]] = None) -> None:
+        """初始化/重置奖励增量基线。"""
+        base = stats or {}
+        self._reward_baseline = {
+            'processed': int(base.get('processed_tasks', 0) or 0),
+            'dropped': int(base.get('dropped_tasks', 0) or 0),
+            'delay': float(base.get('total_delay', 0.0) or 0.0),
+            'energy': float(base.get('total_energy', 0.0) or 0.0),
+            'generated_bytes': float(base.get('generated_data_bytes', 0.0) or 0.0),
+            'dropped_bytes': float(base.get('dropped_data_bytes', 0.0) or 0.0),
+        }
+        self._reward_ema_delay = None
+        self._reward_ema_energy = None
+
+    def _build_reward_snapshot(self, stats: Dict[str, Any]) -> Dict[str, float]:
+        """基于累计统计计算单步奖励所需的增量指标。"""
+        baseline = getattr(self, '_reward_baseline', None) or {
+            'processed': 0,
+            'dropped': 0,
+            'delay': 0.0,
+            'energy': 0.0,
+            'generated_bytes': 0.0,
+            'dropped_bytes': 0.0,
+        }
+
+        total_processed = int(stats.get('processed_tasks', 0) or 0)
+        total_dropped = int(stats.get('dropped_tasks', 0) or 0)
+        total_delay = float(stats.get('total_delay', 0.0) or 0.0)
+        total_energy = float(stats.get('total_energy', 0.0) or 0.0)
+        total_generated = float(stats.get('generated_data_bytes', 0.0) or 0.0)
+        total_dropped_bytes = float(stats.get('dropped_data_bytes', 0.0) or 0.0)
+
+        delta_processed = max(0, total_processed - baseline['processed'])
+        delta_dropped = max(0, total_dropped - baseline['dropped'])
+        delta_delay = max(0.0, total_delay - baseline['delay'])
+        delta_energy = max(0.0, total_energy - baseline['energy'])
+        delta_generated = max(0.0, total_generated - baseline['generated_bytes'])
+        delta_loss_bytes = max(0.0, total_dropped_bytes - baseline['dropped_bytes'])
+
+        tasks_for_delay = delta_processed if delta_processed > 0 else max(1, total_processed)
+        avg_delay_increment = delta_delay / max(1, tasks_for_delay)
+
+        completion_total = delta_processed + delta_dropped
+        completion_rate = normalize_ratio(delta_processed, completion_total, default=1.0)
+        loss_ratio = normalize_ratio(delta_loss_bytes, delta_generated)
+
+        avg_delay_for_reward = avg_delay_increment if avg_delay_increment > 0 else float(stats.get('avg_task_delay', 0.0) or 0.0)
+        energy_per_task = delta_energy / max(1, delta_processed) if delta_processed > 0 else 0.0
+        smoothed_delay, smoothed_energy_per_task = self._apply_reward_smoothing(
+            avg_delay_for_reward,
+            energy_per_task
+        )
+        smoothed_energy_total = smoothed_energy_per_task * max(1, delta_processed)
+
+        reward_snapshot = {
+            'avg_task_delay': smoothed_delay,
+            'total_energy_consumption': smoothed_energy_total if smoothed_energy_total > 0 else float(stats.get('total_energy_consumption', 0.0) or 0.0),
+            'dropped_tasks': delta_dropped,
+            'task_completion_rate': completion_rate,
+            'data_loss_bytes': delta_loss_bytes,
+            'data_loss_ratio_bytes': loss_ratio,
+        }
+
+        self._reward_baseline = {
+            'processed': total_processed,
+            'dropped': total_dropped,
+            'delay': total_delay,
+            'energy': total_energy,
+            'generated_bytes': total_generated,
+            'dropped_bytes': total_dropped_bytes,
+        }
+
+        return reward_snapshot
+
+    def _apply_reward_smoothing(self, delay_value: float, energy_per_task: float) -> Tuple[float, float]:
+        """对奖励关键指标进行指数平滑，减小TD3训练噪声。"""
+        if self._reward_smoothing_alpha <= 0.0:
+            return delay_value, energy_per_task
+        alpha = self._reward_smoothing_alpha
+        if self._reward_ema_delay is None:
+            self._reward_ema_delay = delay_value
+        else:
+            self._reward_ema_delay = (1.0 - alpha) * self._reward_ema_delay + alpha * delay_value
+        if self._reward_ema_energy is None:
+            self._reward_ema_energy = energy_per_task
+        else:
+            self._reward_ema_energy = (1.0 - alpha) * self._reward_ema_energy + alpha * energy_per_task
+        return self._reward_ema_delay, self._reward_ema_energy
+
+    def _maybe_update_dynamic_energy_target(self, episode: int, episode_energy: float) -> None:
+        """根据实际能耗自动放宽目标，避免不可达约束导致振荡。"""
+        if episode_energy <= 0:
+            return
+        decay = 0.9
+        self._energy_target_ema = decay * self._energy_target_ema + (1.0 - decay) * episode_energy
+        if episode < self._energy_target_warmup:
+            return
+        if episode - self._last_energy_target_update < 5:
+            return
+        target = self._dynamic_energy_target
+        ema = self._energy_target_ema
+        if ema > target * 1.2:
+            new_target = min(ema * 0.95, target * 1.8)
+            self._dynamic_energy_target = new_target
+            self._last_energy_target_update = episode
+            update_reward_targets(energy_target=new_target)
+            print(
+                f"⚙️ 能耗EMA {ema:.1f}J 超过目标 {target:.1f}J，"
+                f"自动上调奖励阈值 -> {new_target:.1f}J (Episode {episode})"
+            )
+
     def reset_environment(self) -> np.ndarray:
         """重置环境并返回初始状态"""
         # 重置仿真器状态
@@ -859,7 +991,9 @@ class SingleAgentTrainingEnvironment:
         if hasattr(self, '_last_total_energy'):
             delattr(self, '_last_total_energy')
 
-        self._initialize_episode_counters(getattr(self.simulator, 'stats', None))
+        stats_snapshot = getattr(self.simulator, 'stats', None)
+        self._initialize_episode_counters(stats_snapshot)
+        self._reset_reward_baseline(stats_snapshot)
         
         resource_state = self._collect_resource_state()
         state = self.agent_env.get_state_vector(node_states, system_metrics, resource_state)
@@ -966,7 +1100,8 @@ class SingleAgentTrainingEnvironment:
             except Exception as exc:
                 print(f"⚠️ 联合策略协调器观测异常: {exc}")
         
-        reward = self.agent_env.calculate_reward(system_metrics, cache_metrics, migration_metrics)
+        reward_source = system_metrics.get('reward_snapshot', system_metrics)
+        reward = self.agent_env.calculate_reward(reward_source, cache_metrics, migration_metrics)
         try:
             system_metrics['normalized_reward'] = self._normalize_reward_value(reward)
         except Exception:
@@ -1275,6 +1410,8 @@ class SingleAgentTrainingEnvironment:
         latency_target = max(1e-6, getattr(config.rl, 'latency_target', 0.4))
         energy_target = max(1e-6, getattr(config.rl, 'energy_target', 1200.0))
 
+        reward_snapshot = self._build_reward_snapshot(step_stats)
+
         return {
             'avg_task_delay': avg_delay,
             'total_energy_consumption': total_energy,
@@ -1335,6 +1472,7 @@ class SingleAgentTrainingEnvironment:
             'remote_rejection_rate': remote_rejection_rate,
             'normalized_delay': avg_delay / latency_target,
             'normalized_energy': total_energy / energy_target,
+            'reward_snapshot': reward_snapshot,
         }
 
     def _normalize_reward_value(self, reward: float) -> float:
@@ -1517,6 +1655,10 @@ class SingleAgentTrainingEnvironment:
         # 记录轮次统计
         system_metrics = info.get('system_metrics', {})
         self._record_episode_metrics(system_metrics, episode_steps=step + 1)
+        self._maybe_update_dynamic_energy_target(
+            episode,
+            float(system_metrics.get('total_energy_consumption', 0.0) or 0.0)
+        )
         
         return {
             'episode_reward': episode_reward,

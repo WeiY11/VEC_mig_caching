@@ -338,6 +338,25 @@ class UnifiedRewardCalculator:
         
         return reward
 
+    def update_targets(
+        self,
+        latency_target: Optional[float] = None,
+        energy_target: Optional[float] = None,
+    ) -> None:
+        """动态更新目标值，使奖励函数可以在训练中自适应拓扑变化。"""
+        if latency_target is not None:
+            self.latency_target = float(latency_target)
+            self.latency_tolerance = float(
+                getattr(config.rl, "latency_upper_tolerance", self.latency_target * 2.0)
+            )
+            self.delay_bonus_scale = max(1e-6, self.latency_target)
+        if energy_target is not None:
+            self.energy_target = float(energy_target)
+            self.energy_tolerance = float(
+                getattr(config.rl, "energy_upper_tolerance", self.energy_target * 1.5)
+            )
+            self.energy_bonus_scale = max(1e-6, self.energy_target)
+
     def get_reward_breakdown(self, system_metrics: Dict) -> str:
         """
         获取奖励组成的人类可读分解报告。
@@ -429,6 +448,21 @@ def get_reward_breakdown(system_metrics: Dict, algorithm: str = "general") -> st
     """
     calculator = _sac_reward_calculator if algorithm.upper() == "SAC" else _general_reward_calculator
     return calculator.get_reward_breakdown(system_metrics)
+
+
+def update_reward_targets(
+    latency_target: Optional[float] = None,
+    energy_target: Optional[float] = None,
+) -> None:
+    """
+    动态更新全局奖励目标，确保单例计算器与全局config保持同步。
+    """
+    if latency_target is not None:
+        config.rl.latency_target = float(latency_target)
+    if energy_target is not None:
+        config.rl.energy_target = float(energy_target)
+    _general_reward_calculator.update_targets(latency_target, energy_target)
+    _sac_reward_calculator.update_targets(latency_target, energy_target)
 
 
 # ---------------------------------------------------------------------- #

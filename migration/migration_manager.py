@@ -1,6 +1,7 @@
 """Task migration manager module.
 
 Provides utilities for planning and executing task migrations."""
+import logging
 import numpy as np
 import uuid
 from typing import Dict, List, Tuple, Optional, Any
@@ -41,6 +42,7 @@ class TaskMigrationManager:
     """High-level task migration manager."""
     
     def __init__(self):
+        self.logger = logging.getLogger(__name__)
         # 瑙﹀彂闃堝€?
         self.rsu_overload_threshold = config.migration.rsu_overload_threshold
         self.uav_overload_threshold = config.migration.uav_overload_threshold
@@ -63,6 +65,11 @@ class TaskMigrationManager:
         # 鍐峰嵈绠＄悊
         self.node_last_migration: Dict[str, float] = {}
         self.cooldown_period = config.migration.cooldown_period
+        # Retry/backoff configuration
+        self.retry_backoff_base = float(getattr(config.migration, 'retry_backoff_base', 0.5))
+        self.retry_backoff_max = float(getattr(config.migration, 'retry_backoff_max', 6.0))
+        self.max_retry_attempts = int(getattr(config.migration, 'max_retry_attempts', 3))
+        self.retry_queue: Dict[str, Dict[str, Any]] = {}
     
     def check_migration_needs(self, node_states: Dict, node_positions: Dict[str, Position]) -> List[MigrationPlan]:
         """Check nodes and create migration plans."""
@@ -93,6 +100,10 @@ class TaskMigrationManager:
                         plan = self._create_migration_plan(node_id, target_node, node_states, node_positions)
                         if plan:
                             migration_plans.append(plan)
+        
+        migration_plans.extend(
+            self._collect_retry_plans(current_time, node_states, node_positions)
+        )
         
         return migration_plans
     
@@ -128,6 +139,37 @@ class TaskMigrationManager:
             return best_candidate
         
         return None
+
+    def _collect_retry_plans(self, current_time: float,
+                             node_states: Dict,
+                             node_positions: Dict[str, Position]) -> List[MigrationPlan]:
+        """Generate migration plans for entries waiting in the retry queue."""
+        ready_plans: List[MigrationPlan] = []
+        pending_keys = list(self.retry_queue.keys())
+        for source_id in pending_keys:
+            entry = self.retry_queue.get(source_id, {})
+            if not entry:
+                continue
+            if current_time < entry.get('next_retry_time', 0.0):
+                continue
+            target_id = entry.get('target_node_id')
+            plan = None
+            if target_id:
+                plan = self._create_migration_plan(source_id, target_id, node_states, node_positions)
+            if plan is None:
+                target_id = self._find_best_target(source_id, entry.get('source_type', ''), node_states, node_positions)
+                if target_id:
+                    plan = self._create_migration_plan(source_id, target_id, node_states, node_positions)
+            if plan:
+                ready_plans.append(plan)
+                self.retry_queue.pop(source_id, None)
+            else:
+                # Could not create plan now; push next retry window
+                entry_attempts = entry.get('attempts', 1)
+                backoff = min(self.retry_backoff_max, self.retry_backoff_base * (2 ** max(0, entry_attempts - 1)))
+                entry['next_retry_time'] = current_time + backoff
+                self.retry_queue[source_id] = entry
+        return ready_plans
     
     def _create_migration_plan(self, source_node_id: str, target_node_id: str,
                              node_states: Dict, node_positions: Dict[str, Position]) -> Optional[MigrationPlan]:
@@ -212,8 +254,39 @@ class TaskMigrationManager:
                 self.migration_stats['total_tasks_migrated'] = (
                     self.migration_stats.get('total_tasks_migrated', 0) + migration_plan.tasks_moved
                 )
+        else:
+            self._schedule_retry(migration_plan)
 
         return success
+
+    def _schedule_retry(self, migration_plan: MigrationPlan) -> None:
+        """Schedule a retry with exponential backoff for a failed migration."""
+        source_id = migration_plan.source_node_id
+        source_type = ''
+        if source_id.startswith('rsu_'):
+            source_type = 'rsu'
+        elif source_id.startswith('uav_'):
+            source_type = 'uav'
+        entry = self.retry_queue.get(source_id, {
+            'attempts': 0,
+            'source_type': source_type
+        })
+        attempts = entry.get('attempts', 0) + 1
+        if attempts > self.max_retry_attempts:
+            self.retry_queue.pop(source_id, None)
+            self.logger.debug(
+                "Dropping migration retries for %s after %d attempts",
+                source_id, attempts
+            )
+            return
+        backoff = min(self.retry_backoff_max, self.retry_backoff_base * (2 ** (attempts - 1)))
+        next_retry = get_simulation_time() + backoff
+        self.retry_queue[source_id] = {
+            'attempts': attempts,
+            'source_type': entry.get('source_type'),
+            'target_node_id': migration_plan.target_node_id,
+            'next_retry_time': next_retry
+        }
 
 
     def _apply_migration_effects(self, migration_plan: MigrationPlan,
@@ -257,17 +330,26 @@ class TaskMigrationManager:
             tasks_to_move = max(1, int(len(source_queue) * 0.2))
         tasks_to_move = max(1, min(tasks_to_move, len(source_queue)))
 
-        moved_tasks = []
-        for _ in range(tasks_to_move):
+        moved_tasks: List[Task] = []
+        scored_candidates = [t for t in list(source_queue) if isinstance(t, Task)]
+        if scored_candidates:
+            scored_candidates.sort(key=self._score_task_for_migration)
+            desired = scored_candidates[:tasks_to_move]
+            for task in desired:
+                if self._detach_task_from_queue(source_queue, task):
+                    moved_tasks.append(task)
+        # Fall back to FIFO if we still need to move tasks
+        while len(moved_tasks) < tasks_to_move and source_queue:
             if hasattr(source_queue, 'popleft'):
                 try:
                     moved_tasks.append(source_queue.popleft())
+                    continue
                 except IndexError:
                     break
-            else:
-                if not source_queue:
-                    break
+            try:
                 moved_tasks.append(source_queue.pop(0))
+            except (IndexError, AttributeError):
+                break
 
         if not moved_tasks:
             return
@@ -376,5 +458,40 @@ class TaskMigrationManager:
                 step_stats['tasks_migrated'] += plan.tasks_moved
 
         return step_stats
+
+    def _score_task_for_migration(self, task: Task) -> Tuple[int, int]:
+        """Lower score means higher priority for migration."""
+        priority = getattr(task, 'priority', getattr(config.task, 'num_priority_levels', 4))
+        try:
+            remaining = int(task.remaining_lifetime_slots)
+        except Exception:
+            remaining = getattr(task, 'max_delay_slots', 0)
+        return (priority, remaining)
+
+    def _detach_task_from_queue(self, queue, task: Task) -> bool:
+        """Remove a specific task object from the given queue-like container."""
+        if queue is None or task is None:
+            return False
+        if hasattr(queue, 'remove_task'):
+            try:
+                queue.remove_task(task.task_id)
+                return True
+            except Exception:
+                pass
+        if hasattr(queue, 'remove'):
+            try:
+                queue.remove(task)
+                return True
+            except ValueError:
+                return False
+        # Manual scan fallback
+        try:
+            for idx, item in enumerate(queue):
+                if item is task:
+                    del queue[idx]
+                    return True
+        except Exception:
+            return False
+        return False
 
 

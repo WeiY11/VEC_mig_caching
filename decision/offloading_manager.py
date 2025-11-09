@@ -3,7 +3,7 @@
 """
 from dataclasses import dataclass
 from enum import Enum
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 from config import config
 from utils import dbm_to_watts
@@ -28,6 +28,8 @@ class ProcessingOption:
     migration_source: Optional[str] = None
     cache_hit: bool = False
     latency_weight: float = 1.0
+    reserved_processing_time: float = 0.0
+    reserved_comm_time: float = 0.0
 
     @property
     def weighted_cost(self) -> float:
@@ -152,6 +154,9 @@ class ProcessingModeEvaluator:
         self.cache_response_delay = 0.0001
         self.scheduling_preferences = {'priority_bias': 0.5, 'deadline_bias': 0.5}
         self.tradeoff_bias = 0.5
+        self.virtual_cpu_load: Dict[str, float] = {}
+        self.virtual_comm_load: Dict[str, float] = {}
+        self.last_slot_index: Optional[int] = None
         self._refresh_cost_weights()
 
     def evaluate_all_modes(self, task: Task, candidates: List[str], node_states: Dict,
@@ -212,6 +217,62 @@ class ProcessingModeEvaluator:
             weights[key] = float(weights[key] / total)
         ProcessingModeEvaluator.cost_weight_profile = weights
 
+    def advance_virtual_time(self, slot_index: Optional[int]) -> None:
+        """Decay virtual reservations when the global slot advances."""
+        if slot_index is None:
+            return
+        if self.last_slot_index is None or slot_index > self.last_slot_index:
+            self.virtual_cpu_load = {
+                node: load * 0.5 for node, load in self.virtual_cpu_load.items()
+                if load * 0.5 > 1e-3
+            }
+            self.virtual_comm_load = {
+                node: load * 0.5 for node, load in self.virtual_comm_load.items()
+                if load * 0.5 > 1e-3
+            }
+            self.last_slot_index = slot_index
+
+    def reserve_resources(self, option: ProcessingOption, task: Task, node_states: Dict) -> None:
+        """Record the resources committed by the chosen processing option."""
+        slot = max(1e-9, float(config.network.time_slot_duration))
+        if option.reserved_processing_time > 0:
+            normalized = option.reserved_processing_time / slot
+            self._increment_cpu_reservation(option.target_node_id, normalized, node_states)
+        if option.reserved_comm_time > 0:
+            if option.mode == ProcessingMode.RSU_MIGRATION and option.migration_source:
+                reservation_key = option.migration_source
+            else:
+                reservation_key = getattr(task, 'source_vehicle_id', None)
+            normalized = option.reserved_comm_time / slot
+            self._increment_comm_reservation(reservation_key, normalized)
+
+    def _increment_cpu_reservation(self, node_id: Optional[str], normalized_load: float, node_states: Dict) -> None:
+        if not node_id or normalized_load <= 0:
+            return
+        prev = self.virtual_cpu_load.get(node_id, 0.0)
+        queue_cfg = getattr(config, 'queue', None)
+        max_load = float(getattr(queue_cfg, 'max_load_factor', 1.25)) if queue_cfg else 1.25
+        self.virtual_cpu_load[node_id] = min(max_load, prev + normalized_load)
+        state = node_states.get(node_id)
+        if state is not None:
+            try:
+                state.load_factor = min(
+                    max_load,
+                    float(getattr(state, 'load_factor', 0.0)) + normalized_load * 0.5
+                )
+            except Exception:
+                setattr(
+                    state,
+                    'load_factor',
+                    min(max_load, float(getattr(state, 'load_factor', 0.0)) + normalized_load * 0.5)
+                )
+
+    def _increment_comm_reservation(self, key: Optional[str], normalized_load: float) -> None:
+        if not key or normalized_load <= 0:
+            return
+        prev = self.virtual_comm_load.get(key, 0.0)
+        self.virtual_comm_load[key] = min(3.0, prev + normalized_load)
+
     def update_scheduling_preferences(self, preferences: Dict[str, float]) -> None:
         if not isinstance(preferences, dict):
             return
@@ -267,6 +328,7 @@ class ProcessingModeEvaluator:
             energy_cost=energy,
             success_probability=self._slack_prob(total, task.max_delay_slots),
             latency_weight=self._alpha(task),
+            reserved_processing_time=proc
         )
 
     def _eval_rsu(self, task: Task, rid: str, states: Dict, pos: Dict[str, 'Position'], caches: Dict) -> List[ProcessingOption]:
@@ -277,8 +339,9 @@ class ProcessingModeEvaluator:
         if not (st and vpos and rpos):
             return out
         d = vpos.distance_to(rpos)
-        up = self._tx_delay(task.data_size, d)
-        down = self._tx_delay(task.result_size, d)
+        reservation_key = getattr(task, 'source_vehicle_id', None)
+        up = self._tx_delay(task.data_size, d, reservation_key=reservation_key)
+        down = self._tx_delay(task.result_size, d, reservation_key=reservation_key)
         if self._cache_hit(task, rid, caches):
             total = self.communication_overhead + self.cache_response_delay + down
             energy = self._tx_energy(task.result_size, down)
@@ -290,6 +353,7 @@ class ProcessingModeEvaluator:
                 success_probability=self._slack_prob(total, task.max_delay_slots),
                 cache_hit=True,
                 latency_weight=self._alpha(task),
+                reserved_comm_time=down
             ))
         else:
             proc = task.compute_cycles / max(1e-9, st.cpu_frequency)
@@ -308,6 +372,8 @@ class ProcessingModeEvaluator:
                 energy_cost=energy,
                 success_probability=self._slack_prob(total, task.max_delay_slots),
                 latency_weight=self._alpha(task),
+                reserved_processing_time=proc,
+                reserved_comm_time=up + down
             ))
         return out
 
@@ -335,6 +401,8 @@ class ProcessingModeEvaluator:
                 success_probability=0.9 if total <= task.max_delay_slots * config.network.time_slot_duration else 0.25,
                 migration_source=sid,
                 latency_weight=self._alpha(task),
+                reserved_processing_time=proc,
+                reserved_comm_time=mig
             ))
         return out
 
@@ -345,8 +413,9 @@ class ProcessingModeEvaluator:
         if not (uv and vpos and upos):
             return None
         d = vpos.distance_to(upos)
-        up = self._tx_delay(task.data_size, d)
-        down = self._tx_delay(task.result_size, d)
+        reservation_key = getattr(task, 'source_vehicle_id', None)
+        up = self._tx_delay(task.data_size, d, reservation_key=reservation_key)
+        down = self._tx_delay(task.result_size, d, reservation_key=reservation_key)
         eff = uv.cpu_frequency * max(0.5, float(getattr(uv, 'battery_level', 1.0)))
         proc = task.compute_cycles / max(1e-9, eff)
         wait = self._wait(uv)
@@ -364,6 +433,8 @@ class ProcessingModeEvaluator:
             energy_cost=energy,
             success_probability=self._slack_prob(total, task.max_delay_slots),
             latency_weight=self._alpha(task),
+            reserved_processing_time=proc,
+            reserved_comm_time=up + down
         )
 
     # helpers
@@ -373,11 +444,15 @@ class ProcessingModeEvaluator:
         sig = f"{task.task_type.value}_{int(task.data_size)}_{int(task.compute_cycles)}"
         return sig in caches.get(rid, {})
 
-    def _tx_delay(self, bits: float, d: float) -> float:
+    def _tx_delay(self, bits: float, d: float, reservation_key: Optional[str] = None) -> float:
         base = 50e6
         loss = 1.0 + (d / 2000.0) ** 1.5
         rate = base / max(1e-9, loss)
-        return bits / max(1e-9, rate) + self.communication_overhead
+        raw_delay = bits / max(1e-9, rate) + self.communication_overhead
+        if reservation_key:
+            penalty = 1.0 + self.virtual_comm_load.get(reservation_key, 0.0)
+            return raw_delay * penalty
+        return raw_delay
 
     def _tx_energy(self, bits: float, t: float) -> float:
         tx_power_watts = dbm_to_watts(config.communication.vehicle_tx_power)
@@ -393,6 +468,8 @@ class ProcessingModeEvaluator:
 
     def _wait(self, st) -> float:
         rho = float(getattr(st, 'load_factor', 0.0))
+        node_id = getattr(st, 'node_id', None)
+        rho += self.virtual_cpu_load.get(node_id, 0.0)
         if rho >= 0.999:
             return float('inf')
         base = 0.06
@@ -428,12 +505,20 @@ class OffloadingDecisionMaker:
             if joint_pref is not None:
                 self.evaluator.update_joint_tradeoff(joint_pref)
 
+        slot_duration = max(1e-9, float(config.network.time_slot_duration))
+        slot_index = None
+        gen_time = getattr(task, 'generation_time', None)
+        if isinstance(gen_time, (int, float)):
+            slot_index = int(gen_time / slot_duration)
+        self.evaluator.advance_virtual_time(slot_index)
+
         self.classifier.classify_task(task)
         cands = self.classifier.get_candidate_nodes(task, node_positions)
         options = self.evaluator.evaluate_all_modes(task, cands, node_states, node_positions, cache_states)
         best = self.evaluator.select_best_option(options)
         if best:
             self.decision_stats[best.mode] += 1
+            self.evaluator.reserve_resources(best, task, node_states)
         self.total_decisions += 1
         return best
 

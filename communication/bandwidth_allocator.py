@@ -322,3 +322,4 @@ def allocate_bandwidth_simple(
     allocator = BandwidthAllocator(total_bandwidth=total_bandwidth)
     return allocator.allocate_bandwidth(active_tasks)
 
+

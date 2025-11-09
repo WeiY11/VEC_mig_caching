@@ -203,8 +203,9 @@ class UnifiedStateActionSpace:
         uav_selection = action[idx:idx+num_uavs]
         idx += num_uavs
         
-        # 4. 控制参数（8维）
-        control_params = action[idx:idx+8]
+        # 4. 控制参数（动态维度）
+        control_param_dim = max(0, action_dim - (3 + num_rsus + num_uavs))
+        control_params = action[idx:idx+control_param_dim]
         
         # 构建vehicle_agent的完整动作
         actions['vehicle_agent'] = np.concatenate([
@@ -217,6 +218,7 @@ class UnifiedStateActionSpace:
         # RSU和UAV agent的动作
         actions['rsu_agent'] = rsu_selection
         actions['uav_agent'] = uav_selection
+        actions['control_params'] = control_params
         
         return actions
 

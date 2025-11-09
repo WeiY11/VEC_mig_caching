@@ -22,6 +22,7 @@ import torch.nn.functional as F
 import torch.optim as optim
 import numpy as np
 import random
+import math
 from collections import deque
 from typing import Dict, List, Tuple, Optional, Union, Any
 from dataclasses import dataclass
@@ -51,13 +52,14 @@ class TD3Config:
     noise_clip: float = 0.2  # 噪声裁剪范围
     
     # 探索参数（优化：更快收敛到稳定策略）
-    exploration_noise: float = 0.15  # 初始探索噪声
-    noise_decay: float = 0.996  # 🔧 噪声衰减率（更快衰减，减少后期波动）
-    min_noise: float = 0.03  # 🔧 最小探索噪声（更低底限，提升稳定性）
+    exploration_noise: float = 0.12  # 初始探索噪声
+    noise_decay: float = 0.9992  # 🔧 噪声衰减率（更慢衰减，训练中后期更稳）
+    min_noise: float = 0.02  # 🔧 最小探索噪声（更低底限，提升稳定性）
     
     # 🔧 新增：梯度裁剪防止过拟合
     gradient_clip_norm: float = 0.7  # 🔧 放宽梯度裁剪，允许适度更新
     use_gradient_clip: bool = True   # 启用梯度裁剪
+    use_reward_normalization: bool = True
     
     def __post_init__(self):
         """从环境变量读取配置，用于固定拓扑优化"""
@@ -102,7 +104,8 @@ class TD3Config:
     per_beta_frames: int = 400000  # 🔧 放缓beta增长，稳定学习
 
     # 后期稳定策略参数
-    late_stage_start_updates: int = 90000  # 约800轮更新步
+    late_stage_start_updates: int = 60000  # 约800轮更新步内提前稳定
+    late_stage_start_updates: int = 60000
     late_stage_tau: float = 0.003
     late_stage_policy_delay: int = 3
     late_stage_noise_floor: float = 0.03
@@ -730,6 +733,9 @@ class TD3Agent:
         self.energy_excess_ema = 0.0
         self.delay_excess_ema = 0.0
         
+        self.normalize_rewards = bool(getattr(config, 'use_reward_normalization', False))
+        self.reward_rms = RunningMeanStd()
+
         # 训练统计
         self.actor_losses = []
         self.critic_losses = []
@@ -866,6 +872,13 @@ class TD3Agent:
         batch_next_states = batch_next_states.to(self.device)
         batch_dones = batch_dones.to(self.device)
         weights = weights.to(self.device)
+
+        if self.normalize_rewards:
+            rewards_np = batch_rewards.detach().cpu().numpy()
+            self.reward_rms.update(rewards_np)
+            reward_mean = torch.as_tensor(self.reward_rms.mean, device=self.device, dtype=batch_rewards.dtype)
+            reward_std = torch.as_tensor(max(math.sqrt(self.reward_rms.var), 1e-6), device=self.device, dtype=batch_rewards.dtype)
+            batch_rewards = torch.clamp((batch_rewards - reward_mean) / reward_std, -5.0, 5.0)
 
         # 更新Critic并获取TD误差
         critic_loss, td_errors = self._update_critic(batch_states, batch_actions, batch_rewards, 
@@ -1216,44 +1229,35 @@ class TD3Environment:
     
     def decompose_action(self, action: np.ndarray) -> Dict[str, np.ndarray]:
         """
-        动作分解：3(任务分配) + RSU选择 + UAV选择 + 8(控制参数)
+        动作分解：3(任务分配) + RSU选择 + UAV选择 + control_param_dim(联动控制) + 中央资源段
         """
-        actions = {}
-        
-        # 确保action长度足够
-        if len(action) < self.action_dim:
-            action = np.pad(action, (0, self.action_dim - len(action)), mode='constant')
-        
-        # 动态分解动作
+        if not isinstance(action, np.ndarray):
+            action = np.array(action, dtype=np.float32)
+        if action.size < self.action_dim:
+            action = np.pad(action, (0, self.action_dim - action.size), mode='constant')
+        else:
+            action = action.astype(np.float32)[: self.action_dim]
+
+        actions: Dict[str, np.ndarray] = {}
+        base_segment = action[: self.base_action_dim]
+
         idx = 0
-        
-        # 1. 任务分配偏好（3维）
-        task_allocation = action[idx:idx+3]
+        task_allocation = base_segment[idx : idx + 3]
         idx += 3
-        
-        # 2. RSU选择权重（num_rsus维）
-        rsu_selection = action[idx:idx+self.num_rsus]
+
+        rsu_selection = base_segment[idx : idx + self.num_rsus]
         idx += self.num_rsus
-        
-        # 3. UAV选择权重（num_uavs维）
-        uav_selection = action[idx:idx+self.num_uavs]
+
+        uav_selection = base_segment[idx : idx + self.num_uavs]
         idx += self.num_uavs
-        
-        # 4. 控制参数（8维）
-        control_params = action[idx:idx+8]
-        
-        # 构建vehicle_agent的完整动作（用于仿真器）
-        actions['vehicle_agent'] = np.concatenate([
-            task_allocation,   # 3维
-            rsu_selection,     # num_rsus维
-            uav_selection,     # num_uavs维
-            control_params     # 8维
-        ])
-        
-        # RSU和UAV agent的动作（用于选择概率计算）
+
+        control_params = base_segment[idx : idx + self.control_param_dim]
+
+        actions['vehicle_agent'] = action.copy()
         actions['rsu_agent'] = rsu_selection
         actions['uav_agent'] = uav_selection
-        
+        actions['control_params'] = control_params
+
         return actions
     
     def get_actions(self, state: np.ndarray, training: bool = True) -> Dict[str, np.ndarray]:
@@ -1328,3 +1332,29 @@ class TD3Environment:
             'update_count': self.agent.update_count,
             'policy_delay': self.config.policy_delay
         }
+class RunningMeanStd:
+    """跟踪标量的运行均值和方差，用于奖励归一化。"""
+
+    def __init__(self, epsilon: float = 1e-4):
+        self.mean = 0.0
+        self.var = 1.0
+        self.count = epsilon
+
+    def update(self, x: np.ndarray) -> None:
+        if x.size == 0:
+            return
+        batch_mean = float(np.mean(x))
+        batch_var = float(np.var(x))
+        batch_count = x.size
+
+        delta = batch_mean - self.mean
+        total_count = self.count + batch_count
+
+        new_mean = self.mean + delta * batch_count / total_count
+        m_a = self.var * self.count
+        m_b = batch_var * batch_count
+        m2 = m_a + m_b + delta * delta * self.count * batch_count / total_count
+
+        self.mean = new_mean
+        self.var = m2 / total_count
+        self.count = total_count
