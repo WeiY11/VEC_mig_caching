@@ -792,6 +792,15 @@ class SingleAgentTrainingEnvironment:
             self._episode_cache_collab_base = 0
 
         self._episode_queue_overload_events_base = int(stats_dict.get('queue_overload_events', 0) or 0)
+        delay_buckets = ('delay_processing', 'delay_uplink', 'delay_downlink', 'delay_cache', 'delay_waiting')
+        energy_buckets = ('energy_compute', 'energy_transmit_uplink', 'energy_transmit_downlink', 'energy_cache')
+        self._episode_delay_component_base = {
+            bucket: float(stats_dict.get(bucket, 0.0) or 0.0) for bucket in delay_buckets
+        }
+        self._episode_energy_component_base = {
+            bucket: float(stats_dict.get(bucket, 0.0) or 0.0) for bucket in energy_buckets
+        }
+        self._episode_queue_overflow_base = int(stats_dict.get('queue_overflow_drops', 0) or 0)
         self._episode_counters_initialized = True
 
     def reset_environment(self) -> np.ndarray:
@@ -1025,7 +1034,14 @@ class SingleAgentTrainingEnvironment:
         cache_hits = int(safe_get('cache_hits', 0))
         cache_misses = int(safe_get('cache_misses', 0))
         cache_requests_total = cache_hits + cache_misses
-        cache_hit_rate = normalize_ratio(cache_hits, cache_requests_total)
+        reported_requests = int(step_stats.get('cache_requests', cache_requests_total) or cache_requests_total)
+        reported_hit_rate = step_stats.get('cache_hit_rate')
+        if reported_requests > 0:
+            cache_requests_total = reported_requests
+        if isinstance(reported_hit_rate, (int, float)):
+            cache_hit_rate = float(np.clip(reported_hit_rate, 0.0, 1.0))
+        else:
+            cache_hit_rate = normalize_ratio(cache_hits, cache_requests_total)
         local_cache_hits = int(safe_get('local_cache_hits', 0))
         
         # 🔧 修复：安全计算平均延迟 - 使用累计统计
@@ -1035,6 +1051,26 @@ class SingleAgentTrainingEnvironment:
         
         # 限制延迟在合理范围内（关键修复）
         avg_delay = np.clip(avg_delay, 0.01, 5.0)  # 扩大到0.01-5.0秒范围，适应跨时隙处理
+
+        delay_base = getattr(self, '_episode_delay_component_base', {})
+        delay_processing_total = safe_get('delay_processing', 0.0)
+        delay_uplink_total = safe_get('delay_uplink', 0.0)
+        delay_downlink_total = safe_get('delay_downlink', 0.0)
+        delay_cache_total = safe_get('delay_cache', 0.0)
+        delay_wait_total = safe_get('delay_waiting', 0.0)
+        def _episode_delay(bucket_total: float, bucket_key: str) -> float:
+            return max(0.0, bucket_total - delay_base.get(bucket_key, 0.0))
+        episode_delay_processing = _episode_delay(delay_processing_total, 'delay_processing')
+        episode_delay_uplink = _episode_delay(delay_uplink_total, 'delay_uplink')
+        episode_delay_downlink = _episode_delay(delay_downlink_total, 'delay_downlink')
+        episode_delay_cache = _episode_delay(delay_cache_total, 'delay_cache')
+        episode_delay_wait = _episode_delay(delay_wait_total, 'delay_waiting')
+        delay_denominator = max(1, episode_processed) if episode_processed > 0 else max(1, processed_for_delay)
+        avg_processing_delay_component = episode_delay_processing / delay_denominator
+        avg_uplink_delay_component = episode_delay_uplink / delay_denominator
+        avg_downlink_delay_component = episode_delay_downlink / delay_denominator
+        avg_cache_delay_component = episode_delay_cache / delay_denominator
+        avg_wait_delay_component = episode_delay_wait / delay_denominator
         
         # 🔧 修复能耗计算：使用真实累积能耗并转换为本episode增量
         current_total_energy = safe_get('total_energy', 0.0)
@@ -1057,6 +1093,8 @@ class SingleAgentTrainingEnvironment:
         queue_warning_nodes = step_stats.get('queue_warning_nodes', {}) or {}
         queue_overload_events_total = int(step_stats.get('queue_overload_events', 0) or 0)
         queue_overload_events = max(0, queue_overload_events_total - getattr(self, '_episode_queue_overload_events_base', 0))
+        queue_overflow_total = int(step_stats.get('queue_overflow_drops', 0) or 0)
+        queue_overflow_drops = max(0, queue_overflow_total - getattr(self, '_episode_queue_overflow_base', 0))
         remote_stats = step_stats.get('remote_rejections', {}) or {}
         remote_total = int(remote_stats.get('total', 0) or 0)
         episode_remote_rejects = max(0, remote_total - getattr(self, '_episode_remote_reject_base', 0))
@@ -1133,6 +1171,19 @@ class SingleAgentTrainingEnvironment:
         else:
             episode_incremental_energy = max(0.0, current_total_energy - getattr(self, '_episode_energy_base', 0.0))
             total_energy = episode_incremental_energy
+
+        energy_base = getattr(self, '_episode_energy_component_base', {})
+        def _episode_energy(bucket_key: str) -> float:
+            return max(0.0, safe_get(bucket_key, 0.0) - energy_base.get(bucket_key, 0.0))
+        energy_compute_component = _episode_energy('energy_compute')
+        energy_tx_uplink_component = _episode_energy('energy_transmit_uplink')
+        energy_tx_downlink_component = _episode_energy('energy_transmit_downlink')
+        energy_cache_component = _episode_energy('energy_cache')
+        energy_denominator = max(1, episode_processed) if episode_processed > 0 else 1
+        avg_energy_compute_component = energy_compute_component / energy_denominator
+        avg_energy_uplink_component = energy_tx_uplink_component / energy_denominator
+        avg_energy_downlink_component = energy_tx_downlink_component / energy_denominator
+        avg_energy_cache_component = energy_cache_component / energy_denominator
         
         # 🔧 修复：使用episode级别数据丢失量，避免累积效应
         data_loss_bytes = max(0.0, episode_dropped_bytes)
@@ -1234,6 +1285,19 @@ class SingleAgentTrainingEnvironment:
             'local_cache_hits': local_cache_hits,
             'migration_success_rate': migration_success_rate,
             'dropped_tasks': episode_dropped,
+            'avg_processing_delay': avg_processing_delay_component,
+            'avg_uplink_delay': avg_uplink_delay_component,
+            'avg_downlink_delay': avg_downlink_delay_component,
+            'avg_cache_delay': avg_cache_delay_component,
+            'avg_waiting_delay': avg_wait_delay_component,
+            'energy_compute': energy_compute_component,
+            'energy_transmit_uplink': energy_tx_uplink_component,
+            'energy_transmit_downlink': energy_tx_downlink_component,
+            'energy_cache': energy_cache_component,
+            'avg_energy_compute': avg_energy_compute_component,
+            'avg_energy_uplink': avg_energy_uplink_component,
+            'avg_energy_downlink': avg_energy_downlink_component,
+            'avg_energy_cache': avg_energy_cache_component,
             # 🤖 新增自适应控制指标
             'adaptive_cache_effectiveness': cache_metrics.get('effectiveness', 0.0),
             'adaptive_migration_effectiveness': migration_metrics.get('effectiveness', 0.0),
@@ -1260,6 +1324,7 @@ class SingleAgentTrainingEnvironment:
             'queue_rho_by_node': queue_rho_by_node,
             'queue_overloaded_nodes': queue_overloaded_nodes,
             'queue_warning_nodes': queue_warning_nodes,
+            'queue_overflow_drops': queue_overflow_drops,
             'mm1_queue_error': mm1_queue_error,
             'mm1_delay_error': mm1_delay_error,
             'mm1_predictions': mm1_predictions,
@@ -1317,6 +1382,20 @@ class SingleAgentTrainingEnvironment:
             'normalized_delay': 'normalized_delay',
             'normalized_energy': 'normalized_energy',
             'normalized_reward': 'normalized_reward',
+            'avg_processing_delay': 'avg_processing_delay',
+            'avg_uplink_delay': 'avg_uplink_delay',
+            'avg_downlink_delay': 'avg_downlink_delay',
+            'avg_cache_delay': 'avg_cache_delay',
+            'avg_waiting_delay': 'avg_waiting_delay',
+            'energy_compute': 'energy_compute',
+            'energy_transmit_uplink': 'energy_transmit_uplink',
+            'energy_transmit_downlink': 'energy_transmit_downlink',
+            'energy_cache': 'energy_cache',
+            'avg_energy_compute': 'avg_energy_compute',
+            'avg_energy_uplink': 'avg_energy_uplink',
+            'avg_energy_downlink': 'avg_energy_downlink',
+            'avg_energy_cache': 'avg_energy_cache',
+            'queue_overflow_drops': 'queue_overflow_drops',
         }
 
         def _coerce_scalar(value: Any) -> Optional[float]:

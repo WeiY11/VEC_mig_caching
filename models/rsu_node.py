@@ -83,7 +83,8 @@ class RSUNode(BaseNode):
         delta_t = config.network.time_slot_duration
         compute_density = config.task.task_compute_density
         
-        return (self.state.cpu_frequency * delta_t) / compute_density
+        bits_capacity = (self.state.cpu_frequency * delta_t) / compute_density
+        return bits_capacity / 8.0
     
     def calculate_processing_delay(self, task: Task) -> float:
         """
@@ -302,7 +303,7 @@ class RSUNode(BaseNode):
         计算任务迁移成本 - 对应论文第6节
         """
         # 迁移传输时延
-        migration_delay = task.data_size / self.migration_bandwidth
+        migration_delay = (task.data_size * 8.0) / self.migration_bandwidth
         
         # 迁移计算成本 (基于复杂度)
         computation_cost = task.compute_cycles / 1e9  # 归一化

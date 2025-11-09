@@ -247,8 +247,13 @@ class CompleteSystemSimulator:
         self.node_max_load_factor = float(getattr(queue_cfg, 'max_load_factor', 1.0)) if queue_cfg is not None else 1.0
         self.rsu_nominal_capacity = float(getattr(queue_cfg, 'rsu_nominal_capacity', 20.0)) if queue_cfg is not None else 20.0
         self.uav_nominal_capacity = float(getattr(queue_cfg, 'uav_nominal_capacity', 10.0)) if queue_cfg is not None else 10.0
+        self.queue_overflow_margin = float(getattr(queue_cfg, 'overflow_margin', 1.2)) if queue_cfg is not None else 1.2
         self.cache_config = getattr(self.sys_config, 'cache', None)
         self.cache_pressure_guard = float(getattr(self.cache_config, 'pressure_guard_ratio', 0.05)) if self.cache_config is not None else 0.05
+        delay_clip_from_cfg = getattr(self.stats_config, 'delay_clip_upper', None) if self.stats_config is not None else None
+        self.delay_clip_upper = float(delay_clip_from_cfg if delay_clip_from_cfg is not None else self.config.get('delay_clip_upper', 0.0) or 0.0)
+        self.migration_delay_weight = float(self.config.get('migration_delay_weight', 600.0))
+        self.migration_energy_weight = float(self.config.get('migration_energy_weight', 1.0))
         self._queue_overload_warning_active = False
         self._queue_warning_triggered = False
         self.active_tasks: List[Dict] = []  # 每项: {id, vehicle_id, arrival_time, deadline, work_remaining, node_type, node_idx}
@@ -714,9 +719,20 @@ class CompleteSystemSimulator:
             'total_energy': 0.0,  # 总能耗(焦耳)
             'energy_uplink': 0.0,  # 上行能耗(焦耳)
             'energy_downlink': 0.0,  # 下行能耗(焦耳)
+            'energy_transmit_uplink': 0.0,  # 上行传输能耗
+            'energy_transmit_downlink': 0.0,  # 下行传输能耗
+            'energy_compute': 0.0,  # 计算能耗(焦耳)
+            'energy_cache': 0.0,  # 缓存命中能耗
+            'delay_processing': 0.0,  # 计算阶段延迟
+            'delay_waiting': 0.0,  # 排队等待延迟
+            'delay_uplink': 0.0,  # 上传延迟
+            'delay_downlink': 0.0,  # 下载延迟
+            'delay_cache': 0.0,  # 缓存命中提供的延迟
             'local_cache_hits': 0,  # 本地缓存命中次数
             'cache_hits': 0,  # 缓存命中次数
             'cache_misses': 0,  # 缓存未命中次数
+            'cache_requests': 0,  # 缓存请求次数
+            'cache_hit_rate': 0.0,  # 缓存命中率
             'migrations_executed': 0,  # 执行的迁移次数
             'migrations_successful': 0,  # 成功的迁移次数
             'rsu_migration_delay': 0.0,  # RSU迁移延迟(秒)
@@ -743,6 +759,7 @@ class CompleteSystemSimulator:
             'queue_overload_flag': False,
             'queue_overload_events': 0,
             'queue_rho_by_node': {},
+            'queue_overflow_drops': 0,
             'central_scheduler_calls': 0,
             'central_scheduler_last_decisions': 0,
             'central_scheduler_migrations': 0,
@@ -780,6 +797,119 @@ class CompleteSystemSimulator:
             self.stats['central_scheduler_migrations'] = self.stats.get('central_scheduler_migrations', 0) + len(migrations)
         except Exception as exc:
             logging.debug("Central scheduler update failed: %s", exc)
+
+    def _accumulate_delay(self, bucket: str, value: float) -> None:
+        """Ensure分项延迟与总延迟同步。"""
+        try:
+            amount = max(0.0, float(value))
+        except (TypeError, ValueError):
+            return
+        if amount <= 0.0:
+            return
+        self.stats[bucket] = self.stats.get(bucket, 0.0) + amount
+        self.stats['total_delay'] = self.stats.get('total_delay', 0.0) + amount
+
+    def _accumulate_energy(self, bucket: str, value: float) -> None:
+        """Ensure分项能耗与总能耗同步。"""
+        try:
+            amount = max(0.0, float(value))
+        except (TypeError, ValueError):
+            return
+        if amount <= 0.0:
+            return
+        self.stats[bucket] = self.stats.get(bucket, 0.0) + amount
+        self.stats['total_energy'] = self.stats.get('total_energy', 0.0) + amount
+
+    def _register_cache_request(self, hit: bool) -> None:
+        """更新缓存命中统计与命中率。"""
+        self.stats['cache_requests'] = self.stats.get('cache_requests', 0) + 1
+        if hit:
+            self.stats['cache_hits'] = self.stats.get('cache_hits', 0) + 1
+        else:
+            self.stats['cache_misses'] = self.stats.get('cache_misses', 0) + 1
+        total = self.stats['cache_hits'] + self.stats['cache_misses']
+        self.stats['cache_hit_rate'] = self.stats['cache_hits'] / max(1, total)
+
+    def _prepare_step_usage_counters(self) -> None:
+        """在单步开始前清零本地使用计数。"""
+        for vehicle in self.vehicles:
+            vehicle['local_cycle_used'] = 0.0
+            vehicle['compute_usage'] = 0.0
+
+    def _record_queue_drop(self, task: Dict, node_type: str) -> None:
+        """记录因队列溢出导致的任务丢弃。"""
+        self.stats['dropped_tasks'] = self.stats.get('dropped_tasks', 0) + 1
+        self.stats['queue_overflow_drops'] = self.stats.get('queue_overflow_drops', 0) + 1
+        data_bytes = float(task.get('data_size_bytes', task.get('data_size', 0.0) * 1e6))
+        self.stats['dropped_data_bytes'] = self.stats.get('dropped_data_bytes', 0.0) + data_bytes
+        task['dropped'] = True
+        task['drop_reason'] = 'queue_overflow'
+        drop_stats = self.stats.setdefault('drop_stats', {
+            'total': 0,
+            'wait_time_sum': 0.0,
+            'queue_sum': 0,
+            'by_type': {},
+            'by_scenario': {},
+            'by_reason': {}
+        })
+        drop_stats['total'] = drop_stats.get('total', 0) + 1
+        task_type = task.get('task_type', 'unknown')
+        scenario = task.get('app_scenario', 'unknown')
+        reason = 'queue_overflow'
+        by_type = drop_stats.setdefault('by_type', {})
+        by_scenario = drop_stats.setdefault('by_scenario', {})
+        by_reason = drop_stats.setdefault('by_reason', {})
+        by_type[task_type] = by_type.get(task_type, 0) + 1
+        by_scenario[scenario] = by_scenario.get(scenario, 0) + 1
+        by_reason[reason] = by_reason.get(reason, 0) + 1
+
+    def _enforce_queue_capacity(self, node: Dict, node_type: str, step_summary: Dict[str, Any]) -> None:
+        """在入队后执行，确保队列受控。"""
+        queue = node.get('computation_queue', [])
+        if not isinstance(queue, list):
+            return
+        nominal_capacity = self.rsu_nominal_capacity if node_type == 'RSU' else self.uav_nominal_capacity
+        max_queue = int(max(1, round(nominal_capacity * self.node_max_load_factor * self.queue_overflow_margin)))
+        overflow = len(queue) - max_queue
+        if overflow <= 0:
+            return
+        dropped = 0
+        while overflow > 0 and queue:
+            dropped_task = queue.pop()  # 丢弃最新的任务，保护早到任务
+            self._record_queue_drop(dropped_task, node_type)
+            dropped += 1
+            overflow -= 1
+        if dropped:
+            step_summary['dropped_tasks'] = step_summary.get('dropped_tasks', 0) + dropped
+            step_summary['queue_overflow_drops'] = step_summary.get('queue_overflow_drops', 0) + dropped
+
+    def _try_serve_from_vehicle_cache(self, vehicle: Dict, task: Dict, step_summary: Dict[str, Any],
+                                      cache_controller: Optional[Any]) -> bool:
+        """尝试直接使用车载缓存提供内容。"""
+        content_id = task.get('content_id')
+        if not content_id:
+            return False
+        cache = vehicle.get('device_cache') or {}
+        cached_entry = cache.get(content_id)
+        if cached_entry is None:
+            return False
+        hit_delay = max(0.002, min(0.05, 0.2 * self.time_slot))
+        hit_energy = float(self.config.get('local_cache_energy', 0.15))
+        vehicle['energy_consumed'] = vehicle.get('energy_consumed', 0.0) + hit_energy
+        self.stats['local_cache_hits'] = self.stats.get('local_cache_hits', 0) + 1
+        self._register_cache_request(True)
+        self._accumulate_delay('delay_cache', hit_delay)
+        self._accumulate_energy('energy_cache', hit_energy)
+        self.stats['processed_tasks'] = self.stats.get('processed_tasks', 0) + 1
+        self.stats['completed_tasks'] = self.stats.get('completed_tasks', 0) + 1
+        step_summary['local_cache_hits'] = step_summary.get('local_cache_hits', 0) + 1
+        cached_entry['timestamp'] = self.current_time
+        if cache_controller is not None:
+            try:
+                cache_controller.record_cache_result(content_id, was_hit=True)
+            except Exception:
+                pass
+        return True
 
     def _reset_runtime_states(self):
         """
@@ -827,6 +957,7 @@ class CompleteSystemSimulator:
             self._build_mm1_trackers()
             self._reset_mm1_step_buffers()
             self._mm1_last_prediction_step = -self.mm1_prediction_interval
+        self._prepare_step_usage_counters()
 
     def _update_scheduling_params(self, params: Optional[Dict[str, float]]) -> None:
         """??????????????????????"""
@@ -1161,6 +1292,7 @@ class CompleteSystemSimulator:
             'data_size': data_size_mb,
             'data_size_bytes': data_size_bytes,
             'computation_requirement': computation_mips,
+            'compute_cycles': adjusted_cycles,
             'deadline': self.current_time + deadline_duration,
             'content_id': f'content_{np.random.randint(0, 100)}',
             'priority': np.random.uniform(0.1, 1.0),
@@ -1426,8 +1558,13 @@ class CompleteSystemSimulator:
                 new_queue.append(task)
                 continue
 
-            remaining_work = float(task.get('work_remaining', 0.5)) - work_capacity
-            task['work_remaining'] = max(0.0, remaining_work)
+            previous_work = float(task.get('work_remaining', 0.5))
+            remaining_work = max(0.0, previous_work - work_capacity)
+            task['work_remaining'] = remaining_work
+            consumed_ratio = (previous_work - remaining_work) / max(work_capacity, 1e-9)
+            consumed_ratio = float(np.clip(consumed_ratio, 0.0, 1.0))
+            incremental_service = consumed_ratio * self.time_slot
+            task['service_time'] = task.get('service_time', 0.0) + incremental_service
 
             if task['work_remaining'] > 0.0:
                 new_queue.append(task)
@@ -1437,8 +1574,15 @@ class CompleteSystemSimulator:
             self.stats['processed_tasks'] = self.stats.get('processed_tasks', 0) + 1
 
             actual_delay = current_time - task.get('arrival_time', current_time)
-            actual_delay = max(0.001, min(actual_delay, 20.0))
-            self.stats['total_delay'] += actual_delay
+            clip_upper = getattr(self, 'delay_clip_upper', 0.0)
+            if clip_upper > 0.0:
+                actual_delay = min(actual_delay, clip_upper)
+            actual_delay = max(0.0, actual_delay)
+            service_time = min(actual_delay, task.get('service_time', actual_delay))
+            wait_delay = max(0.0, actual_delay - service_time)
+            self._accumulate_delay('delay_processing', service_time)
+            if wait_delay > 0.0:
+                self._accumulate_delay('delay_waiting', wait_delay)
             self._record_mm1_service(node_type, node_idx, actual_delay)
 
             vehicle_id = task.get('vehicle_id', 'V_0')
@@ -1454,8 +1598,8 @@ class CompleteSystemSimulator:
                 result_size = task.get('data_size_bytes', task.get('data_size', 1.0) * 1e6) * 0.1
                 down_delay, down_energy = self._estimate_transmission(result_size, distance, node_type.lower())
                 self.stats['energy_downlink'] = self.stats.get('energy_downlink', 0.0) + down_energy
-                self.stats['total_delay'] += down_delay
-                self.stats['total_energy'] += down_energy
+                self._accumulate_delay('delay_downlink', down_delay)
+                self._accumulate_energy('energy_transmit_downlink', down_energy)
 
             if node_type == 'RSU':
                 processing_power = 50.0
@@ -1465,7 +1609,7 @@ class CompleteSystemSimulator:
                 processing_power = 10.0
 
             task_energy = processing_power * work_capacity
-            self.stats['total_energy'] += task_energy
+            self._accumulate_energy('energy_compute', task_energy)
             node['energy_consumed'] = node.get('energy_consumed', 0.0) + task_energy
 
             task['completed'] = True
@@ -1591,7 +1735,9 @@ class CompleteSystemSimulator:
         """
         # 基础缓存检查
         # Basic cache check
-        cache_hit = content_id in node.get('cache', {})
+        cache = node.get('cache', {})
+        cache_hit = bool(content_id and cache and content_id in cache)
+        self._register_cache_request(cache_hit)
         
         # 更新统计
         # Update statistics
@@ -2234,8 +2380,10 @@ class CompleteSystemSimulator:
 
         content_id = task.get('content_id')
         # 车辆端不再维护本地缓存，直接根据策略决定卸载或本地计算
-
         forced_mode = getattr(self, 'forced_offload_mode', '')
+        if forced_mode != 'remote_only':
+            if self._try_serve_from_vehicle_cache(vehicle, task, step_summary, cache_controller):
+                return
         if forced_mode == 'local_only':
             self._handle_local_processing(vehicle, task, step_summary)
             return
@@ -2487,17 +2635,18 @@ class CompleteSystemSimulator:
             energy = power * delay * 0.1
             self.stats['processed_tasks'] += 1
             self.stats['completed_tasks'] += 1
-            self.stats['total_delay'] += delay
-            self.stats['total_energy'] += energy
+            self._accumulate_delay('delay_cache', delay)
+            self._accumulate_energy('energy_cache', energy)
+            self.stats['energy_downlink'] = self.stats.get('energy_downlink', 0.0) + energy
             node['energy_consumed'] = node.get('energy_consumed', 0.0) + energy
             return True
 
         # 缓存未命中：计算上传开销
         # Cache miss: calculate upload overhead
         upload_delay, upload_energy = self._estimate_transmission(task.get('data_size_bytes', 1e6), distance, node_type.lower())
-        self.stats['total_delay'] += upload_delay
+        self._accumulate_delay('delay_uplink', upload_delay)
         self.stats['energy_uplink'] += upload_energy
-        self.stats['total_energy'] += upload_energy
+        self._accumulate_energy('energy_transmit_uplink', upload_energy)
         vehicle['energy_consumed'] = vehicle.get('energy_consumed', 0.0) + upload_energy
 
         # 估算远程工作量并创建任务条目
@@ -2525,6 +2674,7 @@ class CompleteSystemSimulator:
 
         queue = node.setdefault('computation_queue', [])
         queue.append(task_entry)
+        self._enforce_queue_capacity(node, node_type, step_summary)
         self._apply_queue_scheduling(node, node_type)
         self._append_active_task(task_entry)
         self._record_mm1_arrival(node_type, node_idx)
@@ -2599,8 +2749,13 @@ class CompleteSystemSimulator:
         processing_delay, energy = self._estimate_local_processing(task, vehicle)
         self.stats['processed_tasks'] += 1
         self.stats['completed_tasks'] += 1
-        self.stats['total_delay'] += processing_delay
-        self.stats['total_energy'] += energy
+        self._accumulate_delay('delay_processing', processing_delay)
+        self._accumulate_energy('energy_compute', energy)
+        cpu_freq = float(vehicle.get('cpu_freq', self.vehicle_cpu_freq))
+        cycles_consumed = processing_delay * cpu_freq
+        vehicle['local_cycle_used'] = vehicle.get('local_cycle_used', 0.0) + cycles_consumed
+        available_cycles = max(1e-6, cpu_freq * self.time_slot)
+        vehicle['compute_usage'] = float(np.clip(vehicle['local_cycle_used'] / available_cycles, 0.0, 1.0))
         step_summary['local_tasks'] += 1
 
     def _record_forced_drop(self, vehicle: Dict, task: Dict, step_summary: Dict, reason: str = 'forced_drop') -> None:
@@ -2949,6 +3104,7 @@ class CompleteSystemSimulator:
         """
         actions = actions or {}
         self._update_scheduling_params(actions.get('scheduling_params'))
+        self._prepare_step_usage_counters()
         if self._central_resource_enabled and hasattr(self, 'resource_pool'):
             try:
                 self.execute_phase2_scheduling()
@@ -2965,7 +3121,8 @@ class CompleteSystemSimulator:
             'generated_tasks': 0,  # 本步生成的任务数
             'local_tasks': 0,  # 本地处理的任务数
             'remote_tasks': 0,  # 远程卸载的任务数
-            'local_cache_hits': 0  # 本地缓存命中次数
+            'local_cache_hits': 0,  # 本地缓存命中次数
+            'queue_overflow_drops': 0  # 本步因队列溢出的丢弃
         }
 
         # 1. 更新车辆位置
@@ -3152,10 +3309,10 @@ class CompleteSystemSimulator:
 
         source_rsu_id = source_rsu['id']
         target_rsu_id = target_rsu['id']
-        avg_task_size = 2.0
-        total_data_size = tasks_to_migrate * avg_task_size
-
         migrated_tasks = source_queue[:tasks_to_migrate]
+        total_data_size = sum(task.get('data_size', 1.0) for task in migrated_tasks)
+        if total_data_size <= 0.0:
+            total_data_size = tasks_to_migrate * 1.0
         if coordinator is not None and migrated_tasks:
             try:
                 coordinator.prepare_prefetch(source_rsu, target_rsu, migrated_tasks, urgency)
@@ -3165,7 +3322,8 @@ class CompleteSystemSimulator:
         source_rsu['computation_queue'] = source_queue[tasks_to_migrate:]
         target_rsu['computation_queue'].extend(migrated_tasks)
 
-        delay_saved = max(0.0, (source_queue_len - target_queue_len) * self.time_slot)
+        queue_relief = max(0.0, source_queue_len - len(source_rsu['computation_queue']))
+        delay_saved = max(0.0, queue_relief * self.time_slot)
         migration_cost = 0.0
         try:
             from utils.wired_backhaul_model import calculate_rsu_to_rsu_delay, calculate_rsu_to_rsu_energy
@@ -3174,7 +3332,7 @@ class CompleteSystemSimulator:
             self.stats['rsu_migration_delay'] = self.stats.get('rsu_migration_delay', 0.0) + wired_delay
             self.stats['rsu_migration_energy'] = self.stats.get('rsu_migration_energy', 0.0) + wired_energy
             self.stats['rsu_migration_data'] = self.stats.get('rsu_migration_data', 0.0) + total_data_size
-            migration_cost = wired_energy + wired_delay * 1000.0
+            migration_cost = (self.migration_energy_weight * wired_energy) + (self.migration_delay_weight * wired_delay)
         except Exception:
             migration_cost = total_data_size * 0.2
 
@@ -3274,17 +3432,20 @@ class CompleteSystemSimulator:
             except Exception as exc:
                 print(f"⚠️ UAV迁移前预取协调失败(UAV_{source_uav_idx}->{target_rsu.get('id')}): {exc}")
 
-        total_data_size = sum(task.get('data_size', 1.0) for task in migrated_tasks) or (tasks_to_migrate * 1.0)
+        total_data_size = sum(task.get('data_size', 1.0) for task in migrated_tasks)
+        if total_data_size <= 0.0:
+            total_data_size = tasks_to_migrate * 1.0
         # Estimate wireless transfer characteristics
         wireless_rate = 12.0  # MB/s
         wireless_delay = (total_data_size / wireless_rate)
         wireless_energy = total_data_size * 0.15 + distance * 0.01
-        delay_saved = max(0.0, (source_queue_len - target_queue_len) * self.time_slot)
+        queue_relief = max(0.0, source_queue_len - len(source_uav['computation_queue']))
+        delay_saved = max(0.0, queue_relief * self.time_slot)
 
         self.stats['uav_migration_distance'] = self.stats.get('uav_migration_distance', 0.0) + distance
         self.stats['uav_migration_count'] = self.stats.get('uav_migration_count', 0) + 1
 
-        migration_cost = wireless_energy + wireless_delay * 800.0
+        migration_cost = (self.migration_energy_weight * wireless_energy) + (self.migration_delay_weight * wireless_delay)
         return {
             'success': True,
             'cost': migration_cost,

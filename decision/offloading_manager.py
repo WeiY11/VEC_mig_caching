@@ -321,7 +321,7 @@ class ProcessingModeEvaluator:
                 continue
             if float(getattr(s, 'load_factor', 0.0)) <= config.migration.rsu_overload_threshold:
                 continue
-            mig = task.data_size / max(1e-9, config.migration.migration_bandwidth)
+            mig = (task.data_size * 8.0) / max(1e-9, config.migration.migration_bandwidth)
             proc = task.compute_cycles / max(1e-9, tgt.cpu_frequency)
             wait = self._wait(tgt)
             total = mig + wait + proc
