@@ -2167,6 +2167,16 @@ def train_single_algorithm(algorithm: str, num_episodes: Optional[int] = None, e
     print(f"  评估间隔: {eval_interval} (自动调整)" if eval_interval != config.experiment.eval_interval else f"  评估间隔: {eval_interval}")
     print(f"  保存间隔: {save_interval} (自动调整)" if save_interval != config.experiment.save_interval else f"  保存间隔: {save_interval}")
     print(f"  实时可视化: {'启用 ✓' if visualizer else '禁用'}")
+    if hasattr(config, 'rl'):
+        print(
+            f"  奖励权重: 延迟={getattr(config.rl, 'reward_weight_delay', 0.0):.2f}, "
+            f"能耗={getattr(config.rl, 'reward_weight_energy', 0.0):.2f}, "
+            f"丢弃={getattr(config.rl, 'reward_penalty_dropped', 0.0):.2f}"
+        )
+        print(
+            f"  目标约束: 时延≤{getattr(config.rl, 'latency_target', 0.0):.2f}s, "
+            f"能耗≤{getattr(config.rl, 'energy_target', 0.0):.0f}J"
+        )
     print("-" * 60)
     
     # 创建结果目录
@@ -2235,8 +2245,10 @@ def train_single_algorithm(algorithm: str, num_episodes: Optional[int] = None, e
             # 保存最佳模型
             if eval_result['avg_reward'] > best_avg_reward:
                 best_avg_reward = eval_result['avg_reward']
-                training_env.agent_env.save_models(f"results/models/single_agent/{algorithm.lower()}/best_model")
-                print(f"  💾 保存最佳模型 (Per-Step奖励: {best_avg_reward:.3f})")
+                best_model_base = f"results/models/single_agent/{algorithm.lower()}/best_model"
+                saved_target = training_env.agent_env.save_models(best_model_base)
+                saved_display = saved_target or best_model_base
+                print(f"  💾 保存最佳模型 -> {saved_display} (Per-Step奖励: {best_avg_reward:.3f})")
         
         # 达到后期阶段时缩放TD3学习率（一次性）
         if (lr_decay_episode is not None and not lr_decay_applied and episode >= lr_decay_episode):
@@ -2258,8 +2270,10 @@ def train_single_algorithm(algorithm: str, num_episodes: Optional[int] = None, e
 
         # 定期保存模型
         if episode % save_interval == 0:
-            training_env.agent_env.save_models(f"results/models/single_agent/{algorithm.lower()}/checkpoint_{episode}")
-            print(f"💾 保存检查点: checkpoint_{episode}")
+            checkpoint_base = f"results/models/single_agent/{algorithm.lower()}/checkpoint_{episode}"
+            checkpoint_path = training_env.agent_env.save_models(checkpoint_base)
+            checkpoint_display = checkpoint_path or checkpoint_base
+            print(f"💾 保存检查点: {checkpoint_display}")
     
     # 训练完成
     total_training_time = time.time() - training_start_time
@@ -2427,6 +2441,9 @@ def evaluate_single_model(algorithm: str, training_env: SingleAgentTrainingEnvir
             return default
         return np.clip(value, -max_val, max_val)
     
+    eval_max_steps = getattr(config.experiment, 'max_steps_per_episode', 200)
+    eval_max_steps = max(50, int(eval_max_steps))
+    
     for _ in range(num_eval_episodes):
         state = training_env.reset_environment()
         episode_reward = 0.0
@@ -2434,7 +2451,7 @@ def evaluate_single_model(algorithm: str, training_env: SingleAgentTrainingEnvir
         episode_completion = 0.0
         steps = 0
         
-        for step in range(50):  # 较短的评估轮次
+        for step in range(eval_max_steps):
             if algorithm == "DQN":
                 actions_result = training_env.agent_env.get_actions(state, training=False)
                 if isinstance(actions_result, dict):

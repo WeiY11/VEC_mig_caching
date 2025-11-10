@@ -23,6 +23,7 @@ import torch.optim as optim
 import numpy as np
 import random
 import math
+import os
 from collections import deque
 from typing import Dict, List, Tuple, Optional, Union, Any
 from dataclasses import dataclass
@@ -54,7 +55,7 @@ class TD3Config:
     # 探索参数（优化：更快收敛到稳定策略）
     exploration_noise: float = 0.12  # 初始探索噪声
     noise_decay: float = 0.9992  # 🔧 噪声衰减率（更慢衰减，训练中后期更稳）
-    min_noise: float = 0.02  # 🔧 最小探索噪声（更低底限，提升稳定性）
+    min_noise: float = 0.005  # 🔧 更低噪声下限，允许训练后期真正收敛
     
     # 🔧 新增：梯度裁剪防止过拟合
     gradient_clip_norm: float = 0.7  # 🔧 放宽梯度裁剪，允许适度更新
@@ -63,7 +64,6 @@ class TD3Config:
     
     def __post_init__(self):
         """从环境变量读取配置，用于固定拓扑优化"""
-        import os
         
         # 读取固定拓扑优化器设置的环境变量
         if 'TD3_HIDDEN_DIM' in os.environ:
@@ -97,6 +97,21 @@ class TD3Config:
         if 'TD3_GRADIENT_CLIP' in os.environ:
             self.gradient_clip_norm = float(os.environ['TD3_GRADIENT_CLIP'])
             print(f"[TD3Config] 从环境变量读取 gradient_clip_norm: {self.gradient_clip_norm}")
+
+        if 'TD3_NOISE_DECAY' in os.environ:
+            self.noise_decay = float(os.environ['TD3_NOISE_DECAY'])
+            print(f"[TD3Config] 从环境变量读取 noise_decay: {self.noise_decay}")
+
+        if 'TD3_MIN_NOISE' in os.environ:
+            self.min_noise = float(os.environ['TD3_MIN_NOISE'])
+            print(f"[TD3Config] 从环境变量读取 min_noise: {self.min_noise}")
+
+        if 'TD3_LATE_STAGE_NOISE_FLOOR' in os.environ:
+            self.late_stage_noise_floor = float(os.environ['TD3_LATE_STAGE_NOISE_FLOOR'])
+            print(
+                "[TD3Config] 从环境变量读取 late_stage_noise_floor: "
+                f"{self.late_stage_noise_floor}"
+            )
     
     # PER 参数（优化以减少低质量样本影响）
     per_alpha: float = 0.6  # 🔧 回调优先级指数，减轻早期过度关注
@@ -108,7 +123,7 @@ class TD3Config:
     late_stage_start_updates: int = 60000
     late_stage_tau: float = 0.003
     late_stage_policy_delay: int = 3
-    late_stage_noise_floor: float = 0.03
+    late_stage_noise_floor: float = 0.01
     td_error_clip: float = 4.0
     
     # 训练频率
@@ -704,6 +719,8 @@ class TD3Agent:
         # 优化器
         self.actor_optimizer = optim.Adam(self.actor.parameters(), lr=config.actor_lr)
         self.critic_optimizer = optim.Adam(self.critic.parameters(), lr=config.critic_lr)
+        self.current_actor_lr = float(config.actor_lr)
+        self.current_critic_lr = float(config.critic_lr)
         # 🔧 暂时禁用学习率调度器，避免短期训练中学习率过快衰减
         # self.actor_lr_scheduler = optim.lr_scheduler.ExponentialLR(self.actor_optimizer, gamma=0.995)
         # self.critic_lr_scheduler = optim.lr_scheduler.ExponentialLR(self.critic_optimizer, gamma=0.995)
@@ -911,6 +928,33 @@ class TD3Agent:
         
         return training_info
 
+    def apply_lr_schedule(self, factor: float = 0.5, min_lr: float = 5e-5) -> Dict[str, float]:
+        """在训练后期按比例缩放学习率"""
+        factor = float(max(factor, 1e-3))
+        min_lr = float(max(min_lr, 1e-6))
+        current_actor_lr = self._get_optimizer_lr(self.actor_optimizer)
+        current_critic_lr = self._get_optimizer_lr(self.critic_optimizer)
+        new_actor_lr = max(min_lr, current_actor_lr * factor)
+        new_critic_lr = max(min_lr, current_critic_lr * factor)
+        self._set_optimizer_lr(self.actor_optimizer, new_actor_lr)
+        self._set_optimizer_lr(self.critic_optimizer, new_critic_lr)
+        self.current_actor_lr = new_actor_lr
+        self.current_critic_lr = new_critic_lr
+        self.config.actor_lr = new_actor_lr
+        self.config.critic_lr = new_critic_lr
+        return {'actor_lr': new_actor_lr, 'critic_lr': new_critic_lr}
+
+    @staticmethod
+    def _set_optimizer_lr(optimizer: optim.Optimizer, lr: float) -> None:
+        for param_group in optimizer.param_groups:
+            param_group['lr'] = lr
+
+    @staticmethod
+    def _get_optimizer_lr(optimizer: optim.Optimizer) -> float:
+        if not optimizer.param_groups:
+            return 0.0
+        return float(optimizer.param_groups[0].get('lr', 0.0))
+
     def _apply_late_stage_strategy(self):
         """应用后期稳定策略，防止奖励崩溃"""
         print("🔧 启用后期稳定策略：调整tau/policy_delay/噪声下限/TD误差裁剪")
@@ -994,8 +1038,15 @@ class TD3Agent:
         for target_param, param in zip(target.parameters(), source.parameters()):
             target_param.data.copy_(param.data)
     
-    def save_model(self, filepath: str):
-        """保存模型"""
+    @staticmethod
+    def _resolve_checkpoint_path(filepath: str) -> str:
+        """将路径转换为最终的.pt文件路径"""
+        return filepath if filepath.endswith('.pth') else f"{filepath}_td3.pth"
+
+    def save_model(self, filepath: str) -> str:
+        """保存模型并返回实际文件路径"""
+        target_path = self._resolve_checkpoint_path(filepath)
+        os.makedirs(os.path.dirname(target_path) or ".", exist_ok=True)
         torch.save({
             'actor_state_dict': self.actor.state_dict(),
             'critic_state_dict': self.critic.state_dict(),
@@ -1006,11 +1057,13 @@ class TD3Agent:
             'exploration_noise': self.exploration_noise,
             'step_count': self.step_count,
             'update_count': self.update_count
-        }, f"{filepath}_td3.pth")
+        }, target_path)
+        return target_path
     
-    def load_model(self, filepath: str):
-        """加载模型"""
-        checkpoint = torch.load(f"{filepath}_td3.pth", map_location=self.device)
+    def load_model(self, filepath: str) -> str:
+        """加载模型并返回实际文件路径"""
+        target_path = self._resolve_checkpoint_path(filepath)
+        checkpoint = torch.load(target_path, map_location=self.device)
         
         self.actor.load_state_dict(checkpoint['actor_state_dict'])
         self.critic.load_state_dict(checkpoint['critic_state_dict'])
@@ -1305,15 +1358,15 @@ class TD3Environment:
     
     def save_models(self, filepath: str):
         """保存模型"""
-        import os
-        os.makedirs(filepath, exist_ok=True)
-        self.agent.save_model(filepath)
-        print(f"✓ TD3模型已保存到: {filepath}")
+        saved_path = self.agent.save_model(filepath)
+        print(f"✓ TD3模型已保存到: {saved_path}")
+        return saved_path
     
     def load_models(self, filepath: str):
         """加载模型"""
-        self.agent.load_model(filepath)
-        print(f"✓ TD3模型已加载: {filepath}")
+        loaded_path = self.agent.load_model(filepath)
+        print(f"✓ TD3模型已加载: {loaded_path}")
+        return loaded_path
     
     def store_experience(self, state: np.ndarray, action: np.ndarray, reward: float,
                         next_state: np.ndarray, done: bool, log_prob: float = 0.0, value: float = 0.0):
@@ -1338,6 +1391,12 @@ class TD3Environment:
             'update_count': self.agent.update_count,
             'policy_delay': self.config.policy_delay
         }
+
+    def apply_late_stage_lr(self, factor: float = 0.5, min_lr: float = 5e-5) -> Optional[Dict[str, float]]:
+        """缩放TD3学习率，通常在后期微调阶段调用"""
+        if hasattr(self.agent, 'apply_lr_schedule'):
+            return self.agent.apply_lr_schedule(factor=factor, min_lr=min_lr)
+        return None
 class RunningMeanStd:
     """跟踪标量的运行均值和方差，用于奖励归一化。"""
 

@@ -219,14 +219,15 @@ class RLConfig:
         # 🏆 最优配置v3.0（2025-11-02）：基于14组权重对比实验的最优结果
         # 来源：aggressive配置在500轮×14组实验中取得最优综合成本（6.63）
         # 实际效果：能耗4892J↓、时延0.331s↓、缓存45.6%↑、完成率93%
-        self.reward_weight_delay = 2.0  # 🏆 标准：平衡的时延权重（目标≈0.3s）
-        self.reward_weight_energy = 1.2  # 🏆 标准：平衡的能耗权重（目标≈1000J）
+        self.reward_weight_delay = 1.8  # 🏆 稍回调时延权重，兼顾 QoS
+        self.reward_weight_energy = 2.15  # 🆙 强化能耗约束，抑制高功耗拖尾
         self.reward_penalty_dropped = 0.15  # 🆙 强化惩罚：防止通过大量丢弃获得低延迟
         self.completion_target = 0.95  # ✅ 目标完成率（>95%视为达标）
         self.reward_weight_completion_gap = 1.2  # 惩罚完成率低于目标的差值
         self.reward_weight_loss_ratio = 3.0  # 数据丢失率权重（每增加10%损失≈0.3成本）
-        self.cache_pressure_threshold = 0.85  # 缓存利用率软阈值
-        self.reward_weight_cache_pressure = 0.8  # 缓存压力惩罚权重
+        self.cache_pressure_threshold = 0.9  # 缓存利用率软阈值（允许更高占用）
+        self.reward_weight_cache_pressure = 0.65  # 更温和的缓存压力权重
+        self.reward_weight_cache_bonus = 0.4  # 命中奖励权重，鼓励缓存复用
         self.reward_weight_queue_overload = 0.02  # 每次队列过载事件的惩罚权重
 
         # ⚠️ 已弃用参数（保留以兼容旧代码）
@@ -242,8 +243,8 @@ class RLConfig:
         # 🏆 最优：严格目标配合高权重，实现最佳性能
         self.latency_target = 0.35  # 🏆 最优：严格时延目标（实测降至0.331s）
         self.latency_upper_tolerance = 0.80  # Upper latency tolerance before penalty
-        self.energy_target = 1200.0  # 🏆 最优：低目标迫使节能（实测降至4892J）
-        self.energy_upper_tolerance = 2000.0  # 能耗容忍上限
+        self.energy_target = 950.0  # 🆙 更紧能耗目标，驱动策略回落至≈3kJ区间
+        self.energy_upper_tolerance = 1800.0  # 较严上限，防止迁移时能耗暴涨
 
 class QueueConfig:
     """

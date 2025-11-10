@@ -453,8 +453,8 @@ def compare_algorithms_cross_scenario(algorithms: List[str], scenario_set: str,
         # 需要获取state_dim和action_dim（这里使用默认值）
         from single_agent.td3 import TD3Environment
         temp_env = TD3Environment()
-        state_dim = temp_env.get_state_dim()
-        action_dim = temp_env.get_action_dim()
+        state_dim = temp_env.state_dim
+        action_dim = temp_env.action_dim
         
         try:
             agent = load_trained_agent(algorithm, model_path, state_dim, action_dim)
@@ -633,8 +633,8 @@ def main():
         # 加载agent
         from single_agent.td3 import TD3Environment
         temp_env = TD3Environment()
-        state_dim = temp_env.get_state_dim()
-        action_dim = temp_env.get_action_dim()
+        state_dim = temp_env.state_dim
+        action_dim = temp_env.action_dim
         
         agent = load_trained_agent(args.algorithm, args.model, state_dim, action_dim)
         
@@ -657,8 +657,8 @@ def main():
         # 加载agent
         from single_agent.td3 import TD3Environment
         temp_env = TD3Environment()
-        state_dim = temp_env.get_state_dim()
-        action_dim = temp_env.get_action_dim()
+        state_dim = temp_env.state_dim
+        action_dim = temp_env.action_dim
         
         agent = load_trained_agent(args.algorithm, args.model, state_dim, action_dim)
         

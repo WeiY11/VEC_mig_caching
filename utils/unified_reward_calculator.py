@@ -46,6 +46,7 @@ class UnifiedRewardCalculator:
         self.weight_energy = float(config.rl.reward_weight_energy)  # 能耗权重
         self.penalty_dropped = float(config.rl.reward_penalty_dropped)  # 任务丢弃惩罚
         self.weight_cache = float(getattr(config.rl, "reward_weight_cache", 0.0))  # 缓存权重
+        self.weight_cache_bonus = float(getattr(config.rl, "reward_weight_cache_bonus", 0.0))
         self.weight_migration = float(getattr(config.rl, "reward_weight_migration", 0.0))  # 迁移权重
         self.weight_joint = float(getattr(config.rl, "reward_weight_joint", 0.05))  # 缓存-迁移联动权重
         self.completion_target = float(getattr(config.rl, "completion_target", 0.95))
@@ -287,6 +288,9 @@ class UnifiedRewardCalculator:
         if cache_metrics and self.weight_cache > 0:
             miss_rate = np.clip(self._safe_float(cache_metrics.get("miss_rate"), 0.0), 0.0, 1.0)
             total_cost += self.weight_cache * miss_rate
+        if cache_metrics and self.weight_cache_bonus > 0:
+            hit_rate = np.clip(self._safe_float(cache_metrics.get("hit_rate"), 0.0), 0.0, 1.0)
+            total_cost -= self.weight_cache_bonus * hit_rate
 
         # 可选的迁移惩罚（通常权重为0）
         if migration_metrics and self.weight_migration > 0:
