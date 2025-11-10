@@ -941,11 +941,14 @@ class TD3Agent:
         # 当前Q值
         current_q1, current_q2 = self.critic(states, actions)
         
-        # Critic损失 (两个Q网络的损失之和)
-        # TD误差
-        td_errors = (current_q1 - target_q)
-        # 加权MSE损失
-        critic_loss = (weights * td_errors.pow(2)).mean() + (weights * (current_q2 - target_q).pow(2)).mean()
+        # Critic损失 (两个Q网络的损失之和)，支持TD误差裁剪稳定梯度
+        td_errors_q1 = current_q1 - target_q
+        td_errors_q2 = current_q2 - target_q
+        if getattr(self.config, "td_error_clip", 0.0) and self.config.td_error_clip > 0:
+            clip_val = float(self.config.td_error_clip)
+            td_errors_q1 = torch.clamp(td_errors_q1, -clip_val, clip_val)
+            td_errors_q2 = torch.clamp(td_errors_q2, -clip_val, clip_val)
+        critic_loss = (weights * td_errors_q1.pow(2)).mean() + (weights * td_errors_q2.pow(2)).mean()
         
         # 更新Critic
         self.critic_optimizer.zero_grad()
@@ -956,7 +959,10 @@ class TD3Agent:
         self.critic_optimizer.step()
         
         self.critic_losses.append(critic_loss.item())
-        return critic_loss.item(), td_errors.abs().squeeze()
+        td_error_magnitude = td_errors_q1.detach().abs().squeeze()
+        if getattr(self.config, "td_error_clip", 0.0) and self.config.td_error_clip > 0:
+            td_error_magnitude = torch.clamp(td_error_magnitude, 0.0, float(self.config.td_error_clip))
+        return critic_loss.item(), td_error_magnitude
     
     def _update_actor(self, states: torch.Tensor) -> float:
         """更新Actor网络"""

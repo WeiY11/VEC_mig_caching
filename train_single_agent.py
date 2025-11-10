@@ -39,7 +39,7 @@ python train_single_agent.py --algorithm TD3 --episodes 200 --no-central-resourc
 python train_single_agent.py --compare --episodes 200  # 比较所有算法
 🚀 增强缓存模式 (默认启用 - 分层L1/L2 + 自适应热度策略 + RSU协作):
 python train_single_agent.py --algorithm TD3 --episodes 1600 --num-vehicles 8
-python train_single_agent.py --algorithm TD3 --episodes 800 --num-vehicles 12
+python train_single_agent.py --algorithm TD3 --episodes 2000 --num-vehicles 12
 python train_single_agent.py --algorithm TD3 --episodes 800 --num-vehicles 12 --silent-mode  # 静默保存结果
 python train_single_agent.py --algorithm TD3 --episodes 1600 --num-vehicles 16
 python train_single_agent.py --algorithm TD3 --episodes 1600 --num-vehicles 20
@@ -1099,7 +1099,16 @@ class SingleAgentTrainingEnvironment:
                 )
             except Exception as exc:
                 print(f"⚠️ 联合策略协调器观测异常: {exc}")
-        
+
+        # 反馈关键系统指标给TD3策略指导模块，驱动能耗/延迟温度自适应
+        agent_core = getattr(self.agent_env, 'agent', None)
+        if agent_core is not None and hasattr(agent_core, 'update_guidance_feedback'):
+            try:
+                agent_core.update_guidance_feedback(system_metrics, cache_metrics, migration_metrics)
+            except Exception as exc:
+                if getattr(self, '_current_episode', 0) % 200 == 0:
+                    print(f"⚠️ 指导反馈更新失败: {exc}")
+
         reward_source = system_metrics.get('reward_snapshot', system_metrics)
         reward = self.agent_env.calculate_reward(reward_source, cache_metrics, migration_metrics)
         try:
@@ -1849,6 +1858,11 @@ class SingleAgentTrainingEnvironment:
                 })
             sim_actions.update(payload)
 
+            # 🔁 让系统模拟器接收Actor导出的指导信号（统一键名为rl_guidance）
+            guidance_payload = actions_dict.get('guidance') if isinstance(actions_dict, dict) else None
+            if isinstance(guidance_payload, dict) and guidance_payload:
+                sim_actions['rl_guidance'] = guidance_payload
+
             # 🎯 =============== 中央资源分配动作 (Phase 1) ===============
             if self.central_resource_enabled and self.central_resource_action_dim > 0:
                 central_start = self.base_action_dim
@@ -2124,7 +2138,13 @@ def train_single_algorithm(algorithm: str, num_episodes: Optional[int] = None, e
     if canonical_algorithm != algorithm:
         print(f"⚙️  规范化算法标识: {canonical_algorithm}")
     algorithm = canonical_algorithm
-    
+
+    lr_decay_episode: Optional[int] = None
+    late_stage_lr_factor = 0.5
+    lr_decay_applied = False
+    if algorithm.upper() == 'TD3' and num_episodes >= 1200:
+        lr_decay_episode = 1200
+
     # 🌐 创建实时可视化器（如果启用）
     visualizer = None
     if enable_realtime_vis and REALTIME_AVAILABLE:
@@ -2218,6 +2238,24 @@ def train_single_algorithm(algorithm: str, num_episodes: Optional[int] = None, e
                 training_env.agent_env.save_models(f"results/models/single_agent/{algorithm.lower()}/best_model")
                 print(f"  💾 保存最佳模型 (Per-Step奖励: {best_avg_reward:.3f})")
         
+        # 达到后期阶段时缩放TD3学习率（一次性）
+        if (lr_decay_episode is not None and not lr_decay_applied and episode >= lr_decay_episode):
+            lr_info = None
+            lr_callback = getattr(training_env.agent_env, 'apply_late_stage_lr', None)
+            if callable(lr_callback):
+                lr_info = lr_callback(factor=late_stage_lr_factor, min_lr=5e-5)
+                lr_decay_applied = True
+            elif hasattr(training_env.agent_env, 'agent'):
+                agent_obj = getattr(training_env.agent_env, 'agent')
+                if hasattr(agent_obj, 'apply_lr_schedule'):
+                    lr_info = agent_obj.apply_lr_schedule(factor=late_stage_lr_factor, min_lr=5e-5)
+                    lr_decay_applied = True
+            if lr_info:
+                print(
+                    f"🔧 第{episode}轮触发TD3学习率缩放 -> "
+                    f"actor_lr={lr_info['actor_lr']:.2e}, critic_lr={lr_info['critic_lr']:.2e}"
+                )
+
         # 定期保存模型
         if episode % save_interval == 0:
             training_env.agent_env.save_models(f"results/models/single_agent/{algorithm.lower()}/checkpoint_{episode}")
