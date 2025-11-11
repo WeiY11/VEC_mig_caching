@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+﻿#!/usr/bin/env python3
 """
 Generate an idealised bandwidth comparison for the six TD3 strategies.
 
@@ -30,10 +30,10 @@ STRATEGIES = [
 STRATEGY_LABELS = {
     "local-only": "Local-Only",
     "remote-only": "Edge-Only",
-    "offloading-only": "Offloading-Only",
+    "offloading-only": "Layered Offloading",
     "resource-only": "Resource-Only",
-    "comprehensive-no-migration": "Comprehensive (No Migration)",
-    "comprehensive-migration": "Comprehensive (TD3)",
+    "comprehensive-no-migration": "Layered TD3 (No Migration)",
+    "comprehensive-migration": "Layered TD3 (Migration)",
 }
 
 BANDWIDTHS = [10, 20, 30, 40, 50]
@@ -55,12 +55,12 @@ def generate_metrics(bandwidth: float) -> Dict[str, IdealisedMetrics]:
     results: Dict[str, IdealisedMetrics] = {}
 
     COST_SHAPES = {
-        "local-only": [6.3, 6.35, 6.4, 6.45, 6.475],
+        "local-only": [6.3, 6.35, 6.4, 6.45, 6.47],
         "remote-only": [9.4, 8.2, 7.4, 6.6, 6.0],
         "offloading-only": [6.8, 6.1, 5.65, 5.2, 4.95],
         "resource-only": [6.5, 5.7, 5.3, 4.9, 4.6],
         "comprehensive-no-migration": [5.9, 5.4, 4.8, 4.2, 3.8],
-        "comprehensive-migration": [5.4, 4.6, 4.1, 3.6, 3.2],
+        "comprehensive-migration": [5.4, 4.7, 4.2, 3.7, 3.3],
     }
 
     def metrics_from_cost(cost: float) -> IdealisedMetrics:
@@ -159,3 +159,4 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+

@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+﻿#!/usr/bin/env python3
 """
 TD3 策略模型缓存系统
 ======================
@@ -32,7 +32,7 @@ results/strategy_model_cache/
   │   │   ├── config.json        # 配置信息
   │   │   └── metrics.json       # 训练指标
   │   └── ...
-  ├── comprehensive-migration/
+  ├── comprehensive-no-migration/
   │   └── ...
   └── ...
 ```
@@ -117,7 +117,7 @@ class StrategyModelCache:
         基于策略配置的关键参数生成哈希值，确保相同配置使用相同缓存
         
         【参数】
-        strategy_key: str - 策略标识（如 "comprehensive-migration"）
+        strategy_key: str - 策略标识（如 "comprehensive-no-migration"）
         episodes: int - 训练轮数
         seed: int - 随机种子
         overrides: Dict - 场景覆盖参数（如车辆数、RSU数等）
@@ -506,4 +506,5 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 

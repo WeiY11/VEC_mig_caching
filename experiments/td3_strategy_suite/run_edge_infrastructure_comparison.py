@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+﻿#!/usr/bin/env python3
 """
 TD3 边缘基础设施综合对比实验
 ==============================
@@ -284,7 +284,7 @@ def plot_results(results: List[Dict[str, object]], suite_dir: Path, strategy_key
     
     # ========== 图5: 资源效率对比（雷达图）==========
     # 选择一个代表性策略（如TD3）
-    representative_strategy = strategy_keys[0] if strategy_keys else "comprehensive-migration"
+    representative_strategy = strategy_keys[0] if strategy_keys else "comprehensive-no-migration"
     
     categories = scenario_labels
     fig, ax = plt.subplots(figsize=(10, 10), subplot_kw=dict(projection='polar'))
@@ -403,7 +403,7 @@ def plot_results(results: List[Dict[str, object]], suite_dir: Path, strategy_key
     fig, ax = plt.subplots(figsize=(14, 8))
     
     # 选择一个代表性策略（TD3）
-    representative_strategy = strategy_keys[0] if strategy_keys else "comprehensive-migration"
+    representative_strategy = strategy_keys[0] if strategy_keys else "comprehensive-no-migration"
     
     # 提取并归一化各指标
     delays = [record["strategies"][representative_strategy]["avg_delay"] for record in results]
@@ -586,4 +586,5 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
 

@@ -43,17 +43,13 @@ from experiments.td3_strategy_suite.suite_cli import (
     resolve_strategy_keys,
     suite_path as build_suite_path,
 )
+from experiments.td3_strategy_suite.parameter_presets import default_data_size_configs
 
 DEFAULT_EPISODES = 500
 DEFAULT_SEED = 42
 
-# 🎯 基于当前任务数据大小配置（0.0625-1.875 MB = 62.5-1875 KB）
-# 类型1: 62.5-250KB, 类型2: 187.5-625KB, 类型3: 500-1125KB, 类型4: 875-1875KB
-DEFAULT_DATA_SIZE_CONFIGS: List[Tuple[int, int, str]] = [
-    (100, 300, "Light (100-300KB)"),       # 主要类型1任务
-    (300, 700, "Standard (300-700KB)"),    # 主要类型2-3任务（当前配置）
-    (700, 1500, "Heavy (700-1500KB)"),     # 主要类型3-4任务
-]  # 优化: 5配置→3配置
+# 🎯 基于当前任务数据大小配置动态生成（默认划分三档）
+DEFAULT_DATA_SIZE_CONFIGS: List[Tuple[int, int, str]] = default_data_size_configs()
 
 
 def parse_data_sizes(value: str) -> List[Tuple[int, int, str]]:

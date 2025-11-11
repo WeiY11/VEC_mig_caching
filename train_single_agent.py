@@ -280,9 +280,16 @@ def get_timestamped_filename(base_name: str, extension: str = ".json") -> str:
 class SingleAgentTrainingEnvironment:
     """单智能体训练环境基类"""
     
-    def __init__(self, algorithm: str, override_scenario: Optional[Dict[str, Any]] = None, 
-                 use_enhanced_cache: bool = False, disable_migration: bool = False,
-                 enforce_offload_mode: Optional[str] = None, fixed_offload_policy: Optional[str] = None):
+    def __init__(
+        self,
+        algorithm: str,
+        override_scenario: Optional[Dict[str, Any]] = None,
+        use_enhanced_cache: bool = False,
+        disable_migration: bool = False,
+        enforce_offload_mode: Optional[str] = None,
+        fixed_offload_policy: Optional[str] = None,
+        joint_controller: bool = False,
+    ):
         self.input_algorithm = algorithm
         normalized_algorithm = algorithm.upper().replace('-', '_')
         alias_map = {
@@ -301,6 +308,10 @@ class SingleAgentTrainingEnvironment:
         # 应用外部覆盖
         central_env_value = os.environ.get('CENTRAL_RESOURCE', '')
         self.central_resource_enabled = central_env_value.strip() in {'1', 'true', 'True'}
+        self.joint_controller = bool(joint_controller)
+        if self.joint_controller and not self.central_resource_enabled:
+            os.environ['CENTRAL_RESOURCE'] = '1'
+            self.central_resource_enabled = True
 
         if override_scenario:
             scenario_config.update(override_scenario)
@@ -2077,11 +2088,13 @@ class SingleAgentTrainingEnvironment:
             return 0  # 安全回退值
 
 
-def train_single_algorithm(algorithm: str, num_episodes: Optional[int] = None, eval_interval: Optional[int] = None, 
-                          save_interval: Optional[int] = None, enable_realtime_vis: bool = False, 
+def train_single_algorithm(algorithm: str, num_episodes: Optional[int] = None, eval_interval: Optional[int] = None,
+                          save_interval: Optional[int] = None, enable_realtime_vis: bool = False,
                           vis_port: int = 5000, silent_mode: bool = False, override_scenario: Optional[Dict[str, Any]] = None,
                           use_enhanced_cache: bool = False, disable_migration: bool = False,
-                          enforce_offload_mode: Optional[str] = None, fixed_offload_policy: Optional[str] = None) -> Dict:
+                          enforce_offload_mode: Optional[str] = None, fixed_offload_policy: Optional[str] = None,
+                          resume_from: Optional[str] = None, resume_lr_scale: Optional[float] = None,
+                          joint_controller: bool = False) -> Dict:
     """训练单个算法
     
     Args:
@@ -2092,6 +2105,8 @@ def train_single_algorithm(algorithm: str, num_episodes: Optional[int] = None, e
         enable_realtime_vis: 是否启用实时可视化
         vis_port: 可视化服务器端口
         silent_mode: 静默模式，跳过用户交互（用于批量实验）
+        resume_from: 已训练模型路径（.pth 或目录前缀），用于warm-start继续训练
+        resume_lr_scale: Warm-start后对学习率的缩放系数（默认0.5，None表示保持原值）
     """
     # 使用配置中的默认值
     if num_episodes is None:
@@ -2132,16 +2147,61 @@ def train_single_algorithm(algorithm: str, num_episodes: Optional[int] = None, e
         use_enhanced_cache=use_enhanced_cache,
         disable_migration=disable_migration,
         enforce_offload_mode=enforce_offload_mode,
-        fixed_offload_policy=fixed_offload_policy
+        fixed_offload_policy=fixed_offload_policy,
+        joint_controller=joint_controller,
     )
     canonical_algorithm = training_env.algorithm
     if canonical_algorithm != algorithm:
         print(f"⚙️  规范化算法标识: {canonical_algorithm}")
     algorithm = canonical_algorithm
 
+    resume_loaded = False
+    resume_target_path = None
+    if resume_from:
+        loader = getattr(training_env.agent_env, 'load_models', None)
+        if callable(loader):
+            try:
+                resume_target_path = loader(resume_from) or resume_from
+                resume_loaded = True
+                print(f"♻️  从已有模型加载成功: {resume_target_path}")
+            except Exception as exc:  # pragma: no cover - 容错路径
+                print(f"⚠️  加载已有模型失败 ({resume_from}): {exc}")
+        else:
+            print("⚠️  当前算法环境不支持加载已有模型，忽略 --resume-from")
+
+        if resume_loaded:
+            agent_obj = getattr(training_env.agent_env, 'agent', None)
+            warmup_adjusted = False
+            if agent_obj and hasattr(agent_obj, 'config') and hasattr(agent_obj.config, 'warmup_steps'):
+                original_warmup = int(getattr(agent_obj.config, 'warmup_steps', 0) or 0)
+                new_warmup = max(500, original_warmup // 4) if original_warmup else 500
+                if original_warmup and new_warmup < original_warmup:
+                    agent_obj.config.warmup_steps = new_warmup
+                    warmup_adjusted = True
+            if warmup_adjusted:
+                print(f"   • Warm-up 步数由 {original_warmup} 缩减至 {new_warmup}，加速经验缓冲重新填充")
+
+            lr_scale_value = resume_lr_scale if resume_lr_scale is not None else 0.5
+            lr_info = None
+            lr_callback = getattr(training_env.agent_env, 'apply_late_stage_lr', None)
+            if callable(lr_callback) and lr_scale_value:
+                try:
+                    lr_info = lr_callback(factor=lr_scale_value, min_lr=5e-5)
+                except Exception:
+                    lr_info = None
+            elif agent_obj and hasattr(agent_obj, 'apply_lr_schedule') and lr_scale_value:
+                try:
+                    lr_info = agent_obj.apply_lr_schedule(factor=lr_scale_value, min_lr=5e-5)
+                except Exception:
+                    lr_info = None
+            if lr_info:
+                print(f"   • 学习率缩放: actor_lr={lr_info.get('actor_lr', 0):.2e}, critic_lr={lr_info.get('critic_lr', 0):.2e}")
+            elif resume_lr_scale:
+                print("   • 学习率缩放请求未执行（当前算法环境未实现 apply_lr_schedule）")
+
     lr_decay_episode: Optional[int] = None
     late_stage_lr_factor = 0.5
-    lr_decay_applied = False
+    lr_decay_applied = resume_loaded  # warm-start 已经缩放过一次学习率
     if algorithm.upper() == 'TD3' and num_episodes >= 1200:
         lr_decay_episode = 1200
 
@@ -2820,6 +2880,10 @@ def main():
                         help='禁用中央资源分配架构，使用标准均匀资源分配')
     parser.add_argument('--silent-mode', action='store_true',
                         help='启用静默模式，跳过训练结束后的交互提示')
+    parser.add_argument('--resume-from', type=str,
+                        help='从已有模型 (.pth 或目录前缀) 继续训练，复用已学策略')
+    parser.add_argument('--resume-lr-scale', type=float, default=None,
+                        help='Warm-start 后的学习率缩放系数 (默认0.5，设为1可保留原值)')
     
     # 🆕 通信模型优化参数（3GPP标准增强）
     parser.add_argument('--comm-enhancements', action='store_true',
@@ -2948,7 +3012,9 @@ def main():
             use_enhanced_cache=not args.no_enhanced_cache,  # 🚀 默认启用增强缓存
             enforce_offload_mode=enforce_mode,
             fixed_offload_policy=getattr(args, 'fixed_offload_policy', None),  # 🎯 固定卸载策略
-            silent_mode=args.silent_mode
+            silent_mode=args.silent_mode,
+            resume_from=args.resume_from,
+            resume_lr_scale=args.resume_lr_scale
         )
     else:
         print("请指定 --algorithm 或使用 --compare 标志")

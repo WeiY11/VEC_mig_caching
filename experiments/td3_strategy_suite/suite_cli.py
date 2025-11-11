@@ -11,7 +11,11 @@ from datetime import datetime
 from pathlib import Path
 from typing import Iterable, List, Optional, Sequence
 
-from experiments.td3_strategy_suite.strategy_runner import STRATEGY_KEYS
+from experiments.td3_strategy_suite.strategy_runner import (
+    STRATEGY_GROUPS,
+    STRATEGY_KEYS,
+    strategy_group,
+)
 
 
 @dataclass(frozen=True)
@@ -25,6 +29,7 @@ class CommonArgs:
     silent: bool
     strategies: Optional[List[str]]
     central_resource: bool = False  # 🎯 中央资源分配架构
+    strategy_groups: Optional[List[str]] = None
 
 
 def _add_boolean_toggle(
@@ -111,6 +116,13 @@ def add_common_experiment_args(
                 "Defaults to all strategies defined in STRATEGY_PRESETS."
             ),
         )
+    parser.add_argument(
+        "--strategy-groups",
+        type=str,
+        help=(
+            "Comma separated strategy group names (e.g. baseline,layered,joint) or 'all'."
+        ),
+    )
     
     # 🎯 中央资源分配架构参数
     parser.add_argument(
@@ -139,6 +151,34 @@ def parse_strategy_selection(value: Optional[str]) -> Optional[List[str]]:
 
     requested_set = set(requested)
     ordered = [strategy for strategy in STRATEGY_KEYS if strategy in requested_set]
+    return ordered or None
+
+
+def parse_strategy_group_selection(value: Optional[str]) -> Optional[List[str]]:
+    """
+    Convert a comma separated string into an ordered list of strategy groups.
+    """
+
+    if not value:
+        return None
+
+    lowered = value.strip().lower()
+    if lowered in {"all", ""}:
+        return None
+
+    requested = [item.strip().lower() for item in value.split(",") if item.strip()]
+    canonical = {group.lower(): group for group in STRATEGY_GROUPS}
+    unknown = [item for item in requested if item not in canonical]
+    if unknown:
+        raise ValueError(
+            f"Unknown strategy groups: {', '.join(sorted(set(unknown)))}. "
+            f"Available: {', '.join(STRATEGY_GROUPS)}"
+        )
+
+    ordered: List[str] = []
+    for group in STRATEGY_GROUPS:
+        if group.lower() in requested:
+            ordered.append(group)
     return ordered or None
 
 
@@ -171,8 +211,17 @@ def resolve_common_args(
     strategies: Optional[List[str]] = None
     if allow_strategies:
         strategies = parse_strategy_selection(getattr(args, "strategies", None))
+    strategy_groups = parse_strategy_group_selection(getattr(args, "strategy_groups", None))
+    if strategy_groups:
+        base_keys = strategies if strategies is not None else list(STRATEGY_KEYS)
+        filtered = [key for key in base_keys if strategy_group(key) in strategy_groups]
+        if not filtered:
+            raise ValueError(
+                f"No strategies remain after applying group filter(s): {', '.join(strategy_groups)}"
+            )
+        strategies = filtered
     
-    # 🎯 中央资源分配架构
+    # ?? 
     central_resource = getattr(args, "central_resource", False)
 
     return CommonArgs(
@@ -183,6 +232,7 @@ def resolve_common_args(
         silent=silent,
         strategies=strategies,
         central_resource=central_resource,
+        strategy_groups=strategy_groups,
     )
 
 

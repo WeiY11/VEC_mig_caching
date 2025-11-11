@@ -22,13 +22,30 @@ from config import config  # noqa: E402
 from train_single_agent import _apply_global_seed_from_env, train_single_algorithm  # noqa: E402
 from experiments.td3_strategy_suite.run_strategy_training import (  # noqa: E402
     STRATEGY_PRESETS,
+    STRATEGY_ORDER,
     _run_heuristic_strategy,
 )
 from utils.unified_reward_calculator import UnifiedRewardCalculator  # noqa: E402
 # 缓存系统已禁用
 # from experiments.td3_strategy_suite.strategy_model_cache import get_global_cache  # noqa: E402
 
-STRATEGY_KEYS: List[str] = list(STRATEGY_PRESETS.keys())
+STRATEGY_KEYS: List[str] = list(STRATEGY_ORDER)
+for extra_key in STRATEGY_PRESETS.keys():
+    if extra_key not in STRATEGY_KEYS:
+        STRATEGY_KEYS.append(extra_key)
+
+
+def strategy_group(strategy_key: str) -> str:
+    preset = STRATEGY_PRESETS[strategy_key]
+    return str(preset.get("group", "baseline"))
+
+
+def strategies_for_group(group_name: str) -> List[str]:
+    target = group_name.strip().lower()
+    return [key for key in STRATEGY_KEYS if strategy_group(key).lower() == target]
+
+
+STRATEGY_GROUPS: List[str] = sorted({strategy_group(key) for key in STRATEGY_PRESETS})
 
 # ========== 初始化统一奖励计算器 ==========
 # 使用统一奖励计算器确保与训练时的奖励函数一致
@@ -110,6 +127,7 @@ def enrich_with_normalized_costs(results: Dict[str, Dict[str, float]]) -> Dict[s
         enriched[key] = dict(metrics)
         enriched[key]["normalized_cost"] = normalized[key]
         enriched[key]["strategy_label"] = strategy_label(key)
+        enriched[key]["strategy_group"] = strategy_group(key)
     return enriched
 
 
@@ -162,11 +180,7 @@ def _run_strategy_suite_internal(
 ) -> Dict[str, Dict[str, float]]:
     keys = list(strategies) if strategies is not None else STRATEGY_KEYS
     results: Dict[str, Dict[str, float]] = {}
-    
-    # ========== 缓存系统已禁用 ==========
-    # 注释原因：用户选择不使用缓存系统
-    # cache = get_global_cache()
-    
+
     for key in keys:
         preset = STRATEGY_PRESETS[key]
         preset_override = preset.get("override_scenario")
@@ -179,42 +193,17 @@ def _run_strategy_suite_internal(
         if merged_override:
             merged_override.setdefault("override_topology", True)
 
-        # ========== 缓存检查已禁用 ==========
-        # cached_data = cache.get_cached_model(key, episodes, seed, merged_override)
-        # 
-        # if cached_data is not None:
-        #     # 使用缓存的训练结果
-        #     cached_metrics = cached_data["metrics"]
-        #     episode_metrics = cached_metrics.get("episode_metrics", {})
-        #     
-        #     avg_delay = tail_mean(episode_metrics.get("avg_delay", []))
-        #     avg_energy = tail_mean(episode_metrics.get("total_energy", []))
-        #     completion_rate = tail_mean(episode_metrics.get("task_completion_rate", []))
-        #     raw_cost = compute_cost(avg_delay, avg_energy)
-        #
-        #     results[key] = {
-        #         "avg_delay": avg_delay,
-        #         "avg_energy": avg_energy,
-        #         "completion_rate": completion_rate,
-        #         "raw_cost": raw_cost,
-        #         "episodes": episodes,
-        #         "seed": seed,
-        #         "from_cache": True,  # 标记为缓存数据
-        #     }
-        #     if include_episode_metrics:
-        #         results[key]["episode_metrics"] = episode_metrics
-        #     
-        #     continue  # 跳过训练
-        
-        # ========== 每次都执行训练（缓存已禁用）==========
+        env_options = dict(preset.get("env_options") or {})
+        preset_central = bool(preset.get("central_resource", False))
+        effective_central = bool(central_resource or preset_central)
+
         os.environ["RANDOM_SEED"] = str(seed)
         _apply_global_seed_from_env()
-        
-        # 🎯 设置中央资源分配模式的环境变量
-        if central_resource:
+
+        if effective_central:
             os.environ['CENTRAL_RESOURCE'] = '1'
         else:
-            os.environ.pop('CENTRAL_RESOURCE', None)  # 清除环境变量
+            os.environ.pop('CENTRAL_RESOURCE', None)
 
         algorithm_kind = str(preset["algorithm"]).lower()
         if algorithm_kind == "heuristic":
@@ -223,6 +212,7 @@ def _run_strategy_suite_internal(
                 episodes=episodes,
                 seed=seed,
                 extra_override=merged_override,
+                env_options=env_options,
             )
         else:
             outcome = train_single_algorithm(
@@ -233,6 +223,7 @@ def _run_strategy_suite_internal(
                 use_enhanced_cache=preset["use_enhanced_cache"],
                 disable_migration=preset["disable_migration"],
                 enforce_offload_mode=preset["enforce_offload_mode"],
+                joint_controller=env_options.get("joint_controller", False),
             )
 
         episode_metrics = outcome.get("episode_metrics", {})
@@ -248,28 +239,12 @@ def _run_strategy_suite_internal(
             "raw_cost": raw_cost,
             "episodes": episodes,
             "seed": seed,
-            "from_cache": False,  # 标记为新训练数据（缓存已禁用）
+            "from_cache": False,
         }
         if include_episode_metrics:
             results[key]["episode_metrics"] = episode_metrics
-        
-        # ========== 保存到缓存已禁用 ==========
-        # try:
-        #     cache.save_model(
-        #         strategy_key=key,
-        #         episodes=episodes,
-        #         seed=seed,
-        #         overrides=merged_override,
-        #         outcome=outcome,
-        #         model_state=None,  # 暂不保存模型参数（仅保存metrics）
-        #     )
-        # except Exception as e:
-        #     # 缓存保存失败不影响训练结果
-        #     if not silent:
-        #         print(f"⚠️ 缓存保存失败: {e}")
-    
-    return results
 
+    return results
 
 def attach_normalized_costs(result_list: List[Dict[str, object]]) -> None:
     for item in result_list:
@@ -326,7 +301,13 @@ def evaluate_configs(
         )
         enriched = enrich_with_normalized_costs(raw)
 
-        target_completion = enriched.get("comprehensive-migration", {}).get("completion_rate", 0.0)
+        reference_key = "comprehensive-no-migration"
+        target_completion = enriched.get(reference_key, {}).get("completion_rate", 0.0)
+        if target_completion <= 0:
+            target_completion = max(
+                (metrics.get("completion_rate", 0.0) for metrics in enriched.values()),
+                default=0.0,
+            )
 
         for strat_key in keys:
             metrics = enriched[strat_key]
@@ -342,7 +323,13 @@ def evaluate_configs(
                 per_strategy_hook(strat_key, metrics, cfg_copy, episode_metrics or {})
             detail_path = config_dir / f"{strat_key}.json"
             metrics_to_save = dict(cfg_copy)
-            metrics_to_save.update({"strategy": strat_key, **metrics})
+            metrics_to_save.update(
+                {
+                    "strategy": strat_key,
+                    "strategy_group": strategy_group(strat_key),
+                    **metrics,
+                }
+            )
             detail_path.write_text(json.dumps(metrics_to_save, indent=2, ensure_ascii=False), encoding="utf-8")
             print(
                 f"  - {strategy_label(strat_key)}: "
@@ -357,6 +344,7 @@ def evaluate_configs(
             "strategies": enriched,
             "episodes": episodes,
             "seed": seed,
+            "strategy_groups": sorted({strategy_group(k) for k in keys}),
         }
         evaluated.append(cfg_entry)
 

@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+﻿#!/usr/bin/env python3
 """
 TD3策略对比实验 - 通用可视化工具
 ======================================
@@ -66,7 +66,7 @@ def add_line_charts(
     >>> charts = add_line_charts(
     ...     results=results,
     ...     suite_dir=Path("results/vehicle_comparison"),
-    ...     strategy_keys=["comprehensive-migration", "local-only"],
+    ...     strategy_keys=["comprehensive-no-migration", "local-only"],
     ...     x_label="Number of Vehicles",
     ...     file_prefix="vehicle"
     ... )
@@ -273,4 +273,5 @@ def print_chart_summary(
             elif "multiline" in chart:
                 desc = " (多指标综合对比)"
             print(f"  - {suite_dir / chart}{desc}")
+
 

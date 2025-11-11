@@ -3,23 +3,23 @@
 TD3 Strategy Training Runner
 --------------------------------
 
-銆愬姛鑳姐€?TD3娑堣瀺瀹為獙璁粌杩愯鍣?鐢ㄤ簬绯荤粺鍦拌瘎浼板悇鍐崇瓥妯″潡鐨勭嫭绔嬭础鐚€?閫氳繃绂佺敤/鍚敤涓嶅悓鐨勭郴缁熺粍浠讹紙鍗歌浇銆佽祫婧愬垎閰嶃€佽縼绉荤瓑锛夛紝閲忓寲姣忎釜妯″潡瀵规暣浣撴€ц兘鐨勫奖鍝嶃€?銆愯鏂囧搴斻€?- 娑堣瀺瀹為獙锛圓blation Study锛夛細璇勪及绯荤粺鍚勬ā鍧楃殑蹇呰鎬?- 瀵规瘮浠ヤ笅6绉嶇瓥鐣ラ厤缃細
-  1. local-only: 浠呮湰鍦版墽琛岋紙鏃犲嵏杞斤級
-  2. remote-only锛堝崟RSU杩滅▼鎵ц锛?  3. offloading-only: 鍗歌浇鍐崇瓥锛堟湰鍦皏s鍗昍SU锛?  4. resource-only: 澶氳妭鐐硅祫婧愬垎閰嶏紙鏃犺縼绉伙級
-  5. comprehensive-no-migration: 瀹屾暣绯荤粺锛堟棤杩佺Щ锛?  6. comprehensive-migration: 瀹屾暣TD3绯荤粺
+This module orchestrates the TD3 ablation / comparison suites. It activates or disables
+unloading, resource allocation, and migration so that each component's contribution can be
+quantified. The comparison now focuses on the six strategies requested for the paper:
+  1. local-only (pure on-board execution)
+  2. remote-only (single RSU enforced, no local execution)
+  3. offloading-only (layered policy where RSU decides the destination)
+  4. resource-only (multi-RSU resource allocation without local processing)
+  5. comprehensive-no-migration (full TD3 stack with migration disabled)
+  6. comprehensive-migration (your original TD3 pipeline; identical to running
+     `python train_single_agent.py --algorithm TD3 --episodes 2000 --num-vehicles 12`)
 
-銆愬伐浣滄祦绋嬨€?1. 姣忔璋冪敤杩愯鍗曚釜绛栫暐閰嶇疆
-2. 璁粌缁撴灉锛圝SON/鍥捐〃/鎶ュ憡锛夎澶嶅埗鍒扮瓥鐣ヤ笓灞炴枃浠跺す
-3. 缁存姢婊氬姩鏇存柊鐨剆ummary.json锛岃褰曟墍鏈夌瓥鐣ョ殑鎬ц兘鎸囨爣
-4. 鍚庣画鍙娇鐢╯ummary.json鐢熸垚绛栫暐瀵规瘮鍥捐〃
-
-銆愪娇鐢ㄧず渚嬨€?```bash
-# 杩愯鍗曚釜绛栫暐
+Example usage:
+```bash
 python experiments/td3_strategy_suite/run_strategy_training.py \\
     --strategy local-only --episodes 800 --seed 42
 
-# 鎵归噺杩愯鎵€鏈夌瓥鐣ワ紙闇€澶栭儴鑴氭湰锛?for strategy in local-only remote-only offloading-only resource-only \\
-                comprehensive-no-migration comprehensive-migration; do
+for strategy in local-only remote-only offloading-only resource-only comprehensive-no-migration comprehensive-migration; do
     python experiments/td3_strategy_suite/run_strategy_training.py \\
         --strategy $strategy --suite-id ablation_20231029 --episodes 800
 done
@@ -83,12 +83,12 @@ DEFAULT_SEED = 42        # 榛樿闅忔満绉嶅瓙锛堜繚璇佸疄楠屽彲�
 # 鎸夌収澶嶆潅搴﹂€掑鎺掑垪锛氫粠鍗曚竴鍔熻兘鍒板畬鏁寸郴缁?
 # 杩欎釜椤哄簭涔熺敤浜庣敓鎴愬姣斿浘琛ㄦ椂鐨勫睍绀洪『搴?
 STRATEGY_ORDER = [
-    "local-only",                    # 鍩哄噯1锛氱函鏈湴璁＄畻
-    "remote-only",                   # 鍩哄噯2锛氬己鍒惰繙绋嬪嵏杞?
-    "offloading-only",               # 妯″潡1锛氬嵏杞藉喅绛?
-    "resource-only",                 # 妯″潡2锛氳祫婧愬垎閰?
-    "comprehensive-no-migration",    # 妯″潡3锛氬畬鏁寸郴缁燂紙鏃犺縼绉伙級
-    "comprehensive-migration",       # 瀹屾暣绯荤粺锛氭墍鏈夋ā鍧楀惎鐢?
+    "local-only",
+    "remote-only",
+    "offloading-only",
+    "resource-only",
+    "comprehensive-no-migration",
+    "comprehensive-migration",
 ]
 
 
@@ -138,6 +138,8 @@ class ScenarioProfile:
     num_rsus: Optional[int]
     num_uavs: Optional[int]
     allow_local: Optional[bool]
+    extra_overrides: Optional[Dict[str, Any]] = None
+    env_options: Optional[Dict[str, Any]] = None
 
 
 SCENARIO_PROFILES: Dict[str, ScenarioProfile] = {
@@ -147,6 +149,34 @@ SCENARIO_PROFILES: Dict[str, ScenarioProfile] = {
         num_rsus=4,
         num_uavs=2,
         allow_local=True,
+    ),
+    "baseline_single_rsu": ScenarioProfile(
+        key="baseline_single_rsu",
+        label="Single RSU baseline (local allowed, no UAV)",
+        num_rsus=1,
+        num_uavs=0,
+        allow_local=True,
+    ),
+    "baseline_single_rsu_remote": ScenarioProfile(
+        key="baseline_single_rsu_remote",
+        label="Single RSU baseline (remote enforced, no UAV)",
+        num_rsus=1,
+        num_uavs=0,
+        allow_local=False,
+    ),
+    "layered_multi_edge": ScenarioProfile(
+        key="layered_multi_edge",
+        label="Layered multi-edge (4 RSU + 2 UAV, local allowed)",
+        num_rsus=4,
+        num_uavs=2,
+        allow_local=True,
+    ),
+    "layered_multi_edge_remote": ScenarioProfile(
+        key="layered_multi_edge_remote",
+        label="Layered multi-edge (remote enforced, no local execution)",
+        num_rsus=4,
+        num_uavs=2,
+        allow_local=False,
     ),
 }
 
@@ -158,13 +188,17 @@ def _scenario_override(profile_key: str) -> Optional[Dict[str, Any]]:
         profile.num_rsus is None
         and profile.num_uavs is None
         and profile.allow_local is None
+        and not profile.extra_overrides
     ):
         return None
-    return _build_override(
+    override = _build_override(
         num_rsus=profile.num_rsus,
         num_uavs=profile.num_uavs,
         allow_local=profile.allow_local,
     )
+    if profile.extra_overrides:
+        override.update(profile.extra_overrides)
+    return override
 
 
 def _make_preset(
@@ -177,9 +211,17 @@ def _make_preset(
     algorithm: str = "TD3",
     flags: Optional[Sequence[str]] = None,
     heuristic_name: Optional[str] = None,
+    group: str = "baseline",
+    central_resource: bool = False,
+    env_options: Optional[Dict[str, Any]] = None,
 ) -> StrategyPreset:
     """Factory keeping strategy definitions concise and consistent."""
     scenario = SCENARIO_PROFILES[scenario_key]
+    merged_env_options: Dict[str, Any] = {}
+    if scenario.env_options:
+        merged_env_options.update(scenario.env_options)
+    if env_options:
+        merged_env_options.update(env_options)
     preset: StrategyPreset = {
         "description": description,
         "algorithm": algorithm,
@@ -192,6 +234,9 @@ def _make_preset(
         "scenario_label": scenario.label,
         "flags": list(flags or ()),
         "heuristic_name": heuristic_name,
+        "group": group,
+        "central_resource": bool(central_resource),
+        "env_options": merged_env_options or None,
     }
     return preset
 
@@ -202,74 +247,80 @@ STRATEGY_PRESETS: "OrderedDict[str, StrategyPreset]" = OrderedDict(
             "local-only",
             _make_preset(
                 description="All tasks execute locally; edge nodes and migration are disabled.",
-                scenario_key="shared_edge",
+                scenario_key="baseline_single_rsu",
                 use_enhanced_cache=False,
                 disable_migration=True,
                 enforce_offload_mode="local_only",
                 algorithm="heuristic",
                 heuristic_name="local_only",
                 flags=("cache_off", "migration_off", "local_only"),
+                group="baseline",
             ),
         ),
         (
             "remote-only",
             _make_preset(
                 description="Edge-only baseline with a single RSU; tasks always offload.",
-                scenario_key="shared_edge",
+                scenario_key="baseline_single_rsu_remote",
                 use_enhanced_cache=False,
                 disable_migration=True,
                 enforce_offload_mode="remote_only",
                 algorithm="heuristic",
                 heuristic_name="rsu_only",
                 flags=("cache_off", "migration_off", "forced_remote"),
+                group="baseline",
             ),
         ),
         (
             "offloading-only",
             _make_preset(
-                description="Agent chooses between local execution and a single RSU; migration disabled.",
-                scenario_key="shared_edge",
+                description="Layered policy: RSU-driven offloading between local and single RSU.",
+                scenario_key="baseline_single_rsu",
                 use_enhanced_cache=False,
                 disable_migration=True,
                 enforce_offload_mode=None,
                 algorithm="heuristic",
                 heuristic_name="greedy",
                 flags=("cache_off", "migration_off", "single_edge"),
+                group="layered",
             ),
         ),
         (
             "resource-only",
             _make_preset(
                 description="Multi-edge load balancing with migration disabled and local execution blocked.",
-                scenario_key="shared_edge",
+                scenario_key="layered_multi_edge_remote",
                 use_enhanced_cache=True,
                 disable_migration=True,
                 enforce_offload_mode="remote_only",
                 algorithm="heuristic",
                 heuristic_name="remote_greedy",
                 flags=("cache_on", "migration_off", "multi_edge"),
+                group="layered",
             ),
         ),
         (
             "comprehensive-no-migration",
             _make_preset(
-                description="Full offloading and resource allocation but migration disabled.",
-                scenario_key="shared_edge",
+                description="Layered TD3: offloading + resource allocation, migration disabled.",
+                scenario_key="layered_multi_edge",
                 use_enhanced_cache=True,
                 disable_migration=True,
                 enforce_offload_mode=None,
                 flags=("cache_on", "migration_off", "multi_edge"),
+                group="layered",
             ),
         ),
         (
             "comprehensive-migration",
             _make_preset(
-                description="Complete TD3 strategy: offloading, resource allocation, and migration enabled.",
-                scenario_key="shared_edge",
+                description="Full TD3 stack with migration enabled (original training pipeline).",
+                scenario_key="layered_multi_edge",
                 use_enhanced_cache=True,
                 disable_migration=False,
                 enforce_offload_mode=None,
                 flags=("cache_on", "migration_on", "multi_edge"),
+                group="layered",
             ),
         ),
     ]
@@ -341,6 +392,7 @@ def _run_heuristic_strategy(
     episodes: int,
     seed: int,
     extra_override: Optional[Dict[str, Any]] = None,
+    env_options: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """Execute deterministic heuristic policies under the shared scenario."""
 
@@ -348,12 +400,14 @@ def _run_heuristic_strategy(
     override = dict(preset.get("override_scenario") or {})
     if extra_override:
         override.update(extra_override)
+    env_kwargs = dict(env_options or {})
     env = SingleAgentTrainingEnvironment(
         "TD3",
         override_scenario=override,
         use_enhanced_cache=preset["use_enhanced_cache"],
         disable_migration=preset["disable_migration"],
         enforce_offload_mode=preset["enforce_offload_mode"],
+        joint_controller=env_kwargs.get("joint_controller", False),
     )
     if hasattr(controller, "update_environment"):
         controller.update_environment(env)
@@ -640,10 +694,16 @@ def run_strategy(strategy: str, args: argparse.Namespace) -> None:
 
     # ========== 步骤4: 执行策略 ==========
     # TD3 继续调用训练接口，启发式策略走轻量评估
+    env_options = dict(preset.get("env_options") or {})
+    if preset.get("central_resource"):
+        os.environ['CENTRAL_RESOURCE'] = '1'
+    else:
+        os.environ.pop('CENTRAL_RESOURCE', None)
+
     algorithm_kind = str(preset["algorithm"]).lower()
     if algorithm_kind == "heuristic":
         silent = True
-        results = _run_heuristic_strategy(preset, episodes, seed)
+        results = _run_heuristic_strategy(preset, episodes, seed, env_options=env_options)
     else:
         silent = getattr(args, "silent", True)
         results = train_single_algorithm(
@@ -654,6 +714,7 @@ def run_strategy(strategy: str, args: argparse.Namespace) -> None:
             use_enhanced_cache=preset["use_enhanced_cache"],
             disable_migration=preset["disable_migration"],
             enforce_offload_mode=preset["enforce_offload_mode"],
+            joint_controller=env_options.get("joint_controller", False),
         )
 
     # ========== 姝ラ5: 鎻愬彇鎬ц兘鎸囨爣 ==========
@@ -801,3 +862,4 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+

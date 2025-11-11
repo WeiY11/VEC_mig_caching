@@ -74,14 +74,13 @@ from experiments.td3_strategy_suite.suite_cli import (
     resolve_strategy_keys,
     suite_path as build_suite_path,
 )
+from experiments.td3_strategy_suite.parameter_presets import default_vehicle_compute_levels
 from utils.unified_reward_calculator import UnifiedRewardCalculator
 
 DEFAULT_EPISODES = 500
 DEFAULT_SEED = 42
-# 🎯 基于当前资源池配置：总本地计算资源（12车辆共享）
-# 当前配置：6 GHz总本地计算
-# 对比：受限(4GHz) vs 当前(6GHz) vs 充裕(10GHz, 15GHz)
-DEFAULT_CPU_FREQS = [4.0, 6.0, 8.0, 10.0, 12.0]  # 总本地计算资源 (GHz)
+# 🎯 基于当前资源池配置（config.compute.total_vehicle_compute）动态生成
+DEFAULT_CPU_FREQS = default_vehicle_compute_levels()  # 总本地计算资源(GHz)
 
 _reward_calculator: UnifiedRewardCalculator | None = None
 
@@ -385,4 +384,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-
