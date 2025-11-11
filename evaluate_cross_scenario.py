@@ -9,22 +9,18 @@
 2. 任务到达率变化（低/中/高负载）
 3. 任务类型分布变化（紧急任务比例）
 4. 网络条件变化（信道质量）
-5. RSU/UAV数量变化
+5. RSU/UAV数量变化（新增1~5架UAV梯度场景）
 
-【使用方法】
-# 1. 评估单个模型在多场景下
-python evaluate_cross_scenario.py --model results/models/single_agent/td3/best_model_td3.pth --algorithm TD3
-
-# 2. 评估多个算法对比
-python evaluate_cross_scenario.py --compare --algorithms TD3 SAC DDPG --scenario-set all
-
-# 3. 自定义场景
-python evaluate_cross_scenario.py --model results/models/single_agent/td3/best_model_td3.pth \
-    --algorithm TD3 --num-vehicles 20 --arrival-rate 3.5 --eval-episodes 20
-
-# 4. 泛化能力分析（训练场景 vs 测试场景）
-python evaluate_cross_scenario.py --model results/models/single_agent/td3/best_model_td3.pth \
-    --algorithm TD3 --generalization-test
+ 🛠️ TD3使用示例（仅关注单智能体TD3时）：
+1) 车辆密度：
+  python evaluate_cross_scenario.py --algorithm TD3 --model results/models/single_agent/td3/best_model_td3.pth --scenario-set vehicle_density --eval-episodes 20
+2) 任务负载：
+  python evaluate_cross_scenario.py --algorithm TD3 --model results/models/single_agent/td3/best_model_td3.pth --scenario-set task_load --eval-episodes 20
+3) 任务类型分布：
+  python evaluate_cross_scenario.py --algorithm TD3 --model results/models/single_agent/td3/best_model_td3.pth --scenario-set task_distribution --eval-episodes 20
+4) 网络条件：
+  python evaluate_cross_scenario.py --algorithm TD3 --model results/models/single_agent/td3/best_model_td3.pth --scenario-set network_condition --eval-episodes 20
+  
 
 【输出】
 - 各场景下的性能指标（时延、能耗、完成率）
@@ -37,6 +33,7 @@ import os
 import sys
 import json
 import time
+import copy
 import argparse
 import numpy as np
 from datetime import datetime
@@ -53,6 +50,80 @@ from evaluation.system_simulator import CompleteSystemSimulator
 
 # ========== 场景定义 ==========
 
+_MISSING = object()
+
+SCENARIO_PARAM_ALIASES = {
+    'task_arrival_rate': 'task.arrival_rate',
+    'noise_power_dbm': 'communication.thermal_noise_density',
+}
+
+TOPOLOGY_KEYS = {'num_vehicles', 'num_rsus', 'num_uavs'}
+
+
+def _resolve_config_target(path: str) -> Tuple[Any, str]:
+    """返回(path)所在对象与属性名"""
+    parts = path.split('.')
+    target = config
+    for part in parts[:-1]:
+        if not hasattr(target, part):
+            raise AttributeError(f"配置中不存在属性 '{part}' (路径: {path})")
+        target = getattr(target, part)
+    return target, parts[-1]
+
+
+def _snapshot_value(value: Any) -> Any:
+    """在需要时深拷贝值，便于恢复"""
+    if value is _MISSING:
+        return _MISSING
+    if isinstance(value, (dict, list)):
+        return copy.deepcopy(value)
+    return value
+
+
+def _set_config_value(path: str, value: Any) -> Dict[str, Any]:
+    """设置配置值并返回原值"""
+    target, attr = _resolve_config_target(path)
+    original = _snapshot_value(getattr(target, attr, _MISSING))
+    setattr(target, attr, value)
+    return {path: original}
+
+
+def _apply_emergency_ratio(ratio: float) -> Dict[str, Any]:
+    """根据紧急任务比例调整任务类型权重"""
+    overrides: Dict[str, Any] = {}
+    task_cfg = config.task
+    original_weights = copy.deepcopy(task_cfg.type_priority_weights)
+    overrides['task.type_priority_weights'] = original_weights
+    
+    ratio = float(np.clip(ratio, 0.05, 0.9))
+    other_keys = [k for k in original_weights.keys() if k != 1]
+    other_sum = sum(original_weights[k] for k in other_keys) or float(len(other_keys))
+    scaled = (1.0 - ratio) / other_sum
+    
+    updated_weights = original_weights.copy()
+    updated_weights[1] = ratio
+    for key in other_keys:
+        updated_weights[key] = original_weights[key] * scaled
+    
+    task_cfg.type_priority_weights = updated_weights
+    previous_ratio = getattr(task_cfg, 'emergency_task_ratio', _MISSING)
+    setattr(task_cfg, 'emergency_task_ratio', ratio)
+    overrides['task.emergency_task_ratio'] = previous_ratio
+    return overrides
+
+
+def restore_config_overrides(overrides: Dict[str, Any]) -> None:
+    """根据记录恢复配置"""
+    for path, original in overrides.items():
+        target, attr = _resolve_config_target(path)
+        if original is _MISSING:
+            if hasattr(target, attr):
+                delattr(target, attr)
+        else:
+            value = copy.deepcopy(original) if isinstance(original, (dict, list)) else original
+            setattr(target, attr, value)
+
+
 class ScenarioConfig:
     """场景配置类"""
     
@@ -61,18 +132,28 @@ class ScenarioConfig:
         self.description = description
         self.params = params
     
-    def apply_to_config(self):
-        """应用场景参数到全局配置"""
+    def apply_to_config(self) -> Dict[str, Any]:
+        """应用场景参数到全局配置，并返回恢复记录"""
+        overrides: Dict[str, Any] = {}
         for key, value in self.params.items():
-            if '.' in key:
-                # 处理嵌套属性，如 'rl.reward_weight_delay'
-                parts = key.split('.')
-                obj = config
-                for part in parts[:-1]:
-                    obj = getattr(obj, part)
-                setattr(obj, parts[-1], value)
-            else:
-                setattr(config, key, value)
+            normalized_key = SCENARIO_PARAM_ALIASES.get(key, key)
+            
+            if key == 'emergency_task_ratio':
+                overrides.update(_apply_emergency_ratio(value))
+                continue
+            
+            if normalized_key in TOPOLOGY_KEYS:
+                overrides.update(_set_config_value(normalized_key, value))
+                network_path = f"network.{normalized_key}"
+                overrides.update(_set_config_value(network_path, value))
+                continue
+            
+            overrides.update(_set_config_value(normalized_key, value))
+            
+            if key == 'noise_power_dbm':
+                overrides.update(_set_config_value('communication.noise_power_dbm', value))
+        
+        return overrides
 
 
 # 预定义场景集
@@ -186,12 +267,69 @@ SCENARIO_SETS = {
             params={'emergency_task_ratio': 0.05}
         ),
     ],
+    
+    # ========== 6. UAV数量梯度（1~5架） ==========
+    "uav_scale": [
+        ScenarioConfig(
+            name="uav_1",
+            description="仅部署1架UAV（极限场景）",
+            params={'num_uavs': 1}
+        ),
+        ScenarioConfig(
+            name="uav_2",
+            description="部署2架UAV（默认配置）",
+            params={'num_uavs': 2}
+        ),
+        ScenarioConfig(
+            name="uav_3",
+            description="部署3架UAV（增强空中覆盖）",
+            params={'num_uavs': 3}
+        ),
+        ScenarioConfig(
+            name="uav_4",
+            description="部署4架UAV（高空协同）",
+            params={'num_uavs': 4}
+        ),
+        ScenarioConfig(
+            name="uav_5",
+            description="部署5架UAV（极限高空支持）",
+            params={'num_uavs': 5}
+        ),
+    ],
 }
 
 
 # ========== Agent加载器 ==========
 
-def load_trained_agent(algorithm: str, model_path: str, state_dim: int, action_dim: int):
+def get_state_action_signature(algorithm: str) -> Tuple[int, int]:
+    """基于算法创建环境以获取状态/动作维度"""
+    algorithm = algorithm.upper()
+    if algorithm == 'TD3':
+        from single_agent.td3 import TD3Environment
+        env = TD3Environment()
+    elif algorithm == 'SAC':
+        from single_agent.sac import SACEnvironment
+        env = SACEnvironment()
+    elif algorithm == 'DDPG':
+        from single_agent.ddpg import DDPGEnvironment
+        env = DDPGEnvironment()
+    elif algorithm == 'PPO':
+        from single_agent.ppo import PPOEnvironment
+        env = PPOEnvironment()
+    elif algorithm == 'DQN':
+        from single_agent.dqn import DQNEnvironment
+        env = DQNEnvironment()
+    else:
+        raise ValueError(f"不支持的算法: {algorithm}")
+    
+    state_dim, action_dim = env.state_dim, env.action_dim
+    del env
+    return state_dim, action_dim
+
+
+def load_trained_agent(algorithm: str, model_path: str,
+                       state_dim: Optional[int] = None,
+                       action_dim: Optional[int] = None):
     """
     加载训练好的agent
     
@@ -205,38 +343,49 @@ def load_trained_agent(algorithm: str, model_path: str, state_dim: int, action_d
     - agent: 加载好的智能体
     """
     algorithm = algorithm.upper()
+    if state_dim is None or action_dim is None:
+        state_dim, action_dim = get_state_action_signature(algorithm)
     
-    # 导入对应的agent类
     if algorithm == 'TD3':
-        from single_agent.td3 import TD3Agent
-        agent = TD3Agent(state_dim, action_dim, config.rl)
+        from single_agent.td3 import TD3Agent, TD3Config
+        agent = TD3Agent(state_dim, action_dim, TD3Config())
     elif algorithm == 'SAC':
-        from single_agent.sac import SACAgent
-        agent = SACAgent(state_dim, action_dim, config.rl)
+        from single_agent.sac import SACAgent, SACConfig
+        agent = SACAgent(state_dim, action_dim, SACConfig())
     elif algorithm == 'DDPG':
-        from single_agent.ddpg import DDPGAgent
-        agent = DDPGAgent(state_dim, action_dim, config.rl)
+        from single_agent.ddpg import DDPGAgent, DDPGConfig
+        agent = DDPGAgent(state_dim, action_dim, DDPGConfig())
     elif algorithm == 'PPO':
-        from single_agent.ppo import PPOAgent
-        agent = PPOAgent(state_dim, action_dim, config.rl)
+        from single_agent.ppo import PPOAgent, PPOConfig
+        agent = PPOAgent(state_dim, action_dim, PPOConfig())
     elif algorithm == 'DQN':
-        from single_agent.dqn import DQNAgent
-        # DQN的action_dim是离散动作数量
-        agent = DQNAgent(state_dim, action_dim, config.rl)
+        from single_agent.dqn import DQNAgent, DQNConfig
+        agent = DQNAgent(state_dim, action_dim, DQNConfig())
     else:
         raise ValueError(f"不支持的算法: {algorithm}")
     
-    # 加载模型参数
-    if os.path.exists(model_path):
-        # 移除文件后缀（如_td3.pth），因为load_model会自动添加
-        base_path = model_path.replace(f'_{algorithm.lower()}.pth', '')
-        agent.load_model(base_path)
-        print(f"✓ 成功加载模型: {model_path}")
-    else:
-        raise FileNotFoundError(f"模型文件不存在: {model_path}")
+    if not os.path.exists(model_path):
+        candidate = f"{model_path}_{algorithm.lower()}.pth"
+        if os.path.exists(candidate):
+            model_path = candidate
+        else:
+            raise FileNotFoundError(f"模型文件不存在: {model_path}")
     
-    # 设置为评估模式（不探索）
-    agent.actor.eval()
+    suffix = f"_{algorithm.lower()}.pth"
+    if model_path.lower().endswith(suffix):
+        base_path = model_path[:-len(suffix)]
+    else:
+        base_path = model_path
+    
+    agent.load_model(base_path)
+    print(f"✓ 成功加载模型: {model_path}")
+    
+    if hasattr(agent, 'actor') and hasattr(agent.actor, 'eval'):
+        agent.actor.eval()
+    if hasattr(agent, 'critic') and hasattr(agent.critic, 'eval'):
+        agent.critic.eval()
+    if hasattr(agent, 'q_network') and hasattr(agent.q_network, 'eval'):
+        agent.q_network.eval()
     
     return agent
 
@@ -261,107 +410,103 @@ def evaluate_agent_in_scenario(agent, algorithm: str, scenario: ScenarioConfig,
     print(f"   参数: {scenario.params}")
     print(f"{'='*60}\n")
     
-    # 应用场景配置
-    original_config = {}
-    for key, value in scenario.params.items():
-        if '.' not in key and hasattr(config, key):
-            original_config[key] = getattr(config, key)
-    
-    scenario.apply_to_config()
-    
-    # 创建环境（使用对应算法的Environment类）
-    if algorithm.upper() == 'TD3':
-        from single_agent.td3 import TD3Environment
-        env = TD3Environment()
-    elif algorithm.upper() == 'SAC':
-        from single_agent.sac import SACEnvironment
-        env = SACEnvironment()
-    elif algorithm.upper() == 'DDPG':
-        from single_agent.ddpg import DDPGEnvironment
-        env = DDPGEnvironment()
-    elif algorithm.upper() == 'PPO':
-        from single_agent.ppo import PPOEnvironment
-        env = PPOEnvironment()
-    elif algorithm.upper() == 'DQN':
-        from single_agent.dqn import DQNEnvironment
-        env = DQNEnvironment()
-    else:
-        raise ValueError(f"不支持的算法: {algorithm}")
-    
-    # 收集评估指标
-    episode_rewards = []
-    episode_delays = []
-    episode_energies = []
-    episode_completion_rates = []
-    episode_cache_hit_rates = []
-    episode_migration_success_rates = []
-    
-    for episode in range(num_episodes):
-        state = env.reset()
-        episode_reward = 0.0
-        done = False
-        step_count = 0
-        
-        while not done and step_count < config.experiment.max_steps_per_episode:
-            # Agent选择动作（不添加噪声）
-            with torch.no_grad():
-                if algorithm.upper() in ['TD3', 'SAC', 'DDPG']:
-                    state_tensor = torch.FloatTensor(state).unsqueeze(0).to(agent.device)
-                    action = agent.actor(state_tensor).cpu().numpy()[0]
-                elif algorithm.upper() == 'PPO':
-                    state_tensor = torch.FloatTensor(state).unsqueeze(0).to(agent.device)
-                    action, _, _ = agent.actor(state_tensor)
-                    action = action.cpu().numpy()[0]
-                elif algorithm.upper() == 'DQN':
-                    state_tensor = torch.FloatTensor(state).unsqueeze(0).to(agent.device)
-                    q_values = agent.q_network(state_tensor)
-                    action = q_values.argmax(dim=1).item()
-            
-            # 执行动作
-            next_state, reward, done, info = env.step(action)
-            
-            episode_reward += reward
-            state = next_state
-            step_count += 1
-        
-        # 收集episode统计
-        episode_rewards.append(episode_reward)
-        
-        # 从仿真器获取性能指标
-        metrics = env.simulator.get_metrics()
-        episode_delays.append(metrics.get('avg_task_delay', 0.0))
-        episode_energies.append(metrics.get('total_energy_consumption', 0.0))
-        episode_completion_rates.append(metrics.get('task_completion_rate', 0.0))
-        episode_cache_hit_rates.append(metrics.get('cache_hit_rate', 0.0))
-        episode_migration_success_rates.append(metrics.get('migration_success_rate', 0.0))
-        
-        if (episode + 1) % 5 == 0:
-            print(f"  Episode {episode+1}/{num_episodes}: "
-                  f"Reward={episode_reward:.2f}, "
-                  f"Delay={episode_delays[-1]:.3f}s, "
-                  f"Completion={episode_completion_rates[-1]:.2%}")
-    
-    # 计算平均结果
-    results = {
-        'scenario_name': scenario.name,
-        'scenario_description': scenario.description,
-        'scenario_params': scenario.params,
-        'num_episodes': num_episodes,
-        'avg_reward': float(np.mean(episode_rewards)),
-        'std_reward': float(np.std(episode_rewards)),
-        'avg_delay': float(np.mean(episode_delays)),
-        'std_delay': float(np.std(episode_delays)),
-        'avg_energy': float(np.mean(episode_energies)),
-        'std_energy': float(np.std(episode_energies)),
-        'avg_completion_rate': float(np.mean(episode_completion_rates)),
-        'std_completion_rate': float(np.std(episode_completion_rates)),
-        'avg_cache_hit_rate': float(np.mean(episode_cache_hit_rates)),
-        'avg_migration_success_rate': float(np.mean(episode_migration_success_rates)),
+    overrides = scenario.apply_to_config()
+    env_kwargs = {
+        'num_vehicles': scenario.params.get('num_vehicles', getattr(config, 'num_vehicles', 12)),
+        'num_rsus': scenario.params.get('num_rsus', getattr(config, 'num_rsus', 4)),
+        'num_uavs': scenario.params.get('num_uavs', getattr(config, 'num_uavs', 2)),
     }
+    env_kwargs = {k: int(v) for k, v in env_kwargs.items() if v is not None}
     
-    # 恢复原始配置
-    for key, value in original_config.items():
-        setattr(config, key, value)
+    try:
+        if algorithm.upper() == 'TD3':
+            from single_agent.td3 import TD3Environment
+            env = TD3Environment(**env_kwargs)
+        elif algorithm.upper() == 'SAC':
+            from single_agent.sac import SACEnvironment
+            env = SACEnvironment(**env_kwargs)
+        elif algorithm.upper() == 'DDPG':
+            from single_agent.ddpg import DDPGEnvironment
+            env = DDPGEnvironment(**env_kwargs)
+        elif algorithm.upper() == 'PPO':
+            from single_agent.ppo import PPOEnvironment
+            env = PPOEnvironment(**env_kwargs)
+        elif algorithm.upper() == 'DQN':
+            from single_agent.dqn import DQNEnvironment
+            env = DQNEnvironment(**env_kwargs)
+        else:
+            raise ValueError(f"不支持的算法: {algorithm}")
+        
+        episode_rewards = []
+        episode_delays = []
+        episode_energies = []
+        episode_completion_rates = []
+        episode_cache_hit_rates = []
+        episode_migration_success_rates = []
+        device = getattr(agent, 'device', None)
+        
+        for episode in range(num_episodes):
+            state = env.reset()
+            episode_reward = 0.0
+            done = False
+            step_count = 0
+            
+            while not done and step_count < config.experiment.max_steps_per_episode:
+                with torch.no_grad():
+                    state_tensor = torch.FloatTensor(state).unsqueeze(0)
+                    if device is not None:
+                        state_tensor = state_tensor.to(device)
+                    
+                    if algorithm.upper() in ['TD3', 'SAC', 'DDPG']:
+                        action = agent.actor(state_tensor).cpu().numpy()[0]
+                    elif algorithm.upper() == 'PPO':
+                        action, _, _ = agent.actor(state_tensor)
+                        action = action.cpu().numpy()[0]
+                    elif algorithm.upper() == 'DQN':
+                        q_values = agent.q_network(state_tensor)
+                        action = q_values.argmax(dim=1).item()
+                    else:
+                        raise ValueError(f"不支持的算法: {algorithm}")
+                
+                next_state, reward, done, info = env.step(action)
+                state = next_state
+                episode_reward += reward
+                step_count += 1
+            
+            episode_rewards.append(episode_reward)
+            metrics = env.simulator.get_metrics()
+            episode_delays.append(metrics.get('avg_task_delay', 0.0))
+            episode_energies.append(metrics.get('total_energy_consumption', 0.0))
+            episode_completion_rates.append(metrics.get('task_completion_rate', 0.0))
+            episode_cache_hit_rates.append(metrics.get('cache_hit_rate', 0.0))
+            episode_migration_success_rates.append(metrics.get('migration_success_rate', 0.0))
+            
+            if (episode + 1) % 5 == 0:
+                print(
+                    f"  Episode {episode+1}/{num_episodes}: "
+                    f"Reward={episode_reward:.2f}, "
+                    f"Delay={episode_delays[-1]:.3f}s, "
+                    f"Completion={episode_completion_rates[-1]:.2%}"
+                )
+        
+        results = {
+            'scenario_name': scenario.name,
+            'scenario_description': scenario.description,
+            'scenario_params': scenario.params,
+            'num_episodes': num_episodes,
+            'avg_reward': float(np.mean(episode_rewards)),
+            'std_reward': float(np.std(episode_rewards)),
+            'avg_delay': float(np.mean(episode_delays)),
+            'std_delay': float(np.std(episode_delays)),
+            'avg_energy': float(np.mean(episode_energies)),
+            'std_energy': float(np.std(episode_energies)),
+            'avg_completion_rate': float(np.mean(episode_completion_rates)),
+            'std_completion_rate': float(np.std(episode_completion_rates)),
+            'avg_cache_hit_rate': float(np.mean(episode_cache_hit_rates)),
+            'avg_migration_success_rate': float(np.mean(episode_migration_success_rates)),
+        }
+    finally:
+        restore_config_overrides(overrides)
     
     print(f"\n✓ 场景评估完成:")
     print(f"  平均奖励: {results['avg_reward']:.2f} ± {results['std_reward']:.2f}")
@@ -449,13 +594,7 @@ def compare_algorithms_cross_scenario(algorithms: List[str], scenario_set: str,
             print(f"⚠️ 未找到{algorithm}的最佳模型，跳过")
             continue
         
-        # 加载agent
-        # 需要获取state_dim和action_dim（这里使用默认值）
-        from single_agent.td3 import TD3Environment
-        temp_env = TD3Environment()
-        state_dim = temp_env.state_dim
-        action_dim = temp_env.action_dim
-        
+        state_dim, action_dim = get_state_action_signature(algorithm)
         try:
             agent = load_trained_agent(algorithm, model_path, state_dim, action_dim)
         except Exception as e:
@@ -630,12 +769,7 @@ def main():
             print("❌ 错误: 泛化测试需要指定--model参数")
             return
         
-        # 加载agent
-        from single_agent.td3 import TD3Environment
-        temp_env = TD3Environment()
-        state_dim = temp_env.state_dim
-        action_dim = temp_env.action_dim
-        
+        state_dim, action_dim = get_state_action_signature(args.algorithm)
         agent = load_trained_agent(args.algorithm, args.model, state_dim, action_dim)
         
         # 运行泛化测试
@@ -654,12 +788,7 @@ def main():
             print("❌ 错误: 需要指定--model参数")
             return
         
-        # 加载agent
-        from single_agent.td3 import TD3Environment
-        temp_env = TD3Environment()
-        state_dim = temp_env.state_dim
-        action_dim = temp_env.action_dim
-        
+        state_dim, action_dim = get_state_action_signature(args.algorithm)
         agent = load_trained_agent(args.algorithm, args.model, state_dim, action_dim)
         
         # 自定义场景
