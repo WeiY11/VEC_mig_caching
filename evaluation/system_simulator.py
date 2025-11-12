@@ -206,7 +206,7 @@ class CompleteSystemSimulator:
         
         # 网络拓扑参数：车辆、RSU、UAV数量
         # Network topology parameters: number of vehicles, RSUs, and UAVs
-        if self.sys_config is not None and not self.config.get('override_topology', False):
+        if self.sys_config is not None and not self.override_topology:
             self.num_vehicles = getattr(self.sys_config.network, 'num_vehicles', 12)
             self.num_rsus = getattr(self.sys_config.network, 'num_rsus', 6)
             self.num_uavs = getattr(self.sys_config.network, 'num_uavs', 2)
@@ -282,7 +282,7 @@ class CompleteSystemSimulator:
         # 🔧 读取资源配置参数（CPU频率、带宽等）
         # Read resource configuration parameters (CPU frequency, bandwidth, etc.)
         # ⚠️ 注意：资源现在从中央资源池分配，这里保留兼容性
-        if self.sys_config is not None and not self.override_topology:
+        if self.sys_config is not None and not self.config.get('override_topology', False):
             self.rsu_cpu_freq = getattr(self.sys_config.compute, 'rsu_default_freq', 15e9)
             self.uav_cpu_freq = getattr(self.sys_config.compute, 'uav_default_freq', 4e9)
             self.vehicle_cpu_freq = getattr(self.sys_config.compute, 'vehicle_default_freq', 0.167e9)
@@ -292,6 +292,10 @@ class CompleteSystemSimulator:
             self.uav_cpu_freq = self.config.get('uav_cpu_freq', 4e9)  # Hz
             self.vehicle_cpu_freq = self.config.get('vehicle_cpu_freq', 0.167e9)  # Hz
             self.bandwidth = self.config.get('bandwidth', 50e6)  # Hz
+
+        # 基准频率用于计算capacity scale，保持统一参照（默认 15/4GHz）
+        self.rsu_reference_freq = float(self.config.get('rsu_reference_freq', 15e9))
+        self.uav_reference_freq = float(self.config.get('uav_reference_freq', 4e9))
         
         # 初始化组件（车辆、RSU、UAV等）
         # Initialize components (vehicles, RSUs, UAVs, etc.)
@@ -1446,13 +1450,14 @@ class CompleteSystemSimulator:
     def _get_node_capacity_scale(self, node: Dict, node_type: str) -> float:
         """根据中央资源分配结果计算节点处理能力缩放因子。"""
         if node_type == 'RSU':
-            baseline = float(getattr(self, 'rsu_cpu_freq', 15e9))
+            reference = float(getattr(self, 'rsu_reference_freq', 15e9))
+            baseline = float(getattr(self, 'rsu_cpu_freq', reference))
         else:
-            baseline = float(getattr(self, 'uav_cpu_freq', 4e9))
+            reference = float(getattr(self, 'uav_reference_freq', 4e9))
+            baseline = float(getattr(self, 'uav_cpu_freq', reference))
         allocated = float(node.get('allocated_compute', baseline))
-        if baseline <= 0:
-            return 1.0
-        scale = allocated / baseline
+        denominator = max(reference, 1e-9)
+        scale = allocated / denominator
         return float(np.clip(scale, 0.2, 3.0))
 
     def _is_node_admissible(self, node: Dict, node_type: str) -> bool:
@@ -2190,7 +2195,8 @@ class CompleteSystemSimulator:
 
         requirement = float(task.get('computation_requirement', 1500.0)) * 1e6  # cycles
         processing_time = requirement / max(cpu_freq, 1e6)
-        processing_time = float(np.clip(processing_time, 0.03, 0.8))
+        # Allow genuine compute latency to surface by avoiding artificial clipping
+        processing_time = max(float(processing_time), 1e-6)
         energy = float(power) * processing_time
         vehicle['energy_consumed'] = vehicle.get('energy_consumed', 0.0) + energy
         return processing_time, energy

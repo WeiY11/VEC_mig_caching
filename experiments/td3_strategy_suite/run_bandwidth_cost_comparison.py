@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+﻿#!/usr/bin/env python3
 """
 只跑带宽敏感性：
 python experiments/td3_strategy_suite/run_bandwidth_cost_comparison.py --experiment-types bandwidth
@@ -21,7 +21,7 @@ import json
 import sys
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, List, Sequence
+from typing import Dict, List, Sequence, cast
 
 import matplotlib.pyplot as plt
 
@@ -59,6 +59,15 @@ GROUP_STYLE = {
     "layered": {"color": "#ff7f0e", "linestyle": "-"},
 }
 GROUP_STYLE["default"] = {"color": "#7f7f7f", "linestyle": ":"}
+
+STRATEGY_COLORS = {
+    "local-only": "#1f77b4",
+    "remote-only": "#ff7f0e",
+    "offloading-only": "#2ca02c",
+    "resource-only": "#d62728",
+    "comprehensive-no-migration": "#9467bd",
+    "comprehensive-migration": "#8c564b",
+}
 
 
 def _parse_float_sequence(value: str, default_values: Sequence[float]) -> List[float]:
@@ -136,7 +145,7 @@ def metrics_enrichment_hook(
 
     if avg_throughput <= 0:
         avg_task_size_mb = 0.35  # 约 350KB
-        num_tasks_per_step = config.get("assumed_tasks_per_step", 12)
+        num_tasks_per_step = int(cast(float, config.get("assumed_tasks_per_step", 12)))
         avg_delay = metrics.get("avg_delay", 0.0)
         if avg_delay > 0:
             avg_throughput = (avg_task_size_mb * num_tasks_per_step) / avg_delay
@@ -226,27 +235,33 @@ def plot_results(
     title_prefix: str,
     x_label: str,
 ) -> List[Path]:
-    labels = [record["label"] for record in results]
+    labels = [str(record["label"]) for record in results]
     x_positions = range(len(results))
     saved_paths: List[Path] = []
 
     def make_chart(metric: str, ylabel: str, suffix: str) -> None:
         plt.figure(figsize=(10, 6))
         for strat_key in strategy_keys:
-            values = [record["strategies"][strat_key][metric] for record in results]
+            values: List[float] = []
+            for r in results:
+                strategies_dict = cast(Dict[str, object], r["strategies"])
+                strat_dict = cast(Dict[str, object], strategies_dict[strat_key])
+                values.append(float(cast(float, strat_dict[metric])))
             group_name = strategy_group(strat_key)
             style = GROUP_STYLE.get(group_name, GROUP_STYLE["default"])
             label = f"{strategy_label(strat_key)} ({group_name})"
+            color = STRATEGY_COLORS.get(strat_key, style.get("color"))
+            linestyle = style.get("linestyle", "-")
             plt.plot(
                 x_positions,
                 values,
                 marker="o",
                 linewidth=2,
                 label=label,
-                color=style.get("color"),
-                linestyle=style.get("linestyle", "-"),
+                color=color,
+                linestyle=linestyle,
             )
-        plt.xticks(x_positions, labels)
+        plt.xticks(x_positions, cast(List[str], labels))
         plt.xlabel(x_label)
         plt.ylabel(ylabel)
         plt.title(f"Impact of {title_prefix} on {ylabel}")
@@ -295,7 +310,9 @@ def print_cost_table(
             axis_str = str(axis_value)
         print(f"{axis_str:<{header_width}}", end="")
         for strat_key in strategy_keys:
-            raw_cost = record["strategies"][strat_key]["raw_cost"]
+            strategies_dict = cast(Dict[str, object], record["strategies"])
+            strat_dict = cast(Dict[str, object], strategies_dict[strat_key])
+            raw_cost = float(cast(float, strat_dict["raw_cost"]))
             print(f"{raw_cost:<22.4f}", end="")
         print()
 

@@ -66,7 +66,7 @@ import random
 if sys.platform == 'win32':
     try:
         if hasattr(sys.stdout, 'reconfigure'):
-            sys.stdout.reconfigure(encoding='utf-8', errors='replace')
+            sys.stdout.reconfigure(encoding='utf-8', errors='replace')  # type: ignore[attr-defined]
         elif hasattr(sys.stdout, 'buffer'):
             import io
             sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace', line_buffering=True)
@@ -74,7 +74,7 @@ if sys.platform == 'win32':
         pass
     try:
         if hasattr(sys.stderr, 'reconfigure'):
-            sys.stderr.reconfigure(encoding='utf-8', errors='replace')
+            sys.stderr.reconfigure(encoding='utf-8', errors='replace')  # type: ignore[attr-defined]
         elif hasattr(sys.stderr, 'buffer'):
             import io
             sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', errors='replace', line_buffering=True)
@@ -162,7 +162,7 @@ def _apply_global_seed_from_env():
     print(f"🔐 全局随机种子已设置为 {seed}")
 
 
-def _maybe_apply_reward_smoothing_from_env():
+def _maybe_apply_reward_smoothing_from_env() -> None:
     """Optionally enable reward smoothing via environment variables.
 
     RL_SMOOTH_DELAY, RL_SMOOTH_ENERGY, RL_SMOOTH_ALPHA can be provided.
@@ -186,8 +186,10 @@ def _build_scenario_config() -> Dict[str, Any]:
     task_arrival_rate = getattr(getattr(config, "task", None), "arrival_rate", 1.8)
     if os.environ.get('TASK_ARRIVAL_RATE'):
         try:
-            task_arrival_rate = float(os.environ.get('TASK_ARRIVAL_RATE'))
-            print(f"🔧 从环境变量覆盖任务到达率: {task_arrival_rate} tasks/s")
+            arrival_rate_str = os.environ.get('TASK_ARRIVAL_RATE')
+            if arrival_rate_str is not None:
+                task_arrival_rate = float(arrival_rate_str)
+                print(f"🔧 从环境变量覆盖任务到达率: {task_arrival_rate} tasks/s")
         except ValueError:
             print(f"⚠️  环境变量TASK_ARRIVAL_RATE无效，使用默认值")
 
@@ -354,59 +356,81 @@ class SingleAgentTrainingEnvironment:
                     print(f"🔧 [Override] 动态设置带宽: {float(bw_value)/1e6:.1f} MHz")
             
             # 🎯 总资源池参数（优先级高于单节点频率）
-            if 'total_vehicle_compute' in override_scenario:
-                total_compute = float(override_scenario['total_vehicle_compute'])
-                config.compute.total_vehicle_compute = total_compute
-                # 自动计算每车平均频率
-                avg_freq = total_compute / config.num_vehicles
-                config.compute.vehicle_initial_freq = avg_freq
-                config.compute.vehicle_default_freq = avg_freq
-                config.compute.vehicle_cpu_freq = avg_freq
-                config.compute.vehicle_cpu_freq_range = (avg_freq, avg_freq)
-                print(f"🔧 [Override] 动态设置总本地计算: {total_compute/1e9:.1f} GHz (每车{avg_freq/1e9:.3f} GHz)")
-            
-            if 'total_rsu_compute' in override_scenario:
-                total_compute = float(override_scenario['total_rsu_compute'])
-                config.compute.total_rsu_compute = total_compute
-                avg_freq = total_compute / config.num_rsus
-                config.compute.rsu_initial_freq = avg_freq
-                config.compute.rsu_default_freq = avg_freq
-                config.compute.rsu_cpu_freq = avg_freq
-                config.compute.rsu_cpu_freq_range = (avg_freq, avg_freq)
-                print(f"🔧 [Override] 动态设置总RSU计算: {total_compute/1e9:.1f} GHz (每RSU{avg_freq/1e9:.1f} GHz)")
-            
-            if 'total_uav_compute' in override_scenario:
-                total_compute = float(override_scenario['total_uav_compute'])
-                config.compute.total_uav_compute = total_compute
-                avg_freq = total_compute / config.num_uavs
-                config.compute.uav_initial_freq = avg_freq
-                config.compute.uav_default_freq = avg_freq
-                config.compute.uav_cpu_freq = avg_freq
-                config.compute.uav_cpu_freq_range = (avg_freq, avg_freq)
-                print(f"🔧 [Override] 动态设置总UAV计算: {total_compute/1e9:.1f} GHz (每UAV{avg_freq/1e9:.1f} GHz)")
-            
-            # CPU频率参数（单节点频率，兼容旧代码）
-            if 'vehicle_cpu_freq' in override_scenario and 'total_vehicle_compute' not in override_scenario:
-                freq_value = override_scenario['vehicle_cpu_freq']
-                # 更新范围和默认值
-                config.compute.vehicle_cpu_freq_range = (freq_value, freq_value)
-                config.compute.vehicle_cpu_freq = freq_value
-                print(f"🔧 [Override] 动态设置车辆CPU频率: {float(freq_value)/1e9:.2f} GHz")
-            
-            if 'rsu_cpu_freq' in override_scenario and 'total_rsu_compute' not in override_scenario:
-                freq_value = override_scenario['rsu_cpu_freq']
-                config.compute.rsu_cpu_freq_range = (freq_value, freq_value)
-                config.compute.rsu_cpu_freq = freq_value
-                print(f"🔧 [Override] 动态设置RSU CPU频率: {float(freq_value)/1e9:.2f} GHz")
-            
-            if 'uav_cpu_freq' in override_scenario and 'total_uav_compute' not in override_scenario:
-                freq_value = override_scenario['uav_cpu_freq']
-                config.compute.uav_cpu_freq_range = (freq_value, freq_value)
-                config.compute.uav_cpu_freq = freq_value
-                print(f"🔧 [Override] 动态设置UAV CPU频率: {float(freq_value)/1e9:.2f} GHz")
+        if override_scenario is not None and 'total_vehicle_compute' in override_scenario:
+            total_compute = float(override_scenario['total_vehicle_compute'])
+            config.compute.total_vehicle_compute = total_compute
+            # 自动计算每车平均频率
+            avg_freq = total_compute / config.num_vehicles
+            config.compute.vehicle_initial_freq = avg_freq
+            config.compute.vehicle_default_freq = avg_freq
+            config.compute.vehicle_cpu_freq = avg_freq
+            config.compute.vehicle_cpu_freq_range = (avg_freq, avg_freq)
+            # 同步 scenario_config，仿真器 override_topology=True 时直接读取这些值
+            scenario_config['total_vehicle_compute'] = total_compute
+            scenario_config['vehicle_cpu_freq'] = avg_freq
+            scenario_config['vehicle_default_freq'] = avg_freq
+            scenario_config['vehicle_initial_freq'] = avg_freq
+            print(f"🔧 [Override] 动态设置总本地计算: {total_compute/1e9:.1f} GHz (每车{avg_freq/1e9:.3f} GHz)")
+
+        if override_scenario is not None and 'total_rsu_compute' in override_scenario:
+            total_compute = float(override_scenario['total_rsu_compute'])
+            config.compute.total_rsu_compute = total_compute
+            avg_freq = total_compute / config.num_rsus
+            config.compute.rsu_initial_freq = avg_freq
+            config.compute.rsu_default_freq = avg_freq
+            config.compute.rsu_cpu_freq = avg_freq
+            config.compute.rsu_cpu_freq_range = (avg_freq, avg_freq)
+            scenario_config['total_rsu_compute'] = total_compute
+            scenario_config['rsu_cpu_freq'] = avg_freq
+            scenario_config['rsu_default_freq'] = avg_freq
+            scenario_config['rsu_initial_freq'] = avg_freq
+            print(f"🔧 [Override] 动态设置总RSU计算: {total_compute/1e9:.1f} GHz (每RSU{avg_freq/1e9:.1f} GHz)")
+
+        if override_scenario is not None and 'total_uav_compute' in override_scenario:
+            total_compute = float(override_scenario['total_uav_compute'])
+            config.compute.total_uav_compute = total_compute
+            avg_freq = total_compute / config.num_uavs
+            config.compute.uav_initial_freq = avg_freq
+            config.compute.uav_default_freq = avg_freq
+            config.compute.uav_cpu_freq = avg_freq
+            config.compute.uav_cpu_freq_range = (avg_freq, avg_freq)
+            scenario_config['total_uav_compute'] = total_compute
+            scenario_config['uav_cpu_freq'] = avg_freq
+            scenario_config['uav_default_freq'] = avg_freq
+            scenario_config['uav_initial_freq'] = avg_freq
+            print(f"🔧 [Override] 动态设置总UAV计算: {total_compute/1e9:.1f} GHz (每UAV{avg_freq/1e9:.1f} GHz)")
+
+        # CPU频率参数（单节点频率，兼容旧代码）
+        if override_scenario is not None and 'vehicle_cpu_freq' in override_scenario and 'total_vehicle_compute' not in override_scenario:
+            freq_value = override_scenario['vehicle_cpu_freq']
+            # 更新范围和默认值
+            config.compute.vehicle_cpu_freq_range = (freq_value, freq_value)
+            config.compute.vehicle_cpu_freq = freq_value
+            scenario_config['vehicle_cpu_freq'] = freq_value
+            scenario_config.setdefault('vehicle_default_freq', freq_value)
+            scenario_config.setdefault('vehicle_initial_freq', freq_value)
+            print(f"🔧 [Override] 动态设置车辆CPU频率: {float(freq_value)/1e9:.2f} GHz")
+
+        if override_scenario is not None and 'rsu_cpu_freq' in override_scenario and 'total_rsu_compute' not in override_scenario:
+            freq_value = override_scenario['rsu_cpu_freq']
+            config.compute.rsu_cpu_freq_range = (freq_value, freq_value)
+            config.compute.rsu_cpu_freq = freq_value
+            scenario_config['rsu_cpu_freq'] = freq_value
+            scenario_config.setdefault('rsu_default_freq', freq_value)
+            scenario_config.setdefault('rsu_initial_freq', freq_value)
+            print(f"🔧 [Override] 动态设置RSU CPU频率: {float(freq_value)/1e9:.2f} GHz")
+
+        if override_scenario is not None and 'uav_cpu_freq' in override_scenario and 'total_uav_compute' not in override_scenario:
+            freq_value = override_scenario['uav_cpu_freq']
+            config.compute.uav_cpu_freq_range = (freq_value, freq_value)
+            config.compute.uav_cpu_freq = freq_value
+            scenario_config['uav_cpu_freq'] = freq_value
+            scenario_config.setdefault('uav_default_freq', freq_value)
+            scenario_config.setdefault('uav_initial_freq', freq_value)
+            print(f"🔧 [Override] 动态设置UAV CPU频率: {float(freq_value)/1e9:.2f} GHz")
             
             # 任务数据大小参数
-            if 'task_data_size_min_kb' in override_scenario or 'task_data_size_max_kb' in override_scenario:
+            if override_scenario is not None and ('task_data_size_min_kb' in override_scenario or 'task_data_size_max_kb' in override_scenario):
                 min_kb = override_scenario.get('task_data_size_min_kb')
                 max_kb = override_scenario.get('task_data_size_max_kb')
                 if min_kb is not None and max_kb is not None:
@@ -418,52 +442,52 @@ class SingleAgentTrainingEnvironment:
                     print(f"🔧 [Override] 动态设置任务数据大小: {min_kb}-{max_kb} KB")
             
             # 任务复杂度参数
-            if 'task_complexity_multiplier' in override_scenario:
+            if override_scenario is not None and 'task_complexity_multiplier' in override_scenario:
                 multiplier = override_scenario['task_complexity_multiplier']
                 # 通过环境变量传递给TaskConfig
                 os.environ['TASK_COMPLEXITY_MULTIPLIER'] = str(multiplier)
                 print(f"🔧 [Override] 动态设置任务复杂度倍数: {multiplier}x")
             
-            if 'task_compute_density' in override_scenario:
+            if override_scenario is not None and 'task_compute_density' in override_scenario:
                 density = override_scenario['task_compute_density']
-                config.task.task_compute_density = float(density)
+                config.task.task_compute_density = int(float(density))  # type: ignore
                 print(f"🔧 [Override] 动态设置任务计算密度: {density} cycles/bit")
             
             # 缓存容量参数
-            if 'cache_capacity' in override_scenario:
+            if override_scenario is not None and 'cache_capacity' in override_scenario:
                 capacity_mb = override_scenario['cache_capacity']
                 # 通过环境变量传递（影响所有节点）
                 os.environ['CACHE_CAPACITY_MB'] = str(capacity_mb)
                 print(f"🔧 [Override] 动态设置缓存容量: {capacity_mb} MB")
 
             # 服务能力参数
-            if 'rsu_base_service' in override_scenario:
+            if override_scenario is not None and 'rsu_base_service' in override_scenario:
                 value = int(override_scenario['rsu_base_service'])
                 config.service.rsu_base_service = value
                 print(f"🔧 [Override] 动态设置RSU基础服务能力: {value}")
-            if 'rsu_max_service' in override_scenario:
+            if override_scenario is not None and 'rsu_max_service' in override_scenario:
                 value = int(override_scenario['rsu_max_service'])
                 config.service.rsu_max_service = value
                 print(f"🔧 [Override] 动态设置RSU最大服务能力: {value}")
-            if 'rsu_work_capacity' in override_scenario:
+            if override_scenario is not None and 'rsu_work_capacity' in override_scenario:
                 value = float(override_scenario['rsu_work_capacity'])
                 config.service.rsu_work_capacity = value
                 print(f"🔧 [Override] 动态设置RSU工作容量: {value}")
-            if 'uav_base_service' in override_scenario:
+            if override_scenario is not None and 'uav_base_service' in override_scenario:
                 value = int(override_scenario['uav_base_service'])
                 config.service.uav_base_service = value
                 print(f"🔧 [Override] 动态设置UAV基础服务能力: {value}")
-            if 'uav_max_service' in override_scenario:
+            if override_scenario is not None and 'uav_max_service' in override_scenario:
                 value = int(override_scenario['uav_max_service'])
                 config.service.uav_max_service = value
                 print(f"🔧 [Override] 动态设置UAV最大服务能力: {value}")
-            if 'uav_work_capacity' in override_scenario:
+            if override_scenario is not None and 'uav_work_capacity' in override_scenario:
                 value = float(override_scenario['uav_work_capacity'])
                 config.service.uav_work_capacity = value
                 print(f"🔧 [Override] 动态设置UAV工作容量: {value}")
             
             # 任务到达率参数
-            if 'task_arrival_rate' in override_scenario:
+            if override_scenario is not None and 'task_arrival_rate' in override_scenario:
                 arrival_rate = override_scenario['task_arrival_rate']
                 config.task.arrival_rate = float(arrival_rate)
                 # 同时设置环境变量以兼容旧代码
@@ -471,7 +495,7 @@ class SingleAgentTrainingEnvironment:
                 print(f"🔧 [Override] 动态设置任务到达率: {arrival_rate} tasks/s")
             
             # 单一任务数据大小参数（用于混合负载实验）
-            if 'task_data_size_kb' in override_scenario:
+            if override_scenario is not None and 'task_data_size_kb' in override_scenario:
                 size_kb = override_scenario['task_data_size_kb']
                 size_bytes = float(size_kb) * 1024
                 config.task.data_size_range = (size_bytes, size_bytes)
@@ -479,18 +503,18 @@ class SingleAgentTrainingEnvironment:
                 print(f"🔧 [Override] 动态设置任务数据大小: {size_kb} KB")
             
             # 通信参数（噪声功率、路径损耗）
-            if 'noise_power_dbm' in override_scenario:
+            if override_scenario is not None and 'noise_power_dbm' in override_scenario:
                 noise_power = override_scenario['noise_power_dbm']
-                config.communication.noise_power_dbm = float(noise_power)
+                setattr(config.communication, 'noise_power_dbm', float(noise_power))  # type: ignore
                 print(f"🔧 [Override] 动态设置噪声功率: {noise_power} dBm")
             
-            if 'path_loss_exponent' in override_scenario:
+            if override_scenario is not None and 'path_loss_exponent' in override_scenario:
                 exponent = override_scenario['path_loss_exponent']
-                config.communication.path_loss_exponent = float(exponent)
+                setattr(config.communication, 'path_loss_exponent', float(exponent))  # type: ignore
                 print(f"🔧 [Override] 动态设置路径损耗指数: {exponent}")
             
             # 资源异构性参数
-            if 'heterogeneity_level' in override_scenario:
+            if override_scenario is not None and 'heterogeneity_level' in override_scenario:
                 hetero_level = override_scenario['heterogeneity_level']
                 os.environ['HETEROGENEITY_LEVEL'] = str(hetero_level)
                 print(f"🔧 [Override] 动态设置资源异构性级别: {hetero_level}")
@@ -564,14 +588,16 @@ class SingleAgentTrainingEnvironment:
         self.use_enhanced_cache = use_enhanced_cache and ENHANCED_CACHE_AVAILABLE
         env_disable_migration = os.environ.get("DISABLE_MIGRATION", "").strip() == "1"
         self.disable_migration = disable_migration or env_disable_migration
+        simulator: CompleteSystemSimulator
         if self.use_enhanced_cache:
             print("🚀 [Training] Using Enhanced Cache System (Default) with:")
             print("   - Hierarchical L1/L2 caching (3GB + 7GB)")
             print("   - Adaptive HeatBasedCacheStrategy")
             print("   - Inter-RSU collaboration")
-            self.simulator = EnhancedSystemSimulator(scenario_config)
+            simulator = EnhancedSystemSimulator(scenario_config)  # type: ignore[assignment]
         else:
-            self.simulator = CompleteSystemSimulator(scenario_config)
+            simulator = CompleteSystemSimulator(scenario_config)
+        self.simulator: CompleteSystemSimulator = simulator
         
         # 🤖 初始化自适应控制组件
         self.adaptive_cache_controller = AdaptiveCacheController()
@@ -1007,7 +1033,11 @@ class SingleAgentTrainingEnvironment:
         self._reset_reward_baseline(stats_snapshot)
         
         resource_state = self._collect_resource_state()
-        state = self.agent_env.get_state_vector(node_states, system_metrics, resource_state)
+        # 仅TD3及其变种支持资源状态参数
+        if isinstance(self.agent_env, (TD3Environment, TD3LatencyEnergyEnvironment, CAMTD3Environment)):
+            state = self.agent_env.get_state_vector(node_states, system_metrics, resource_state)  # type: ignore[call-arg]
+        else:
+            state = self.agent_env.get_state_vector(node_states, system_metrics)  # type: ignore[call-arg]
         
         return state
 
@@ -1095,7 +1125,10 @@ class SingleAgentTrainingEnvironment:
         system_metrics = self._calculate_system_metrics(step_stats)
         
         # 获取下一状态
-        next_state = self.agent_env.get_state_vector(node_states, system_metrics, resource_state)
+        if isinstance(self.agent_env, (TD3Environment, TD3LatencyEnergyEnvironment, CAMTD3Environment)):
+            next_state = self.agent_env.get_state_vector(node_states, system_metrics, resource_state)  # type: ignore[call-arg]
+        else:
+            next_state = self.agent_env.get_state_vector(node_states, system_metrics)  # type: ignore[call-arg]
         
         # 🔧 增强：计算包含子系统指标的奖励
         cache_metrics = self.adaptive_cache_controller.get_cache_metrics()
@@ -1296,15 +1329,15 @@ class SingleAgentTrainingEnvironment:
                 else:
                     theo_delay_val = None
 
-                mm1_predictions[node_key] = {
-                    'arrival_rate': arrival_rate,
-                    'service_rate': service_rate,
-                    'rho': rho_storable,
+                mm1_predictions[node_key] = {  # type: ignore[assignment]
+                    'arrival_rate': float(arrival_rate),
+                    'service_rate': float(service_rate),
+                    'rho': float(rho_storable) if rho_storable is not None else 0.0,
                     'stable': bool(stable),
-                    'theoretical_queue': theo_queue_val,
-                    'actual_queue': actual_queue,
-                    'theoretical_delay': theo_delay_val,
-                    'actual_delay': actual_delay_obs,
+                    'theoretical_queue': float(theo_queue_val) if theo_queue_val is not None else 0.0,
+                    'actual_queue': float(actual_queue),
+                    'theoretical_delay': float(theo_delay_val) if theo_delay_val is not None else 0.0,
+                    'actual_delay': float(actual_delay_obs),
                 }
 
                 if theo_queue_val is not None:
@@ -1371,10 +1404,10 @@ class SingleAgentTrainingEnvironment:
         def _normalize_vector(key: str, length: int = 4, clip: bool = True) -> List[float]:
             raw = step_stats.get(key)
             if isinstance(raw, (np.ndarray, list, tuple)):
-                values = raw
+                values = [float(v) for v in raw]  # 明确转换为float列表
             else:
                 values = []
-            return normalize_feature_vector(values, length, clip=clip)
+            return normalize_feature_vector(values, length, clip=clip)  # type: ignore[arg-type]
 
         queue_distribution = _normalize_vector('task_type_queue_distribution')
         active_distribution = _normalize_vector('task_type_active_distribution')
@@ -1652,12 +1685,17 @@ class SingleAgentTrainingEnvironment:
                 training_info = self.agent_env.train_step(state, safe_action, reward, next_state, done)
             elif self.algorithm in ["DDPG", "TD3", "TD3_LATENCY_ENERGY", "SAC"]:
                 # 连续动作算法首选numpy数组，但接受Union类型
-                safe_action = action if isinstance(action, np.ndarray) else np.array([action], dtype=np.float32)
-                training_info = self.agent_env.train_step(state, safe_action, reward, next_state, done)
+                if isinstance(action, np.ndarray):
+                    safe_action = action
+                elif isinstance(action, (int, float)):
+                    safe_action = np.array([float(action)], dtype=np.float32)
+                else:
+                    safe_action = np.array(action, dtype=np.float32)
+                training_info = self.agent_env.train_step(state, safe_action, reward, next_state, done)  # type: ignore[arg-type]
             elif self.algorithm == "PPO":
                 # PPO使用特殊的episode级别训练，train_step为占位符
                 # 保持原action类型即可，因为PPO的train_step不做实际处理
-                training_info = self.agent_env.train_step(state, action, reward, next_state, done)
+                training_info = self.agent_env.train_step(state, action, reward, next_state, done)  # type: ignore[arg-type]
             else:
                 # 其他算法的默认处理
                 training_info = {'message': f'Unknown algorithm: {self.algorithm}'}
@@ -1755,17 +1793,24 @@ class SingleAgentTrainingEnvironment:
         
         # 检查是否应该更新（每N个episode或buffer快满时）
         ppo_config = self.agent_env.config
+        update_freq = getattr(ppo_config, 'update_frequency', 1)
+        buffer_size = getattr(ppo_config, 'buffer_size', 1000)
+        agent_obj = getattr(self.agent_env, 'agent', None)
+        if agent_obj is not None:
+            agent_buffer = getattr(agent_obj, 'buffer', None)  # type: ignore[union-attr]
+            buffer_current_size = agent_buffer.size if agent_buffer is not None else 0
+        else:
+            buffer_current_size = 0
         should_update = (
-            episode % ppo_config.update_frequency == 0 or  # 每N个episode
-            self.agent_env.agent.buffer.size >= ppo_config.buffer_size * 0.9  # buffer接近满
+            episode % max(1, update_freq) == 0 or  # 每N个episode
+            buffer_current_size >= buffer_size * 0.9  # buffer接近满
         )
         
         # 进行更新
-        # PPOEnvironment.update只接受last_value参数，force_update在agent内部处理
-        if should_update:
-            training_info = self.agent_env.agent.update(last_value_float, force_update=True)
-        else:
-            training_info = self.agent_env.agent.update(last_value_float, force_update=False)
+        # PPOEnvironment.update只接受last_value参数
+        training_info: Dict = {}
+        if agent_obj is not None:
+            training_info = agent_obj.update(last_value_float)  # type: ignore[call-arg]
         
         system_metrics = info.get('system_metrics', {})
         
@@ -1824,7 +1869,7 @@ class SingleAgentTrainingEnvironment:
                 rsu_raw = np.clip(rsu_raw, -5.0, 5.0)
                 rsu_exp = np.exp(rsu_raw - np.max(rsu_raw))
                 rsu_probs = rsu_exp / np.sum(rsu_exp)
-                sim_actions['rsu_selection_probs'] = [float(x) for x in rsu_probs]
+                sim_actions['rsu_selection_probs'] = rsu_probs.tolist()  # type: ignore[assignment]
             
             # UAV选择概率
             num_uavs = self.num_uavs
@@ -1837,7 +1882,7 @@ class SingleAgentTrainingEnvironment:
                 uav_raw = np.clip(uav_raw, -5.0, 5.0)
                 uav_exp = np.exp(uav_raw - np.max(uav_raw))
                 uav_probs = uav_exp / np.sum(uav_exp)
-                sim_actions['uav_selection_probs'] = [float(x) for x in uav_probs]
+                sim_actions['uav_selection_probs'] = uav_probs.tolist()  # type: ignore[assignment]
             
             # 🤖 =============== 新增联合缓存-迁移控制参数 ===============
             control_start = 3 + num_rsus + num_uavs
@@ -1883,7 +1928,7 @@ class SingleAgentTrainingEnvironment:
                 if allocations:
                     try:
                         self.simulator.apply_resource_allocation(allocations)
-                        sim_actions['central_resource_allocation'] = allocations
+                        sim_actions['central_resource_allocation'] = allocations  # type: ignore[assignment]
                     except Exception as exc:
                         print(f"⚠️ 中央资源分配应用失败: {exc}")
             
@@ -1915,7 +1960,7 @@ class SingleAgentTrainingEnvironment:
                             gate = getattr(enc, 'last_gate', None)
                 if gate is not None:
                     try:
-                        sim_actions['dc_tradeoff_gate'] = float(_np.clip(gate, 0.0, 1.0))
+                        sim_actions['dc_tradeoff_gate'] = float(_np.clip(gate, 0.0, 1.0))  # type: ignore[assignment]
                     except Exception:
                         pass
             except Exception:
@@ -2172,6 +2217,8 @@ def train_single_algorithm(algorithm: str, num_episodes: Optional[int] = None, e
         if resume_loaded:
             agent_obj = getattr(training_env.agent_env, 'agent', None)
             warmup_adjusted = False
+            original_warmup = 0
+            new_warmup = 0
             if agent_obj and hasattr(agent_obj, 'config') and hasattr(agent_obj.config, 'warmup_steps'):
                 original_warmup = int(getattr(agent_obj.config, 'warmup_steps', 0) or 0)
                 new_warmup = max(500, original_warmup // 4) if original_warmup else 500
@@ -2194,7 +2241,7 @@ def train_single_algorithm(algorithm: str, num_episodes: Optional[int] = None, e
                     lr_info = agent_obj.apply_lr_schedule(factor=lr_scale_value, min_lr=5e-5)
                 except Exception:
                     lr_info = None
-            if lr_info:
+            if lr_info and isinstance(lr_info, dict):
                 print(f"   • 学习率缩放: actor_lr={lr_info.get('actor_lr', 0):.2e}, critic_lr={lr_info.get('critic_lr', 0):.2e}")
             elif resume_lr_scale:
                 print("   • 学习率缩放请求未执行（当前算法环境未实现 apply_lr_schedule）")
@@ -2211,7 +2258,7 @@ def train_single_algorithm(algorithm: str, num_episodes: Optional[int] = None, e
         print(f"🌐 启动实时可视化服务器 (端口: {vis_port})")
         # 允许通过环境变量覆盖可视化展示名（用于两阶段标签）
         display_name = os.environ.get('ALGO_DISPLAY_NAME', algorithm)
-        visualizer = create_visualizer(
+        visualizer = create_visualizer(  # type: ignore[name-defined]
             algorithm=display_name,
             total_episodes=num_episodes,
             port=vis_port,
@@ -2322,10 +2369,10 @@ def train_single_algorithm(algorithm: str, num_episodes: Optional[int] = None, e
                 if hasattr(agent_obj, 'apply_lr_schedule'):
                     lr_info = agent_obj.apply_lr_schedule(factor=late_stage_lr_factor, min_lr=5e-5)
                     lr_decay_applied = True
-            if lr_info:
+            if lr_info and isinstance(lr_info, dict):
                 print(
                     f"🔧 第{episode}轮触发TD3学习率缩放 -> "
-                    f"actor_lr={lr_info['actor_lr']:.2e}, critic_lr={lr_info['critic_lr']:.2e}"
+                    f"actor_lr={lr_info.get('actor_lr', 0):.2e}, critic_lr={lr_info.get('critic_lr', 0):.2e}"
                 )
 
         # 定期保存模型

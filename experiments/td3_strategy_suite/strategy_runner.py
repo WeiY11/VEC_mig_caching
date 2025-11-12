@@ -120,12 +120,13 @@ def normalize_costs(cost_map: Dict[str, float]) -> Dict[str, float]:
     return {k: (v - min_cost) / span for k, v in cost_map.items()}
 
 
-def enrich_with_normalized_costs(results: Dict[str, Dict[str, float]]) -> Dict[str, Dict[str, float]]:
+def enrich_with_normalized_costs(results: Dict[str, Dict[str, float]]) -> Dict[str, Dict[str, object]]:
+    from typing import cast
     normalized = normalize_costs({k: v["raw_cost"] for k, v in results.items()})
-    enriched: Dict[str, Dict[str, float]] = {}
+    enriched: Dict[str, Dict[str, object]] = {}
     for key, metrics in results.items():
-        enriched[key] = dict(metrics)
-        enriched[key]["normalized_cost"] = normalized[key]
+        enriched[key] = cast(Dict[str, object], dict(metrics))
+        enriched[key]["normalized_cost"] = float(normalized[key])
         enriched[key]["strategy_label"] = strategy_label(key)
         enriched[key]["strategy_group"] = strategy_group(key)
     return enriched
@@ -157,7 +158,7 @@ def run_strategy_suite_with_details(
     silent: bool,
     strategies: Optional[Iterable[str]] = None,
     central_resource: bool = False,
-) -> Dict[str, Dict[str, object]]:
+) -> Dict[str, Dict[str, float]]:
     return _run_strategy_suite_internal(
         override_scenario=override_scenario,
         episodes=episodes,
@@ -248,7 +249,9 @@ def _run_strategy_suite_internal(
 
 def attach_normalized_costs(result_list: List[Dict[str, object]]) -> None:
     for item in result_list:
-        strategies = item.get("strategies", {})
+        strategies_obj = item.get("strategies", {})
+        from typing import cast
+        strategies = cast(Dict[str, Dict[str, float]], strategies_obj)
         costs = {k: v.get("raw_cost", 0.0) for k, v in strategies.items()}
         normalized = normalize_costs(costs)
         for key, value in normalized.items():
@@ -282,7 +285,9 @@ def evaluate_configs(
         cfg_copy = dict(cfg)
         cfg_key = str(cfg_copy.get("key") or f"config_{index}")
         label = str(cfg_copy.get("label", cfg_key))
-        overrides = dict(cfg_copy.get("overrides", {}))
+        from typing import cast
+        overrides_val = cfg_copy.get("overrides", {})
+        overrides = cast(Dict[str, object], overrides_val if isinstance(overrides_val, dict) else {})
         config_dir = suite_path / cfg_key
         config_dir.mkdir(parents=True, exist_ok=True)
 
@@ -299,28 +304,38 @@ def evaluate_configs(
             strategies=keys,
             central_resource=central_resource,
         )
-        enriched = enrich_with_normalized_costs(raw)
+        from typing import cast
+        enriched = enrich_with_normalized_costs(cast(Dict[str, Dict[str, float]], raw))
 
         reference_key = "comprehensive-no-migration"
-        target_completion = enriched.get(reference_key, {}).get("completion_rate", 0.0)
+        from typing import cast
+        ref_data = enriched.get(reference_key, {})
+        ref_completion_val = ref_data.get("completion_rate") if ref_data else None
+        target_completion = float(cast(float, ref_completion_val)) if ref_completion_val is not None else 0.0
         if target_completion <= 0:
-            target_completion = max(
-                (metrics.get("completion_rate", 0.0) for metrics in enriched.values()),
-                default=0.0,
-            )
+            completion_values = []
+            for metrics_obj in enriched.values():
+                metrics_dict = cast(Dict[str, object], metrics_obj)
+                cr_val = metrics_dict.get("completion_rate")
+                if cr_val is not None:
+                    completion_values.append(float(cast(float, cr_val)))
+            target_completion = max(completion_values, default=0.0)
 
         for strat_key in keys:
-            metrics = enriched[strat_key]
+            metrics = cast(Dict[str, object], enriched[strat_key])
             episode_metrics = metrics.pop("episode_metrics", None)
-            completion_rate = max(float(metrics.get("completion_rate", 0.0)), 1e-6)
+            cr_val = metrics.get("completion_rate")
+            completion_rate = max(float(cast(float, cr_val)) if cr_val is not None else 0.0, 1e-6)
             if target_completion > 0:
-                multiplier = max(1.0, target_completion / completion_rate)
+                multiplier = max(1.0, float(target_completion) / completion_rate)
             else:
                 multiplier = 1.0
             metrics["resource_multiplier_required"] = multiplier
 
             if per_strategy_hook:
-                per_strategy_hook(strat_key, metrics, cfg_copy, episode_metrics or {})
+                from typing import cast
+                ep_metrics = cast(Dict[str, List[float]], episode_metrics or {})
+                per_strategy_hook(strat_key, cast(Dict[str, float], metrics), cfg_copy, ep_metrics)
             detail_path = config_dir / f"{strat_key}.json"
             metrics_to_save = dict(cfg_copy)
             metrics_to_save.update(

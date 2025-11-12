@@ -1,4 +1,4 @@
-﻿#!/usr/bin/env python3
+#!/usr/bin/env python3
 """
 TD3 Strategy Training Runner
 --------------------------------
@@ -64,8 +64,9 @@ from experiments.fallback_baselines import (
 
 StrategyPreset = Dict[str, Any]  # 绛栫暐棰勮閰嶇疆绫诲瀷
 
-# ========== 鍒濆鍖栫粺涓€濂栧姳璁＄畻鍣?==========
-# 浣跨敤缁熶竴濂栧姳璁＄畻鍣ㄧ'淇濅笌璁粌鏃剁殑濂栧姳鍑芥暟涓€鑷?_reward_calculator: Optional[UnifiedRewardCalculator] = None
+# ========== 初始化统一奖励计算器 ==========
+# 使用统一奖励计算器确保与训练时的奖励函数一致
+_reward_calculator: Optional[UnifiedRewardCalculator] = None
 
 
 def _get_reward_calculator() -> UnifiedRewardCalculator:
@@ -247,7 +248,7 @@ STRATEGY_PRESETS: "OrderedDict[str, StrategyPreset]" = OrderedDict(
             "local-only",
             _make_preset(
                 description="All tasks execute locally; edge nodes and migration are disabled.",
-                scenario_key="baseline_single_rsu",
+                scenario_key="layered_multi_edge",
                 use_enhanced_cache=False,
                 disable_migration=True,
                 enforce_offload_mode="local_only",
@@ -260,8 +261,8 @@ STRATEGY_PRESETS: "OrderedDict[str, StrategyPreset]" = OrderedDict(
         (
             "remote-only",
             _make_preset(
-                description="Edge-only baseline with a single RSU; tasks always offload.",
-                scenario_key="baseline_single_rsu_remote",
+                description="Edge-only baseline with multi-edge; tasks always offload.",
+                scenario_key="layered_multi_edge_remote",
                 use_enhanced_cache=False,
                 disable_migration=True,
                 enforce_offload_mode="remote_only",
@@ -274,14 +275,14 @@ STRATEGY_PRESETS: "OrderedDict[str, StrategyPreset]" = OrderedDict(
         (
             "offloading-only",
             _make_preset(
-                description="Layered policy: RSU-driven offloading between local and single RSU.",
-                scenario_key="baseline_single_rsu",
+                description="Layered policy: multi-edge offloading between local and RSU/UAV.",
+                scenario_key="layered_multi_edge",
                 use_enhanced_cache=False,
                 disable_migration=True,
                 enforce_offload_mode=None,
                 algorithm="heuristic",
                 heuristic_name="greedy",
-                flags=("cache_off", "migration_off", "single_edge"),
+                flags=("cache_off", "migration_off", "multi_edge"),
                 group="layered",
             ),
         ),
