@@ -1,4 +1,4 @@
-﻿#!/usr/bin/env python3
+#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
 系统配置模块 - VEC边缘计算迁移与缓存系统
@@ -122,7 +122,7 @@ class ExperimentConfig:
         self.save_interval = 100
         self.eval_interval = 50
         self.log_interval = 20  # 20 * 0.1 s ~ 2 s, matches previous cadence
-        self.max_steps_per_episode = 400  # 🔧 翻倍：保持相同仿真时长（400×0.1s=40s）
+        self.max_steps_per_episode = 200  # 🚀 加速优化：缩短50%步数（200×0.1s=20s）
         self.warmup_episodes = 10
         self.use_timestamp = True
         self.timestamp_format = "%Y%m%d_%H%M%S"
@@ -155,13 +155,31 @@ class RLConfig:
     【奖励函数权重 - 核心优化目标】
     ⚠️ 重要：这是系统的核心优化目标！
     
-    核心目标函数：
-        Objective = ω_T × 时延 + ω_E × 能耗
-        Reward = -(ω_T × 时延 + ω_E × 能耗) - 0.02 × dropped_tasks
+    核心目标函数（🔧 修复问题6和问题10：使用normalizer后重新平衡权重）：
+        norm_delay = delay / delay_normalizer (0.2s)
+        norm_energy = energy / energy_normalizer (1000J)
+        Objective = ω_T × norm_delay + ω_E × norm_energy
+        Reward = -(ω_T × norm_delay + ω_E × norm_energy) - 0.02 × dropped_tasks
+    
+    🔧 修复问题10：基于normalizer重新评估权重比例
+    
+    【权重设置分析】
+    典型值：delay ≈ 0.3s, energy ≈ 1000J
+    归一化后：norm_delay = 0.3/0.2 = 1.5, norm_energy = 1000/1000 = 1.0
+    
+    如果使用原始权重 (2.4, 1.0)：
+        weighted_delay = 2.4 × 1.5 = 3.6
+        weighted_energy = 1.0 × 1.0 = 1.0
+        → 时延贡献是能耗的3.6倍，过度偏向时延优化
+    
+    优化后权重 (1.5, 1.0)：
+        weighted_delay = 1.5 × 1.5 = 2.25
+        weighted_energy = 1.0 × 1.0 = 1.0
+        → 时延贡献是能耗的2.25倍，更平衡的优化
     
     权重设置：
-    - reward_weight_delay = 2.4   # 时延权重（目标≈0.4s）
-    - reward_weight_energy = 1.0  # 能耗权重（目标≈1200J）
+    - reward_weight_delay = 1.5    # 时延权重（降低以平衡归一化效果）
+    - reward_weight_energy = 1.0   # 能耗权重（保持基准）
     - reward_penalty_dropped = 0.02  # 丢弃任务轻微惩罚（保证完成率约束）
     
     ⚠️ 已废弃参数（保留兼容性）：
@@ -218,10 +236,11 @@ class RLConfig:
         # Objective = ω_T × 时延 + ω_E × 能耗 + ω_C × 缓存失效
         # 🏆 最优配置v3.0（2025-11-02）：基于14组权重对比实验的最优结果
         # 来源：aggressive配置在500轮×14组实验中取得最优综合成本（6.63）
-        # 实际效果：能耗4892J↓、时延0.331s↓、缓存45.6%↑、完成率93%
-        self.reward_weight_delay = 1.8  # 🏆 稍回调时延权重，兼顾 QoS
-        self.reward_weight_energy = 2.15  # 🆙 强化能耗约束，抑制高功耗拖尾
-        self.reward_penalty_dropped = 0.15  # 🆙 强化惩罚：防止通过大量丢弃获得低延迟
+        # 实际效果：能肗4892J↓、时延0.331s↓、缓存45.6%↑、完成率93%
+        # 🔧 修复问题10：基于normalizer重新评估权重（保持适度的权重配置）
+        self.reward_weight_delay = 1.5  # 🔧 调整：降低以平衡归一化效果（1.8→1.5）
+        self.reward_weight_energy = 1.0  # 能耗权重（保持基准，由normalizer控制）
+        self.reward_penalty_dropped = 0.02  # 🎯 丢弃任务轻微惩罚（保证完成率约束）
         self.completion_target = 0.95  # ✅ 目标完成率（>95%视为达标）
         self.reward_weight_completion_gap = 1.2  # 惩罚完成率低于目标的差值
         self.reward_weight_loss_ratio = 3.0  # 数据丢失率权重（每增加10%损失≈0.3成本）
@@ -240,10 +259,10 @@ class RLConfig:
         self.reward_weight_remote_reject = 0.5  # 远端拒绝惩罚
 
         # 🎯 延时-能耗优化目标阈值（供算法动态调整）
-        # 🏆 最优：严格目标配合高权重，实现最佳性能
-        self.latency_target = 0.35  # 🏆 最优：严格时延目标（实测降至0.331s）
+        # 🏆 12车辆高负载场景目标（基于设计文档）
+        self.latency_target = 0.40  # 🎯 12车辆时延目标（0.4s）
         self.latency_upper_tolerance = 0.80  # Upper latency tolerance before penalty
-        self.energy_target = 950.0  # 🆙 更紧能耗目标，驱动策略回落至≈3kJ区间
+        self.energy_target = 1200.0  # 🎯 12车辆能耗目标（1200J，12车×100J/车）
         self.energy_upper_tolerance = 1800.0  # 较严上限，防止迁移时能耗暴涨
 
 class QueueConfig:
@@ -318,7 +337,11 @@ class TaskConfig:
     def __init__(self):
         self.num_priority_levels = 4
         self.task_compute_density = 120  # cycles per bit as default
-        self.arrival_rate = 1.0   # tasks per second (moderate-load scenario)
+        self.arrival_rate = 2.5   # tasks per second (高负载场景 - 12车辆×2.5=30 tasks/s总负载)
+        
+        # 🔧 修复问题8：降低计算密度至30-80 cycles/bit（更符合实际应用）
+        self.task_compute_density = 50  # cycles per bit - 典型值（图像处理30-50，视频20-40）
+        self.arrival_rate = 2.5   # tasks per second (高负载场景 - 12车辆×2.5=30 tasks/s总负载)
         
         # 🔑 重新设计：任务参数 - 分层设计不同复杂度任务
         self.data_size_range = (0.5e6/8, 15e6/8)  # 0.5-15 Mbits = 0.0625-1.875 MB
@@ -327,8 +350,8 @@ class TaskConfig:
         # 计算周期配置 (自动计算，确保一致性)
         self.compute_cycles_range = (1e8, 1e10)  # cycles
         
-        # 截止时间配置（放宽上限，匹配增强的服务能力）
-        self.deadline_range = (0.25, 0.9)  # seconds，对应3-9个时隙(100ms)
+        # 🔧 修复问题9：截止时间配置对齐时隙边界（100ms时隙）
+        self.deadline_range = (0.3, 0.9)  # seconds，对应3-9个时隙(100ms)，边界对齐
         # 输出比例配置
         self.task_output_ratio = 0.05  # 输出大小是输入大小的5%
         
@@ -352,11 +375,12 @@ class TaskConfig:
         self.deadline_relax_fallback = 1.0
 
         # 🔧 收紧约束：max_latency_slots调整（充分利用100ms精细时隙）
+        # 🔧 修复问题8：降低计算密度（30-80 cycles/bit）
         self.task_profiles: Dict[int, TaskProfileSpec] = {
-            1: TaskProfileSpec(1, (0.5e6/8, 2e6/8), 60, 3, 1.0),   # 0.3s
-            2: TaskProfileSpec(2, (1.5e6/8, 5e6/8), 90, 4, 0.4),   # 0.4s
-            3: TaskProfileSpec(3, (4e6/8, 9e6/8), 110, 5, 0.4),    # 0.5s
-            4: TaskProfileSpec(4, (6e6/8, 15e6/8), 140, 8, 0.4),   # 0.8s
+            1: TaskProfileSpec(1, (0.5e6/8, 2e6/8), 35, 3, 1.0),   # 35 cycles/bit, 0.3s - 极度敏感（紧急制动）
+            2: TaskProfileSpec(2, (1.5e6/8, 5e6/8), 50, 4, 0.4),   # 50 cycles/bit, 0.4s - 敏感（导航）
+            3: TaskProfileSpec(3, (4e6/8, 9e6/8), 65, 5, 0.4),     # 65 cycles/bit, 0.5s - 中度容忍（视频处理）
+            4: TaskProfileSpec(4, (6e6/8, 15e6/8), 80, 8, 0.4),    # 80 cycles/bit, 0.8s - 容忍（数据分析）
         }
         # Backwards-compatible dictionary view for legacy code
         self.task_type_specs = {
@@ -673,29 +697,28 @@ class ComputeConfig:
     【功能】定义CPU频率、能耗模型参数
     【论文对应】Section 2.3 "Energy Consumption Model"
     
-    【能耗模型公式】（论文Equation 3-5）
-    车辆能耗：E_v = κ₁ · C · f² + P_static · t
-    RSU能耗：E_r = κ₂ · C · f² + P_static · t
-    UAV能耗：E_u = κ₃ · C · f² + P_static · t + P_hover · t
+    【能耗模型公式】（论文Equation 3-5）- 🔧 修复问题1：统一使用 f³ 模型
+    车辆能耗：E_v = κ₁ · f³ + P_static · t
+    RSU能耗：E_r = κ₂ · f³ + P_static · t
+    UAV能耗：E_u = κ₃ · f³ + P_static · t + P_hover · t
     
     【车辆参数】（基于Intel NUC i7实际校准）
-    - vehicle_kappa1 = 5.12e-31  # 基于实际硬件校准
-    - vehicle_kappa2 = 2.40e-20  # 频率平方项系数
-    - vehicle_static_power = 8.0W  # 实际车载芯片静态功耗
-    - vehicle_idle_power = 3.5W    # 空闲功耗
+    - vehicle_kappa1 = 5.12e-31  # W/(Hz)³ - CMOS动态功耗系数（基于实际硬件校准）
+    - vehicle_static_power = 8.0W  # W - 实际车载芯片静态功耗
+    - vehicle_idle_power = 3.5W    # W - 空闲功耗
     - vehicle_cpu_freq_range = 8-25 GHz
     - vehicle_default_freq = 2.5 GHz
     
     【RSU参数】（基于20GHz边缘服务器校准）
-    - rsu_kappa = 2.8e-31  # 高性能CPU功耗系数
-    - rsu_static_power = 25.0W  # 边缘服务器静态功耗
+    - rsu_kappa = 2.8e-31  # W/(Hz)³ - 高性能CPU功耗系数
+    - rsu_static_power = 25.0W  # W - 边缘服务器静态功耗
     - rsu_cpu_freq_range = 18-22 GHz
     - rsu_default_freq = 20 GHz  # 高性能边缘计算（Intel Xeon Platinum等）
     
     【UAV参数】（基于实际UAV硬件校准）
-    - uav_kappa = 8.89e-31  # 功耗受限的UAV芯片
-    - uav_static_power = 2.5W  # 轻量化设计
-    - uav_hover_power = 25.0W  # 悬停功耗（更合理）
+    - uav_kappa3 = 8.89e-31  # W/(Hz)³ - 功耗受限的UAV芯片
+    - uav_static_power = 2.5W  # W - 轻量化设计
+    - uav_hover_power = 25.0W  # W - 悬停功耗（更合理）
     - uav_cpu_freq_range = 1.5-9 GHz
     - uav_default_freq = 2.2 GHz  # 🔑 现代无人机边缘计算芯片（平衡性能与功耗）
     

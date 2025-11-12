@@ -37,12 +37,12 @@ class TD3Config:
     """TD3算法配置 - 🎯 v2.0基线版本（稳定可靠）"""
     # 网络结构
     hidden_dim: int = 512  # 🔧 统一使用512，确保所有车辆数配置都有充足容量  
-    actor_lr: float = 2e-4  # 🔧 Actor学习率（提升以加快收敛）
-    critic_lr: float = 3e-4  # 🔧 Critic学习率（提升以更好评估）
+    actor_lr: float = 3e-4  # 🚀 加速：提升学习率
+    critic_lr: float = 4e-4  # 🚀 加速：提升学习率
     graph_embed_dim: int = 128  # 图编码器输出维度
     
     # 训练参数
-    batch_size: int = 256
+    batch_size: int = 512  # 🚀 加速：翻倍Batch Size，提升样本效率
     buffer_size: int = 100000
     tau: float = 0.005  # 目标网络软更新系数
     gamma: float = 0.99  
@@ -120,15 +120,14 @@ class TD3Config:
 
     # 后期稳定策略参数
     late_stage_start_updates: int = 60000  # 约800轮更新步内提前稳定
-    late_stage_start_updates: int = 60000
     late_stage_tau: float = 0.003
     late_stage_policy_delay: int = 3
     late_stage_noise_floor: float = 0.01
     td_error_clip: float = 4.0
     
     # 训练频率
-    update_freq: int = 1
-    warmup_steps: int = 4000
+    update_freq: int = 2  # 🚀 加速：每2步更新一次（降低计算量）
+    warmup_steps: int = 2000  # 🚀 加速：减半warmup
 
 
 class GraphFeatureExtractor(nn.Module):
@@ -187,7 +186,7 @@ class GraphFeatureExtractor(nn.Module):
         # 群组嵌入(3) + 全局attention(1) + 距离/缓存上下文(2) + 权衡上下文(1) + 全局特征
         self.output_dim = embed_dim * 7 + global_feature_dim
 
-        self._last_outputs: Dict[str, torch.Tensor] = {}
+        self._last_outputs: Dict[str, Optional[torch.Tensor]] = {}
 
     def forward(self, state: torch.Tensor) -> torch.Tensor:
         batch = state.size(0)
@@ -219,12 +218,12 @@ class GraphFeatureExtractor(nn.Module):
             self._last_outputs = {}
             return torch.cat([zeros, global_segment], dim=1)
 
-        encoded = self.node_encoder(all_nodes)  # [B, N, E]
+        encoded = self.node_encoder(all_nodes)
         attn_logits = self.attn_proj(encoded).squeeze(-1)
         attn_weights = torch.softmax(attn_logits, dim=1)
         attention_embed = torch.sum(attn_weights.unsqueeze(-1) * encoded, dim=1)
 
-        def group_pool(feats: torch.Tensor, proj_layer: nn.Linear) -> torch.Tensor:
+        def group_pool(feats: torch.Tensor, proj_layer: Union[nn.Linear, nn.Module]) -> torch.Tensor:
             if feats.size(1) == 0:
                 return torch.zeros(batch, proj_layer.out_features, device=state.device)
             encoded_group = self.node_encoder(feats)
@@ -401,10 +400,11 @@ class TD3Actor(nn.Module):
 
     @staticmethod
     def _init_weights(module: nn.Module):
-        for layer in module:
-            if isinstance(layer, nn.Linear):
-                nn.init.xavier_uniform_(layer.weight)
-                nn.init.constant_(layer.bias, 0.0)
+        if isinstance(module, nn.Sequential):
+            for layer in module:
+                if isinstance(layer, nn.Linear):
+                    nn.init.xavier_uniform_(layer.weight)
+                    nn.init.constant_(layer.bias, 0.0)
 
     def forward(self, state: torch.Tensor) -> torch.Tensor:
         fused = self.encoder(state)
@@ -683,6 +683,14 @@ class TD3Agent:
         self.config.batch_size = self.optimized_batch_size
         
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        
+        # 🚀 GPU混合精度训练支持
+        self.use_amp = torch.cuda.is_available()
+        if self.use_amp:
+            self.scaler = torch.cuda.amp.GradScaler()
+            print(f"🚀 启用GPU加速 + 混合精度训练 (AMP)")
+        else:
+            self.scaler: Optional[torch.cuda.amp.GradScaler] = None
 
         offload_dim = 3 + num_rsus + num_uavs
         cache_dim = action_dim - offload_dim
@@ -690,6 +698,8 @@ class TD3Agent:
             raise ValueError("动作维度不足以拆出缓存/迁移控制参数")
 
         actor_cls = actor_cls or TD3Actor
+        if actor_cls is None:
+            raise ValueError("actor_cls cannot be None")
         base_actor_kwargs = {
             "state_dim": state_dim,
             "offload_dim": offload_dim,
@@ -724,6 +734,9 @@ class TD3Agent:
         # 🔧 暂时禁用学习率调度器，避免短期训练中学习率过快衰减
         # self.actor_lr_scheduler = optim.lr_scheduler.ExponentialLR(self.actor_optimizer, gamma=0.995)
         # self.critic_lr_scheduler = optim.lr_scheduler.ExponentialLR(self.critic_optimizer, gamma=0.995)
+        
+        if not self.use_amp:
+            self.scaler = None
         
         # 经验回放缓冲区
         # PER beta参数
@@ -968,39 +981,58 @@ class TD3Agent:
                       rewards: torch.Tensor, next_states: torch.Tensor, 
                       dones: torch.Tensor, weights: torch.Tensor) -> Tuple[float, torch.Tensor]:
         """更新Critic网络"""
-        with torch.no_grad():
-            # 目标策略平滑化
-            next_actions = self.target_actor(next_states)
+        # 🚀 混合精度优化
+        if self.use_amp and self.scaler is not None:
+            with torch.cuda.amp.autocast():
+                with torch.no_grad():
+                    next_actions = self.target_actor(next_states)
+                    noise = torch.randn_like(next_actions) * self.config.target_noise
+                    noise = torch.clamp(noise, -self.config.noise_clip, self.config.noise_clip)
+                    next_actions = torch.clamp(next_actions + noise, -1.0, 1.0)
+                    target_q1, target_q2 = self.target_critic(next_states, next_actions)
+                    target_q = torch.min(target_q1, target_q2)
+                    target_q = rewards + (1 - dones) * self.config.gamma * target_q
+                
+                current_q1, current_q2 = self.critic(states, actions)
+                td_errors_q1 = current_q1 - target_q
+                td_errors_q2 = current_q2 - target_q
+                if getattr(self.config, "td_error_clip", 0.0) and self.config.td_error_clip > 0:
+                    clip_val = float(self.config.td_error_clip)
+                    td_errors_q1 = torch.clamp(td_errors_q1, -clip_val, clip_val)
+                    td_errors_q2 = torch.clamp(td_errors_q2, -clip_val, clip_val)
+                critic_loss = (weights * td_errors_q1.pow(2)).mean() + (weights * td_errors_q2.pow(2)).mean()
             
-            # 添加裁剪噪声
-            noise = torch.randn_like(next_actions) * self.config.target_noise
-            noise = torch.clamp(noise, -self.config.noise_clip, self.config.noise_clip)
-            next_actions = torch.clamp(next_actions + noise, -1.0, 1.0)
+            self.critic_optimizer.zero_grad()
+            self.scaler.scale(critic_loss).backward()
+            if self.config.use_gradient_clip:
+                self.scaler.unscale_(self.critic_optimizer)
+                torch.nn.utils.clip_grad_norm_(self.critic.parameters(), self.config.gradient_clip_norm)
+            self.scaler.step(self.critic_optimizer)
+            self.scaler.update()
+        else:
+            with torch.no_grad():
+                next_actions = self.target_actor(next_states)
+                noise = torch.randn_like(next_actions) * self.config.target_noise
+                noise = torch.clamp(noise, -self.config.noise_clip, self.config.noise_clip)
+                next_actions = torch.clamp(next_actions + noise, -1.0, 1.0)
+                target_q1, target_q2 = self.target_critic(next_states, next_actions)
+                target_q = torch.min(target_q1, target_q2)
+                target_q = rewards + (1 - dones) * self.config.gamma * target_q
             
-            # 计算目标Q值 (取两个Q网络的最小值)
-            target_q1, target_q2 = self.target_critic(next_states, next_actions)
-            target_q = torch.min(target_q1, target_q2)
-            target_q = rewards + (1 - dones) * self.config.gamma * target_q
-        
-        # 当前Q值
-        current_q1, current_q2 = self.critic(states, actions)
-        
-        # Critic损失 (两个Q网络的损失之和)，支持TD误差裁剪稳定梯度
-        td_errors_q1 = current_q1 - target_q
-        td_errors_q2 = current_q2 - target_q
-        if getattr(self.config, "td_error_clip", 0.0) and self.config.td_error_clip > 0:
-            clip_val = float(self.config.td_error_clip)
-            td_errors_q1 = torch.clamp(td_errors_q1, -clip_val, clip_val)
-            td_errors_q2 = torch.clamp(td_errors_q2, -clip_val, clip_val)
-        critic_loss = (weights * td_errors_q1.pow(2)).mean() + (weights * td_errors_q2.pow(2)).mean()
-        
-        # 更新Critic
-        self.critic_optimizer.zero_grad()
-        critic_loss.backward()
-        # 🔧 使用配置的梯度裁剪参数
-        if self.config.use_gradient_clip:
-            torch.nn.utils.clip_grad_norm_(self.critic.parameters(), self.config.gradient_clip_norm)
-        self.critic_optimizer.step()
+            current_q1, current_q2 = self.critic(states, actions)
+            td_errors_q1 = current_q1 - target_q
+            td_errors_q2 = current_q2 - target_q
+            if getattr(self.config, "td_error_clip", 0.0) and self.config.td_error_clip > 0:
+                clip_val = float(self.config.td_error_clip)
+                td_errors_q1 = torch.clamp(td_errors_q1, -clip_val, clip_val)
+                td_errors_q2 = torch.clamp(td_errors_q2, -clip_val, clip_val)
+            critic_loss = (weights * td_errors_q1.pow(2)).mean() + (weights * td_errors_q2.pow(2)).mean()
+            
+            self.critic_optimizer.zero_grad()
+            critic_loss.backward()
+            if self.config.use_gradient_clip:
+                torch.nn.utils.clip_grad_norm_(self.critic.parameters(), self.config.gradient_clip_norm)
+            self.critic_optimizer.step()
         
         self.critic_losses.append(critic_loss.item())
         td_error_magnitude = td_errors_q1.detach().abs().squeeze()
@@ -1074,6 +1106,7 @@ class TD3Agent:
         self.exploration_noise = checkpoint['exploration_noise']
         self.step_count = checkpoint['step_count']
         self.update_count = checkpoint['update_count']
+        return target_path
 
 
 class TD3Environment:
@@ -1286,7 +1319,7 @@ class TD3Environment:
             self.num_rsus
         )
     
-    def decompose_action(self, action: np.ndarray) -> Dict[str, np.ndarray]:
+    def decompose_action(self, action: np.ndarray) -> Dict[str, Union[np.ndarray, Dict[str, np.ndarray]]]:
         """
         动作分解：3(任务分配) + RSU选择 + UAV选择 + control_param_dim(联动控制) + 中央资源段
         """
@@ -1317,15 +1350,21 @@ class TD3Environment:
         actions['uav_agent'] = uav_selection
         actions['control_params'] = control_params
 
-        return actions
+        return actions  # type: ignore
     
-    def get_actions(self, state: np.ndarray, training: bool = True) -> Dict[str, np.ndarray]:
+    def update_guidance_feedback(self, system_metrics: Dict[str, float], 
+                                cache_metrics: Optional[Dict[str, float]] = None,
+                                migration_metrics: Optional[Dict[str, float]] = None) -> None:
+        """更新guidance反馈 - 支持智能体的引导信号更新"""
+        self.agent.update_guidance_feedback(system_metrics, cache_metrics, migration_metrics)
+    
+    def get_actions(self, state: np.ndarray, training: bool = True) -> Dict[str, Union[np.ndarray, Dict[str, np.ndarray]]]:
         """获取动作"""
         global_action = self.agent.select_action(state, training)
         actions = self.decompose_action(global_action)
         guidance = self.agent.get_latest_guidance()
         if guidance:
-            actions['guidance'] = guidance
+            actions['guidance'] = guidance  # type: ignore
         return actions
     
     def calculate_reward(self, system_metrics: Dict, 

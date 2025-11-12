@@ -75,8 +75,9 @@ class WirelessCommunicationModel:
         self.carrier_frequency = getattr(config.communication, 'carrier_frequency', 3.5e9)  # 🔧 修复问题1：3.5 GHz
         self.los_threshold = getattr(config.communication, 'los_threshold', 50.0)  # d_0 = 50m - 3GPP TS 38.901
         self.los_decay_factor = getattr(config.communication, 'los_decay_factor', 100.0)  # α_LoS = 100m
-        self.shadowing_std_los = getattr(config.communication, 'shadowing_std_los', 3.0)  # 🔧 修复问题9：UMi场景3dB
-        self.shadowing_std_nlos = getattr(config.communication, 'shadowing_std_nlos', 4.0)  # 🔧 修复问题9：UMi场景4dB
+        # 🔧 修复问题7：调整为3GPP TR 38.901标准值（UMi-Street Canyon场景）
+        self.shadowing_std_los = getattr(config.communication, 'shadowing_std_los', 4.0)  # 3GPP标准：4 dB (LoS)
+        self.shadowing_std_nlos = getattr(config.communication, 'shadowing_std_nlos', 7.82)  # 3GPP标准：7.82 dB (NLoS)
         self.coding_efficiency = getattr(config.communication, 'coding_efficiency', 0.9)  # 🔧 修复问题5：5G NR标准
         self.processing_delay = getattr(config.communication, 'processing_delay', 0.001)  # T_proc = 1ms
         self.thermal_noise_density = getattr(config.communication, 'thermal_noise_density', -174.0)  # dBm/Hz
@@ -157,10 +158,17 @@ class WirelessCommunicationModel:
         
         【修复记录】
         - 问题3: 最小距离从1m修正为0.5m（3GPP UMi场景标准）
+        - 问题4: 验证频率单位转换（Hz → GHz）并添加验证日志
         """
         # 🔧 修复问题3：确保距离至少为配置的最小距离（默认0.5米），避免log10(0)
         distance_km = max(distance / 1000.0, self.min_distance / 1000.0)
+        
+        # 🔧 修复问题4：验证频率单位转换（Hz → GHz）
         frequency_ghz = self.carrier_frequency / 1e9
+        # 验证频率范围合理性（3GPP NR: 0.45-52.6 GHz）
+        if not (0.45 <= frequency_ghz <= 52.6):
+            import warnings
+            warnings.warn(f"Carrier frequency {frequency_ghz:.2f} GHz outside 3GPP NR range (0.45-52.6 GHz)")
         
         # LoS路径损耗 - 3GPP标准式(12)
         los_path_loss = 32.4 + 20 * math.log10(frequency_ghz) + 20 * math.log10(distance_km)
@@ -498,21 +506,21 @@ class ComputeEnergyModel:
     """
     
     def __init__(self):
+        # 🔧 修复问题3：为所有kappa参数添加单位注释
         # 车辆能耗参数 - 论文式(5)-(9)
-        self.vehicle_kappa1 = config.compute.vehicle_kappa1
-        self.vehicle_kappa2 = config.compute.vehicle_kappa2
-        self.vehicle_static_power = config.compute.vehicle_static_power
-        self.vehicle_idle_power = config.compute.vehicle_idle_power
+        self.vehicle_kappa1 = config.compute.vehicle_kappa1  # W/(Hz)³ - CMOS动态功耗系数
+        self.vehicle_static_power = config.compute.vehicle_static_power  # W - 静态功耗
+        self.vehicle_idle_power = config.compute.vehicle_idle_power  # W - 空闲功耗
         
         # RSU能耗参数 - 论文式(20)-(21)
         # 🔧 修复：使用rsu_kappa而不是rsu_kappa2（避免混淆）
-        self.rsu_kappa = getattr(config.compute, 'rsu_kappa', config.compute.rsu_kappa2)
-        self.rsu_static_power = getattr(config.compute, 'rsu_static_power', 0.0)
+        self.rsu_kappa = getattr(config.compute, 'rsu_kappa', config.compute.rsu_kappa2)  # W/(Hz)³ - CMOS动态功耗系数
+        self.rsu_static_power = getattr(config.compute, 'rsu_static_power', 0.0)  # W - 静态功耗
         
         # UAV能耗参数 - 论文式(25)-(30)
-        self.uav_kappa3 = config.compute.uav_kappa3
-        self.uav_static_power = getattr(config.compute, 'uav_static_power', 0.0)
-        self.uav_hover_power = config.compute.uav_hover_power
+        self.uav_kappa3 = config.compute.uav_kappa3  # W/(Hz)³ - CMOS动态功耗系数
+        self.uav_static_power = getattr(config.compute, 'uav_static_power', 0.0)  # W - 静态功耗
+        self.uav_hover_power = config.compute.uav_hover_power  # W - 悬停功耗
         
         # 并行处理效率
         self.parallel_efficiency = config.compute.parallel_efficiency
@@ -523,15 +531,22 @@ class ComputeEnergyModel:
         """
         计算车辆计算能耗 - 对应论文式(5)-(9)
         
+        【能耗模型】CMOS动态功耗 f³ 模型
+        P_dynamic = κ₁ × f³ + P_static
+        E_total = P_dynamic × t_active + P_idle × t_idle
+        
+        【修复记录】
+        - 问题1: 移除 kappa2×f² 项，统一使用 f³ 模型（符合CMOS标准）
+        
         Returns:
             能耗详细信息字典
         """
         # 计算CPU利用率
         utilization = min(1.0, processing_time / time_slot_duration)
         
-        # 动态功率模型 - 论文式(7)
-        dynamic_power = (self.vehicle_kappa1 * (cpu_frequency ** 3) +
-                        self.vehicle_kappa2 * (cpu_frequency ** 2) * utilization +
+        # 🔧 修复问题1：统一使用 f³ 动态功率模型（CMOS标准）
+        # 动态功率 P = κ₁ × f³ + P_static
+        dynamic_power = (self.vehicle_kappa1 * (cpu_frequency ** 3) + 
                         self.vehicle_static_power)
         
         # 计算能耗 - 论文式(8)
@@ -571,7 +586,7 @@ class ComputeEnergyModel:
                 'total_energy': 0.0
             }
         
-        # RSU处理功率 - 论文式(544): P = κ × f³
+        # 🔧 修复问题5：RSU处理功率 - 论文式(20): P = κ × f³
         # 🔧 修复：使用rsu_kappa而不是rsu_kappa2
         processing_power = self.rsu_kappa * (cpu_frequency ** 3)
         

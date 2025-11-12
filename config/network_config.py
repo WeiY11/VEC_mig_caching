@@ -40,14 +40,16 @@ class NetworkConfig:
         }
         
         # 3GPP标准通信配置
+        # 🔧 修复问题2：使用models.py中的参数（统一配置源）
         self.communication_config = {
-            'carrier_frequency': 2.0e9,  # 2 GHz - 3GPP标准频率
+            'carrier_frequency': 3.5e9,  # 3.5 GHz - 3GPP NR n78频段
             'bandwidth': 20e6,           # 20 MHz
             'thermal_noise_density': -174.0,  # dBm/Hz - 3GPP标准
             'los_threshold': 50.0,       # m - 3GPP TS 38.901
             'los_decay_factor': 100.0,   # m - 3GPP标准
-            'shadowing_std_los': 4.0,    # dB - 3GPP标准
-            'shadowing_std_nlos': 8.0,   # dB - 3GPP标准
+            # 🔧 修复问题7：调整为3GPP TR 38.901标准值（UMi-Street Canyon场景）
+            'shadowing_std_los': 4.0,    # dB - 3GPP标准（LoS）
+            'shadowing_std_nlos': 7.82,  # dB - 3GPP标准（NLoS）
             'antenna_gain_rsu': 15.0,    # dBi
             'antenna_gain_uav': 5.0,     # dBi
             'antenna_gain_vehicle': 3.0, # dBi

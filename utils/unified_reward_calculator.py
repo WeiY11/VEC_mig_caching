@@ -245,12 +245,13 @@ class UnifiedRewardCalculator:
             0.0, self._safe_float(system_metrics.get("remote_rejection_rate"))
         )
 
-        # ========== 核心归一化：统一使用目标值归一化 ==========
-        # Objective = w_T × (delay/target) + w_E × (energy/target)
+        # 🔧 修复问题6：使用 delay_normalizer 和 energy_normalizer 进行归一化
+        # ========== 核心归一化：使用normalizer进行尺度统一 ==========
+        # Objective = w_T × (delay/normalizer) + w_E × (energy/normalizer)
         # 这样可以确保两个指标在同一尺度上，权重才有意义
         
-        norm_delay = avg_delay / max(self.latency_target, 1e-6)
-        norm_energy = total_energy / max(self.energy_target, 1e-6)
+        norm_delay = avg_delay / max(self.delay_normalizer, 1e-6)
+        norm_energy = total_energy / max(self.energy_normalizer, 1e-6)
 
         # 计算核心成本：归一化后的加权和
         core_cost = self.weight_delay * norm_delay + self.weight_energy * norm_energy
@@ -379,8 +380,8 @@ class UnifiedRewardCalculator:
         completion_rate = max(0.0, self._safe_float(system_metrics.get("task_completion_rate"), 0.0))
 
         # 计算归一化值
-        norm_delay = avg_delay / max(self.latency_target, 1e-6)
-        norm_energy = total_energy / max(self.energy_target, 1e-6)
+        norm_delay = avg_delay / max(self.delay_normalizer, 1e-6)
+        norm_energy = total_energy / max(self.energy_normalizer, 1e-6)
         
         # 计算加权成本
         weighted_delay = self.weight_delay * norm_delay
