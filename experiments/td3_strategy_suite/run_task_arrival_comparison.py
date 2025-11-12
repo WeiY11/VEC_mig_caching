@@ -41,6 +41,7 @@ from experiments.td3_strategy_suite.suite_cli import (
     resolve_common_args,
     resolve_strategy_keys,
     suite_path as build_suite_path,
+    get_default_scenario_overrides,
 )
 from experiments.td3_strategy_suite.parameter_presets import default_arrival_rates
 
@@ -120,13 +121,9 @@ def main() -> None:
     arrival_rates = parse_arrival_rates(args.arrival_rates)
     configs: List[Dict[str, object]] = []
     for rate in arrival_rates:
-        overrides = {
-            "num_vehicles": 12,
-            "num_rsus": 4,
-            "num_uavs": 2,
-            "task_arrival_rate": float(rate),
-            "override_topology": True,
-        }
+        overrides = get_default_scenario_overrides(
+            task_arrival_rate=float(rate),
+        )
         configs.append(
             {
                 "key": f"{rate:.2f}",

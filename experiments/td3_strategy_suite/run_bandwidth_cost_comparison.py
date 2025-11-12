@@ -42,6 +42,7 @@ from experiments.td3_strategy_suite.suite_cli import (
     resolve_common_args,
     resolve_strategy_keys,
     suite_path as build_suite_path,
+    get_default_scenario_overrides,  # 🎯 消除硬编码
 )
 from experiments.td3_strategy_suite.parameter_presets import (
     default_rsu_compute_levels,
@@ -157,15 +158,12 @@ def build_bandwidth_configs(bandwidths: List[float]) -> List[Dict[str, object]]:
     configs: List[Dict[str, object]] = []
     for bw in bandwidths:
         bw_hz = float(bw) * 1e6  # 转换为Hz (e.g., 10MHz -> 10e6 Hz)
-        overrides = {
-            "bandwidth": bw_hz,
-            "total_bandwidth": bw_hz,
-            "num_vehicles": 12,
-            "num_rsus": 4,
-            "num_uavs": 2,
-            "override_topology": True,
-            "assumed_tasks_per_step": 12,
-        }
+        # 🎯 使用统一的默认配置，消除硬编码
+        overrides = get_default_scenario_overrides(
+            bandwidth=bw_hz,
+            total_bandwidth=bw_hz,
+            assumed_tasks_per_step=12,
+        )
         configs.append(
             {
                 "key": f"{bw}mhz",
@@ -182,14 +180,11 @@ def build_rsu_compute_configs(levels_ghz: List[float]) -> List[Dict[str, object]
     configs: List[Dict[str, object]] = []
     for freq in levels_ghz:
         total_hz = float(freq) * 1e9
-        overrides = {
-            "total_rsu_compute": total_hz,
-            "num_vehicles": 12,
-            "num_rsus": 4,
-            "num_uavs": 2,
-            "override_topology": True,
-            "assumed_tasks_per_step": 12,
-        }
+        # 🎯 使用统一的默认配置，消除硬编码
+        overrides = get_default_scenario_overrides(
+            total_rsu_compute=total_hz,
+            assumed_tasks_per_step=12,
+        )
         configs.append(
             {
                 "key": f"rsu_{freq:.1f}ghz",
@@ -206,14 +201,11 @@ def build_uav_compute_configs(levels_ghz: List[float]) -> List[Dict[str, object]
     configs: List[Dict[str, object]] = []
     for freq in levels_ghz:
         total_hz = float(freq) * 1e9
-        overrides = {
-            "total_uav_compute": total_hz,
-            "num_vehicles": 12,
-            "num_rsus": 4,
-            "num_uavs": 2,
-            "override_topology": True,
-            "assumed_tasks_per_step": 12,
-        }
+        # 🎯 使用统一的默认配置，消除硬编码
+        overrides = get_default_scenario_overrides(
+            total_uav_compute=total_hz,
+            assumed_tasks_per_step=12,
+        )
         configs.append(
             {
                 "key": f"uav_{freq:.1f}ghz",

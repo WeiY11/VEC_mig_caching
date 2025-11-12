@@ -41,6 +41,7 @@ from experiments.td3_strategy_suite.suite_cli import (
     resolve_common_args,
     resolve_strategy_keys,
     suite_path as build_suite_path,
+    get_default_scenario_overrides,
 )
 
 DEFAULT_EPISODES = 500
@@ -144,12 +145,10 @@ def main() -> None:
     node_configs = parse_configurations(args.configurations)
     configs: List[Dict[str, object]] = []
     for num_rsus, num_uavs, label in node_configs:
-        overrides = {
-            "num_vehicles": 12,
-            "num_rsus": int(num_rsus),
-            "num_uavs": int(num_uavs),
-            "override_topology": True,
-        }
+        overrides = get_default_scenario_overrides(
+            num_rsus=int(num_rsus),
+            num_uavs=int(num_uavs),
+        )
         configs.append(
             {
                 "key": f"{num_rsus}rsu_{num_uavs}uav",

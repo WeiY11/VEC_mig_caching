@@ -58,6 +58,7 @@ from experiments.td3_strategy_suite.suite_cli import (
     resolve_common_args,
     resolve_strategy_keys,
     suite_path as build_suite_path,
+    get_default_scenario_overrides,
 )
 
 DEFAULT_EPISODES = 500
@@ -252,16 +253,12 @@ def main() -> None:
     # 构建配置列表
     configs: List[Dict[str, object]] = []
     for workload_config in WORKLOAD_CONFIGS:
-        overrides = {
-            "task_complexity_multiplier": workload_config["task_complexity_multiplier"],
-            "task_compute_density": workload_config["task_compute_density"],
-            "task_data_size_kb": workload_config["task_data_size_kb"],
-            "task_arrival_rate": workload_config["task_arrival_rate"],
-            "override_topology": True,
-            "num_vehicles": 12,
-            "num_rsus": 4,
-            "num_uavs": 2,
-        }
+        overrides = get_default_scenario_overrides(
+            task_complexity_multiplier=workload_config["task_complexity_multiplier"],
+            task_compute_density=workload_config["task_compute_density"],
+            task_data_size_kb=workload_config["task_data_size_kb"],
+            task_arrival_rate=workload_config["task_arrival_rate"],
+        )
         configs.append(
             {
                 "key": workload_config["key"],

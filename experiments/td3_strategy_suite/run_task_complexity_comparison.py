@@ -42,6 +42,7 @@ from experiments.td3_strategy_suite.suite_cli import (
     resolve_common_args,
     resolve_strategy_keys,
     suite_path as build_suite_path,
+    get_default_scenario_overrides,
 )
 
 DEFAULT_EPISODES = 500
@@ -145,15 +146,11 @@ def main() -> None:
     configs: List[Dict[str, object]] = []
     for level in complexity_levels:
         density = clamp_density(400.0 * level)
-        overrides = {
-            "task_complexity_multiplier": float(level),
-            "task_compute_density": float(density),
-            "high_load_mode": True,
-            "override_topology": True,
-            "num_vehicles": 12,
-            "num_rsus": 4,
-            "num_uavs": 2,
-        }
+        overrides = get_default_scenario_overrides(
+            task_complexity_multiplier=float(level),
+            task_compute_density=float(density),
+            high_load_mode=True,
+        )
         configs.append(
             {
                 "key": f"complex_{level:.2f}",

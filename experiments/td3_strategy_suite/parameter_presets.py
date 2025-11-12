@@ -72,8 +72,11 @@ def default_bandwidths_mhz() -> List[float]:
     return _scale_from_base(base_mhz, (0.4, 0.6, 0.8, 1.0, 1.2), digits=1, min_value=5.0)
 
 
-def default_data_size_configs(num_segments: int = 3) -> List[Tuple[int, int, str]]:
-    """Build evenly spaced task data-size ranges (KB) from the config."""
+def default_data_size_configs(num_segments: int = 5) -> List[Tuple[int, int, str]]:
+    """Build evenly spaced task data-size ranges (KB) from the config.
+    
+    Default changed from 3 to 5 segments to improve parameter sensitivity curve smoothness.
+    """
 
     data_range = getattr(config.task, "data_size_range", None) or getattr(
         config.task, "task_data_size_range", (0.5e6 / 8, 15e6 / 8)

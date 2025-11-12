@@ -81,6 +81,7 @@ from experiments.td3_strategy_suite.suite_cli import (
     resolve_common_args,
     resolve_strategy_keys,
     suite_path as build_suite_path,
+    get_default_scenario_overrides,
 )
 
 DEFAULT_EPISODES = 500
@@ -366,16 +367,14 @@ def main() -> None:
     # ========== 构建配置列表 ==========
     configs: List[Dict[str, object]] = []
     for scenario in NETWORK_TOPOLOGY_SCENARIOS:
-        overrides = {
-            "num_vehicles": 12,
-            "num_rsus": scenario["num_rsus"],
-            "num_uavs": scenario["num_uavs"],
-            "bandwidth": scenario["bandwidth_mhz"] * 1e6,  # Hz
-            "noise_power_dbm": scenario["noise_power_dbm"],
-            "path_loss_exponent": scenario["path_loss_exponent"],
-            "override_topology": True,
-            "assumed_tasks_per_step": 12,
-        }
+        overrides = get_default_scenario_overrides(
+            num_rsus=scenario["num_rsus"],
+            num_uavs=scenario["num_uavs"],
+            bandwidth=scenario["bandwidth_mhz"] * 1e6,  # Hz
+            noise_power_dbm=scenario["noise_power_dbm"],
+            path_loss_exponent=scenario["path_loss_exponent"],
+            assumed_tasks_per_step=12,
+        )
         configs.append(
             {
                 "key": scenario["key"],

@@ -59,6 +59,7 @@ from experiments.td3_strategy_suite.suite_cli import (
     resolve_common_args,
     resolve_strategy_keys,
     suite_path as build_suite_path,
+    get_default_scenario_overrides,
 )
 
 DEFAULT_EPISODES = 500
@@ -264,14 +265,10 @@ def main() -> None:
     for hetero_config in HETEROGENEITY_CONFIGS:
         # 注意: 这里需要与SystemConfig配合，实际实现中可能需要扩展配置系统
         # 目前作为示例，使用hetero_level参数
-        overrides = {
-            "heterogeneity_level": hetero_config["heterogeneity_level"],
+        overrides = get_default_scenario_overrides(
+            heterogeneity_level=hetero_config["heterogeneity_level"],
             # 未来可扩展: rsu_compute_range, uav_compute_range等
-            "override_topology": True,
-            "num_vehicles": 12,
-            "num_rsus": 4,
-            "num_uavs": 2,
-        }
+        )
         configs.append(
             {
                 "key": hetero_config["key"],

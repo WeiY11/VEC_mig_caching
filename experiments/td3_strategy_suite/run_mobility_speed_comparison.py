@@ -85,6 +85,7 @@ if str(project_root) not in sys.path:
 from config import config
 from train_single_agent import _apply_global_seed_from_env, train_single_algorithm
 from utils.unified_reward_calculator import UnifiedRewardCalculator
+from experiments.td3_strategy_suite.suite_cli import get_default_scenario_overrides
 
 # ========== 初始化统一奖励计算器 ==========
 _reward_calculator = None
@@ -149,13 +150,9 @@ def run_single_config(
     _apply_global_seed_from_env()
     
     # ========== 步骤2: 构建场景覆盖配置 ==========
-    override_scenario = {
-        "num_vehicles": 12,
-        "num_rsus": 4,
-        "num_uavs": 2,
-        "vehicle_speed_ms": speed_ms,  # m/s
-        "override_topology": True,
-    }
+    override_scenario = get_default_scenario_overrides(
+        vehicle_speed_ms=speed_ms,  # m/s
+    )
     
     # ========== 步骤3: 执行训练 ==========
     episodes = args.episodes or DEFAULT_EPISODES

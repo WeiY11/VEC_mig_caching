@@ -32,6 +32,41 @@ class CommonArgs:
     strategy_groups: Optional[List[str]] = None
 
 
+# 🎯 默认基准场景配置（消除硬编码）
+DEFAULT_SCENARIO_CONFIG = {
+    "num_vehicles": 12,
+    "num_rsus": 4,
+    "num_uavs": 2,
+    "override_topology": True,
+}
+
+
+def get_default_scenario_overrides(**custom_overrides) -> dict:
+    """获取默认场景配置，支持自定义覆盖
+    
+    【功能】
+    统一所有实验的基准场景配置，消除硬编码问题。
+    
+    【参数】
+    **custom_overrides: 自定义覆盖配置（如 bandwidth=20e6）
+    
+    【返回值】
+    合并后的配置字典
+    
+    【使用示例】
+    ```python
+    # 带宽实验
+    overrides = get_default_scenario_overrides(bandwidth=20e6)
+    
+    # 自定义车辆数
+    overrides = get_default_scenario_overrides(num_vehicles=16, bandwidth=30e6)
+    ```
+    """
+    config = dict(DEFAULT_SCENARIO_CONFIG)
+    config.update(custom_overrides)
+    return config
+
+
 def _add_boolean_toggle(
     parser: argparse.ArgumentParser,
     *,

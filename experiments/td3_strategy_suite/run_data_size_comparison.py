@@ -42,6 +42,7 @@ from experiments.td3_strategy_suite.suite_cli import (
     resolve_common_args,
     resolve_strategy_keys,
     suite_path as build_suite_path,
+    get_default_scenario_overrides,
 )
 from experiments.td3_strategy_suite.parameter_presets import default_data_size_configs
 
@@ -81,14 +82,10 @@ def run_single_config(
     print(f"Running data size configuration: {label}")
     print(f"{'=' * 60}")
 
-    override_scenario = {
-        "num_vehicles": 12,
-        "num_rsus": 4,
-        "num_uavs": 2,
-        "task_data_size_min_kb": min_kb,
-        "task_data_size_max_kb": max_kb,
-        "override_topology": True,
-    }
+    override_scenario = get_default_scenario_overrides(
+        task_data_size_min_kb=min_kb,
+        task_data_size_max_kb=max_kb,
+    )
 
     config_dir = suite_dir / f"{min_kb}_{max_kb}"
     config_dir.mkdir(parents=True, exist_ok=True)

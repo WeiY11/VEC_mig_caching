@@ -245,6 +245,34 @@ def _make_preset(
 STRATEGY_PRESETS: "OrderedDict[str, StrategyPreset]" = OrderedDict(
     [
         (
+            "random",
+            _make_preset(
+                description="Random offloading baseline: fully random action selection.",
+                scenario_key="layered_multi_edge",
+                use_enhanced_cache=False,
+                disable_migration=True,
+                enforce_offload_mode=None,
+                algorithm="heuristic",
+                heuristic_name="random",
+                flags=("cache_off", "migration_off", "random"),
+                group="heuristic",
+            ),
+        ),
+        (
+            "round-robin",
+            _make_preset(
+                description="Round-robin baseline: cycle through local, RSU, UAV targets.",
+                scenario_key="layered_multi_edge",
+                use_enhanced_cache=False,
+                disable_migration=True,
+                enforce_offload_mode=None,
+                algorithm="heuristic",
+                heuristic_name="round_robin",
+                flags=("cache_off", "migration_off", "round_robin"),
+                group="heuristic",
+            ),
+        ),
+        (
             "local-only",
             _make_preset(
                 description="All tasks execute locally; edge nodes and migration are disabled.",
@@ -315,7 +343,7 @@ STRATEGY_PRESETS: "OrderedDict[str, StrategyPreset]" = OrderedDict(
         (
             "comprehensive-migration",
             _make_preset(
-                description="Full TD3 stack with migration enabled (original training pipeline).",
+                description="CAMTD3",
                 scenario_key="layered_multi_edge",
                 use_enhanced_cache=True,
                 disable_migration=False,
@@ -373,6 +401,12 @@ class RemoteGreedyPolicy(HeuristicPolicy):
 
 def _resolve_heuristic_policy(name: Optional[str], seed: int) -> HeuristicPolicy:
     key = (name or "").strip().lower()
+    if key in {"random"}:
+        from experiments.fallback_baselines import RandomPolicy
+        return RandomPolicy(seed=seed)
+    if key in {"round_robin", "roundrobin", "round-robin"}:
+        from experiments.fallback_baselines import RoundRobinPolicy
+        return RoundRobinPolicy()
     if key in {"local_only", "localonly"}:
         return LocalOnlyPolicy()
     if key in {"rsu_only", "remote_only"}:

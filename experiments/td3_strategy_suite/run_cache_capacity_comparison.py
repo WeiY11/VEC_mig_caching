@@ -42,6 +42,7 @@ from experiments.td3_strategy_suite.suite_cli import (
     resolve_common_args,
     resolve_strategy_keys,
     suite_path as build_suite_path,
+    get_default_scenario_overrides,
 )
 
 DEFAULT_EPISODES = 500
@@ -145,13 +146,9 @@ def main() -> None:
     cache_levels = parse_cache_levels(args.cache_levels)
     configs: List[Dict[str, object]] = []
     for capacity_mb in cache_levels:
-        overrides = {
-            "cache_capacity": float(capacity_mb),
-            "override_topology": True,
-            "num_vehicles": 12,
-            "num_rsus": 4,
-            "num_uavs": 2,
-        }
+        overrides = get_default_scenario_overrides(
+            cache_capacity=float(capacity_mb),
+        )
         configs.append(
             {
                 "key": f"{int(capacity_mb)}mb",

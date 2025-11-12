@@ -74,6 +74,7 @@ from experiments.td3_strategy_suite.suite_cli import (
     resolve_common_args,
     resolve_strategy_keys,
     suite_path as build_suite_path,
+    get_default_scenario_overrides,
 )
 
 DEFAULT_EPISODES = 500
@@ -506,15 +507,11 @@ def main() -> None:
     # ========== 构建配置列表 ==========
     configs: List[Dict[str, object]] = []
     for scenario in INFRASTRUCTURE_SCENARIOS:
-        overrides = {
-            "num_vehicles": 12,
-            "num_rsus": 4,
-            "num_uavs": 2,
-            "rsu_cpu_freq": scenario["rsu_compute_ghz"] * 1e9,  # Hz
-            "uav_cpu_freq": scenario["uav_compute_ghz"] * 1e9,  # Hz
-            "bandwidth": scenario["bandwidth_mhz"] * 1e6,  # Hz
-            "override_topology": True,
-        }
+        overrides = get_default_scenario_overrides(
+            rsu_cpu_freq=scenario["rsu_compute_ghz"] * 1e9,  # Hz
+            uav_cpu_freq=scenario["uav_compute_ghz"] * 1e9,  # Hz
+            bandwidth=scenario["bandwidth_mhz"] * 1e6,  # Hz
+        )
         configs.append(
             {
                 "key": scenario["key"],

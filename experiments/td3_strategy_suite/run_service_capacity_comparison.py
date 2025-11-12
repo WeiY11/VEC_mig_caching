@@ -43,6 +43,7 @@ from experiments.td3_strategy_suite.suite_cli import (
     resolve_common_args,
     resolve_strategy_keys,
     suite_path as build_suite_path,
+    get_default_scenario_overrides,
 )
 
 DEFAULT_EPISODES = 500
@@ -163,13 +164,7 @@ def main() -> None:
     configs: List[Dict[str, object]] = []
     for factor in service_factors:
         params = derive_service_parameters(factor)
-        overrides = {
-            **params,
-            "override_topology": True,
-            "num_vehicles": 12,
-            "num_rsus": 4,
-            "num_uavs": 2,
-        }
+        overrides = get_default_scenario_overrides(**params)
         configs.append(
             {
                 "key": f"svc_{factor:.2f}",

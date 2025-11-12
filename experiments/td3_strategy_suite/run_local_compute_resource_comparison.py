@@ -73,6 +73,7 @@ from experiments.td3_strategy_suite.suite_cli import (
     resolve_common_args,
     resolve_strategy_keys,
     suite_path as build_suite_path,
+    get_default_scenario_overrides,
 )
 from experiments.td3_strategy_suite.parameter_presets import default_vehicle_compute_levels
 from utils.unified_reward_calculator import UnifiedRewardCalculator
@@ -311,15 +312,11 @@ def main() -> None:
     # ========== 构建配置列表 ==========
     configs: List[Dict[str, object]] = []
     for freq in cpu_freqs:
-        overrides = {
-            "num_vehicles": 12,
-            "num_rsus": 4,
-            "num_uavs": 2,
-            "total_vehicle_compute": float(freq) * 1e9,  # 🎯 总本地计算资源(Hz)，12车辆共享
-            "override_topology": True,
-            "fallback_task_size_kb": 350.0,
-            "assumed_tasks_per_step": 12,
-        }
+        overrides = get_default_scenario_overrides(
+            total_vehicle_compute=float(freq) * 1e9,  # 🎯 总本地计算资源(Hz)，12车辆共享
+            fallback_task_size_kb=350.0,
+            assumed_tasks_per_step=12,
+        )
         configs.append(
             {
                 "key": f"{freq:.1f}ghz",

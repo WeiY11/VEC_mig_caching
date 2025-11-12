@@ -1,4 +1,4 @@
-﻿#!/usr/bin/env python3
+﻿﻿#!/usr/bin/env python3
 """
 Generate an idealised bandwidth comparison for the six TD3 strategies.
 
@@ -33,7 +33,7 @@ STRATEGY_LABELS = {
     "offloading-only": "Layered Offloading",
     "resource-only": "Resource-Only",
     "comprehensive-no-migration": "Layered TD3 (No Migration)",
-    "comprehensive-migration": "Layered TD3 (Migration)",
+    "comprehensive-migration": "CAMTD3",
 }
 
 BANDWIDTHS = [10, 20, 30, 40, 50]
