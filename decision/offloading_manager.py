@@ -7,7 +7,7 @@ from typing import Dict, List, Optional, Tuple
 
 from config import config
 from utils import dbm_to_watts
-from models.data_structures import Task, TaskType
+from models.data_structures import Task, TaskType, Position
 
 
 class ProcessingMode(Enum):
@@ -77,7 +77,7 @@ class TaskClassifier:
             compute_density = compute_cycles / denom
         system_load = self._estimate_system_load_hint()
         slot_duration = getattr(config.network, 'time_slot_duration', 0.1)
-        type_value = config.get_task_type(
+        type_value = config.task.get_task_type(
             max_delay_slots,
             data_size=data_size,
             compute_cycles=compute_cycles,
@@ -104,7 +104,7 @@ class TaskClassifier:
     def _is_task_cacheable(self, task: Task) -> bool:
         return getattr(task, 'cache_access_count', 0) > 0
 
-    def get_candidate_nodes(self, task: Task, all_nodes: Dict[str, 'Position']) -> List[str]:
+    def get_candidate_nodes(self, task: Task, all_nodes: Dict[str, Position]) -> List[str]:
         t = task.task_type
         vid = task.source_vehicle_id
         if t == TaskType.EXTREMELY_DELAY_SENSITIVE:
@@ -121,7 +121,7 @@ class TaskClassifier:
             return c
         return list(all_nodes.keys())
 
-    def _get_nearby_rsus(self, vid: str, nodes: Dict[str, 'Position'], max_d: float, k: int) -> List[str]:
+    def _get_nearby_rsus(self, vid: str, nodes: Dict[str, Position], max_d: float, k: int) -> List[str]:
         if vid not in nodes:
             return []
         v = nodes[vid]
@@ -129,13 +129,13 @@ class TaskClassifier:
         arr.sort(key=lambda x: x[0])
         return [nid for _, nid in arr[:k]]
 
-    def _get_reachable_rsus(self, vid: str, nodes: Dict[str, 'Position'], max_d: float) -> List[str]:
+    def _get_reachable_rsus(self, vid: str, nodes: Dict[str, Position], max_d: float) -> List[str]:
         if vid not in nodes:
             return []
         v = nodes[vid]
         return [nid for nid, p in nodes.items() if nid.startswith('rsu_') and v.distance_to(p) <= max_d]
 
-    def _get_capable_uavs(self, vid: str, nodes: Dict[str, 'Position'], max_d: float) -> List[str]:
+    def _get_capable_uavs(self, vid: str, nodes: Dict[str, Position], max_d: float) -> List[str]:
         if vid not in nodes:
             return []
         v = nodes[vid]
@@ -160,7 +160,7 @@ class ProcessingModeEvaluator:
         self._refresh_cost_weights()
 
     def evaluate_all_modes(self, task: Task, candidates: List[str], node_states: Dict,
-                           node_positions: Dict[str, 'Position'], cache_states: Optional[Dict] = None) -> List[ProcessingOption]:
+                           node_positions: Dict[str, Position], cache_states: Optional[Dict] = None) -> List[ProcessingOption]:
         opts: List[ProcessingOption] = []
         for nid in candidates:
             if nid.startswith('vehicle_'):
@@ -331,7 +331,7 @@ class ProcessingModeEvaluator:
             reserved_processing_time=proc
         )
 
-    def _eval_rsu(self, task: Task, rid: str, states: Dict, pos: Dict[str, 'Position'], caches: Dict) -> List[ProcessingOption]:
+    def _eval_rsu(self, task: Task, rid: str, states: Dict, pos: Dict[str, Position], caches: Dict) -> List[ProcessingOption]:
         out: List[ProcessingOption] = []
         st = states.get(rid)
         vpos = pos.get(task.source_vehicle_id)
@@ -377,7 +377,7 @@ class ProcessingModeEvaluator:
             ))
         return out
 
-    def _eval_rsu_mig(self, task: Task, target: str, states: Dict, pos: Dict[str, 'Position']) -> List[ProcessingOption]:
+    def _eval_rsu_mig(self, task: Task, target: str, states: Dict, pos: Dict[str, Position]) -> List[ProcessingOption]:
         out: List[ProcessingOption] = []
         tgt = states.get(target)
         if not tgt:
@@ -406,7 +406,7 @@ class ProcessingModeEvaluator:
             ))
         return out
 
-    def _eval_uav(self, task: Task, uid: str, states: Dict, pos: Dict[str, 'Position']) -> Optional[ProcessingOption]:
+    def _eval_uav(self, task: Task, uid: str, states: Dict, pos: Dict[str, Position]) -> Optional[ProcessingOption]:
         uv = states.get(uid)
         vpos = pos.get(task.source_vehicle_id)
         upos = pos.get(uid)
@@ -469,7 +469,8 @@ class ProcessingModeEvaluator:
     def _wait(self, st) -> float:
         rho = float(getattr(st, 'load_factor', 0.0))
         node_id = getattr(st, 'node_id', None)
-        rho += self.virtual_cpu_load.get(node_id, 0.0)
+        if node_id is not None:
+            rho += self.virtual_cpu_load.get(node_id, 0.0)
         if rho >= 0.999:
             return float('inf')
         base = 0.06
@@ -517,7 +518,7 @@ class OffloadingDecisionMaker:
         options = self.evaluator.evaluate_all_modes(task, cands, node_states, node_positions, cache_states)
         best = self.evaluator.select_best_option(options)
         if best:
-            self.decision_stats[best.mode] += 1
+            self.decision_stats[best.mode] = self.decision_stats.get(best.mode, 0) + 1
             self.evaluator.reserve_resources(best, task, node_states)
         self.total_decisions += 1
         return best
@@ -525,7 +526,7 @@ class OffloadingDecisionMaker:
     def get_decision_statistics(self) -> Dict:
         if self.total_decisions == 0:
             return {m.value: 0.0 for m in ProcessingMode}
-        stats = {m.value: c / self.total_decisions for m, c in self.decision_stats.items()}
+        stats: Dict = {m.value: c / self.total_decisions for m, c in self.decision_stats.items()}
         stats['classification_distribution'] = self.classifier.get_classification_distribution()
         stats['total_decisions'] = self.total_decisions
         return stats

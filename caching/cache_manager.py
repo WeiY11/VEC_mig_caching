@@ -50,7 +50,7 @@ class HeatBasedCacheStrategy:
     结合历史热度、时间槽热度和Zipf流行度分布
     """
     
-    def __init__(self, slot_duration: float = None, total_slots: int = None):
+    def __init__(self, slot_duration: Optional[float] = None, total_slots: Optional[int] = None):
         """
         初始化热度策略
         

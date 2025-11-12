@@ -75,7 +75,7 @@ def generate_metrics(bandwidth: float) -> Dict[str, IdealisedMetrics]:
             completion_rate=clamp(completion, 0.5, 0.95),
         )
 
-    idx = BANDWIDTHS.index(bandwidth)
+    idx = BANDWIDTHS.index(int(bandwidth))
     for strat, series in COST_SHAPES.items():
         cost_value = series[idx]
         results[strat] = metrics_from_cost(cost_value)

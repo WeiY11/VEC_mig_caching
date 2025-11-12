@@ -952,7 +952,7 @@ class IntegratedCommunicationComputeModel:
                 hover_energy_info = self.compute_energy_model.calculate_uav_hover_energy(total_time)
                 hover_energy = hover_energy_info['total_energy']
                 compute_energy_info['hover_energy'] = hover_energy
-                compute_energy_info['hover_details'] = hover_energy_info
+                compute_energy_info['hover_details'] = hover_energy_info  # type: ignore[assignment]
                 compute_energy_info['total_energy'] += hover_energy
                 compute_energy_info['compute_energy'] = compute_energy_info.get('compute_energy', 0.0) + hover_energy
             

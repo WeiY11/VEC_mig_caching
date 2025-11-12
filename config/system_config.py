@@ -1067,6 +1067,16 @@ class CacheConfig:
         self.prediction_window = 10  # time slots
         self.popularity_decay_factor = 0.9
         self.request_history_size = 100
+        
+        # 逻辑回归参数 - 对应论文式(1)
+        self.logistic_alpha0 = -2.0  # 截距
+        self.logistic_alpha1 = 1.5   # 历史频率权重
+        self.logistic_alpha2 = 0.8   # 请求率权重
+        self.logistic_alpha3 = 0.6   # 时间因素权重
+        self.logistic_alpha4 = 0.4   # 区域特征权重
+        
+        # 缓存命中预测开关
+        self.cache_hit_prediction_enabled = True
 
 class NormalizationConfig:
     """

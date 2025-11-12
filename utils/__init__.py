@@ -174,6 +174,10 @@ class ExponentialMovingAverage:
         else:
             self.value = self.alpha * new_value + (1 - self.alpha) * self.value
         return self.value
+    
+    def get_value(self) -> float:
+        """获取当前指数移动平均值"""
+        return self.value if self.value is not None else 0.0
 
 __all__ = ['Logger', 'Metrics', 'MovingAverage', 'PerformanceTracker', 'DataProcessor', 
            'SystemMetricsValidator', 'EnergyValidator', 'validate_energy_consumption', 
