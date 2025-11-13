@@ -17,11 +17,11 @@ DEFAULT_CONFIG = {
     },
     
     "task_generation": {
-        "arrival_rate": 1.5,        # tasks/second - tuned for 100 ms slots (0.15 tasks/slot)
-        "data_size_range": [0.5e6/8, 15e6/8],  # 🔧 修复: 0.5-15 Mbits = 0.0625-1.875 MB
-        "compute_density": 120,     # cycles/bit - 对应表IV基准
-        "deadline_range": [0.2, 0.8],  # seconds - corresponds to 2-8 slots @100 ms
-        "output_ratio": 0.1         # 输出大小比例
+        "arrival_rate": 3.0,        # tasks/second - 🔧 优化: 3.0 tasks/s/vehicle (高负载但不极端)
+        "data_size_range": [0.5e6/8, 15e6/8],  # 🔧 恢复: 0.5-15 Mbits = 0.0625-1.875 MB
+        "compute_density": 100,     # cycles/bit - 🔧 优化：适度提高（视频处理级别）
+        "deadline_range": [0.3, 0.9],  # seconds - 3-9 slots @100 ms
+        "output_ratio": 0.05         # 输出大小比例
     },
     
     "network_topology": {

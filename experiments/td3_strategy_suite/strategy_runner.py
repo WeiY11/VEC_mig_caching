@@ -96,6 +96,11 @@ def compute_cost(avg_delay: float, avg_energy: float) -> float:
     ✅ 修复后：使用latency_target和energy_target，与训练时的奖励计算完全一致
     ✅ 修复前：错误使用了delay_normalizer(0.2)和energy_normalizer(1000)
     ✅ 确保评估指标与训练指标可比
+    
+    【重要提示】
+    🎯 归一化基准必须与UnifiedRewardCalculator一致
+    🎯 修改此函数时必须同步更新utils/unified_reward_calculator.py
+    🎯 不同实验配置下，raw_cost应该可比（基于相同的归一化基准）
     """
     weight_delay = float(config.rl.reward_weight_delay)
     weight_energy = float(config.rl.reward_weight_energy)
@@ -248,14 +253,29 @@ def _run_strategy_suite_internal(
     return results
 
 def attach_normalized_costs(result_list: List[Dict[str, object]]) -> None:
+    """使用全局归一化确保跨配置可比性"""
+    # 🎯 修复：收集所有配置点的所有策略成本,计算全局min/max
+    all_costs: List[float] = []
     for item in result_list:
         strategies_obj = item.get("strategies", {})
         from typing import cast
         strategies = cast(Dict[str, Dict[str, float]], strategies_obj)
-        costs = {k: v.get("raw_cost", 0.0) for k, v in strategies.items()}
-        normalized = normalize_costs(costs)
-        for key, value in normalized.items():
-            strategies[key]["normalized_cost"] = value
+        for v in strategies.values():
+            all_costs.append(v.get("raw_cost", 0.0))
+    
+    # 计算全局归一化基准
+    global_min = min(all_costs) if all_costs else 0.0
+    global_max = max(all_costs) if all_costs else 1.0
+    global_span = max(global_max - global_min, 1e-12)
+    
+    # 应用全局归一化
+    for item in result_list:
+        strategies_obj = item.get("strategies", {})
+        from typing import cast
+        strategies = cast(Dict[str, Dict[str, float]], strategies_obj)
+        for key, metrics in strategies.items():
+            raw = metrics.get("raw_cost", 0.0)
+            strategies[key]["normalized_cost"] = (raw - global_min) / global_span
 
 
 def strategy_label(strategy_key: str) -> str:

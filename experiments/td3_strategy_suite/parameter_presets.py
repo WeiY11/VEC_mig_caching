@@ -49,9 +49,12 @@ def default_vehicle_compute_levels() -> List[float]:
 
 
 def default_rsu_compute_levels() -> List[float]:
-    """Five RSU compute presets (GHz)."""
-
-    base = float(getattr(config.compute, "total_rsu_compute", 40e9))
+    """Five RSU compute presets (GHz).
+    
+    🎯 优化：基准值从40 GHz调整为50 GHz，与默认配置保持一致
+    这样CAMTD3在中间配置(50 GHz)下训练，更容易泛化到两侧
+    """
+    base = float(getattr(config.compute, "total_rsu_compute", 50e9))  # 🎯 从40e9改为50e9
     base_ghz = base / 1e9
     return _scale_from_base(base_ghz, (0.6, 0.8, 1.0, 1.2, 1.4), digits=1, min_value=5.0)
 

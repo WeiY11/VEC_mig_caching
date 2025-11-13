@@ -1,4 +1,4 @@
-﻿#!/usr/bin/env python3
+﻿﻿﻿#!/usr/bin/env python3
 """
 只跑带宽敏感性：
 python experiments/td3_strategy_suite/run_bandwidth_cost_comparison.py --experiment-types bandwidth
@@ -48,7 +48,7 @@ from experiments.td3_strategy_suite.parameter_presets import (
     default_rsu_compute_levels,
 )
 
-DEFAULT_EPISODES = 500
+DEFAULT_EPISODES = 800  # 🎯 优化：从500增加到800，提高CAMTD3训练稳定性
 DEFAULT_SEED = 42
 # 🎯 默认运行的五档参数
 DEFAULT_BANDWIDTHS = [20.0, 30.0, 40.0, 50.0, 60.0]  # MHz
@@ -441,6 +441,17 @@ def main() -> None:
     warn_if_not_five(bandwidths, "Bandwidth (MHz)")
     warn_if_not_five(rsu_levels, "RSU total compute (GHz)")
     warn_if_not_five(uav_levels, "UAV total compute (GHz)")
+    
+    # 🎯 优化：添加配置一致性检查
+    from config import config as sys_config
+    config_rsu_compute_ghz = float(getattr(sys_config.compute, 'total_rsu_compute', 50e9)) / 1e9
+    middle_rsu_level = sorted(rsu_levels)[len(rsu_levels)//2] if rsu_levels else 50.0
+    
+    if abs(config_rsu_compute_ghz - middle_rsu_level) > 5.0:
+        print(f"\n⚠️  [警告] 配置不一致：")
+        print(f"   系统默认RSU计算资源: {config_rsu_compute_ghz:.1f} GHz")
+        print(f"   实验中间配置点: {middle_rsu_level:.1f} GHz")
+        print(f"   建议：使CAMTD3在中间配置点训练，可获得更好的泛化性能\n")
 
     suite_root = build_suite_path(common)
     suite_root.mkdir(parents=True, exist_ok=True)
