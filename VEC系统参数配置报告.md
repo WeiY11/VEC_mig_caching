@@ -417,12 +417,14 @@ E_rx = (P_rx + P_circuit) × t_rx
 | `reward_weight_energy` | 1.0 | 能耗权重（基准） |
 | `reward_penalty_dropped` | 0.05 | 丢弃任务惩罚 |
 | `reward_weight_cache` | 0.5 | 缓存奖励权重 |
+| `reward_weight_offload_bonus` | 0.15 | 🔧 远程卸载激励权重（鼓励边缘计算利用） |
 
 **奖励函数公式**:
 ```
 norm_delay = delay / delay_normalizer (0.2s)
 norm_energy = energy / energy_normalizer (1000J)
-Reward = -(1.5×norm_delay + 1.0×norm_energy) - 0.05×dropped_tasks
+offload_bonus = reward_weight_offload_bonus × (rsu_offload_ratio + uav_offload_ratio)
+Reward = -(1.5×norm_delay + 1.0×norm_energy) - 0.05×dropped_tasks + offload_bonus
 ```
 
 **优化目标阈值**:

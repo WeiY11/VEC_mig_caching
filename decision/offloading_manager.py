@@ -16,6 +16,7 @@ class ProcessingMode(Enum):
     RSU_OFFLOAD_NO_CACHE = "rsu_miss"
     RSU_MIGRATION = "rsu_migration"
     UAV_OFFLOAD = "uav_offload"
+    UAV_RELAY = "uav_relay"  # UAV中继模式：转发数据到RSU
 
 
 @dataclass
@@ -30,6 +31,8 @@ class ProcessingOption:
     latency_weight: float = 1.0
     reserved_processing_time: float = 0.0
     reserved_comm_time: float = 0.0
+    relay_node_id: Optional[str] = None  # UAV中继时的中继节点ID
+    final_target_id: Optional[str] = None  # UAV中继时的最终目标RSU
 
     @property
     def weighted_cost(self) -> float:
@@ -171,9 +174,13 @@ class ProcessingModeEvaluator:
                 opts.extend(self._eval_rsu(task, nid, node_states, node_positions, cache_states or {}))
                 opts.extend(self._eval_rsu_mig(task, nid, node_states, node_positions))
             elif nid.startswith('uav_'):
+                # 评估UAV计算模式
                 o = self._eval_uav(task, nid, node_states, node_positions)
                 if o:
                     opts.append(o)
+                # 评估UAV中继模式
+                relay_opts = self._eval_uav_relay(task, nid, node_states, node_positions)
+                opts.extend(relay_opts)
         return opts
 
     def _alpha(self, task: Task) -> float:
@@ -475,6 +482,165 @@ class ProcessingModeEvaluator:
             return float('inf')
         base = 0.06
         return max(0.0, (rho * base) / max(1e-6, 1 - rho))
+
+    def _calculate_link_quality(self, distance: float, link_type: str = 'ground') -> float:
+        """
+        计算链路质量（基于距离和链路类型）
+        
+        Args:
+            distance: 距离（米）
+            link_type: 'ground' (车辆-RSU) 或 'air' (车辆-UAV 或 UAV-RSU)
+            
+        Returns:
+            信号质量 (0.0-1.0)，值越大信号越好
+        """
+        if link_type == 'air':
+            # UAV链路：少遮挡，但距离衰减显著
+            max_distance = 800.0  # UAV有效距离
+            path_loss_exp = 2.2  # 空中路径损耗指数较小
+        else:
+            # 地面链路：遮挡多，距离衰减严重
+            max_distance = 600.0  # RSU有效距离
+            path_loss_exp = 3.5  # 地面路径损耗指数较大
+        
+        if distance >= max_distance:
+            return 0.1  # 超出覆盖范围，信号极弱
+        
+        # 基于距离的质量计算：quality = (1 - (d/d_max)^exp)
+        normalized_distance = distance / max_distance
+        quality = max(0.1, 1.0 - (normalized_distance ** path_loss_exp))
+        
+        return quality
+
+    def _should_use_uav_relay(self, vehicle_pos: Position, uav_pos: Position, 
+                             rsu_pos: Position, uav_state: Dict, 
+                             rsu_state: Dict) -> bool:
+        """
+        判断是否应该使用UAV中继模式
+        
+        决策条件（根据用户需求）：
+        1. 车辆到RSU直连信号质量差 (<0.5)
+        2. 通过UAV中继信号质量好 (>0.7)
+        3. UAV电量充足 (>30%)
+        4. UAV负载不高 (<70%)
+        """
+        # 1. 计算直连信号质量
+        direct_distance = vehicle_pos.distance_to(rsu_pos)
+        direct_quality = self._calculate_link_quality(direct_distance, 'ground')
+        
+        # 2. 计算中继信号质量（取两段的最小值）
+        v2u_distance = vehicle_pos.distance_to(uav_pos)
+        u2r_distance = uav_pos.distance_to(rsu_pos)
+        v2u_quality = self._calculate_link_quality(v2u_distance, 'air')
+        u2r_quality = self._calculate_link_quality(u2r_distance, 'air')
+        relay_quality = min(v2u_quality, u2r_quality)
+        
+        # 3. UAV状态检查
+        uav_battery = float(getattr(uav_state, 'battery_level', 1.0))
+        uav_load = float(getattr(uav_state, 'load_factor', 0.0))
+        
+        # 4. RSU状态检查（过载时也可以考虑中继）
+        rsu_load = float(getattr(rsu_state, 'load_factor', 0.0))
+        
+        # 决策逻辑：
+        # - 直连质量差 AND 中继质量好
+        # - UAV电量充足（>30%）
+        # - UAV负载不高（<70%）
+        # - RSU未过载 (<90%)
+        if (direct_quality < 0.5 and relay_quality > 0.7 and
+            uav_battery > 0.3 and uav_load < 0.7 and rsu_load < 0.9):
+            return True
+        
+        return False
+
+    def _eval_uav_relay(self, task: Task, uav_id: str, states: Dict, 
+                       pos: Dict[str, Position]) -> List[ProcessingOption]:
+        """
+        评估UAV中继模式：从车辆通过UAV转发到RSU
+        
+        Returns:
+            中继选项列表（可能有多个RSU选择）
+        """
+        opts: List[ProcessingOption] = []
+        
+        uav_state = states.get(uav_id)
+        vehicle_pos = pos.get(task.source_vehicle_id)
+        uav_pos = pos.get(uav_id)
+        
+        if not (uav_state and vehicle_pos and uav_pos):
+            return opts
+        
+        # 遍历所有RSU，找到适合中继的目标
+        for rsu_id, rsu_state in states.items():
+            if not rsu_id.startswith('rsu_'):
+                continue
+            
+            rsu_pos = pos.get(rsu_id)
+            if not rsu_pos:
+                continue
+            
+            # 判断是否适合中继
+            if not self._should_use_uav_relay(vehicle_pos, uav_pos, rsu_pos, uav_state, rsu_state):
+                continue
+            
+            # 计算中继时延和能耗
+            # 阶段1：车辆 -> UAV
+            v2u_distance = vehicle_pos.distance_to(uav_pos)
+            reservation_key = getattr(task, 'source_vehicle_id', None)
+            v2u_uplink = self._tx_delay(task.data_size, v2u_distance, reservation_key)
+            v2u_energy = self._tx_energy(task.data_size, v2u_uplink)
+            
+            # 阶段2：UAV转发延迟（很小，几毫秒）
+            relay_delay = 0.002  # 2ms转发延迟
+            # UAV转发能耗（低功耗）
+            uav_tx_power = dbm_to_watts(config.communication.uav_tx_power)
+            relay_energy = uav_tx_power * relay_delay
+            
+            # 阶段3：UAV -> RSU
+            u2r_distance = uav_pos.distance_to(rsu_pos)
+            u2r_delay = self._tx_delay(task.data_size, u2r_distance)
+            u2r_energy = uav_tx_power * u2r_delay
+            
+            # 阶段4：RSU处理
+            proc = task.compute_cycles / max(1e-9, rsu_state.cpu_frequency)
+            wait = self._wait(rsu_state)
+            
+            # 阶段5：RSU -> UAV -> 车辆（结果返回）
+            result_down_u2r = self._tx_delay(task.result_size, u2r_distance)
+            result_down_v2u = self._tx_delay(task.result_size, v2u_distance)
+            result_energy = (uav_tx_power * (result_down_u2r + relay_delay) + 
+                           self._tx_energy(task.result_size, result_down_v2u))
+            
+            # 总时延
+            total_delay = (v2u_uplink + relay_delay + u2r_delay + 
+                          wait + proc + 
+                          result_down_u2r + relay_delay + result_down_v2u)
+            
+            # 总能耗：车辆发送 + UAV转发 + RSU计算 + 结果返回
+            rsu_dynamic_power = config.compute.rsu_kappa2 * (rsu_state.cpu_frequency ** 3)
+            rsu_compute_energy = rsu_dynamic_power * proc
+            rsu_static_energy = config.compute.rsu_static_power * max(proc, config.network.time_slot_duration)
+            
+            total_energy = (v2u_energy + relay_energy + u2r_energy + 
+                          rsu_compute_energy + rsu_static_energy + result_energy)
+            
+            # 成功率：中继链路稳定性稍低，但总体可靠
+            success_prob = self._slack_prob(total_delay, task.max_delay_slots) * 0.9  # 0.9系数考虑中继风险
+            
+            opts.append(ProcessingOption(
+                mode=ProcessingMode.UAV_RELAY,
+                target_node_id=uav_id,  # 主目标是UAV
+                relay_node_id=uav_id,
+                final_target_id=rsu_id,  # 最终处理节点是RSU
+                predicted_delay=self._cost_delay(total_delay, task),
+                energy_cost=total_energy,
+                success_probability=success_prob,
+                latency_weight=self._alpha(task),
+                reserved_processing_time=proc,
+                reserved_comm_time=v2u_uplink + u2r_delay + result_down_u2r + result_down_v2u
+            ))
+        
+        return opts
 
     def select_best_option(self, opts: List[ProcessingOption]) -> Optional[ProcessingOption]:
         opts = [o for o in opts if o and o.success_probability > 0.1]

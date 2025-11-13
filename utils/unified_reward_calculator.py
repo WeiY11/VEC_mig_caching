@@ -49,6 +49,8 @@ class UnifiedRewardCalculator:
         self.weight_cache_bonus = float(getattr(config.rl, "reward_weight_cache_bonus", 0.0))
         self.weight_migration = float(getattr(config.rl, "reward_weight_migration", 0.0))  # 迁移权重
         self.weight_joint = float(getattr(config.rl, "reward_weight_joint", 0.05))  # 缓存-迁移联动权重
+        # 🔧 新增：远程卸载激励权重
+        self.weight_offload_bonus = float(getattr(config.rl, "reward_weight_offload_bonus", 0.15))  # 边缘计算利用奖励
         self.completion_target = float(getattr(config.rl, "completion_target", 0.95))
         self.weight_completion_gap = float(getattr(config.rl, "reward_weight_completion_gap", 0.0))
         self.weight_loss_ratio = float(getattr(config.rl, "reward_weight_loss_ratio", 0.0))
@@ -246,6 +248,13 @@ class UnifiedRewardCalculator:
         remote_rejection_rate = max(
             0.0, self._safe_float(system_metrics.get("remote_rejection_rate"))
         )
+        # 🔧 新增：远程卸载利用率
+        rsu_offload_ratio = max(
+            0.0, self._safe_float(system_metrics.get("rsu_offload_ratio"))
+        )
+        uav_offload_ratio = max(
+            0.0, self._safe_float(system_metrics.get("uav_offload_ratio"))
+        )
 
         # 🔧 修复问题6：使用 delay_normalizer 和 energy_normalizer 进行归一化
         # ========== 核心归一化：使用normalizer进行尺度统一 ==========
@@ -283,6 +292,14 @@ class UnifiedRewardCalculator:
 
         if self.weight_remote_reject > 0.0 and remote_rejection_rate > 0.0:
             total_cost += self.weight_remote_reject * remote_rejection_rate
+
+        # 🔧 新增：远程卸载激励（鼓励使用边缘节点）
+        if self.weight_offload_bonus > 0.0:
+            # 计算总远程卸载率（RSU + UAV）
+            total_offload_ratio = rsu_offload_ratio + uav_offload_ratio
+            # 奖励：远程卸载率越高，成本越低
+            offload_bonus = self.weight_offload_bonus * total_offload_ratio
+            total_cost -= offload_bonus
 
         # ========== 辅助指标（可选，权重较小）==========
         # 注意：缓存和迁移是手段，不是优化目标，所以权重设为0
