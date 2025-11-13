@@ -160,12 +160,19 @@ class HierarchicalCacheManager:
         return True
     
     def _promote_to_l1(self, content_id: str):
-        """将内容从L2提升到L1"""
+        """
+        🎯 P2-1优化：智能提升策略
+        将内容从 L2 提升到 L1，基于多维度评估
+        """
         if content_id not in self.l2_cache:
             return
         
         item = self.l2_cache[content_id]
         size = item['size']
+        
+        # 🔥 智能提升决策：综合评估是否值得提升
+        if not self._should_promote(content_id, size):
+            return
         
         # 如果L1空间不足，先降级一些内容到L2
         while self.l1_size + size > self.l1_capacity and self.l1_cache:
@@ -180,6 +187,48 @@ class HierarchicalCacheManager:
         self.l2_size -= size
         
         self.stats['promotions'] += 1
+    
+    # 🎯 P2-1优化：智能提升决策
+    def _should_promote(self, content_id: str, size: float) -> bool:
+        """
+        评估内容是否应该从 L2 提升到 L1
+        
+        考虑因素：
+        1. 访问频率：高频访问优先提升
+        2. 内容大小：小文件更适合 L1
+        3. 访问趋势：近期访问增长
+        4. L1 使用率：避免过度拥堵
+        
+        Returns:
+            是否应该提升
+        """
+        # 计算 L1 使用率
+        l1_usage_ratio = self.l1_size / self.l1_capacity
+        
+        # 1. 频率分数
+        freq = self.access_frequency.get(content_id, 0)
+        freq_score = min(1.0, freq / (self.heat_threshold * 2))
+        
+        # 2. 大小分数（越小越好）
+        size_ratio = size / (self.l1_capacity * 0.2)  # L1单个内容不超过20%
+        size_score = 1.0 - min(1.0, size_ratio)
+        
+        # 3. 趋势分数：近期访问增长
+        recent_accesses = len([h for h in self.access_history[-20:] if h['content_id'] == content_id])
+        trend_score = min(1.0, recent_accesses / 5)
+        
+        # 综合评分：频率40% + 大小30% + 趋势30%
+        total_score = 0.4 * freq_score + 0.3 * size_score + 0.3 * trend_score
+        
+        # 决策阈值：根据 L1 使用率动态调整
+        if l1_usage_ratio < 0.5:
+            threshold = 0.5  # L1 空闲，降低阈值
+        elif l1_usage_ratio < 0.8:
+            threshold = 0.65  # 正常使用
+        else:
+            threshold = 0.8   # L1 拥堵，提高阈值
+        
+        return total_score >= threshold
     
     def _demote_from_l1(self):
         """将L1中最冷的内容降级到L2"""

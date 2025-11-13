@@ -59,8 +59,9 @@ class HeatBasedCacheStrategy:
             total_slots: 总时间槽数，None则自适应
         """
         # 🔧 优化：调整热度参数以适应仿真环境
-        self.decay_factor = 0.95          # 提高衰减因子，保持更长时间的热度
-        self.heat_mix_factor = 0.8        # 增加历史热度权重，减少时间槽依赖
+        # 🎯 P0-2优化：加快冷却速度，平衡历史与实时
+        self.decay_factor = 0.92          # 从0.95→0.92，加快冷却速度
+        self.heat_mix_factor = 0.7        # 从0.8→0.7，平衡历史与实时热度
         self.zipf_exponent = 0.8          # Zipf分布参数
         
         # 🚀 自适应时间槽配置
@@ -253,16 +254,27 @@ class CollaborativeCacheManager:
     实现邻居协作和背包优化算法
     """
     
-    def __init__(self, node_id: str):
+    def __init__(self, node_id: str, node_type: Optional[str] = None):
         self.node_id = node_id
-        self.cache_capacity = config.cache.rsu_cache_capacity
+        self.node_type = node_type if node_type else "RSU"  # 默认RSU
+        
+        # 🎯 P0-1优化：根据节点类型设置容量和策略
+        if self.node_type == "Vehicle":
+            self.cache_capacity = config.cache.vehicle_cache_capacity
+            policy_name = config.cache.vehicle_cache_policy.lower()
+        elif self.node_type == "UAV":
+            self.cache_capacity = config.cache.uav_cache_capacity
+            policy_name = config.cache.uav_cache_policy.lower()
+        else:  # RSU
+            self.cache_capacity = config.cache.rsu_cache_capacity
+            policy_name = config.cache.rsu_cache_policy.lower()
         
         # 缓存存储
         self.cached_items: Dict[str, CachedItem] = {}
         self.current_usage = 0.0
         
         # 替换策略
-        policy_name = config.cache.cache_replacement_policy.lower()
+        # 🎯 P0-1优化：使用针对性策略配置
         if policy_name == "lru":
             self.replacement_policy = CacheReplacementPolicy.LRU
         elif policy_name == "lfu":
@@ -310,6 +322,14 @@ class CollaborativeCacheManager:
             (是否命中, 动作类型)
         """
         self.cache_stats['total_requests'] += 1
+        
+        # 🎯 P1-1优化：每100次请求执行一次预测缓存
+        if self.cache_stats['total_requests'] % 100 == 0:
+            predicted_contents = self.predictive_caching()
+            # 记录预测结果（可用于后续预加载）
+            if not hasattr(self, '_predicted_contents'):
+                self._predicted_contents = set()
+            self._predicted_contents.update(predicted_contents)
         
         # 更新热度
         self.heat_strategy.update_heat(content_id)
@@ -366,11 +386,15 @@ class CollaborativeCacheManager:
                 self.cached_items[content_id] = self.cached_items.pop(content_id)
     
     def _check_neighbor_collaboration(self, content_id: str) -> bool:
-        """检查邻居协作缓存"""
+        """
+        🎯 P1-2优化：检查邻居协作缓存（含成本评估）
+        """
         for neighbor_id, cached_contents in self.neighbor_cache_states.items():
             if content_id in cached_contents:
-                # 邻居有此内容，可以协作获取
-                return True
+                # 🔥 调用成本评估，只在值得时才协作
+                should_collaborate, cost = self._evaluate_collaboration_cost(content_id, neighbor_id)
+                if should_collaborate:
+                    return True
         return False
     
     def _decide_cache_action(self, content_id: str, data_size: float) -> int:
@@ -483,15 +507,23 @@ class CollaborativeCacheManager:
         return False
     
     def _make_space(self, required_space: float) -> bool:
-        """根据替换策略腾出空间"""
+        """
+        根据替换策略腾出空间
+        🎯 P3-3优化：批量淘汰优化
+        """
+        # 🔥 批量淘汰优化：预留额外空间减少频繁淘汰
+        # 一次淘汰释放120%的所需空间
+        buffer_ratio = 1.2
+        target_space = required_space * buffer_ratio
+        
         if self.replacement_policy == CacheReplacementPolicy.LRU:
-            return self._lru_eviction(required_space)
+            return self._lru_eviction(target_space)
         elif self.replacement_policy == CacheReplacementPolicy.LFU:
-            return self._lfu_eviction(required_space)
+            return self._lfu_eviction(target_space)
         elif self.replacement_policy == CacheReplacementPolicy.FIFO:
-            return self._fifo_eviction(required_space)
+            return self._fifo_eviction(target_space)
         else:  # HYBRID
-            return self._hybrid_eviction(required_space)
+            return self._hybrid_eviction(target_space)
     
     def _lru_eviction(self, required_space: float) -> bool:
         """LRU替换策略"""
@@ -539,7 +571,13 @@ class CollaborativeCacheManager:
         return freed_space >= required_space
     
     def _hybrid_eviction(self, required_space: float) -> bool:
-        """混合替换策略"""
+        """
+        🎯 P3-1优化：混合替换策略（自适应权重）
+        综合考虑：时间性、频率、价值（权重自适应）
+        """
+        # 🔥 自适应权重计算
+        weights = self._adaptive_hybrid_weights()
+        
         # 综合考虑访问频率、最近性和缓存价值
         scored_items = []
         
@@ -549,7 +587,10 @@ class CollaborativeCacheManager:
             frequency_score = 1.0 / max(1, item.access_count)
             value_score = 1.0 / max(0.1, item.cache_value)
             
-            total_score = 0.4 * recency_score + 0.3 * frequency_score + 0.3 * value_score
+            # 🎯 使用自适应权重
+            total_score = (weights['recency'] * recency_score + 
+                          weights['frequency'] * frequency_score + 
+                          weights['value'] * value_score)
             scored_items.append((total_score, content_id, item))
         
         # 按分数排序，分数高的优先替换
@@ -565,12 +606,220 @@ class CollaborativeCacheManager:
         
         return freed_space >= required_space
     
+    # 🎯 P3-1优化：自适应权重计算
+    def _adaptive_hybrid_weights(self) -> Dict[str, float]:
+        """
+        根据当前缓存状态动态调整混合策略权重
+        
+        Returns:
+            {'recency': float, 'frequency': float, 'value': float}
+        """
+        # 默认权重
+        weights = {'recency': 0.4, 'frequency': 0.3, 'value': 0.3}
+        
+        if not self.cached_items:
+            return weights
+        
+        # 计算缓存使用率
+        usage_ratio = self.current_usage / self.cache_capacity
+        
+        # 计算命中率
+        total_requests = self.cache_stats['hits'] + self.cache_stats['misses']
+        hit_rate = self.cache_stats['hits'] / total_requests if total_requests > 0 else 0.5
+        
+        # 🔥 自适应规则：
+        # 1. 高使用率(>80%) → 提高frequency权重，保留高频内容
+        if usage_ratio > 0.8:
+            weights['frequency'] = 0.4
+            weights['recency'] = 0.3
+            weights['value'] = 0.3
+        
+        # 2. 低命中率(<60%) → 提高value权重，优化热度选择
+        if hit_rate < 0.6:
+            weights['value'] = 0.4
+            weights['recency'] = 0.35
+            weights['frequency'] = 0.25
+        
+        # 3. 高命中率(>85%) → 提高recency权重，加快更新
+        if hit_rate > 0.85:
+            weights['recency'] = 0.5
+            weights['frequency'] = 0.25
+            weights['value'] = 0.25
+        
+        return weights
+    
     def _evict_item(self, content_id: str):
         """从缓存中移除项目"""
         if content_id in self.cached_items:
             item = self.cached_items.pop(content_id)
             self.current_usage -= item.data_size
             self.cache_stats['evictions'] += 1
+    
+    # 🎯 P1-1优化：预测式缓存预加载
+    def predictive_caching(self, prediction_horizon: Optional[int] = None) -> List[str]:
+        """
+        基于热度趋势预测未来高需求内容
+        
+        Args:
+            prediction_horizon: 预测数量，默认使用配置值
+            
+        Returns:
+            应该预加载的内容ID列表
+        """
+        if not config.cache.enable_predictive_caching:
+            return []
+        
+        if prediction_horizon is None:
+            prediction_horizon = config.cache.prediction_horizon
+        
+        predictions = []
+        current_time = get_simulation_time()
+        prediction_threshold = config.cache.prediction_threshold
+        
+        # 遍历所有有访问历史的内容
+        for content_id in self.heat_strategy.access_history.keys():
+            access_times = self.heat_strategy.access_history[content_id]
+            
+            # 至少需3次访问才能预测趋势
+            if len(access_times) < 3:
+                continue
+            
+            # 计算访问增长率
+            recent_accesses = len([t for t in access_times if current_time - t < 60])  # 最近1分钟
+            older_accesses = len([t for t in access_times if 60 <= current_time - t < 120])  # 1-2分钟前
+            
+            if older_accesses > 0:
+                growth_rate = recent_accesses / older_accesses
+                if growth_rate > prediction_threshold:  # 增长超过50%
+                    # 预测未来需求
+                    predicted_requests = recent_accesses * growth_rate
+                    
+                    # 更新缓存项的预测值
+                    if content_id in self.cached_items:
+                        self.cached_items[content_id].predicted_requests = predicted_requests
+                    
+                    predictions.append((content_id, predicted_requests))
+        
+        # 返回预测需求最高的前N个
+        predictions.sort(key=lambda x: x[1], reverse=True)
+        return [cid for cid, _ in predictions[:prediction_horizon]]
+    
+    # 🎯 P1-2优化：协作缓存成本评估
+    def _evaluate_collaboration_cost(self, content_id: str, neighbor_id: str) -> Tuple[bool, float]:
+        """
+        评估协作缓存的成本效益
+        
+        Args:
+            content_id: 内容ID
+            neighbor_id: 邻居节点ID
+            
+        Returns:
+            (是否协作, 协作成本)
+        """
+        # 计算从邻居获取的延迟成本
+        # 假设邻居距离存储在 neighbor_distances 中
+        if not hasattr(self, 'neighbor_distances'):
+            self.neighbor_distances = {}  # 初始化邻居距离字典
+        
+        distance = self.neighbor_distances.get(neighbor_id, 500)  # 默认500m
+        transmission_delay = distance / 3e8 * 1000  # 光速传播延迟(ms)
+        bandwidth_cost = 10  # 带宽占用成本(简化)
+        
+        collaboration_cost = transmission_delay + bandwidth_cost
+        
+        # 与本地缓存比较
+        local_cache_cost = 50  # 本地缓存的固定成本
+        
+        # 协作成本小于本地成本的1.2倍才值得协作
+        return collaboration_cost < local_cache_cost * 1.2, collaboration_cost
+    
+    # 🎯 P2-2优化：动态容量调整
+    def adaptive_capacity_allocation(self, current_load: float, hit_rate: float) -> float:
+        """
+        根据负载和命中率动态调整缓存容量
+        
+        策略：
+        - 高负载低命中率 → 增加容量
+        - 低负载高命中率 → 减少容量（节能）
+        
+        Args:
+            current_load: 当前负载 (0.0-1.0+)
+            hit_rate: 缓存命中率 (0.0-1.0)
+            
+        Returns:
+            新的缓存容量
+        """
+        if not config.cache.enable_dynamic_capacity:
+            return self.cache_capacity
+        
+        base_capacity = self.cache_capacity
+        
+        # 负载因子：0.0-1.0 → 0.8-1.2
+        load_factor = 0.8 + 0.4 * min(1.0, current_load)
+        
+        # 命中率因子：<0.6 → 增加，>0.8 → 减少
+        if hit_rate < 0.6:
+            hit_rate_factor = 1.2
+        elif hit_rate > 0.8:
+            hit_rate_factor = 0.9
+        else:
+            hit_rate_factor = 1.0
+        
+        new_capacity = base_capacity * load_factor * hit_rate_factor
+        
+        # 限制在合理范围 (50%-150%)
+        min_capacity = base_capacity * config.cache.capacity_adjust_min_ratio
+        max_capacity = base_capacity * config.cache.capacity_adjust_max_ratio
+        
+        return np.clip(new_capacity, min_capacity, max_capacity)
+    
+    # 🎯 P3-2优化：缓存预热策略
+    def warmup_cache(self, historical_stats: Optional[Dict] = None) -> None:
+        """
+        使用历史统计数据预热缓存
+        
+        Args:
+            historical_stats: 历史热门内容统计
+                {content_id: {'frequency': int, 'avg_size': float, 'heat': float}}
+        """
+        if not config.cache.enable_cache_warmup:
+            return
+        
+        if not historical_stats:
+            # 如果没有历史数据，使用当前热度统计
+            historical_stats = {}
+            for content_id, heat in self.heat_strategy.historical_heat.items():
+                if heat > 0.1:  # 只预热热度超过0.1的内容
+                    historical_stats[content_id] = {
+                        'heat': heat,
+                        'avg_size': 1.0,  # 默认1MB
+                        'frequency': len(self.heat_strategy.access_history.get(content_id, []))
+                    }
+        
+        if not historical_stats:
+            return
+        
+        # 按热度排序
+        sorted_contents = sorted(historical_stats.items(), 
+                               key=lambda x: x[1].get('heat', 0.0), 
+                               reverse=True)
+        
+        preload_budget = self.cache_capacity * config.cache.warmup_capacity_ratio  # 使用30%容量预热
+        used_budget = 0.0
+        
+        for content_id, stats in sorted_contents:
+            size = stats.get('avg_size', 1.0)
+            if used_budget + size <= preload_budget:
+                # 模拟缓存（不实际下载，只记录元数据）
+                self.cached_items[content_id] = CachedItem(
+                    content_id=content_id,
+                    data_size=size,
+                    historical_heat=stats.get('heat', 0.0),
+                    cache_time=get_simulation_time(),
+                    access_count=stats.get('frequency', 1)
+                )
+                self.current_usage += size
+                used_budget += size
     
     def sync_with_neighbors(self, neighbor_cache_states: Dict[str, Set[str]]):
         """与邻居同步缓存状态"""
@@ -585,6 +834,18 @@ class CollaborativeCacheManager:
         
         # 更新邻居列表
         self.neighbor_nodes = set(neighbor_cache_states.keys())
+        
+        # 🎯 P2-2优化：定期执行动态容量调整（每次同步时）
+        if config.cache.enable_dynamic_capacity:
+            stats = self.get_cache_statistics()
+            # 计算当前负载和命中率
+            current_load = stats['usage_ratio']
+            hit_rate = stats['hit_rate']
+            
+            # 调整容量
+            new_capacity = self.adaptive_capacity_allocation(current_load, hit_rate)
+            if abs(new_capacity - self.cache_capacity) > self.cache_capacity * 0.05:  # 变化超过5%才调整
+                self.cache_capacity = new_capacity
     
     def get_cache_state(self) -> Set[str]:
         """获取当前缓存状态"""

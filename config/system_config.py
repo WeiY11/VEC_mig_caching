@@ -1078,8 +1078,14 @@ class CacheConfig:
         self.rsu_cache_capacity = 10e9  # 10 GB
         self.uav_cache_capacity = 2e9  # 2 GB
         
-        # 缓存策略配置
-        self.cache_replacement_policy = 'LRU'  # LRU, LFU, RANDOM
+        # 🎯 P0-1优化：差异化缓存替换策略配置
+        # 针对不同节点类型使用最优策略
+        self.vehicle_cache_policy = 'LRU'      # 车辆移动快，LRU适合
+        self.rsu_cache_policy = 'HYBRID'       # RSU使用混合策略，平衡各因素
+        self.uav_cache_policy = 'LFU'          # UAV覆盖广，LFU更优
+        
+        # 保留兼容性（默认策略）
+        self.cache_replacement_policy = 'HYBRID'  # 默认使用混合策略
         self.cache_hit_threshold = 0.8
         self.cache_update_interval = 1.0  # seconds
         
@@ -1087,6 +1093,20 @@ class CacheConfig:
         self.prediction_window = 10  # time slots
         self.popularity_decay_factor = 0.9
         self.request_history_size = 100
+        
+        # 🎯 P0-2优化：预测式缓存配置
+        self.enable_predictive_caching = True      # 启用预测缓存
+        self.prediction_horizon = 5                # 预测未来5个高需求内容
+        self.prediction_threshold = 1.5            # 增长率阈值
+        
+        # 🎯 P2-2优化：动态容量调整配置
+        self.enable_dynamic_capacity = True        # 启用动态容量调整
+        self.capacity_adjust_min_ratio = 0.5       # 最小容量比例
+        self.capacity_adjust_max_ratio = 1.5       # 最大容量比例
+        
+        # 🎯 P3-2优化：缓存预热配置
+        self.enable_cache_warmup = True            # 启用缓存预热
+        self.warmup_capacity_ratio = 0.3           # 预热使用30%容量
         
         # 逻辑回归参数 - 对应论文式(1)
         self.logistic_alpha0 = -2.0  # 截距

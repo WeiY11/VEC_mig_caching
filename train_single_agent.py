@@ -131,6 +131,14 @@ except ImportError:
     REALTIME_AVAILABLE = False
     print("⚠️  实时可视化功能不可用，请运行: pip install flask flask-socketio")
 
+# 🎨 导入高端训练可视化器
+try:
+    from utils.advanced_training_visualizer import create_visualizer as create_advanced_visualizer
+    ADVANCED_VIS_AVAILABLE = True
+except ImportError:
+    ADVANCED_VIS_AVAILABLE = False
+    print("⚠️  高端可视化功能不可用")
+
 # 尝试导入PyTorch以设置随机种子；如果不可用则跳过
 try:
     import torch
@@ -2147,7 +2155,7 @@ def train_single_algorithm(algorithm: str, num_episodes: Optional[int] = None, e
                           use_enhanced_cache: bool = False, disable_migration: bool = False,
                           enforce_offload_mode: Optional[str] = None, fixed_offload_policy: Optional[str] = None,
                           resume_from: Optional[str] = None, resume_lr_scale: Optional[float] = None,
-                          joint_controller: bool = False) -> Dict:
+                          joint_controller: bool = False, enable_advanced_vis: bool = False) -> Dict:
     """训练单个算法
     
     Args:
@@ -2160,6 +2168,7 @@ def train_single_algorithm(algorithm: str, num_episodes: Optional[int] = None, e
         silent_mode: 静默模式，跳过用户交互（用于批量实验）
         resume_from: 已训练模型路径（.pth 或目录前缀），用于warm-start继续训练
         resume_lr_scale: Warm-start后对学习率的缩放系数（默认0.5，None表示保持原值）
+        enable_advanced_vis: 是否启用高端训练可视化
     """
     # 导入任务分布统计模块
     from utils.training_analytics_integration import TaskAnalyticsTracker
@@ -2265,7 +2274,22 @@ def train_single_algorithm(algorithm: str, num_episodes: Optional[int] = None, e
 
     # 🌐 创建实时可视化器（如果启用）
     visualizer = None
-    if enable_realtime_vis and REALTIME_AVAILABLE:
+    advanced_visualizer = None
+    
+    # 🎨 优先使用高端可视化（更好的显示效果）
+    if enable_advanced_vis and ADVANCED_VIS_AVAILABLE:
+        print("🎨 启动高端训练可视化 Dashboard")
+        advanced_visualizer = create_advanced_visualizer(max_history=min(500, num_episodes))  # type: ignore[name-defined]
+        advanced_visualizer.start(interval=1000)  # 每秒刷新一次
+        print("✅ 高端可视化已启用")
+        print("   - 按 'p' 暂停/继续")
+        print("   - 按 's' 保存截图")
+        print("   - 按 'q' 退出")
+    elif enable_advanced_vis and not ADVANCED_VIS_AVAILABLE:
+        print("⚠️  高端可视化未启用（缺少依赖包）")
+    
+    # 🌐 Fallback到Web可视化
+    if enable_realtime_vis and REALTIME_AVAILABLE and not advanced_visualizer:
         print(f"🌐 启动实时可视化服务器 (端口: {vis_port})")
         # 允许通过环境变量覆盖可视化展示名（用于两阶段标签）
         display_name = os.environ.get('ALGO_DISPLAY_NAME', algorithm)
@@ -2284,6 +2308,7 @@ def train_single_algorithm(algorithm: str, num_episodes: Optional[int] = None, e
     print(f"  总轮次: {num_episodes}")
     print(f"  评估间隔: {eval_interval} (自动调整)" if eval_interval != config.experiment.eval_interval else f"  评估间隔: {eval_interval}")
     print(f"  保存间隔: {save_interval} (自动调整)" if save_interval != config.experiment.save_interval else f"  保存间隔: {save_interval}")
+    print(f"  高端可视化: {'启用 ✓' if advanced_visualizer else '禁用'}")
     print(f"  实时可视化: {'启用 ✓' if visualizer else '禁用'}")
     if hasattr(config, 'rl'):
         print(
@@ -2346,6 +2371,26 @@ def train_single_algorithm(algorithm: str, num_episodes: Optional[int] = None, e
         training_env.performance_tracker['recent_delays'].update(system_metrics.get('avg_task_delay', 0))
         training_env.performance_tracker['recent_energy'].update(system_metrics.get('total_energy_consumption', 0))
         training_env.performance_tracker['recent_completion'].update(system_metrics.get('task_completion_rate', 0))
+        
+        # 🎨 更新高端可视化
+        if advanced_visualizer:
+            # 收集详细指标
+            vis_metrics = {
+                'reward': episode_result['avg_reward'],
+                'loss': episode_result.get('loss', 0),  # 如果有损失值
+                'hit_rate': system_metrics.get('cache_hit_rate', 0),
+                'delay': system_metrics.get('avg_task_delay', 0) * 1000,  # 转换为ms
+                'energy': system_metrics.get('total_energy_consumption', 0),
+                'success_rate': system_metrics.get('task_completion_rate', 0),
+                'action': episode_result.get('last_action'),  # 最后一个动作
+                'gradient_norm': episode_result.get('gradient_norm')  # 如果有梯度范数
+            }
+            advanced_visualizer.update(episode, vis_metrics)
+            
+            # 定期保存可视化截图
+            if episode % save_interval == 0:
+                advanced_visualizer.save(f"results/single_agent/{algorithm.lower()}/viz_checkpoint_{episode}.png")
+        
         # 🌐 更新实时可视化
         if visualizer:
             vis_metrics = {
@@ -2415,6 +2460,12 @@ def train_single_algorithm(algorithm: str, num_episodes: Optional[int] = None, e
     
     # 训练完成
     total_training_time = time.time() - training_start_time
+    
+    # 🎨 保存高端可视化最终结果
+    if advanced_visualizer:
+        final_viz_path = f"results/single_agent/{algorithm.lower()}/final_training_viz.png"
+        advanced_visualizer.save(final_viz_path)
+        print(f"💾 高端可视化已保存: {final_viz_path}")
     
     # 🌐 标记实时可视化完成
     if visualizer:
@@ -2965,6 +3016,8 @@ def main():
     # 🌐 实时可视化参数
     parser.add_argument('--realtime-vis', action='store_true', help='启用实时可视化')
     parser.add_argument('--vis-port', type=int, default=5000, help='实时可视化服务器端口 (默认: 5000)')
+    # 🎨 高端训练可视化参数
+    parser.add_argument('--advanced-vis', action='store_true', help='启用高端训练可视化 Dashboard')
     # 🚀 增强缓存参数（默认启用）
     parser.add_argument('--no-enhanced-cache', action='store_true', 
                        help='禁用增强缓存系统（默认启用分层L1/L2 + 热度策略 + RSU协作）')
@@ -3116,7 +3169,8 @@ def main():
             fixed_offload_policy=getattr(args, 'fixed_offload_policy', None),  # 🎯 固定卸载策略
             silent_mode=args.silent_mode,
             resume_from=args.resume_from,
-            resume_lr_scale=args.resume_lr_scale
+            resume_lr_scale=args.resume_lr_scale,
+            enable_advanced_vis=args.advanced_vis  # 🎨 高端可视化
         )
     else:
         print("请指定 --algorithm 或使用 --compare 标志")

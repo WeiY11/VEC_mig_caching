@@ -17,7 +17,7 @@ import sys
 if sys.platform == 'win32':
     try:
         if hasattr(sys.stdout, 'reconfigure'):
-            sys.stdout.reconfigure(encoding='utf-8', errors='replace')
+            sys.stdout.reconfigure(encoding='utf-8', errors='replace')  # type: ignore[attr-defined]
         elif hasattr(sys.stdout, 'buffer'):
             import io
             sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace', line_buffering=True)
@@ -25,7 +25,7 @@ if sys.platform == 'win32':
         pass
     try:
         if hasattr(sys.stderr, 'reconfigure'):
-            sys.stderr.reconfigure(encoding='utf-8', errors='replace')
+            sys.stderr.reconfigure(encoding='utf-8', errors='replace')  # type: ignore[attr-defined]
         elif hasattr(sys.stderr, 'buffer'):
             import io
             sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', errors='replace', line_buffering=True)

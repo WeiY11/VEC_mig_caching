@@ -28,6 +28,7 @@ from utils.unified_time_manager import get_simulation_time, advance_simulation_t
 from utils.realistic_content_generator import generate_realistic_content, get_realistic_content_size
 from utils.spatial_index import SpatialIndex
 from decision.two_stage_planner import TwoStagePlanner, PlanEntry
+from decision.strategy_coordinator import StrategyCoordinator
 
 
 class CentralResourcePool:
@@ -182,7 +183,7 @@ class CompleteSystemSimulator:
     Complete system simulator for vehicular edge computing.
     """
     
-    def __init__(self, config: Dict = None):
+    def __init__(self, config: Optional[Dict] = None):
         """
         初始化仿真器
         
@@ -705,7 +706,7 @@ class CompleteSystemSimulator:
         self._reset_runtime_states()
         print("初始化了 6 个缓存管理器")
 
-    def _fresh_stats_dict(self) -> Dict[str, float]:
+    def _fresh_stats_dict(self) -> Dict[str, Any]:
         """
         创建新的统计字典，保证关键指标齐全
         
@@ -848,14 +849,17 @@ class CompleteSystemSimulator:
         self.stats['dropped_data_bytes'] = self.stats.get('dropped_data_bytes', 0.0) + data_bytes
         task['dropped'] = True
         task['drop_reason'] = 'queue_overflow'
-        drop_stats = self.stats.setdefault('drop_stats', {
+        drop_stats_default: Dict[str, Any] = {
             'total': 0,
             'wait_time_sum': 0.0,
             'queue_sum': 0,
             'by_type': {},
             'by_scenario': {},
             'by_reason': {}
-        })
+        }
+        drop_stats = self.stats.setdefault('drop_stats', drop_stats_default)
+        if not isinstance(drop_stats, dict):
+            drop_stats = drop_stats_default
         drop_stats['total'] = drop_stats.get('total', 0) + 1
         task_type = task.get('task_type', 'unknown')
         scenario = task.get('app_scenario', 'unknown')
@@ -1312,14 +1316,18 @@ class CompleteSystemSimulator:
         self._last_app_name = scenario_name
 
         # 馃搳 浠诲姟缁熻鏀堕泦
-        gen_stats = self.stats.setdefault('task_generation', {'total': 0, 'by_type': {}, 'by_scenario': {}})
-        gen_stats['total'] += 1
+        gen_stats_default: Dict[str, Any] = {'total': 0, 'by_type': {}, 'by_scenario': {}}
+        gen_stats = self.stats.setdefault('task_generation', gen_stats_default)
+        if not isinstance(gen_stats, dict):
+            gen_stats = gen_stats_default
+        gen_stats['total'] = (gen_stats.get('total', 0) or 0) + 1
         by_type = gen_stats.setdefault('by_type', {})
         by_type[task_type] = by_type.get(task_type, 0) + 1
         by_scenario = gen_stats.setdefault('by_scenario', {})
         by_scenario[scenario_name] = by_scenario.get(scenario_name, 0) + 1
 
-        report_interval = self.stats_config.task_report_interval if getattr(self, 'stats_config', None) else self.config.get('task_report_interval', 100)
+        stats_cfg = getattr(self, 'stats_config', None)
+        report_interval = stats_cfg.task_report_interval if stats_cfg is not None else self.config.get('task_report_interval', 100)
         report_interval = max(1, int(report_interval))
         if gen_stats['total'] % report_interval == 0:
             total_classified = sum(by_type.values()) or 1
@@ -1367,7 +1375,8 @@ class CompleteSystemSimulator:
         
         # 使用NumPy计算L2范数（欧几里得距离）
         # Use NumPy to calculate L2 norm (Euclidean distance)
-        return np.linalg.norm(pos1 - pos2)
+        distance = np.linalg.norm(pos1 - pos2)
+        return float(distance)
     
     
     def _refresh_spatial_index(self, update_static: bool = True, update_vehicle: bool = True) -> None:
@@ -1378,16 +1387,16 @@ class CompleteSystemSimulator:
         if not getattr(self, 'spatial_index', None):
             return
         try:
-            if update_static:
+            if update_static and self.spatial_index is not None:
                 self.spatial_index.update_static_nodes(self.rsus, self.uavs)
-            if update_vehicle:
+            if update_vehicle and self.spatial_index is not None:
                 self.spatial_index.update_vehicle_nodes(self.vehicles)
         except Exception:
             # 索引刷新失败时回退至朴素遍历逻辑
             pass
     
     
-    def _find_least_loaded_node(self, node_type: str, exclude_node: Dict = None) -> Dict:
+    def _find_least_loaded_node(self, node_type: str, exclude_node: Optional[Dict] = None) -> Optional[Dict]:
         """
         寻找负载最轻的节点（用于任务分配和迁移决策）
         Find the least loaded node (for task assignment and migration decisions)
@@ -1427,7 +1436,7 @@ class CompleteSystemSimulator:
         # Find the node with the shortest queue (least loaded)
         # 使用min函数配合lambda表达式，按computation_queue长度排序
         # Use min function with lambda to sort by computation_queue length
-        best_node = min(candidates, key=lambda n: len(n.get('computation_queue', [])))
+        best_node: Optional[Dict] = min(candidates, key=lambda n: len(n.get('computation_queue', [])))
         return best_node
     
     def _process_node_queues(self):
@@ -1466,21 +1475,41 @@ class CompleteSystemSimulator:
         capacity = self.rsu_nominal_capacity if node_type == 'RSU' else self.uav_nominal_capacity
         ratio = queue_len / max(1.0, capacity)
         usage = float(node.get('compute_usage', 0.0))
-        threshold = max(0.5, self.node_max_load_factor)
-        return (ratio < threshold) and (usage < threshold or usage == 0.0)
+        
+        # 🔧 修复：区分RSU和UAV的准入阈值
+        # UAV使用更宽松的阈值（允许到150%负载），避免完全无法接受任务
+        # RSU保持原有的严格控制（100%阈值）
+        if node_type == 'UAV':
+            queue_threshold = 1.5  # UAV队列允许150%容量
+            usage_threshold = 1.5  # UAV使用率允许150%
+        else:
+            queue_threshold = max(0.5, self.node_max_load_factor)  # RSU默认100%
+            usage_threshold = max(0.5, self.node_max_load_factor)
+        
+        # 队列检查：队列长度 < 阈值
+        queue_ok = ratio < queue_threshold
+        # 使用率检查：使用率 < 阈值 或者 使用率为0（初始状态）
+        usage_ok = usage < usage_threshold or usage == 0.0
+        
+        return queue_ok and usage_ok
 
     def _record_offload_rejection(self, node_type: str, reason: str = 'unknown') -> None:
         """记录由于拥塞/策略导致的远端卸载拒绝。"""
-        stats = self.stats.setdefault('remote_rejections', {
+        stats_default: Dict[str, Any] = {
             'total': 0,
             'by_type': {'RSU': 0, 'UAV': 0},
             'by_reason': {}
-        })
+        }
+        stats = self.stats.setdefault('remote_rejections', stats_default)
+        if not isinstance(stats, dict):
+            stats = stats_default
         stats['total'] = stats.get('total', 0) + 1
         by_type = stats.setdefault('by_type', {})
-        by_type[node_type] = by_type.get(node_type, 0) + 1
+        if isinstance(by_type, dict):
+            by_type[node_type] = by_type.get(node_type, 0) + 1
         by_reason = stats.setdefault('by_reason', {})
-        by_reason[reason] = by_reason.get(reason, 0) + 1
+        if isinstance(by_reason, dict):
+            by_reason[reason] = by_reason.get(reason, 0) + 1
 
     def _process_single_node_queue(self, node: Dict, node_type: str, node_idx: int) -> None:
         """
@@ -1601,7 +1630,7 @@ class CompleteSystemSimulator:
                     vehicle_pos = np.append(vehicle_pos, 0.0)
                 distance = np.linalg.norm(node_pos - vehicle_pos)
                 result_size = task.get('data_size_bytes', task.get('data_size', 1.0) * 1e6) * 0.1
-                down_delay, down_energy = self._estimate_transmission(result_size, distance, node_type.lower())
+                down_delay, down_energy = self._estimate_transmission(result_size, float(distance), node_type.lower())
                 self.stats['energy_downlink'] = self.stats.get('energy_downlink', 0.0) + down_energy
                 self._accumulate_delay('delay_downlink', down_delay)
                 self._accumulate_energy('energy_transmit_downlink', down_energy)
@@ -1623,7 +1652,7 @@ class CompleteSystemSimulator:
         self._record_mm1_queue_length(node_type, node_idx, len(new_queue))
 
 
-    def find_nearest_rsu(self, vehicle_pos: np.ndarray) -> Dict:
+    def find_nearest_rsu(self, vehicle_pos: np.ndarray) -> Optional[Dict]:
         """
         ??????????????????RSU?
         Fallback to brute-force iteration when the index is unavailable.
@@ -1632,11 +1661,12 @@ class CompleteSystemSimulator:
             return None
 
         vehicle_vec = np.asarray(vehicle_pos, dtype=float)
-        best_node = None
+        best_node: Optional[Dict] = None
         best_distance = float('inf')
 
-        if getattr(self, 'spatial_index', None):
-            nearest = self.spatial_index.find_nearest_rsu(vehicle_vec, return_distance=True)
+        spatial_index = getattr(self, 'spatial_index', None)
+        if spatial_index is not None:
+            nearest = spatial_index.find_nearest_rsu(vehicle_vec, return_distance=True)
             if nearest:
                 _, node, dist = nearest
                 coverage = float(node.get('coverage_radius', self.coverage_radius))
@@ -1645,11 +1675,11 @@ class CompleteSystemSimulator:
                 best_node = node
                 best_distance = dist
 
-            max_radius = self.spatial_index.rsu_max_radius or max(
+            max_radius = spatial_index.rsu_max_radius or max(
                 (float(rsu.get('coverage_radius', self.coverage_radius)) for rsu in self.rsus),
                 default=self.coverage_radius,
             )
-            neighbors = self.spatial_index.query_rsus_within_radius(vehicle_vec, max_radius)
+            neighbors = spatial_index.query_rsus_within_radius(vehicle_vec, max_radius)
             for _, node, dist in neighbors:
                 coverage = float(node.get('coverage_radius', self.coverage_radius))
                 if dist <= coverage and dist < best_distance:
@@ -1668,7 +1698,7 @@ class CompleteSystemSimulator:
 
         return best_node
 
-    def find_nearest_uav(self, vehicle_pos: np.ndarray) -> Dict:
+    def find_nearest_uav(self, vehicle_pos: np.ndarray) -> Optional[Dict]:
         """
         ???????????UAV???
         """
@@ -1676,13 +1706,14 @@ class CompleteSystemSimulator:
             return None
 
         vehicle_vec = np.asarray(vehicle_pos, dtype=float)
-        if getattr(self, 'spatial_index', None):
-            nearest = self.spatial_index.find_nearest_uav(vehicle_vec, return_distance=True)
+        spatial_index = getattr(self, 'spatial_index', None)
+        if spatial_index is not None:
+            nearest = spatial_index.find_nearest_uav(vehicle_vec, return_distance=True)
             if nearest:
                 return nearest[1]
 
         min_distance = float('inf')
-        nearest_uav = None
+        nearest_uav: Optional[Dict] = None
         for uav in self.uavs:
             distance = self.calculate_distance(vehicle_vec, uav['position'])
             if distance < min_distance:
@@ -1715,7 +1746,7 @@ class CompleteSystemSimulator:
         self,
         content_id: str,
         node: Dict,
-        agents_actions: Dict = None,
+        agents_actions: Optional[Dict] = None,
         node_type: str = 'RSU'
     ) -> bool:
         """
@@ -2253,7 +2284,8 @@ class CompleteSystemSimulator:
                 })
                 by_type = drop_stats.setdefault('by_type', {})
                 by_scenario = drop_stats.setdefault('by_scenario', {})
-                log_interval = self.stats_config.drop_log_interval if getattr(self, 'stats_config', None) else self.config.get('drop_log_interval', 400)
+                stats_cfg = getattr(self, 'stats_config', None)
+                log_interval = stats_cfg.drop_log_interval if stats_cfg is not None else self.config.get('drop_log_interval', 400)
                 log_interval = max(1, int(log_interval))
                 for task in queue:
                     if self.current_time > task.get('deadline', float('inf')):
@@ -2362,8 +2394,9 @@ class CompleteSystemSimulator:
 
         # 仅在RSU之间传播缓存
         coverage = rsu_node.get('coverage_radius', 300.0)
-        if getattr(self, 'spatial_index', None):
-            neighbor_candidates = self.spatial_index.query_rsus_within_radius(rsu_node['position'], coverage * 1.2)
+        spatial_index = getattr(self, 'spatial_index', None)
+        if spatial_index is not None:
+            neighbor_candidates = spatial_index.query_rsus_within_radius(rsu_node['position'], coverage * 1.2)
             for _, neighbor, _ in neighbor_candidates:
                 if neighbor is rsu_node:
                     continue
@@ -2433,14 +2466,15 @@ class CompleteSystemSimulator:
 
         vehicle_pos = np.asarray(vehicle.get('position', [0.0, 0.0]), dtype=float)
         candidates = []
-        if getattr(self, 'spatial_index', None):
-            max_radius = self.spatial_index.rsu_max_radius or max(
+        spatial_index = getattr(self, 'spatial_index', None)
+        if spatial_index is not None:
+            max_radius = spatial_index.rsu_max_radius or max(
                 (float(rsu.get('coverage_radius', self.coverage_radius)) for rsu in self.rsus),
                 default=self.coverage_radius,
             )
-            candidates = self.spatial_index.query_rsus_within_radius(vehicle_pos, max_radius)
+            candidates = spatial_index.query_rsus_within_radius(vehicle_pos, max_radius)
             if not candidates:
-                nearest = self.spatial_index.find_nearest_rsu(vehicle_pos, return_distance=True)
+                nearest = spatial_index.find_nearest_rsu(vehicle_pos, return_distance=True)
                 if nearest:
                     candidates = [nearest]
 
@@ -2516,14 +2550,15 @@ class CompleteSystemSimulator:
 
         vehicle_pos = np.asarray(vehicle.get('position', [0.0, 0.0]), dtype=float)
         candidates = []
-        if getattr(self, 'spatial_index', None):
-            max_radius = self.spatial_index.uav_max_radius or max(
+        spatial_index = getattr(self, 'spatial_index', None)
+        if spatial_index is not None:
+            max_radius = spatial_index.uav_max_radius or max(
                 (float(uav.get('coverage_radius', 350.0)) for uav in self.uavs),
                 default=350.0,
             )
-            candidates = self.spatial_index.query_uavs_within_radius(vehicle_pos, max_radius)
+            candidates = spatial_index.query_uavs_within_radius(vehicle_pos, max_radius)
             if not candidates:
-                nearest = self.spatial_index.find_nearest_uav(vehicle_pos, return_distance=True)
+                nearest = spatial_index.find_nearest_uav(vehicle_pos, return_distance=True)
                 if nearest:
                     candidates = [nearest]
 
@@ -2793,7 +2828,7 @@ class CompleteSystemSimulator:
         step_summary['last_forced_drop_reason'] = reason
 
     
-    def check_adaptive_migration(self, agents_actions: Dict = None):
+    def check_adaptive_migration(self, agents_actions: Optional[Dict] = None):
         """馃幆 澶氱淮搴︽櫤鑳借縼绉绘鏌?(闃堝€艰Е鍙?璐熻浇宸Е鍙?璺熼殢杩佺Щ)"""
         if not agents_actions or 'migration_controller' not in agents_actions:
             return
@@ -3053,6 +3088,7 @@ class CompleteSystemSimulator:
                 'deadline_relax_factor': task.get('deadline_relax_factor', 1.0)
             }
             best_new_node['computation_queue'].append(migrated_task)
+            best_node_type = best_node_type or 'RSU'
             self._apply_queue_scheduling(best_new_node, best_node_type)
             target_queue_after = len(best_new_node['computation_queue'])
 
@@ -3123,7 +3159,7 @@ class CompleteSystemSimulator:
         self.current_time = get_simulation_time()
 
         # 当前步骤的统计摘要
-        step_summary = {
+        step_summary: Dict[str, Any] = {
             'generated_tasks': 0,  # 本步生成的任务数
             'local_tasks': 0,  # 本地处理的任务数
             'remote_tasks': 0,  # 远程卸载的任务数
@@ -3181,18 +3217,20 @@ class CompleteSystemSimulator:
         self._cleanup_active_tasks()
 
         # 姹囨€讳俊鎭?
-        step_summary.update({
-            'current_time': self.current_time,
-            'rsu_queue_lengths': [len(rsu.get('computation_queue', [])) for rsu in self.rsus],
-            'uav_queue_lengths': [len(uav.get('computation_queue', [])) for uav in self.uavs],
-            'active_tasks': len(self.active_tasks)
-        })
+        step_summary['current_time'] = self.current_time
+        step_summary['rsu_queue_lengths'] = [len(rsu.get('computation_queue', [])) for rsu in self.rsus]
+        step_summary['uav_queue_lengths'] = [len(uav.get('computation_queue', [])) for uav in self.uavs]
+        step_summary['active_tasks'] = len(self.active_tasks)
 
         stability_metrics = self._monitor_queue_stability()
-        step_summary.update(stability_metrics)
-        step_summary.update(self._summarize_task_types())
+        for key, value in stability_metrics.items():
+            step_summary[key] = value
+        task_type_summary = self._summarize_task_types()
+        for key, value in task_type_summary.items():
+            step_summary[key] = value
         mm1_predictions = self._finalize_mm1_step(self.current_step)
-        step_summary['mm1_predictions'] = mm1_predictions
+        if isinstance(mm1_predictions, dict):
+            step_summary['mm1_predictions'] = mm1_predictions
 
         if self._central_resource_enabled:
             self._update_central_scheduler(step_summary)

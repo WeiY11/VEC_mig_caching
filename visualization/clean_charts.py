@@ -278,12 +278,14 @@ class ModernVisualizer:
             self._apply_modern_style(ax6, 'Loss Rate & Migration')
         
         # 全局美化
-        plt.tight_layout()
-        plt.subplots_adjust(top=0.92)
-        
-        # 保存高质量图片
-        plt.savefig(save_path, dpi=300, bbox_inches='tight', 
-                   facecolor='white', edgecolor='none')
+        with warnings.catch_warnings():
+            warnings.filterwarnings('ignore', category=UserWarning, module='matplotlib')
+            plt.tight_layout()
+            plt.subplots_adjust(top=0.92)
+            
+            # 保存高质量图片
+            plt.savefig(save_path, dpi=300, bbox_inches='tight', 
+                       facecolor='white', edgecolor='none')
         plt.close()
         
         print(f"📊 {algorithm} Training Overview with Core Metrics Saved: {save_path}")
@@ -344,9 +346,11 @@ class ModernVisualizer:
         ax2.legend(loc='upper right', frameon=False)
         self._apply_modern_style(ax2, 'RSU 热点强度（峰值 vs 均值）')
 
-        plt.tight_layout()
-        plt.subplots_adjust(top=0.92)
-        plt.savefig(save_path, dpi=300, bbox_inches='tight', facecolor='white', edgecolor='none')
+        with warnings.catch_warnings():
+            warnings.filterwarnings('ignore', category=UserWarning, module='matplotlib')
+            plt.tight_layout()
+            plt.subplots_adjust(top=0.92)
+            plt.savefig(save_path, dpi=300, bbox_inches='tight', facecolor='white', edgecolor='none')
         plt.close()
         print(f"\U0001f4ca Hotspot-Traffic Dynamics Chart Saved: {save_path}")
 
@@ -505,10 +509,12 @@ class ModernVisualizer:
             ax4.text(0.5, 0.5, 'No Energy/Loss Data', ha='center', va='center', transform=ax4.transAxes)
             self._apply_modern_style(ax4, 'Energy & Loss Rate')
         
-        plt.tight_layout()
-        plt.subplots_adjust(top=0.92)
-        plt.savefig(save_path, dpi=300, bbox_inches='tight',
-                   facecolor='white', edgecolor='none')
+        with warnings.catch_warnings():
+            warnings.filterwarnings('ignore', category=UserWarning, module='matplotlib')
+            plt.tight_layout()
+            plt.subplots_adjust(top=0.92)
+            plt.savefig(save_path, dpi=300, bbox_inches='tight',
+                       facecolor='white', edgecolor='none')
         plt.close()
         
         print(f"📊 Performance Comparison with Core Metrics Saved: {save_path}")
@@ -625,9 +631,11 @@ def plot_objective_function_breakdown(training_env, algorithm: str, save_path: s
     ax2.set_xlabel('Episode')
     ax2.grid(True, alpha=0.3)
     
-    plt.tight_layout()
-    plt.savefig(save_path, dpi=300, bbox_inches='tight',
-               facecolor='white', edgecolor='none')
+    with warnings.catch_warnings():
+        warnings.filterwarnings('ignore', category=UserWarning, module='matplotlib')
+        plt.tight_layout()
+        plt.savefig(save_path, dpi=300, bbox_inches='tight',
+                   facecolor='white', edgecolor='none')
     plt.close()
     
     print(f"📊 {algorithm} Objective Function Analysis Saved: {save_path}")
