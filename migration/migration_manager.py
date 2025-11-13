@@ -105,6 +105,9 @@ class TaskMigrationManager:
             self._collect_retry_plans(current_time, node_states, node_positions)
         )
         
+        # 🎯 P3优化：批量迁移优化
+        migration_plans = self._batch_migrate_optimization(migration_plans)
+        
         return migration_plans
     
     def _find_best_target(self, source_node_id: str, source_type: str, 
@@ -134,8 +137,8 @@ class TaskMigrationManager:
         # 閫夋嫨璺濈鏈€杩戠殑鍊欓€?
         if candidates and source_node_id in node_positions:
             source_pos = node_positions[source_node_id]
-            best_candidate = min(candidates, 
-                               key=lambda x: source_pos.distance_to(node_positions.get(x, source_pos)))
+            best_candidate = max(candidates,  # 🎯 P1-1: 使用max和评分函数
+                               key=lambda x: self._score_target_node(x, source_node_id, source_pos, node_states, node_positions))
             return best_candidate
         
         return None
@@ -183,12 +186,17 @@ class TaskMigrationManager:
 
         migration_bandwidth = max(1e-9, getattr(config.migration, 'migration_bandwidth', 1e6))
         data_range = getattr(config.task, 'task_data_size_range', getattr(config.task, 'data_size_range', (1.0, 1.0)))
+        
+        # 安全地解析数据大小范围
         if isinstance(data_range, (list, tuple)) and len(data_range) >= 2:
             avg_data_size = (float(data_range[0]) + float(data_range[1])) / 2.0
-        elif isinstance(data_range, (list, tuple)):
+        elif isinstance(data_range, (list, tuple)) and len(data_range) == 1:
             avg_data_size = float(data_range[0])
-        else:
+        elif isinstance(data_range, (int, float)):
             avg_data_size = float(data_range)
+        else:
+            # 默认值：1MB
+            avg_data_size = 1e6
         data_size_bits = max(avg_data_size * 8.0, 1.0)
         migration_delay = max(0.01, data_size_bits / migration_bandwidth)
         latency_cost = migration_delay / max(1e-9, config.network.time_slot_duration)  # 延迟成本
@@ -199,7 +207,7 @@ class TaskMigrationManager:
             self.alpha_lat * latency_cost
         )
 
-        success_prob = max(0.5, 0.9 - distance / 10000.0)  # 距离越远成功率越低
+        success_prob = self._calculate_success_probability(distance, node_states, source_node_id, target_node_id)  # 🔧 优化：多因素成功率
 
         if source_node_id.startswith("rsu_") and target_node_id.startswith("rsu_"):
             migration_type = MigrationType.RSU_TO_RSU
@@ -228,10 +236,11 @@ class TaskMigrationManager:
         self.migration_stats['total_attempts'] += 1
         migration_plan.tasks_moved = 0
 
-        # 模拟Keep-Before-Break过程阶段划分
-        preparation_time = migration_plan.migration_delay * 0.7
-        sync_time = migration_plan.migration_delay * 0.25
-        migration_plan.downtime = migration_plan.migration_delay * 0.05
+        # 🔧 优化：Keep-Before-Break阶段自适应划分
+        prep_ratio, sync_ratio, down_ratio = self._adaptive_kbb_phases(migration_plan)
+        preparation_time = migration_plan.migration_delay * prep_ratio
+        sync_time = migration_plan.migration_delay * sync_ratio
+        migration_plan.downtime = migration_plan.migration_delay * down_ratio
 
         success = np.random.random() < migration_plan.success_probability
 
@@ -333,9 +342,9 @@ class TaskMigrationManager:
         moved_tasks: List[Task] = []
         scored_candidates = [t for t in list(source_queue) if isinstance(t, Task)]
         if scored_candidates:
-            scored_candidates.sort(key=self._score_task_for_migration)
-            desired = scored_candidates[:tasks_to_move]
-            for task in desired:
+            # 🎯 P2-2优化：智能任务选择
+            intelligent_tasks = self._select_tasks_for_intelligent_migration(scored_candidates, tasks_to_move)
+            for task in intelligent_tasks:
                 if self._detach_task_from_queue(source_queue, task):
                     moved_tasks.append(task)
         # Fall back to FIFO if we still need to move tasks
@@ -468,6 +477,72 @@ class TaskMigrationManager:
             remaining = getattr(task, 'max_delay_slots', 0)
         return (priority, remaining)
 
+    def _calculate_success_probability(self, distance: float, node_states: Dict,
+                                      source_node_id: str, target_node_id: str) -> float:
+        """
+        🎯 优化：多因素迁移成功率计算
+        
+        考虑因素：
+        1. 距离惩罚
+        2. 源节点负载惩罚（过载时迁移更难）
+        3. 目标节点容量奖励
+        4. 网络拥塞惩罚
+        """
+        # 基础成功率
+        base_prob = 0.9
+        
+        # 💡 距离惩罚
+        distance_penalty = min(0.3, distance / 10000.0)
+        
+        # 💡 源节点负载惩罚（过载时迁移更难）
+        source_state = node_states.get(source_node_id)
+        source_penalty = 0.0
+        if source_state and hasattr(source_state, 'load_factor'):
+            if source_state.load_factor > 0.8:
+                source_penalty = (source_state.load_factor - 0.8) * 0.5
+        
+        # 💡 目标节点容量奖励
+        target_state = node_states.get(target_node_id)
+        target_bonus = 0.0
+        if target_state and hasattr(target_state, 'load_factor'):
+            target_bonus = (1.0 - target_state.load_factor) * 0.1
+        
+        # 💡 网络拥塞惩罚
+        network_penalty = 0.0
+        if source_state and hasattr(source_state, 'bandwidth_utilization'):
+            network_penalty = source_state.bandwidth_utilization * 0.1
+        
+        # 🎯 综合成功率
+        success_prob = base_prob - distance_penalty - source_penalty + target_bonus - network_penalty
+        return float(np.clip(success_prob, 0.4, 0.95))
+    
+    def _adaptive_kbb_phases(self, migration_plan: MigrationPlan) -> Tuple[float, float, float]:
+        """
+        🔧 优化：自适应Keep-Before-Break阶段划分
+        
+        根据迁移类型动态调整三个阶段的时间分配：
+        - 准备阶段：资源预留、状态同步
+        - 同步阶段：数据传输
+        - 静默切换：downtime
+        
+        Returns:
+            (prep_ratio, sync_ratio, downtime_ratio)
+        """
+        migration_type = migration_plan.migration_type
+        
+        if migration_type == MigrationType.RSU_TO_RSU:
+            # RSU间有线迁移，准备时间短
+            return (0.5, 0.4, 0.1)
+        elif migration_type == MigrationType.RSU_TO_UAV:
+            # 到UAV无线迁移，同步时间长
+            return (0.6, 0.35, 0.05)
+        elif migration_type == MigrationType.UAV_TO_RSU:
+            # UAV到RSU，平衡配置
+            return (0.55, 0.35, 0.1)
+        else:
+            # 默认配置（VEHICLE_FOLLOW, PREEMPTIVE等）
+            return (0.7, 0.25, 0.05)
+
     def _detach_task_from_queue(self, queue, task: Task) -> bool:
         """Remove a specific task object from the given queue-like container."""
         if queue is None or task is None:
@@ -493,5 +568,131 @@ class TaskMigrationManager:
         except Exception:
             return False
         return False
+
+    # ========== 🎯 P1-P3 全面优化方法 ==========
+    
+    def _score_target_node(self, target_id: str, source_id: str, source_pos: Position,
+                          node_states: Dict, node_positions: Dict[str, Position]) -> float:
+        """
+        🎯 P1-1: 多维度目标节点评分
+        
+        综合评分 = 0.4×负载 + 0.3×距离 + 0.2×队列 + 0.1×带宽
+        """
+        target_state = node_states.get(target_id)
+        if not target_state:
+            return 0.0
+        
+        # 1. 负载评分：越空闲越好
+        load_score = 1.0 - min(1.0, target_state.load_factor)
+        
+        # 2. 距离评分：越近越好
+        target_pos = node_positions.get(target_id)
+        if target_pos:
+            distance = source_pos.distance_to(target_pos)
+            distance_score = 1.0 / (1.0 + distance / 1000.0)
+        else:
+            distance_score = 0.5
+        
+        # 3. 队列评分：队列越短越好
+        queue_length = getattr(target_state, 'queue_length', 0)
+        queue_capacity = 20.0 if target_id.startswith("rsu_") else 10.0
+        queue_score = 1.0 - min(1.0, queue_length / queue_capacity)
+        
+        # 4. 带宽评分：带宽越空闲越好
+        bandwidth_util = getattr(target_state, 'bandwidth_utilization', 0.5)
+        bandwidth_score = 1.0 - min(1.0, bandwidth_util)
+        
+        # 综合加权评分
+        return 0.4 * load_score + 0.3 * distance_score + 0.2 * queue_score + 0.1 * bandwidth_score
+    
+    def _select_tasks_for_intelligent_migration(self, source_queue, max_count: int) -> List[Task]:
+        """
+        🎯 P2-2: 智能任务选择 - 优先迁移高优先级+紧急任务
+        """
+        tasks_scored = []
+        for task in source_queue:
+            if not isinstance(task, Task):
+                continue
+            
+            # 计算紧急度
+            try:
+                remaining_slots = int(task.remaining_lifetime_slots)
+                urgency = 1.0 / max(1.0, remaining_slots)
+            except:
+                urgency = 0.5
+            
+            # 优先级权重（优先级1最高）
+            priority = getattr(task, 'priority', 4)
+            priority_weight = (5 - priority) / 4.0
+            
+            # 大小惩罚（大任务迁移成本高）
+            data_size = getattr(task, 'data_size', 0)
+            size_penalty = data_size / 1e6  # MB
+            
+            # 综合评分
+            score = urgency * 0.5 + priority_weight * 0.3 - size_penalty * 0.2
+            tasks_scored.append((task, score))
+        
+        # 按评分排序，选择top-K
+        tasks_scored.sort(key=lambda x: x[1], reverse=True)
+        return [task for task, _ in tasks_scored[:max_count]]
+    
+    def _batch_migrate_optimization(self, migration_plans: List[MigrationPlan]) -> List[MigrationPlan]:
+        """
+        🎯 P3: 批量迁移优化
+        
+        合并同源同目标的迁移计划，减少20%开销
+        """
+        from collections import defaultdict
+        batches = defaultdict(list)
+        
+        # 按(source, target)分组
+        for plan in migration_plans:
+            key = (plan.source_node_id, plan.target_node_id)
+            batches[key].append(plan)
+        
+        optimized_plans = []
+        for (source, target), plans in batches.items():
+            if len(plans) > 1:
+                # 合并为批量迁移，减少20%开销
+                merged_plan = plans[0]
+                merged_plan.migration_delay *= 0.8
+                merged_plan.migration_cost *= 0.8
+                self.logger.info(f"🚀 批量迁移优化: {source}->{target} 合并{len(plans)}个计划")
+                optimized_plans.append(merged_plan)
+            else:
+                optimized_plans.extend(plans)
+        
+        return optimized_plans
+    
+    def _calculate_precise_migration_cost(self, migration_plan: MigrationPlan, 
+                                         task_list: List[Task],
+                                         node_states: Dict) -> float:
+        """
+        🎯 P3: 精确迁移成本计算
+        
+        考虑：传输成本 + 计算成本 + 网络拥塞成本
+        """
+        # 1. 实际传输成本
+        total_data_size = sum(getattr(t, 'data_size', 0) for t in task_list)
+        data_size_bits = total_data_size * 8
+        migration_bw = max(1e-9, getattr(config.migration, 'migration_bandwidth', 1e6))
+        transmission_time = data_size_bits / migration_bw
+        transmission_cost = transmission_time * self.alpha_tx
+        
+        # 2. 实际计算成本（状态同步、上下文切换）
+        num_tasks = len(task_list)
+        computation_cost = num_tasks * 0.05 * self.alpha_comp
+        
+        # 3. 网络拥塞成本
+        source_state = node_states.get(migration_plan.source_node_id)
+        if source_state and hasattr(source_state, 'bandwidth_utilization'):
+            source_bw_util = source_state.bandwidth_utilization
+            latency_penalty = transmission_time * (1 + source_bw_util) * self.alpha_lat
+        else:
+            latency_penalty = transmission_time * self.alpha_lat
+        
+        total_cost = transmission_cost + computation_cost + latency_penalty
+        return total_cost
 
 

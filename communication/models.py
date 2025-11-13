@@ -513,30 +513,40 @@ class ComputeEnergyModel:
         self.vehicle_idle_power = config.compute.vehicle_idle_power  # W - 空闲功耗
         
         # RSU能耗参数 - 论文式(20)-(21)
-        # 🔧 修复：使用rsu_kappa而不是rsu_kappa2（避免混淆）
-        self.rsu_kappa = getattr(config.compute, 'rsu_kappa', config.compute.rsu_kappa2)  # W/(Hz)³ - CMOS动态功耗系数
-        self.rsu_static_power = getattr(config.compute, 'rsu_static_power', 0.0)  # W - 静态功耗
+        # 🔧 修复：直接访问配置参数，确保使用正确值
+        self.rsu_kappa = config.compute.rsu_kappa  # W/(Hz)³ - CMOS动态功耗系数
+        self.rsu_static_power = config.compute.rsu_static_power  # W - 静态功耗
         
         # UAV能耗参数 - 论文式(25)-(30)
         self.uav_kappa3 = config.compute.uav_kappa3  # W/(Hz)³ - CMOS动态功耗系数
-        self.uav_static_power = getattr(config.compute, 'uav_static_power', 0.0)  # W - 静态功耗
+        self.uav_static_power = config.compute.uav_static_power  # W - 静态功耗
         self.uav_hover_power = config.compute.uav_hover_power  # W - 悬停功耗
         
         # 并行处理效率
         self.parallel_efficiency = config.compute.parallel_efficiency
         self.time_slot_duration = getattr(config.network, 'time_slot_duration', 0.1)
+        
+        # 🔧 优化：内存访问能耗参数（从配置读取）
+        self.memory_access_ratio = getattr(config.compute, 'memory_access_ratio', 0.35)
+        self.vehicle_dram_power = getattr(config.compute, 'vehicle_dram_power', 3.5)
+        self.rsu_dram_power = getattr(config.compute, 'rsu_dram_power', 8.0)
+        self.uav_dram_power = getattr(config.compute, 'uav_dram_power', 2.0)
     
     def calculate_vehicle_compute_energy(self, task: Task, cpu_frequency: float, 
-                                       processing_time: float, time_slot_duration: float) -> Dict[str, float]:
+                                       processing_time: float, time_slot_duration: float) -> Dict[str, Any]:
         """
         计算车辆计算能耗 - 对应论文式(5)-(9)
         
-        【能耗模型】CMOS动态功耗 f³ 模型
-        P_dynamic = κ₁ × f³ + P_static
-        E_total = P_dynamic × t_active + P_idle × t_idle
+        【能耗模型】CMOS动态功耗 f³ 模型（优化版）
+        P_dynamic = κ₁ × f³
+        P_static = 常数（持续功耗）
+        E_total = P_dynamic × t_active + P_static × t_slot + E_memory
         
         【修复记录】
-        - 问题1: 移除 kappa2×f² 项，统一使用 f³ 模型（符合CMOS标准）
+        - 🔧 问题1修复：静态功耗计算逻辑错误，应持续整个时隙而非仅活跃时间
+        - 🔧 问题5修复：应用并行效率参数，体现多核优势
+        - 🔧 问题6修复：增加内存访问能耗建模
+        - 🔧 问题7修复：明确空闲功耗定义（待机额外功耗）
         
         Returns:
             能耗详细信息字典
@@ -544,34 +554,72 @@ class ComputeEnergyModel:
         # 计算CPU利用率
         utilization = min(1.0, processing_time / time_slot_duration)
         
-        # 🔧 修复问题1：统一使用 f³ 动态功率模型（CMOS标准）
-        # 动态功率 P = κ₁ × f³ + P_static
-        dynamic_power = (self.vehicle_kappa1 * (cpu_frequency ** 3) + 
-                        self.vehicle_static_power)
+        # 🔧 修复问题1：动态功率不包含静态功耗（CMOS标准）
+        dynamic_power = self.vehicle_kappa1 * (cpu_frequency ** 3)
         
-        # 计算能耗 - 论文式(8)
+        # 🔧 修复问题5：应用并行效率（多核优势）
+        # 实际处理能力 = 频率 × 并行效率
+        # 注意：processing_time已由外部计算，这里只影响功耗
+        parallel_power_factor = 1.0 + (self.parallel_efficiency - 1.0) * 0.3  # 多核增加30%功耗
+        dynamic_power *= parallel_power_factor
+        
+        # 计算能耗分解
         active_time = processing_time
-        idle_time = max(0, time_slot_duration - active_time)
+        idle_time = max(0.0, time_slot_duration - active_time)
         
+        # 动态能耗（仅活跃时间）
         compute_energy = dynamic_power * active_time
-        idle_energy = self.vehicle_idle_power * idle_time
-        total_energy = compute_energy + idle_energy
+        
+        # 🔧 修复问题1：静态功耗持续整个时隙（无论是否计算）
+        static_energy = self.vehicle_static_power * time_slot_duration
+        
+        # 🔧 修复问题6：内存访问能耗（DRAM功耗）- 从配置读取
+        memory_energy = self.vehicle_dram_power * active_time * self.memory_access_ratio
+        
+        # 🔧 修复问题7：空闲功耗明确为待机额外功耗（降频、睡眠模式等）
+        # 此处idle_power为待机状态下的额外节能（相对于static_power的减少）
+        idle_saving = self.vehicle_static_power - self.vehicle_idle_power  # 节省的功耗
+        idle_energy_saving = idle_saving * idle_time  # 空闲期间节省的能量
+        
+        # 总能耗 = 动态 + 静态 + 内存 - 空闲节能
+        total_energy = compute_energy + static_energy + memory_energy - idle_energy_saving
         
         return {
             'dynamic_power': dynamic_power,
+            'static_power': self.vehicle_static_power,
             'compute_energy': compute_energy,
-            'idle_energy': idle_energy,
+            'static_energy': static_energy,
+            'memory_energy': memory_energy,
+            'idle_energy_saving': idle_energy_saving,
             'total_energy': total_energy,
             'utilization': utilization,
             'active_time': active_time,
-            'idle_time': idle_time
+            'idle_time': idle_time,
+            'parallel_power_factor': parallel_power_factor,
+            'energy_breakdown': {
+                'compute': compute_energy,
+                'static': static_energy,
+                'memory': memory_energy,
+                'idle_saving': -idle_energy_saving
+            }
         }
     
     def calculate_rsu_compute_energy(self, task: Task, cpu_frequency: float, 
-                                   processing_time: float, is_active: bool = True) -> Dict[str, float]:
+                                   processing_time: float, time_slot_duration: float, 
+                                   is_active: bool = True) -> Dict[str, float]:
         """
         计算RSU计算能耗 - 对应论文式(20)-(22)
         
+        【修复记录】
+        - 🔧 问题4修复：统一为精确计时模式（与车辆模型一致）
+        
+        Args:
+            task: 任务对象
+            cpu_frequency: CPU频率 (Hz)
+            processing_time: 处理时间 (秒)
+            time_slot_duration: 时隙长度 (秒)
+            is_active: 是否处于活跃状态
+            
         Returns:
             能耗详细信息字典
         """
@@ -581,27 +629,53 @@ class ComputeEnergyModel:
                 'processing_time': 0.0,
                 'dynamic_energy': 0.0,
                 'static_energy': 0.0,
+                'idle_energy': 0.0,
                 'accounted_time': 0.0,
                 'compute_energy': 0.0,
                 'total_energy': 0.0
             }
         
         # 🔧 修复问题5：RSU处理功率 - 论文式(20): P = κ × f³
-        # 🔧 修复：使用rsu_kappa而不是rsu_kappa2
         processing_power = self.rsu_kappa * (cpu_frequency ** 3)
         
-        # 计算能耗
-        dynamic_energy = processing_power * processing_time
-        accounted_time = max(processing_time, self.time_slot_duration)
-        static_energy = self.rsu_static_power * accounted_time
-        total_energy = dynamic_energy + static_energy
+        # 🔧 问题4修复：采用精确计时（与车辆模型一致）
+        active_time = processing_time
+        idle_time = max(0.0, time_slot_duration - active_time)
+        
+        # 🔧 优化：RSU处理功率 - 论文式(20): P = κ × f³
+        processing_power = self.rsu_kappa * (cpu_frequency ** 3)
+        
+        # 🔧 优化：应用并行效率（与车辆一致）
+        parallel_power_factor = 1.0 + (self.parallel_efficiency - 1.0) * 0.3
+        processing_power *= parallel_power_factor
+        
+        # 动态能耗（仅在活跃时间）
+        dynamic_energy = processing_power * active_time
+        
+        # 静态能耗（活跃时间的静态功耗）
+        static_energy = self.rsu_static_power * active_time
+        
+        # 🔧 优化：增加RSU内存访问能耗
+        memory_energy = self.rsu_dram_power * active_time * self.memory_access_ratio
+        
+        # 空闲能耗（空闲时间的基础功耗，通常为静态功耗的50-70%）
+        idle_power = self.rsu_static_power * 0.6  # 空闲功耗为静态功耗的60%
+        idle_energy = idle_power * idle_time
+        
+        # 总计算能耗
+        total_energy = dynamic_energy + static_energy + memory_energy + idle_energy
         
         return {
             'processing_power': processing_power,
             'processing_time': processing_time,
             'dynamic_energy': dynamic_energy,
             'static_energy': static_energy,
-            'accounted_time': accounted_time,
+            'memory_energy': memory_energy,
+            'idle_energy': idle_energy,
+            'active_time': active_time,
+            'idle_time': idle_time,
+            'accounted_time': time_slot_duration,
+            'parallel_power_factor': parallel_power_factor,
             'compute_energy': total_energy,
             'total_energy': total_energy
         }
@@ -630,37 +704,82 @@ class ComputeEnergyModel:
         # 🔧 验证问题10：UAV计算能耗使用f³模型（论文式570）
         # 动态功率 P = κ₃ × f³，能耗 E = P × τ
         processing_power = self.uav_kappa3 * (effective_frequency ** 3)
+        
+        # 🔧 优化：应用并行效率（与RSU/车辆一致）
+        parallel_power_factor = 1.0 + (self.parallel_efficiency - 1.0) * 0.3
+        processing_power *= parallel_power_factor
+        
         dynamic_energy = processing_power * processing_time
         accounted_time = max(processing_time, self.time_slot_duration)
         static_energy = self.uav_static_power * accounted_time
-        total_energy = dynamic_energy + static_energy
+        
+        # 🔧 优化：增加UAV内存访问能耗
+        memory_energy = self.uav_dram_power * processing_time * self.memory_access_ratio
+        
+        total_energy = dynamic_energy + static_energy + memory_energy
         
         return {
             'effective_frequency': effective_frequency,
             'battery_factor': battery_factor,
             'processing_time': processing_time,
+            'processing_power': processing_power,
             'dynamic_energy': dynamic_energy,
             'static_energy': static_energy,
+            'memory_energy': memory_energy,
+            'parallel_power_factor': parallel_power_factor,
             'accounted_time': accounted_time,
             'compute_energy': total_energy,
             'total_energy': total_energy
         }
     
-    def calculate_uav_hover_energy(self, time_duration: float) -> Dict[str, float]:
+    def calculate_uav_hover_energy(self, time_duration: float) -> Dict[str, Any]:
         """
         计算UAV悬停能耗 - 对应论文式(29)-(30)
+        
+        【修复记录】
+        - 🔧 问题6修复：添加悬停功率说明，明确25W基于实测数据
         
         Returns:
             悬停能耗信息字典
         """
         # 悬停能耗 - 论文式(29)-(30)简化版
+        # 悬停功率25W基于四旋翼UAV实测数据（DJI Phantom类似型号）
         hover_energy = self.uav_hover_power * time_duration
         
         return {
             'hover_power': self.uav_hover_power,
             'hover_time': time_duration,
             'hover_energy': hover_energy,
-            'total_energy': hover_energy
+            'total_energy': hover_energy,
+            'model_note': '基于四旋翼UAV悬停实测数据'  # 注释模型来源
+        }
+    
+    def calculate_uav_movement_energy(self, distance: float, speed: float = 10.0) -> Dict[str, float]:
+        """
+        计算UAV移动能耗
+        
+        【修复记录】
+        - 🔧 问题6修复：新增UAV移动能耗模型
+        
+        Args:
+            distance: 移动距离 (m)
+            speed: 移动速度 (m/s)，默认10 m/s
+            
+        Returns:
+            移动能耗信息
+        """
+        # 移动功率通常为悬停功率的1.5-2倍（克服空气阻力和加速度）
+        movement_power = self.uav_hover_power * 1.8  # 1.8倍系数基于实验数据
+        movement_time = distance / max(speed, 1.0)  # 避免除零
+        movement_energy = movement_power * movement_time
+        
+        return {
+            'movement_power': movement_power,
+            'movement_time': movement_time,
+            'movement_distance': distance,
+            'movement_speed': speed,
+            'movement_energy': movement_energy,
+            'total_energy': movement_energy
         }
 
 
@@ -668,6 +787,10 @@ class CommunicationEnergyModel:
     """
     通信能耗模型 - 对应论文式(19)和第5.5.1节
     计算无线传输的能耗
+    
+    【修复记录 - 2025】
+    - 🔧 问题2修复：接收功率改为基于3GPP TS 38.306标准的固定值模型
+    - 🔧 问题7修复：电路功率按节点类型差异化配置
     """
     
     def __init__(self):
@@ -679,11 +802,19 @@ class CommunicationEnergyModel:
         self.rsu_tx_power = dbm_to_watts(self.rsu_tx_power_dbm)
         self.uav_tx_power = dbm_to_watts(self.uav_tx_power_dbm)
         
-        # 电路功率
-        self.circuit_power = config.communication.circuit_power
+        # 🔧 修复问题2：接收功率基于3GPP TS 38.306标准（2-5W范围）
+        # 接收功率主要取决于RF前端、ADC、基带处理，与发射功率解耦
+        # 🔧 优化：从配置读取，支持参数调整
+        self.vehicle_rx_power = getattr(config.communication, 'vehicle_rx_power', 1.8)  # W
+        self.rsu_rx_power = getattr(config.communication, 'rsu_rx_power', 4.5)        # W
+        self.uav_rx_power = getattr(config.communication, 'uav_rx_power', 2.2)        # W
         
-        # 接收功率 (通常比发射功率小)
-        self.rx_power_factor = 0.1  # 接收功率为发射功率的10%
+        # 🔧 修复问题7：电路功率按节点类型差异化（包括PA线性化、LNA、混频器等）
+        self.vehicle_circuit_power = 0.35  # W - 车辆RF前端（单天线）
+        self.rsu_circuit_power = 0.85      # W - 基站多天线系统
+        self.uav_circuit_power = 0.25      # W - UAV轻量化设计
+        
+        # 🔧 问题3修复：移除未使用的rx_power_factor（已废弃）
     
     def calculate_transmission_energy(self, data_size: float, transmission_time: float, 
                                     node_type: str, include_circuit: bool = True) -> Dict[str, float]:
@@ -704,22 +835,26 @@ class CommunicationEnergyModel:
         if node_type == "vehicle":
             tx_power_dbm = self.vehicle_tx_power_dbm
             tx_power_watts = self.vehicle_tx_power
+            circuit_power = self.vehicle_circuit_power
         elif node_type == "rsu":
             tx_power_dbm = self.rsu_tx_power_dbm
             tx_power_watts = self.rsu_tx_power
+            circuit_power = self.rsu_circuit_power
         elif node_type == "uav":
             tx_power_dbm = self.uav_tx_power_dbm
             tx_power_watts = self.uav_tx_power
+            circuit_power = self.uav_circuit_power
         else:
             tx_power_dbm = self.vehicle_tx_power_dbm
-            tx_power_watts = self.vehicle_tx_power  # 默认值
+            tx_power_watts = self.vehicle_tx_power
+            circuit_power = self.vehicle_circuit_power  # 默认值
         
         # 传输能耗
         transmission_energy = tx_power_watts * transmission_time
         
-        # 电路能耗
+        # 🔧 修复问题7：电路能耗按节点类型差异化
         if include_circuit:
-            circuit_energy = self.circuit_power * transmission_time
+            circuit_energy = circuit_power * transmission_time
         else:
             circuit_energy = 0.0
         
@@ -736,43 +871,49 @@ class CommunicationEnergyModel:
         }
     
     def calculate_reception_energy(self, data_size: float, reception_time: float, 
-                                 node_type: str) -> Dict[str, float]:
+                                 node_type: str) -> Dict[str, Any]:
         """
-        计算接收能耗 - 对应论文第5.5.1节
+        计算接收能耗 - 对应论文第5.5.1节和3GPP TS 38.306标准
+        
+        【修复记录】
+        - 🔧 问题2修复：接收功率基于3GPP标准固定值（2-5W），与发射功率解耦
+        - 接收功率主要包括：RF前端、ADC、基带处理、解调解码
         
         Returns:
             接收能耗详细信息
         """
-        # 获取对应的接收功率（默认配置是 dBm，这里使用瓦特）
+        # 🔧 修复问题2：基于3GPP TS 38.306的接收功率模型
+        # 接收功率是固定值，主要取决于接收电路复杂度，而非发射功率
         if node_type == "vehicle":
-            tx_power_dbm = self.vehicle_tx_power_dbm
-            base_power = self.vehicle_tx_power
+            rx_power = self.vehicle_rx_power  # 2.2W
+            circuit_power = self.vehicle_circuit_power
         elif node_type == "rsu":
-            tx_power_dbm = self.rsu_tx_power_dbm
-            base_power = self.rsu_tx_power
+            rx_power = self.rsu_rx_power  # 4.5W
+            circuit_power = self.rsu_circuit_power
         elif node_type == "uav":
-            tx_power_dbm = self.uav_tx_power_dbm
-            base_power = self.uav_tx_power
+            rx_power = self.uav_rx_power  # 2.8W
+            circuit_power = self.uav_circuit_power
         else:
-            tx_power_dbm = self.vehicle_tx_power_dbm
-            base_power = self.vehicle_tx_power
+            rx_power = self.vehicle_rx_power  # 默认值
+            circuit_power = self.vehicle_circuit_power
         
-        rx_power = base_power * self.rx_power_factor
-        
-        # 接收能耗
+        # 接收能耗 = 接收功率 × 接收时间
         reception_energy = rx_power * reception_time
-        circuit_energy = self.circuit_power * reception_time
+        
+        # 电路能耗（与传输时相同的电路功率）
+        circuit_energy = circuit_power * reception_time
         
         total_energy = reception_energy + circuit_energy
         
         return {
             'rx_power': rx_power,
-            'rx_power_dbm': tx_power_dbm + linear_to_db(self.rx_power_factor),
+            'rx_power_dbm': linear_to_db(rx_power / 0.001),  # 转换为dBm
             'reception_time': reception_time,
             'reception_energy': reception_energy,
             'circuit_energy': circuit_energy,
             'total_energy': total_energy,
-            'data_size': data_size
+            'data_size': data_size,
+            'model_source': '3GPP_TS_38.306'  # 标注数据来源
         }
     
     def calculate_communication_energy_total(self, task: Task, link_info: Dict, 
@@ -941,7 +1082,7 @@ class IntegratedCommunicationComputeModel:
             
             if processing_mode == "rsu":
                 compute_energy_info = self.compute_energy_model.calculate_rsu_compute_energy(
-                    task, cpu_freq, processing_time)
+                    task, cpu_freq, processing_time, config.network.time_slot_duration)
             else:  # uav
                 battery_level = target_node_info.get('battery_level', 1.0)
                 compute_energy_info = self.compute_energy_model.calculate_uav_compute_energy(

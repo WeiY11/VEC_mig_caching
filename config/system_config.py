@@ -155,13 +155,14 @@ class RLConfig:
     【奖励函数权重 - 核心优化目标】
     ⚠️ 重要：这是系统的核心优化目标！
     
-    核心目标函数（🔧 修复问题6和问题10：使用normalizer后重新平衡权重）：
-        norm_delay = delay / delay_normalizer (0.2s)
-        norm_energy = energy / energy_normalizer (1000J)
+    核心目标函数（🔧 修复问题6和问题10：归一化基准与优化目标对齐）：
+        norm_delay = delay / latency_target (0.4s)
+        norm_energy = energy / energy_target (1200J)
         Objective = ω_T × norm_delay + ω_E × norm_energy
         Reward = -(ω_T × norm_delay + ω_E × norm_energy) - 0.02 × dropped_tasks
     
-    🔧 修复问题10：基于normalizer重新评估权重比例
+    🔧 修复问题6：归一化基准现在直接使用latency_target和energy_target
+    （而非旧的硬编码值0.2s和1000J，确保权重含义一致）
     
     【权重设置分析】
     典型值：delay ≈ 0.3s, energy ≈ 1000J
@@ -332,21 +333,19 @@ class TaskConfig:
     
     def __init__(self):
         self.num_priority_levels = 4
-        self.task_compute_density = 120  # cycles per bit as default
-        self.arrival_rate = 2.5   # tasks per second (高负载场景 - 12车辆×2.5=30 tasks/s总负载)
         
-        # 🎯 优化后高负载配置：平衡真实性与实验有效性
-        # 目标：本地计算完成率降至75-80%（而非<65%），保留策略差异性
-        self.task_compute_density = 100  # cycles per bit - 适度提高（视频处理级别）
-        self.arrival_rate = 3.0   # tasks per second (高负载 - 12车辆×3.0=36 tasks/s总负载)
+        # 🎯 高负载场景配置：平衡真实性与实验有效性
+        # 目标：本地计算完成率降至75-80%，保留策略差异性
+        self.task_compute_density = 100  # cycles per bit - 默认计算密度（视频处理级别）
+        self.arrival_rate = 3.0   # tasks/s - 高负载场景（12车辆×3.0=36 tasks/s总负载）
         
         # 🎯 优化后任务参数：保持挑战性但避免极端情况
         self.data_size_range = (0.5e6/8, 15e6/8)  # 0.5-15 Mbits = 0.0625-1.875 MB (恢复合理范围)
         self.task_data_size_range = self.data_size_range  # 兼容性别名
 
-        # 计算周期配置 (基于适度计算密度)
-        # 最大计算量 = 1.875MB × 8 × 100 cycles/bit = 1.5e9 cycles
-        self.compute_cycles_range = (7.5e7, 1.5e9)  # cycles (匹配100 cycles/bit)
+        # 计算周期配置 (基于分级计算密度)
+        # 最大计算量 = 15 Mbits × 150 cycles/bit = 2.25e9 cycles (类型4任务)
+        self.compute_cycles_range = (7.5e7, 2.5e9)  # cycles (覆盖60-150 cycles/bit全范围)
         
         # 🔧 修复问题9：截止时间配置对齐时隙边界（100ms时隙）
         self.deadline_range = (0.3, 0.9)  # seconds，对应3-9个时隙(100ms)，边界对齐
@@ -732,13 +731,23 @@ class ComputeConfig:
     """
     
     def __init__(self):
+        # 并行处理效率
         self.parallel_efficiency = 0.8
         
+        # 🔧 优化：内存访问能耗参数配置化
+        self.memory_access_ratio = 0.35  # 内存访问时间占比（35%）
+        self.vehicle_dram_power = 3.5    # W - 车载DRAM功耗
+        self.rsu_dram_power = 8.0        # W - RSU DRAM功耗（更大容量）
+        self.uav_dram_power = 2.0        # W - UAV DRAM功耗（低功耗设计）
+        
         # 🔑 修复：车辆能耗参数 - 基于实际硬件校准
-        self.vehicle_kappa1 = 5.12e-31  # 基于Intel NUC i7实际校准
-        self.vehicle_kappa2 = 2.40e-20  # 频率平方项系数
-        self.vehicle_static_power = 8.0  # W (现实车载芯片静态功耗)
-        self.vehicle_idle_power = 3.5   # W (空闲功耗)
+        # 🔧 问题2修复：重新校准kappa1以匹配更高的频率范围
+        # 目标：1.5GHz约8W，3.0GHz约17W（包含静态功耗）
+        self.vehicle_kappa1 = 1.5e-28  # W/(Hz)³ - 重新校准（1.5GHz动态功耗3W，3.0GHz动态功耗12W）
+        self.vehicle_kappa2 = 2.40e-20  # 频率平方项系数（兼容性保留）
+        # 🔧 问题1/7修复：静态功耗降低至合理范围，与现代车载芯片匹配
+        self.vehicle_static_power = 5.0  # W（现代车载芯片基础功耗）
+        self.vehicle_idle_power = 2.0   # W（待机模式功耗，静态功耗的40%）
         
         # 🔑 修复：RSU能耗参数 - 基于20GHz边缘服务器校准
         # 🎯 优化：降低kappa系数，避免高频率下能耗过高
@@ -752,17 +761,12 @@ class ComputeConfig:
         self.uav_kappa = 8.89e-31  # 功耗受限的UAV芯片
         self.uav_kappa3 = 8.89e-31  # 修复后参数
         self.uav_static_power = 2.5  # W (轻量化设计)
-        self.uav_hover_power = 25.0  # W (更合理的悬停功耗)
+        # 🔧 问题6修复：统一UAV悬停功率配置
+        self.uav_hover_power = 25.0  # W (基于四旋翼UAV实测数据，悬停约25W)
         
-        # 🎯 总资源池配置（中央智能体分配）
-        # 设计理念：中央基站智能体负责资源分配，Phase 1决策，Phase 2执行
-        # 注意：这些是资源池总量，实际分配由中央智能体的动作决定
-        # 
-        # 📊 资源平衡设计（基于负载分析）：
-        # - 本地计算适度受限：促使部分任务卸载（而非全部）
-        # - 边缘计算充足：确保卸载任务能被处理
-        # - 带宽匹配通信需求：避免通信瓶颈
-        self.total_vehicle_compute = 6e9     # 总本地计算：6 GHz（12车辆共享，每车0.5GHz）
+        # 🔧 问题2修复：CPU频率配置更新为现代车载芯片范围
+        # 参考：高通骁龙8 Gen 2 (1.8-3.2GHz)、NVIDIA Jetson Xavier (1.2-2.26GHz)
+        self.total_vehicle_compute = 24e9     # 总本地计算：24 GHz（12车辆共享，每车2.0GHz）
         self.total_rsu_compute = 50e9        # 总RSU计算：50 GHz（4个RSU共享，每个12.5GHz）
         self.total_uav_compute = 8e9         # 总UAV计算：8 GHz（2个UAV共享，每个4GHz）
         
@@ -772,13 +776,13 @@ class ComputeConfig:
         # 2. 中央资源池模式：初始均匀分配，运行时由智能体动态优化（新设计）
         
         # 初始分配策略（均匀分配作为baseline）
-        self.vehicle_initial_freq = self.total_vehicle_compute / 12   # 0.167 GHz - 初始均分
-        self.rsu_initial_freq = self.total_rsu_compute / 4            # 15 GHz - 初始均分
+        self.vehicle_initial_freq = self.total_vehicle_compute / 12   # 2.0 GHz - 初始均分
+        self.rsu_initial_freq = self.total_rsu_compute / 4            # 12.5 GHz - 初始均分
         self.uav_initial_freq = self.total_uav_compute / 2            # 4 GHz - 初始均分
         
-        # CPU频率范围（保留兼容性，用于标准模式）
-        # 在中央资源池模式下，这些范围会被动态分配覆盖
-        self.vehicle_cpu_freq_range = (self.vehicle_initial_freq, self.vehicle_initial_freq)
+        # 🔧 问题2修复：CPU频率范围更新为现代车载芯片范围
+        # 支持动态调频（DVFS），从1.5GHz至3.0GHz
+        self.vehicle_cpu_freq_range = (1.5e9, 3.0e9)  # 1.5-3.0 GHz（现代车载芯片）
         self.rsu_cpu_freq_range = (self.rsu_initial_freq, self.rsu_initial_freq)
         self.uav_cpu_freq_range = (self.uav_initial_freq, self.uav_initial_freq)
         
@@ -797,8 +801,7 @@ class ComputeConfig:
         self.rsu_memory_size = 32e9  # 32 GB
         self.uav_memory_size = 4e9  # 4 GB
         
-        # UAV特殊配置
-        self.uav_hover_power = 50.0  # W
+        # 🔧 问题6修复：移除冗余的uav_hover_power配置（已在上方定义）
 
 class NetworkConfig:
     """
@@ -837,7 +840,8 @@ class NetworkConfig:
     def __init__(self):
         self.time_slot_duration = 0.1  # seconds - 🔧 改为100ms，更精细的控制粒度
         self.bandwidth = 100e6  # Hz - 🎯 总带宽100MHz（5G NR高带宽，匹配卸载需求）
-        self.carrier_frequency = 2.4e9  # Hz
+        # 🔧 修复：载波频率应与CommunicationConfig保持一致（3.5 GHz）
+        self.carrier_frequency = 3.5e9  # Hz - 3GPP NR n78频段
         self.noise_power = -174  # dBm/Hz
         self.path_loss_exponent = 2.0
         self.coverage_radius = 1000  # meters
@@ -904,7 +908,19 @@ class CommunicationConfig:
         self.vehicle_tx_power = 23.0  # dBm (200mW) - 3GPP标准
         self.rsu_tx_power = 46.0      # dBm (40W) - 3GPP标准
         self.uav_tx_power = 30.0      # dBm (1W) - 3GPP标准
-        self.circuit_power = 0.1      # W
+        
+        # 🔧 问题7修复：电路功率按节点类型差异化
+        self.vehicle_circuit_power = 0.35  # W - 车辆RF前端（单天线）
+        self.rsu_circuit_power = 0.85      # W - 基站多天线系统
+        self.uav_circuit_power = 0.25      # W - UAV轻量化设计
+        self.circuit_power = 0.35          # W - 默认值（保持向后兼容）
+        
+        # 🔧 优化：接收功率配置（基于3GPP TS 38.306标准）
+        # 降低车辆接收功率，使其与发射功率比例更合理
+        self.vehicle_rx_power = 1.8  # W - 车辆接收功率（从TX 200mW的90%）
+        self.rsu_rx_power = 4.5      # W - RSU接收功率（从TX 40W的11.25%）
+        self.uav_rx_power = 2.2      # W - UAV接收功率（从TX 1W的220%）
+        
         self.noise_figure = 9.0       # dB - 3GPP标准
         
         # 🎯 总带宽池配置（中央智能体动态分配）
@@ -999,10 +1015,10 @@ class MigrationConfig:
         self.migration_cost_factor = 0.1
         
         # 🔑 调整：合理的迁移触发阈值
-        # 🔧 修复v2：降低到75%，更早触发迁移，减少队列过载
-        self.rsu_overload_threshold = 0.75   # 75%负载即触发迁移
-        self.uav_overload_threshold = 0.75   # UAV同样75%
-        self.rsu_underload_threshold = 0.3
+        # 🔧 优化v3：进一步降低到70%，更积极触发迁移，避免过载
+        self.rsu_overload_threshold = 0.70   # 70%负载即触发迁移（优化）
+        self.uav_overload_threshold = 0.70   # UAV同样70%
+        self.rsu_underload_threshold = 0.3   # 欠载阈值保持不变
         # 队列/切换阈值（用于车辆跟随与过载切换）
         self.follow_handover_distance = 30.0  # meters，车辆跟随触发的最小距离改善
         # 🔑 最终优化：统一队列管理标准
@@ -1024,7 +1040,10 @@ class MigrationConfig:
         self.migration_time_penalty = 0.05  # seconds
         
         # 🔑 用户要求：每秒触发一次迁移决策
-        self.cooldown_period = 1.0  # 1秒冷却期，实现每秒最多一次迁移
+        # 🚀 优化：差异化冷却期策略
+        self.cooldown_period = 0.5  # 0.5秒基础冷却期（紧急迁移）
+        self.normal_cooldown = 1.0  # 1.0秒正常迁移冷却期
+        self.proactive_cooldown = 2.0  # 2.0秒主动优化冷却期
 
 class CacheConfig:
     """

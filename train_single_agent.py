@@ -39,7 +39,7 @@ python train_single_agent.py --algorithm TD3 --episodes 200 --no-central-resourc
 python train_single_agent.py --compare --episodes 200  # 比较所有算法
 🚀 增强缓存模式 (默认启用 - 分层L1/L2 + 自适应热度策略 + RSU协作):
 python train_single_agent.py --algorithm TD3 --episodes 1600 --num-vehicles 8
-python train_single_agent.py --algorithm TD3 --episodes 2000 --num-vehicles 12
+python train_single_agent.py --algorithm TD3 --episodes 1000 --num-vehicles 12
 python train_single_agent.py --algorithm TD3 --episodes 800 --num-vehicles 12 --silent-mode  # 静默保存结果
 python train_single_agent.py --algorithm TD3 --episodes 1600 --num-vehicles 16
 python train_single_agent.py --algorithm TD3 --episodes 1600 --num-vehicles 20
@@ -1635,6 +1635,9 @@ class SingleAgentTrainingEnvironment:
         # 🔧 重置episode步数跟踪，修复能耗计算
         self._current_episode_step = 0
         
+        # 🎯 初始化本episode的step统计列表
+        episode_step_stats = []
+        
         episode_reward = 0.0
         episode_info = {}
         step = 0
@@ -1673,6 +1676,10 @@ class SingleAgentTrainingEnvironment:
             
             # 执行动作（将动作字典传入以影响仿真器卸载偏好）
             next_state, reward, done, info = self.step(action, state, actions_dict)
+            
+            # 🎯 保存本步的step_stats供任务分布统计使用
+            step_stats = info.get('step_stats', {})
+            episode_step_stats.append(step_stats)
             
             # 初始化training_info
             training_info = {}
@@ -1723,7 +1730,8 @@ class SingleAgentTrainingEnvironment:
             'avg_reward': episode_reward,
             'episode_info': episode_info,
             'system_metrics': system_metrics,
-            'steps': step + 1
+            'steps': step + 1,
+            'step_stats_list': episode_step_stats  # 🎯 返回每个step的统计数据
         }
     
     def _run_ppo_episode(self, episode: int, max_steps: int = 100) -> Dict:
@@ -2153,6 +2161,9 @@ def train_single_algorithm(algorithm: str, num_episodes: Optional[int] = None, e
         resume_from: 已训练模型路径（.pth 或目录前缀），用于warm-start继续训练
         resume_lr_scale: Warm-start后对学习率的缩放系数（默认0.5，None表示保持原值）
     """
+    # 导入任务分布统计模块
+    from utils.training_analytics_integration import TaskAnalyticsTracker
+    
     # 使用配置中的默认值
     if num_episodes is None:
         num_episodes = config.experiment.num_episodes
@@ -2290,6 +2301,15 @@ def train_single_algorithm(algorithm: str, num_episodes: Optional[int] = None, e
     os.makedirs(f"results/single_agent/{algorithm.lower()}", exist_ok=True)
     os.makedirs(f"results/models/single_agent/{algorithm.lower()}", exist_ok=True)
     
+    # 🎯 初始化任务处理方式分布统计跟踪器
+    # 根据episode数自动调整日志输出间隔
+    log_interval = max(1, num_episodes // 20) if num_episodes > 0 else 10
+    analytics_tracker = TaskAnalyticsTracker(
+        enable_logging=True,
+        log_interval=log_interval
+    )
+    print(f"\n📊 已启用任务处理方式分布统计（每{log_interval}个episode输出一次）")
+    
     # 训练循环
     # 🔧 修复：per-step奖励范围约为-2.0到-0.5，初始值应相应调整
     best_avg_reward = -10.0  # per-step奖励初始阈值（负值越大越好）
@@ -2298,8 +2318,19 @@ def train_single_algorithm(algorithm: str, num_episodes: Optional[int] = None, e
     for episode in range(1, num_episodes + 1):
         episode_start_time = time.time()
         
+        # 🎯 开始记录该episode的任务分布统计
+        analytics_tracker.start_episode(episode)
+        
         # 运行训练轮次
         episode_result = training_env.run_episode(episode)
+        
+        # 🎯 记录本episode内所有的step统计
+        step_stats_list = episode_result.get('step_stats_list', [])
+        for step_idx, step_stats in enumerate(step_stats_list):
+            analytics_tracker.record_step(step_idx, step_stats)
+        
+        # 🎯 结束该episode的任务分布统计
+        episode_stats = analytics_tracker.end_episode()
         
         # 记录训练数据
         training_env.episode_rewards.append(episode_result['avg_reward'])
@@ -2394,6 +2425,30 @@ def train_single_algorithm(algorithm: str, num_episodes: Optional[int] = None, e
     print(f"🎉 {algorithm}训练完成!")
     print(f"⏱️  总训练时间: {total_training_time/3600:.2f} 小时")
     print(f"🏆 最佳Per-Step奖励: {best_avg_reward:.3f}")
+    
+    # 📊 输出任务处理方式分布统计
+    print("\n" + "=" * 60)
+    print("📊 任务处理方式分布统计")
+    print("=" * 60)
+    
+    # 打印训练汇总统计
+    analytics_tracker.print_training_summary()
+    
+    # 打印最近N个episode的详细统计
+    analytics_tracker.print_summary(top_n=min(20, num_episodes))
+    
+    # 导出CSV数据用于后续分析
+    csv_export_path = f"results/single_agent/{algorithm.lower()}/task_distribution_analysis.csv"
+    analytics_tracker.export_csv(csv_export_path)
+    
+    # 获取演化趋势
+    evolution_trends = analytics_tracker.get_evolution_trend()
+    if evolution_trends and evolution_trends.get('episodes'):
+        print(f"\n📈 任务处理方式演化趋势分析:")
+        print(f"   - 本地处理占比: {evolution_trends['local_ratio'][-1]:.1%} (初始: {evolution_trends['local_ratio'][0]:.1%})")
+        print(f"   - RSU处理占比: {evolution_trends['rsu_ratio'][-1]:.1%} (初始: {evolution_trends['rsu_ratio'][0]:.1%})")
+        print(f"   - UAV处理占比: {evolution_trends['uav_ratio'][-1]:.1%} (初始: {evolution_trends['uav_ratio'][0]:.1%})")
+        print(f"   - 任务成功率: {evolution_trends['success_ratio'][-1]:.1%} (初始: {evolution_trends['success_ratio'][0]:.1%})")
     
     # 收集系统统计信息用于报告
     simulator_stats = {}

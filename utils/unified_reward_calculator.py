@@ -76,18 +76,20 @@ class UnifiedRewardCalculator:
             # 默认所有任务类型权重相等
             self.task_priority_weights = {1: 0.25, 2: 0.25, 3: 0.25, 4: 0.25}
 
-        # 归一化因子（基于典型延迟0.2s和能耗1000J）
-        # Normalisation factors (based on typical delay 0.2s and energy 1000J).
-        # 注：时隙已改为100ms，但归一化因子基于实际延迟范围，无需改变
-        self.delay_normalizer = 0.2  # 延迟归一化因子（秒）- 典型延迟参考值
-        self.energy_normalizer = 1000.0  # 能耗归一化因子（焦耳）
+        # 🔧 修复：归一化因子必须与优化目标值对齐
+        # Normalisation factors MUST align with optimization targets (latency_target and energy_target).
+        # 根据训练结果（Episode 1000+）：延迟稳定在~0.05s，能耗稳定在~5000J
+        # 目标值设置为：latency_target=0.4s, energy_target=1200J
+        # 因此归一化基准应该直接使用这些目标值，而非硬编码的0.2s和1000J
+        self.delay_normalizer = self.latency_target  # 与目标值对齐
+        self.energy_normalizer = self.energy_target  # 与目标值对齐
         self.delay_bonus_scale = max(1e-6, self.latency_target)
         self.energy_bonus_scale = max(1e-6, self.energy_target)
         
-        # SAC算法使用不同的归一化参数
+        # SAC算法使用不同的归一化参数（但仍需与target对齐）
         if self.algorithm == "SAC":
-            self.delay_normalizer = 0.25
-            self.energy_normalizer = 1200.0
+            self.delay_normalizer = self.latency_target  # 对齐
+            self.energy_normalizer = self.energy_target  # 对齐
 
         norm_cfg = getattr(config, "normalization", None)
         if norm_cfg is not None:
