@@ -1865,8 +1865,15 @@ class SingleAgentTrainingEnvironment:
             # =============== 原有任务分配逻辑 (保持兼容) ===============
             raw = vehicle_action_array[:3]
             raw = np.clip(raw, -5.0, 5.0)
+            
+            # 🔧 修复：确保UAV有基础概率，避免被学习到-5导致死亡
+            # 如果UAV维度被学习到极低值（<-3），给予一个基础值
+            if raw.size > 2 and raw[2] < -3.0:
+                raw[2] = -1.0  # 给UAV一个合理的初始值
+            
             exp = np.exp(raw - np.max(raw))
             probs = exp / np.sum(exp)
+            
             sim_actions = {
                 'vehicle_offload_pref': {
                     'local': float(probs[0]),

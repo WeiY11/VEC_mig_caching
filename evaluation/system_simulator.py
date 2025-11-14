@@ -842,7 +842,14 @@ class CompleteSystemSimulator:
             vehicle['compute_usage'] = 0.0
 
     def _record_queue_drop(self, task: Dict, node_type: str) -> None:
-        """记录因队列溢出导致的任务丢弃。"""
+        """记录因队列溢出导致的任务丢弃。
+        
+        🔧 关键修复：防止重复统计已丢弃的任务
+        """
+        # 🔧 如果任务已经被标记为丢弃，直接返回，避免重复计数
+        if task.get('dropped', False):
+            return
+        
         self.stats['dropped_tasks'] = self.stats.get('dropped_tasks', 0) + 1
         self.stats['queue_overflow_drops'] = self.stats.get('queue_overflow_drops', 0) + 1
         data_bytes = float(task.get('data_size_bytes', task.get('data_size', 0.0) * 1e6))
@@ -872,12 +879,18 @@ class CompleteSystemSimulator:
         by_reason[reason] = by_reason.get(reason, 0) + 1
 
     def _enforce_queue_capacity(self, node: Dict, node_type: str, step_summary: Dict[str, Any]) -> None:
-        """在入队后执行，确保队列受控。"""
+        """在入队后执行，确保队列受控
+        
+        🔧 紧急修复：大幅提高队列溢出边界，减少丢弃
+        """
         queue = node.get('computation_queue', [])
         if not isinstance(queue, list):
             return
         nominal_capacity = self.rsu_nominal_capacity if node_type == 'RSU' else self.uav_nominal_capacity
-        max_queue = int(max(1, round(nominal_capacity * self.node_max_load_factor * self.queue_overflow_margin)))
+        # 🔧 紧急修复：大幅放宽溢出边界 (1.5 → 3.0)
+        # 原值过于严格，导致大量任务被丢弃
+        overflow_margin = 3.0  # 允许队列长度达到名义容量的3倍
+        max_queue = int(max(1, round(nominal_capacity * self.node_max_load_factor * overflow_margin)))
         overflow = len(queue) - max_queue
         if overflow <= 0:
             return
@@ -1470,21 +1483,23 @@ class CompleteSystemSimulator:
         return float(np.clip(scale, 0.2, 3.0))
 
     def _is_node_admissible(self, node: Dict, node_type: str) -> bool:
-        """检查节点是否允许新的卸载任务进入。"""
+        """检查节点是否允许新的卸载任务进入
+        
+        🔧 紧急修复：大幅放宽准入阈值，让UAV也能接受任务
+        """
         queue_len = len(node.get('computation_queue', []))
         capacity = self.rsu_nominal_capacity if node_type == 'RSU' else self.uav_nominal_capacity
         ratio = queue_len / max(1.0, capacity)
         usage = float(node.get('compute_usage', 0.0))
         
-        # 🔧 修复：区分RSU和UAV的准入阈值
-        # UAV使用更宽松的阈值（允许到150%负载），避免完全无法接受任务
-        # RSU保持原有的严格控制（100%阈值）
+        # 🔧 紧急修复：大幅放宽阈值，让节点能够接受更多任务
+        # 原阈值过于严格，导致大量任务被拒绝
         if node_type == 'UAV':
-            queue_threshold = 1.5  # UAV队列允许150%容量
-            usage_threshold = 1.5  # UAV使用率允许150%
-        else:
-            queue_threshold = max(0.5, self.node_max_load_factor)  # RSU默认100%
-            usage_threshold = max(0.5, self.node_max_load_factor)
+            queue_threshold = 5.0  # UAV队列允许500%容量（极度宽松）
+            usage_threshold = 5.0  # UAV使用率允许500%
+        else:  # RSU
+            queue_threshold = 3.0  # RSU队列允许300%容量（宽松）
+            usage_threshold = 3.0  # RSU使用率允许300%
         
         # 队列检查：队列长度 < 阈值
         queue_ok = ratio < queue_threshold
@@ -2288,8 +2303,13 @@ class CompleteSystemSimulator:
                 log_interval = stats_cfg.drop_log_interval if stats_cfg is not None else self.config.get('drop_log_interval', 400)
                 log_interval = max(1, int(log_interval))
                 for task in queue:
+                    # 🔧 修复:检查任务是否已经被丢弃,避免重复计数
+                    if task.get('dropped', False):
+                        continue
+                    
                     if self.current_time > task.get('deadline', float('inf')):
                         task['dropped'] = True
+                        task['drop_reason'] = 'deadline_exceeded'
                         self.stats['dropped_tasks'] += 1
                         self.stats['dropped_data_bytes'] += float(task.get('data_size_bytes', 0.0))
 
@@ -2800,7 +2820,17 @@ class CompleteSystemSimulator:
         step_summary['local_tasks'] += 1
 
     def _record_forced_drop(self, vehicle: Dict, task: Dict, step_summary: Dict, reason: str = 'forced_drop') -> None:
-        """记录因策略约束导致的任务丢弃事件"""
+        """记录因策略约束导致的任务丢弃事件
+        
+        🔧 关键修复：防止重复统计已丢弃的任务
+        """
+        # 🔧 如果任务已经被标记为丢弃，直接返回，避免重复计数
+        if task.get('dropped', False):
+            return
+        
+        task['dropped'] = True  # 立即标记，防止后续重复处理
+        task['drop_reason'] = reason
+        
         self.stats['dropped_tasks'] = self.stats.get('dropped_tasks', 0) + 1
         self.stats['dropped_data_bytes'] = self.stats.get('dropped_data_bytes', 0.0) + float(task.get('data_size_bytes', 0.0))
 

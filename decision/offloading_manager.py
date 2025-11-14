@@ -115,12 +115,12 @@ class TaskClassifier:
         if t == TaskType.DELAY_SENSITIVE:
             c = [vid]
             c.extend(self._get_nearby_rsus(vid, all_nodes, 600.0, 2))
-            c.extend(self._get_capable_uavs(vid, all_nodes, 400.0))
+            c.extend(self._get_capable_uavs(vid, all_nodes, 600.0))  # 🔧 UAV优化: 400m→600m,与RSU对齐
             return c
         if t == TaskType.MODERATELY_DELAY_TOLERANT:
             c = [vid]
             c.extend(self._get_reachable_rsus(vid, all_nodes, 800.0))
-            c.extend(self._get_capable_uavs(vid, all_nodes, 600.0))
+            c.extend(self._get_capable_uavs(vid, all_nodes, 800.0))  # 🔧 UAV优化: 600m→800m,扩大覆盖
             return c
         return list(all_nodes.keys())
 
@@ -431,6 +431,7 @@ class ProcessingModeEvaluator:
         dynamic_energy = config.compute.uav_kappa3 * (eff ** 2) * proc
         slot_duration = config.network.time_slot_duration
         static_energy = config.compute.uav_static_power * max(proc, slot_duration)
+        # 🔧 UAV优化修正:悬停能耗持续存在,UAV空闲时也消耗(原逻辑正确)
         hover_energy = config.compute.uav_hover_power * total
         energy = comm_energy + dynamic_energy + static_energy + hover_energy
         return ProcessingOption(
@@ -542,13 +543,13 @@ class ProcessingModeEvaluator:
         # 4. RSU状态检查（过载时也可以考虑中继）
         rsu_load = float(getattr(rsu_state, 'load_factor', 0.0))
         
-        # 决策逻辑：
+        # 决策逻辑（🔧 UAV优化：放宽中继激活条件）：
         # - 直连质量差 AND 中继质量好
-        # - UAV电量充足（>30%）
-        # - UAV负载不高（<70%）
-        # - RSU未过载 (<90%)
-        if (direct_quality < 0.5 and relay_quality > 0.7 and
-            uav_battery > 0.3 and uav_load < 0.7 and rsu_load < 0.9):
+        # - UAV电量充足（>25%，原30%）
+        # - UAV负载不高（<75%，原70%）
+        # - RSU未过载 (<95%，原90%)
+        if (direct_quality < 0.5 and relay_quality > 0.6 and
+            uav_battery > 0.25 and uav_load < 0.75 and rsu_load < 0.95):
             return True
         
         return False

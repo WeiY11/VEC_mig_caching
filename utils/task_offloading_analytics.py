@@ -235,6 +235,8 @@ class TaskOffloadingAnalytics:
         self.episode_history: List[EpisodeTaskStatistics] = []
         self.enable_logging = True
         self.log_interval = 10  # 每10个step输出一次日志
+        # 🔧 新增：用于追踪累积统计的基线值（每个episode开始时重置）
+        self._cumulative_baseline: Dict[str, int] = {}
     
     def start_episode(self, episode: int) -> None:
         """开始新的episode统计"""
@@ -242,6 +244,8 @@ class TaskOffloadingAnalytics:
             self.finalize_episode()
         
         self.current_episode = EpisodeTaskStatistics(episode=episode)
+        # 🔧 重置累积基线（用于计算单步增量）
+        self._cumulative_baseline = {}
     
     def record_step(self, step: int, step_result: Dict) -> None:
         """从simulator的step_result记录单步统计
@@ -249,11 +253,23 @@ class TaskOffloadingAnalytics:
         Args:
             step: 步数
             step_result: 来自simulator.run_simulation_step()的返回值
+                        注意：step_result中的某些统计是累积值（如dropped_tasks）
         """
         if self.current_episode is None:
             raise RuntimeError("Must call start_episode() before record_step()")
         
-        # 提取step_result中的任务分布信息
+        # 🔧 关键修复：step_result中的dropped_tasks是累积值，需要计算增量
+        # 获取当前累积统计
+        current_dropped_cumulative = int(step_result.get('dropped_tasks', 0))
+        
+        # 计算单步增量
+        previous_dropped = self._cumulative_baseline.get('dropped_tasks', 0)
+        step_dropped_increment = max(0, current_dropped_cumulative - previous_dropped)
+        
+        # 更新基线
+        self._cumulative_baseline['dropped_tasks'] = current_dropped_cumulative
+        
+        # 提取step_result中的任务分布信息（其他字段是单步值）
         dist = TaskDistribution(
             episode=self.current_episode.episode,
             step=step,
@@ -262,7 +278,7 @@ class TaskOffloadingAnalytics:
             rsu_processed=int(step_result.get('remote_tasks', 0)),  # 包括RSU和UAV
             # 注意：当前system_simulator未分离RSU和UAV，需要增强
             uav_processed=0,  # 待改进：需要从simulator分离出UAV任务数
-            dropped_tasks=int(step_result.get('dropped_tasks', 0)),
+            dropped_tasks=step_dropped_increment,  # 🔧 使用增量值而非累积值
             rsu_cache_hits=int(step_result.get('local_cache_hits', 0)),  # 这是本地缓存
         )
         

@@ -278,6 +278,10 @@ class QueueConfig:
     【设计说明】
     时隙同步设计：max_lifetime = 6 × 0.1s = 0.6s最大等待时间（收紧约束）
     强衰减策略：aging_factor = 0.25确保老任务优先处理
+    
+    【🔧 优化修复】
+    - 提高队列容量：支持高负载场景（12车辆 × 3.0 tasks/s）
+    - 放宽超载阈值：允许适度排队缓冲
     """
     
     def __init__(self):
@@ -287,12 +291,15 @@ class QueueConfig:
         self.priority_levels = 4
         # Aging factor tuned for short slots (strong decay each step)
         self.aging_factor = 0.25
-        # 允许轻微超载，从而减少频繁的过载告警
-        self.max_load_factor = 1.1
+        # 🔧 修复：提高超载阈值，允许合理排队（1.1 → 1.5）
+        self.max_load_factor = 1.5
         self.global_rho_threshold = float(os.environ.get('QUEUE_GLOBAL_RHO_THRESHOLD', '1.0'))
         self.stability_warning_ratio = float(os.environ.get('QUEUE_STABILITY_WARNING_RATIO', '0.9'))
-        self.rsu_nominal_capacity = float(os.environ.get('QUEUE_RSU_NOMINAL_CAPACITY', '20.0'))
-        self.uav_nominal_capacity = float(os.environ.get('QUEUE_UAV_NOMINAL_CAPACITY', '10.0'))
+        # 🔧 修复：大幅提高队列容量，匹配高负载场景需求
+        # RSU: 20 → 50 (每个RSU需处理约180任务/episode，允许缓冲)
+        # UAV: 10 → 30 (UAV也需要充足队列空间)
+        self.rsu_nominal_capacity = float(os.environ.get('QUEUE_RSU_NOMINAL_CAPACITY', '50.0'))
+        self.uav_nominal_capacity = float(os.environ.get('QUEUE_UAV_NOMINAL_CAPACITY', '30.0'))
         # Capacity limits (bytes) used for queue admission control
         self.vehicle_queue_capacity = float(os.environ.get('QUEUE_VEHICLE_CAPACITY', '2.5e8'))
         self.rsu_queue_capacity = float(os.environ.get('QUEUE_RSU_CAPACITY', '1.5e9'))
@@ -337,7 +344,8 @@ class TaskConfig:
         # 🎯 高负载场景配置：平衡真实性与实验有效性
         # 目标：本地计算完成率降至75-80%，保留策略差异性
         self.task_compute_density = 100  # cycles per bit - 默认计算密度（视频处理级别）
-        self.arrival_rate = 3.0   # tasks/s - 高负载场景（12车辆×3.0=36 tasks/s总负载）
+        # 🔧 紧急修复：大幅降低任务到达率，避免系统崩溃 (3.0 → 1.8)
+        self.arrival_rate = 1.8   # tasks/s - 降低负载避免队列溢出
         
         # 🎯 优化后任务参数：保持挑战性但避免极端情况
         self.data_size_range = (0.5e6/8, 15e6/8)  # 0.5-15 Mbits = 0.0625-1.875 MB (恢复合理范围)
@@ -655,20 +663,29 @@ class ServiceConfig:
     【设计说明】
     RSU服务能力 > UAV服务能力（符合实际硬件差异）
     动态服务能力 = base + (queue_length / boost_divisor)
+    
+    【🔧 优化修复】
+    - 大幅提高处理速度：匹配高负载场景（12车辆 × 3.0 tasks/s = 36 tasks/s）
+    - 优化动态提升：更快响应队列堆积
     """
 
     def __init__(self):
-        # RSU 服务能力
-        self.rsu_base_service = 5
-        self.rsu_max_service = 12
-        self.rsu_work_capacity = 3.5  # 相当于每个时隙的工作单位
-        self.rsu_queue_boost_divisor = 5.0
+        # 🔧 修复：大幅提高RSU服务能力（匹配高负载需求）
+        # base: 5 → 10 (基础处理速度翻倍)
+        # max: 12 → 25 (峰值处理能力提升)
+        # work_capacity: 3.5 → 6.0 (工作容量提升70%)
+        self.rsu_base_service = 10
+        self.rsu_max_service = 25
+        self.rsu_work_capacity = 6.0  # 相当于每个时隙的工作单位
+        self.rsu_queue_boost_divisor = 4.0  # 5.0 → 4.0 (更快响应队列堆积)
 
-        # UAV 服务能力
-        self.uav_base_service = 4
-        self.uav_max_service = 8
-        self.uav_work_capacity = 2.2
-        self.uav_queue_boost_divisor = 3.5
+        # 🔧 UAV优化修正:基于2.5GHz频率的合理服务能力配置
+        # 不应通过提高算力参数来"强行"提升UAV利用率
+        # 而应优化卸载决策逻辑,在合适场景下选择UAV
+        self.uav_base_service = 6            # 基于2.5GHz的合理服务能力
+        self.uav_max_service = 12            # 峰值处理能力
+        self.uav_work_capacity = 3.0         # 工作容量
+        self.uav_queue_boost_divisor = 2.5   # 保持队列加速优化
 
 
 class StatsConfig:
@@ -739,7 +756,6 @@ class ComputeConfig:
         self.vehicle_dram_power = 3.5    # W - 车载DRAM功耗
         self.rsu_dram_power = 8.0        # W - RSU DRAM功耗（更大容量）
         self.uav_dram_power = 2.0        # W - UAV DRAM功耗（低功耗设计）
-        
         # 🔑 修复：车辆能耗参数 - 基于实际硬件校准
         # 🔧 问题2修复：重新校准kappa1以匹配更高的频率范围
         # 目标：1.5GHz约8W，3.0GHz约17W（包含静态功耗）
@@ -757,28 +773,30 @@ class ComputeConfig:
         self.rsu_kappa2 = 5.0e-32
         self.rsu_static_power = 25.0  # W (20GHz边缘服务器静态功耗)
         
-        # 🔑 修复：UAV能耗参数 - 基于实际UAV硬件校准
+        # 🔑 修复:UAV能耗参数 - 基于实际UAV硬件校准
         self.uav_kappa = 8.89e-31  # 功耗受限的UAV芯片
         self.uav_kappa3 = 8.89e-31  # 修复后参数
-        self.uav_static_power = 2.5  # W (轻量化设计)
-        # 🔧 问题6修复：统一UAV悬停功率配置
-        self.uav_hover_power = 25.0  # W (基于四旋翼UAV实测数据，悬停约25W)
+        self.uav_static_power = 2.5  # W (轻量化芯片基础功耗)
+        # 🔧 UAV优化修正:悬停功耗独立存在,UAV空闲时也持续消耗
+        self.uav_hover_power = 25.0  # W (四旋翼悬停功率,持续存在)
         
-        # 🔧 问题2修复：CPU频率配置更新为现代车载芯片范围
-        # 参考：高通骁龙8 Gen 2 (1.8-3.2GHz)、NVIDIA Jetson Xavier (1.2-2.26GHz)
-        self.total_vehicle_compute = 24e9     # 总本地计算：24 GHz（12车辆共享，每车2.0GHz）
-        self.total_rsu_compute = 50e9        # 总RSU计算：50 GHz（4个RSU共享，每个12.5GHz）
-        self.total_uav_compute = 8e9         # 总UAV计算：8 GHz（2个UAV共享，每个4GHz）
+        # 🔧 问题2修复:CPU频率配置更新为现代车载芯片范围
+        # 参考:高通骁龙8 Gen 2 (1.8-3.2GHz)、NVIDIA Jetson Xavier (1.2-2.26GHz)
+        self.total_vehicle_compute = 24e9     # 总本地计算:24 GHz(12车辆共享,每车2.0GHz)
+        self.total_rsu_compute = 50e9        # 总RSU计算:50 GHz(4个RSU共享,每个12.5GHz)
+        # 🔧 UAV优化修正:降低至合理范围,符合轻量级UAV芯片实际能力
+        self.total_uav_compute = 5e9         # 总UAV计算:5 GHz(2个UAV共享,每个2.5GHz)
         
         # 🔑 初始CPU频率配置（仅用于节点初始化，运行时由中央智能体动态调整）
         # 两种模式：
         # 1. 标准模式：每个节点独立固定频率（旧设计，保留兼容性）
         # 2. 中央资源池模式：初始均匀分配，运行时由智能体动态优化（新设计）
         
-        # 初始分配策略（均匀分配作为baseline）
+        # 初始分配策略(均匀分配作为baseline)
         self.vehicle_initial_freq = self.total_vehicle_compute / 12   # 2.0 GHz - 初始均分
         self.rsu_initial_freq = self.total_rsu_compute / 4            # 12.5 GHz - 初始均分
-        self.uav_initial_freq = self.total_uav_compute / 2            # 4 GHz - 初始均分
+        # 🔧 UAV优化修正:符合轻量级UAV实际算力
+        self.uav_initial_freq = self.total_uav_compute / 2            # 2.5 GHz - 初始均分
         
         # 🔧 问题2修复：CPU频率范围更新为现代车载芯片范围
         # 支持动态调频（DVFS），从1.5GHz至3.0GHz

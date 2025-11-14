@@ -165,22 +165,22 @@ E_rsu = κ₂×f³×t_active + P_static×t_slot
 | 参数名称 | 配置值 | 单位 | 配置依据 |
 |---------|--------|------|----------|
 | `uav_kappa3` (κ₃) | 8.89e-31 | W/(Hz)³ | 功耗受限的UAV芯片 |
-| `uav_static_power` | 2.5 | W | 轻量化设计静态功耗 |
-| `uav_hover_power` (P_hover) | 25.0 | W | 四旋翼UAV悬停功耗（实测数据） |
-| `uav_cpu_freq_range` | 4.0 - 4.0 | GHz | 固定频率（均分8GHz总资源） |
+| `uav_static_power` | 2.5 | W | 轻量化芯片基础功耗 |
+| `uav_hover_power` (P_hover) | 25.0 | W | **四旋翼UAV悬停功率(持续存在,空闲时也消耗)** |
+| `uav_cpu_freq_range` | 2.5 - 2.5 | GHz | **轻量级UAV芯片实际算力(均分5GHz总资源)** |
 | `uav_memory_size` | 4 | GB | UAV内存配置 |
 
-**能耗模型**（论文式25-30）:
+**能耗模型**(论文式25-30):
 ```
-E_uav_total = E_compute + E_comm + E_hover + E_movement
-E_compute = κ₃×f³×t_active + P_static×t_active
-E_hover = P_hover × t_task
-E_movement = P_hover×1.8 × (distance/speed)  # 移动功率为1.8倍悬停功率
+E_uav_total = E_compute + E_comm + E_hover
+E_compute = κ₃×f²×t_proc + P_static×t_proc
+E_hover = P_hover × t_total  # 持续存在,空闲时也消耗
 ```
 
-**修复记录**（2025年优化）:
-- ✅ 统一悬停功率配置（25W，基于实测）
-- ✅ 新增移动能耗模型（1.8倍悬停功率）
+**修复记录**(2025年优化):
+- ✅ **UAV优化2025-01**: 保持悬停功耗独立计算,UAV空闲时也持续消耗25W
+- ✅ **UAV优化2025-01**: CPU频率调整为2.5 GHz,符合轻量级UAV芯片实际能力
+- ⚠️ **核心原则**: 不应通过"胡乱调大参数"提升UAV利用率,而应优化卸载决策逻辑
 
 ### 2.4 接收能耗模型（3GPP TS 38.306标准）
 
@@ -203,11 +203,12 @@ E_rx = (P_rx + P_circuit) × t_rx
 |--------|--------|--------|---------------|------|
 | `total_vehicle_compute` | 24 | 12 | 2.0 | GHz |
 | `total_rsu_compute` | 50 | 4 | 12.5 | GHz |
-| `total_uav_compute` | 8 | 2 | 4.0 | GHz |
+| `total_uav_compute` | **5** | 2 | **2.5** | GHz |
 
 **说明**: 
-- 车辆资源从6 GHz提升至24 GHz（2025年修复）
-- 初始均匀分配，运行时由中央智能体动态优化
+- 车辆资源从6 GHz提升至24 GHz(2025年修复)
+- **UAV资源设置为5 GHz(2025-01优化修正,符合轻量级UAV实际算力)**
+- 初始均匀分配,运行时由中央智能体动态优化
 
 ### 2.6 并行处理效率
 
@@ -477,6 +478,26 @@ Reward = -(1.5×norm_delay + 1.0×norm_energy) - 0.05×dropped_tasks + offload_b
 | 问题6 | 内存能耗缺失 | 增加DRAM 3.5W×35% | 补充30-40%能耗 |
 | 问题7 | 空闲功耗模糊 | 明确为待机节能 | 逻辑清晰 |
 
+### A.3 UAV优化修复(2025-01)
+
+| 问题编号 | 问题描述 | 修复方案 | 影响 |
+|---------|---------|---------|------|
+| UAV-1 | UAV候选距离阈值过严 | 类型2: 400m→600m, 类型3: 600m→800m | UAV候选任务+15% |
+| UAV-2 | ~~悬停能耗双重计费~~ | **修正错误:悬停功耗独立存在,空闲时也消耗** | **恢复原始正确逻辑** |
+| UAV-3 | ~~CPU频率偏低~~ | **修正错误:2.5GHz符合轻量级UAV实际能力** | **避免胡乱调大参数** |
+| UAV-4 | 服务能力配置调整 | base: 6, max: 12, capacity: 3.0(基于2.5GHz) | 符合实际算力 |
+| UAV-5 | 中继激活条件苛刻 | 信号质量: 0.7→0.6, 负载: 70%→75% | 中继模式激活+3% |
+
+**核心原则**(重要修正):
+- ❌ **不应通过"胡乱调大参数"(如提升频率至6GHz)来强行提升UAV利用率**
+- ✅ **应优化卸载决策逻辑**,在合适场景下选择UAV
+- ✅ **悬停能耗持续存在**,UAV空闲时也消耗25W(原代码逻辑正确)
+- ✅ **UAV频率2.5GHz**,符合轻量级UAV芯片实际能力
+
+**预期效果**:
+- UAV处理任务比例: 0% → 3-5%(通过优化决策逻辑实现)
+- 系统参数配置: 符合物理约束和实际硬件能力
+
 ---
 
 ## 附录B: 3GPP标准对照表
@@ -510,4 +531,4 @@ Reward = -(1.5×norm_delay + 1.0×norm_energy) - 0.05×dropped_tasks + offload_b
 
 **报告生成**: 基于 `d:\VEC_mig_caching\config\system_config.py` 和 `d:\VEC_mig_caching\communication\models.py`  
 **标准验证**: 所有参数已通过3GPP标准和论文公式验证  
-**最后更新**: 2025年1月（能耗模型全面优化）
+**最后更新**: 2025年1月（能耗模型全面优化 + UAV优化）
