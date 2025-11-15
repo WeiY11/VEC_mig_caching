@@ -1650,10 +1650,41 @@ class CompleteSystemSimulator:
                 self._accumulate_delay('delay_downlink', down_delay)
                 self._accumulate_energy('energy_transmit_downlink', down_energy)
 
+            # 🔥 深度修复：使用真实的CMOS动态功耗模型计算RSU/UAV能耗
+            # E_total = (P_dynamic + P_static) × t_processing
+            # P_dynamic = κ × f³
+            
             if node_type == 'RSU':
-                processing_power = 50.0
+                # RSU能耗参数
+                cpu_freq = node.get('cpu_freq', 12.5e9)  # 12.5 GHz
+                kappa = 5.0e-32  # W/(Hz)³
+                static_power = 25.0  # W
+                
+                if self.sys_config is not None:
+                    cpu_freq = getattr(self.sys_config.compute, 'rsu_cpu_freq', cpu_freq)
+                    kappa = getattr(self.sys_config.compute, 'rsu_kappa', kappa)
+                    static_power = getattr(self.sys_config.compute, 'rsu_static_power', static_power)
+                
+                dynamic_power = kappa * (cpu_freq ** 3)
+                processing_power = dynamic_power + static_power
+                
             elif node_type == 'UAV':
-                processing_power = 20.0
+                # UAV能耗参数（包含悬停功耗）
+                cpu_freq = node.get('cpu_freq', 2.5e9)  # 2.5 GHz
+                kappa3 = 8.89e-31  # W/(Hz)³
+                static_power = 2.5  # W
+                hover_power = 25.0  # W - 悬停功耗（持续存在）
+                
+                if self.sys_config is not None:
+                    cpu_freq = getattr(self.sys_config.compute, 'uav_cpu_freq', cpu_freq)
+                    kappa3 = getattr(self.sys_config.compute, 'uav_kappa3', kappa3)
+                    static_power = getattr(self.sys_config.compute, 'uav_static_power', static_power)
+                    hover_power = getattr(self.sys_config.compute, 'uav_hover_power', hover_power)
+                
+                dynamic_power = kappa3 * (cpu_freq ** 3)
+                # UAV总功耗 = 计算动态功耗 + 静态功耗 + 悬停功耗
+                processing_power = dynamic_power + static_power + hover_power
+                
             else:
                 processing_power = 10.0
 
@@ -2243,7 +2274,19 @@ class CompleteSystemSimulator:
         processing_time = requirement / max(cpu_freq, 1e6)
         # Allow genuine compute latency to surface by avoiding artificial clipping
         processing_time = max(float(processing_time), 1e-6)
-        energy = float(power) * processing_time
+        
+        # 🔥 关键修复：使用完整的动态+静态功耗模型
+        # E_total = P_dynamic × t_active + P_static × t_active
+        # P_dynamic = κ₁ × f³
+        kappa1 = 1.5e-28  # W/(Hz)³ - 动态功耗系数
+        if self.sys_config is not None:
+            kappa1 = getattr(self.sys_config.compute, 'vehicle_kappa1', kappa1)
+        else:
+            kappa1 = float(self.config.get('vehicle_kappa1', kappa1))
+        
+        dynamic_power = kappa1 * (cpu_freq ** 3)  # 动态功耗：P = κ₁ × f³
+        energy = (dynamic_power + power) * processing_time  # 总能耗 = (动态+静态) × 时间
+        
         vehicle['energy_consumed'] = vehicle.get('energy_consumed', 0.0) + energy
         return processing_time, energy
 
@@ -2255,7 +2298,7 @@ class CompleteSystemSimulator:
         """
         # 基础速率（bit/s）- 这些值是基于实际网络环境校准的
         if link == 'uav':
-            base_rate = 45e6  # 45 Mbps - UAV链路（受限于移动性和功率）
+            base_rate = 60e6  # 60 Mbps - UAV链路（优化后提升传输速率）
             power_w = 0.12
         else:  # RSU
             base_rate = 80e6  # 80 Mbps - RSU链路（更稳定的固定链路）
@@ -2689,17 +2732,37 @@ class CompleteSystemSimulator:
             cache_hit = self.check_cache_hit_adaptive(task['content_id'], node, actions, node_type='UAV')
 
         if cache_hit:
-            # 缓存命中：快速完成
+            # 🔥 深度修复：缓存命中时的能耗计算（使用真实的功耗模型）
             # Cache hit: quick completion
             delay = max(0.02, 0.2 * self.time_slot)
-            power = 18.0 if node_type == 'RSU' else 12.0
-            energy = power * delay * 0.1
+            
+            # 使用真实的静态功耗（缓存读取仅需静态功耗）
+            if node_type == 'RSU':
+                static_power = 25.0  # W - RSU静态功耗
+                if self.sys_config is not None:
+                    static_power = getattr(self.sys_config.compute, 'rsu_static_power', static_power)
+                power = static_power * 0.1  # 缓存读取只用静态功耗的10%
+            else:  # UAV
+                static_power = 2.5  # W - UAV静态功耗
+                hover_power = 25.0  # W - UAV悬停功耗（持续存在）
+                if self.sys_config is not None:
+                    static_power = getattr(self.sys_config.compute, 'uav_static_power', static_power)
+                    hover_power = getattr(self.sys_config.compute, 'uav_hover_power', hover_power)
+                # UAV缓存读取仍需计算悬停功耗
+                power = static_power * 0.1 + hover_power
+            
+            energy = power * delay
             self.stats['processed_tasks'] += 1
             self.stats['completed_tasks'] += 1
             self._accumulate_delay('delay_cache', delay)
             self._accumulate_energy('energy_cache', energy)
             self.stats['energy_downlink'] = self.stats.get('energy_downlink', 0.0) + energy
             node['energy_consumed'] = node.get('energy_consumed', 0.0) + energy
+            # 🔥 记录RSU/UAV任务统计
+            if node_type == 'RSU':
+                step_summary['rsu_tasks'] = step_summary.get('rsu_tasks', 0) + 1
+            elif node_type == 'UAV':
+                step_summary['uav_tasks'] = step_summary.get('uav_tasks', 0) + 1
             return True
 
         # 缓存未命中：计算上传开销
@@ -2739,6 +2802,11 @@ class CompleteSystemSimulator:
         self._apply_queue_scheduling(node, node_type)
         self._append_active_task(task_entry)
         self._record_mm1_arrival(node_type, node_idx)
+        # 🔥 记录RSU/UAV任务统计
+        if node_type == 'RSU':
+            step_summary['rsu_tasks'] = step_summary.get('rsu_tasks', 0) + 1
+        elif node_type == 'UAV':
+            step_summary['uav_tasks'] = step_summary.get('uav_tasks', 0) + 1
         return True
 
     def _apply_queue_scheduling(self, node: Dict, node_type: str) -> None:
@@ -3193,6 +3261,8 @@ class CompleteSystemSimulator:
             'generated_tasks': 0,  # 本步生成的任务数
             'local_tasks': 0,  # 本地处理的任务数
             'remote_tasks': 0,  # 远程卸载的任务数
+            'rsu_tasks': 0,  # RSU处理的任务数
+            'uav_tasks': 0,  # UAV处理的任务数
             'local_cache_hits': 0,  # 本地缓存命中次数
             'queue_overflow_drops': 0  # 本步因队列溢出的丢弃
         }

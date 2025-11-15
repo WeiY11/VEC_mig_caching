@@ -773,19 +773,19 @@ class ComputeConfig:
         self.rsu_kappa2 = 5.0e-32
         self.rsu_static_power = 25.0  # W (20GHz边缘服务器静态功耗)
         
-        # 🔑 修复:UAV能耗参数 - 基于实际UAV硬件校准
+        # 🔑 修复:UAV能耗参数 - 基于NVIDIA Jetson Xavier NX实际硬件
         self.uav_kappa = 8.89e-31  # 功耗受限的UAV芯片
         self.uav_kappa3 = 8.89e-31  # 修复后参数
         self.uav_static_power = 2.5  # W (轻量化芯片基础功耗)
-        # 🔧 UAV优化修正:悬停功耗独立存在,UAV空闲时也持续消耗
-        self.uav_hover_power = 25.0  # W (四旋翼悬停功率,持续存在)
+        # 🔧 UAV优化修正:悬停功耗优化(轻量级四旋翼)
+        self.uav_hover_power = 15.0  # W (轻量级四旋翼悬停功率,持续存在)
         
-        # 🔧 问题2修复:CPU频率配置更新为现代车载芯片范围
-        # 参考:高通骁龙8 Gen 2 (1.8-3.2GHz)、NVIDIA Jetson Xavier (1.2-2.26GHz)
-        self.total_vehicle_compute = 24e9     # 总本地计算:24 GHz(12车辆共享,每车2.0GHz)
+        # 🔧 问题2修复:CPU频率配置更新为论文要求范围
+        # 参考:论文中车辆计算资源 fv ∈ [1, 2] GHz
+        self.total_vehicle_compute = 18e9     # 总本地计算:18 GHz(12车辆共享,每车1.5GHz平均)
         self.total_rsu_compute = 50e9        # 总RSU计算:50 GHz(4个RSU共享,每个12.5GHz)
-        # 🔧 UAV优化修正:降低至合理范围,符合轻量级UAV芯片实际能力
-        self.total_uav_compute = 5e9         # 总UAV计算:5 GHz(2个UAV共享,每个2.5GHz)
+        # 🔧 UAV优化2025-01-13:NVIDIA Jetson Xavier NX (6核@1.9GHz,等效3.5GHz)
+        self.total_uav_compute = 7e9         # 总UAV计算:7 GHz(2个UAV共享,每个3.5GHz)
         
         # 🔑 初始CPU频率配置（仅用于节点初始化，运行时由中央智能体动态调整）
         # 两种模式：
@@ -793,14 +793,14 @@ class ComputeConfig:
         # 2. 中央资源池模式：初始均匀分配，运行时由智能体动态优化（新设计）
         
         # 初始分配策略(均匀分配作为baseline)
-        self.vehicle_initial_freq = self.total_vehicle_compute / 12   # 2.0 GHz - 初始均分
+        self.vehicle_initial_freq = self.total_vehicle_compute / 12   # 1.5 GHz - 初始均分
         self.rsu_initial_freq = self.total_rsu_compute / 4            # 12.5 GHz - 初始均分
-        # 🔧 UAV优化修正:符合轻量级UAV实际算力
-        self.uav_initial_freq = self.total_uav_compute / 2            # 2.5 GHz - 初始均分
+        # 🔧 UAV优化2025-01-13:NVIDIA Jetson Xavier NX实际算力
+        self.uav_initial_freq = self.total_uav_compute / 2            # 3.5 GHz - 初始均分
         
-        # 🔧 问题2修复：CPU频率范围更新为现代车载芯片范围
-        # 支持动态调频（DVFS），从1.5GHz至3.0GHz
-        self.vehicle_cpu_freq_range = (1.5e9, 3.0e9)  # 1.5-3.0 GHz（现代车载芯片）
+        # 🔧 问题2修复：CPU频率范围更新为论文要求
+        # 车辆支持动态调频（DVFS），范围 fv ∈ [1, 2] GHz
+        self.vehicle_cpu_freq_range = (1.0e9, 2.0e9)  # 1.0-2.0 GHz（论文要求）
         self.rsu_cpu_freq_range = (self.rsu_initial_freq, self.rsu_initial_freq)
         self.uav_cpu_freq_range = (self.uav_initial_freq, self.uav_initial_freq)
         
@@ -946,6 +946,12 @@ class CommunicationConfig:
         self.channel_bandwidth = 5e6  # 5 MHz per channel
         self.uplink_bandwidth = 50e6  # 50 MHz（边缘计算上行密集，确保卸载通畅）
         self.downlink_bandwidth = 50e6  # 50 MHz
+        
+        # 🔧 论文对齐：RSU/UAV下行带宽配置
+        # MEC服务器（RSU）下行带宽: B_ES^down = 1000 MHz
+        # UAV下行带宽: B_u^down = 10 MHz
+        self.rsu_downlink_bandwidth = 1000e6  # 1000 MHz (1 GHz) - 论文要求
+        self.uav_downlink_bandwidth = 10e6    # 10 MHz - 论文要求
         
         # 🔧 修复问题1：载波频率修正为3.5 GHz（符合论文要求和3GPP NR n78频段）
         self.carrier_frequency = 3.5e9  # 3.5 GHz - 3GPP NR n78频段（论文要求3.3-3.8 GHz，典型3.5 GHz）

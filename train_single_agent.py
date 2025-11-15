@@ -1386,6 +1386,22 @@ class SingleAgentTrainingEnvironment:
         data_generated_bytes = max(0.0, episode_generated_bytes)
         data_loss_ratio_bytes = normalize_ratio(data_loss_bytes, data_generated_bytes)
         
+        # 🔥 新增：计算卸载比例（local/rsu/uav）
+        local_tasks_count = int(safe_get('local_tasks', 0))
+        rsu_tasks_count = int(safe_get('rsu_tasks', 0))
+        uav_tasks_count = int(safe_get('uav_tasks', 0))
+        total_offload_tasks = local_tasks_count + rsu_tasks_count + uav_tasks_count
+        
+        if total_offload_tasks > 0:
+            local_offload_ratio = float(local_tasks_count) / float(total_offload_tasks)
+            rsu_offload_ratio = float(rsu_tasks_count) / float(total_offload_tasks)
+            uav_offload_ratio = float(uav_tasks_count) / float(total_offload_tasks)
+        else:
+            # 默认值：全部本地处理
+            local_offload_ratio = 1.0
+            rsu_offload_ratio = 0.0
+            uav_offload_ratio = 0.0
+        
         # 迁移成功率（来自仿真器统计）
         migrations_executed = int(safe_get('migrations_executed', 0))
         migrations_successful = int(safe_get('migrations_successful', 0))
@@ -1534,6 +1550,13 @@ class SingleAgentTrainingEnvironment:
             'normalized_delay': avg_delay / latency_target,
             'normalized_energy': total_energy / energy_target,
             'reward_snapshot': reward_snapshot,
+            # 🔥 新增：卸载比例统计
+            'local_offload_ratio': local_offload_ratio,
+            'rsu_offload_ratio': rsu_offload_ratio,
+            'uav_offload_ratio': uav_offload_ratio,
+            'local_tasks_count': local_tasks_count,
+            'rsu_tasks_count': rsu_tasks_count,
+            'uav_tasks_count': uav_tasks_count,
         }
 
     def _normalize_reward_value(self, reward: float) -> float:
