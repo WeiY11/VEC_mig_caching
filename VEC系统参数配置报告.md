@@ -468,24 +468,25 @@ E_rx = (P_rx + P_circuit) × t_rx
 **核心权重**:
 | 参数名称 | 配置值 | 配置依据 |
 |---------|--------|----------|
-| `reward_weight_delay` | 1.2 | 时延权重（平衡能耗重要性） |
-| `reward_weight_energy` | 1.5 | 能耗权重（强化约束，惩罚UAV高能耗） |
-| `reward_penalty_dropped` | 0.08 | 丢弃任务惩罚（提升完成率要求） |
+| `reward_weight_delay` | **1.0** | ⬇️ **优化收敛**：时延权重（减小降低奖励方差） |
+| `reward_weight_energy` | **1.2** | ⬇️ **优化收敛**：能耗权重（适度降低，保持相对重要性） |
+| `reward_penalty_dropped` | **0.1** | ⬆️ **确保完成率**：丢弃任务惩罚（提高以确保88%完成率） |
 | `reward_weight_cache` | 0.5 | 缓存奖励权重 |
 
 **奖励函数公式**:
 ```
 norm_delay = delay / delay_normalizer (0.4s)
 norm_energy = energy / energy_normalizer (1200J)
-Reward = -(1.2×norm_delay + 1.5×norm_energy) - 0.08×dropped_tasks
+Reward = -(1.0×norm_delay + 1.2×norm_energy) - 0.1×dropped_tasks
 ```
 
 **设计原则**:
-- **强化能耗约束**：能耗权重1.5 > 延迟权重1.2，引导智能体优先选择RSU（低能耗）
+- **平衡收敛性与稳定性**：降低权重值，减少奖励方差，提高收敛稳定性
+- **保持能耗约束**：能耗权重1.2 > 时延权重1.0，引导智能体优先选择RSU（低能耗）
 - **不直接奖励卸载比例**，而是通过准确的能耗模型让智能体自然学会卸载
 - 本地处理能耗 = (动态功耗 + 静态功耗) × 时间，其中 **P_dynamic = κ₁ × f³**
 - ✅ **缓存命中几乎无能耗**：只有1ms内存访问延迟，能耗可忽略（~0.0J）
-- **UAV高能耗惩罚**：悬停功耗15W + 计算功耗，总能耗远高于RSU
+- **UAV高能耗惩罚**：悬停功耇15W + 计算功耗，总能耗远高于RSU
 - 远程卸载能耗 = 传输能耗 + RSU/UAV计算能耗（通常更低）
 - 智能体通过最小化 **总成本** 自动学会在合适时候卸载
 
