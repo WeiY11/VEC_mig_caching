@@ -233,11 +233,11 @@ class RLConfig:
         self.noise_decay = 0.998       # 每轮噪声衰减率
         self.min_noise = 0.01          # 最小探索噪声
         
-        # 🎯 优化后奖励权重：避免过度惩罚导致训练不稳定
+        # 🎯 优化后奖励权重：强化能耗约束，引导RSU优先
         # 在高负载场景下，适度惩罚比严厉惩罚更有利于算法收敛
-        self.reward_weight_delay = 1.5  # 时延权重（保持平衡）
-        self.reward_weight_energy = 1.0  # 能耗权重（保持基准）
-        self.reward_penalty_dropped = 0.05  # 🔧 适度惩罚（0.1→0.05），避免梯度爆炸
+        self.reward_weight_delay = 1.2  # 时延权重（降低以平衡能耗重要性）
+        self.reward_weight_energy = 1.5  # 能耗权重（提升以惩罚UAV高能耗）
+        self.reward_penalty_dropped = 0.08  # 🔧 提升丢弃惩罚（0.05→0.08），保证完成率
         self.completion_target = 0.88  # ✅ 务实目标（高负载下88%为合理目标）
         self.reward_weight_completion_gap = 1.5  # 🔧 温和惩罚（2.5→1.5），保持稳定性
         self.reward_weight_loss_ratio = 3.0  # 数据丢失率权重（保持警示作用）
@@ -344,8 +344,8 @@ class TaskConfig:
         # 🎯 高负载场景配置：平衡真实性与实验有效性
         # 目标：本地计算完成率降至75-80%，保留策略差异性
         self.task_compute_density = 100  # cycles per bit - 默认计算密度（视频处理级别）
-        # 🔧 紧急修复：大幅降低任务到达率，避免系统崩溃 (3.0 → 1.8)
-        self.arrival_rate = 1.8   # tasks/s - 降低负载避免队列溢出
+        # 🔧 修复：提升任务到达率，增加系统负载，让智能体学会资源调度 (1.8 → 2.2)
+        self.arrival_rate = 2.2   # tasks/s - 适度负载（12车×2.2 = 26.4 tasks/s总负载）
         
         # 🎯 优化后任务参数：保持挑战性但避免极端情况
         self.data_size_range = (0.5e6/8, 15e6/8)  # 0.5-15 Mbits = 0.0625-1.875 MB (恢复合理范围)

@@ -2732,32 +2732,29 @@ class CompleteSystemSimulator:
             cache_hit = self.check_cache_hit_adaptive(task['content_id'], node, actions, node_type='UAV')
 
         if cache_hit:
-            # 🔥 深度修复：缓存命中时的能耗计算（使用真实的功耗模型）
-            # Cache hit: quick completion
-            delay = max(0.02, 0.2 * self.time_slot)
+            # ✅ 修复：缓存命中几乎无能耗，只有极短的内存访问延迟
+            # Cache hit: minimal delay (memory access ~1ms), negligible energy
+            delay = 0.001  # 1ms - 内存访问延迟
             
-            # 使用真实的静态功耗（缓存读取仅需静态功耗）
-            if node_type == 'RSU':
-                static_power = 25.0  # W - RSU静态功耗
-                if self.sys_config is not None:
-                    static_power = getattr(self.sys_config.compute, 'rsu_static_power', static_power)
-                power = static_power * 0.1  # 缓存读取只用静态功耗的10%
-            else:  # UAV
-                static_power = 2.5  # W - UAV静态功耗
-                hover_power = 25.0  # W - UAV悬停功耗（持续存在）
-                if self.sys_config is not None:
-                    static_power = getattr(self.sys_config.compute, 'uav_static_power', static_power)
-                    hover_power = getattr(self.sys_config.compute, 'uav_hover_power', hover_power)
-                # UAV缓存读取仍需计算悬停功耗
-                power = static_power * 0.1 + hover_power
+            # ✅ 缓存读取能耗可忽略不计（存储器访问功耗 << 0.01J）
+            # Cache read energy is negligible (memory access power << 0.01J)
+            energy = 0.0  # 缓存命中无显著能耗
             
-            energy = power * delay
+            # ✅ 如果需要返回结果，计算下行传输能耗（很小，结果只有输入的5%）
+            # If result needs to be returned, calculate downlink transmission energy
+            result_size = task.get('data_size_bytes', 1e6) * 0.05  # 结果是输入的5%
+            if result_size > 0:
+                down_delay, down_energy = self._estimate_transmission(result_size, float(distance), node_type.lower())
+                delay += down_delay  # 加上下行延迟
+                energy = down_energy  # 只有下行传输有能耗
+            
             self.stats['processed_tasks'] += 1
             self.stats['completed_tasks'] += 1
             self._accumulate_delay('delay_cache', delay)
             self._accumulate_energy('energy_cache', energy)
-            self.stats['energy_downlink'] = self.stats.get('energy_downlink', 0.0) + energy
-            node['energy_consumed'] = node.get('energy_consumed', 0.0) + energy
+            if energy > 0:
+                self.stats['energy_downlink'] = self.stats.get('energy_downlink', 0.0) + energy
+                node['energy_consumed'] = node.get('energy_consumed', 0.0) + energy
             # 🔥 记录RSU/UAV任务统计
             if node_type == 'RSU':
                 step_summary['rsu_tasks'] = step_summary.get('rsu_tasks', 0) + 1

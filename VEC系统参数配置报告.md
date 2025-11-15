@@ -281,7 +281,7 @@ E_rx = (P_rx + P_circuit) × t_rx
 
 | 参数名称 | 配置值 | 单位 | 配置依据 |
 |---------|--------|------|----------|
-| `arrival_rate` | 3.0 | tasks/s | 高负载场景（12车辆×3.0=36 tasks/s总负载） |
+| `arrival_rate` | 2.2 | tasks/s | 适度负载场景（12车辆×2.2=26.4 tasks/s总负载） |
 | `data_size_range` | 0.5 - 15 | Mbits | 全局数据大小范围（0.0625-1.875 MB） |
 | `task_compute_density` | 100 | cycles/bit | 默认计算密度（视频处理级别） |
 | `deadline_range` | 0.3 - 0.9 | s | 截止时间范围（对应3-9个时隙） |
@@ -468,21 +468,24 @@ E_rx = (P_rx + P_circuit) × t_rx
 **核心权重**:
 | 参数名称 | 配置值 | 配置依据 |
 |---------|--------|----------|
-| `reward_weight_delay` | 1.5 | 时延权重（归一化后平衡） |
-| `reward_weight_energy` | 1.0 | 能耗权重（基准） |
-| `reward_penalty_dropped` | 0.05 | 丢弃任务惩罚 |
+| `reward_weight_delay` | 1.2 | 时延权重（平衡能耗重要性） |
+| `reward_weight_energy` | 1.5 | 能耗权重（强化约束，惩罚UAV高能耗） |
+| `reward_penalty_dropped` | 0.08 | 丢弃任务惩罚（提升完成率要求） |
 | `reward_weight_cache` | 0.5 | 缓存奖励权重 |
 
 **奖励函数公式**:
 ```
 norm_delay = delay / delay_normalizer (0.4s)
 norm_energy = energy / energy_normalizer (1200J)
-Reward = -(1.5×norm_delay + 1.0×norm_energy) - 0.05×dropped_tasks
+Reward = -(1.2×norm_delay + 1.5×norm_energy) - 0.08×dropped_tasks
 ```
 
 **设计原则**:
+- **强化能耗约束**：能耗权重1.5 > 延迟权重1.2，引导智能体优先选择RSU（低能耗）
 - **不直接奖励卸载比例**，而是通过准确的能耗模型让智能体自然学会卸载
 - 本地处理能耗 = (动态功耗 + 静态功耗) × 时间，其中 **P_dynamic = κ₁ × f³**
+- ✅ **缓存命中几乎无能耗**：只有1ms内存访问延迟，能耗可忽略（~0.0J）
+- **UAV高能耗惩罚**：悬停功耗15W + 计算功耗，总能耗远高于RSU
 - 远程卸载能耗 = 传输能耗 + RSU/UAV计算能耗（通常更低）
 - 智能体通过最小化 **总成本** 自动学会在合适时候卸载
 
