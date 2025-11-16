@@ -30,6 +30,7 @@ class CommonArgs:
     strategies: Optional[List[str]]
     central_resource: bool = False  # 🎯 中央资源分配架构
     strategy_groups: Optional[List[str]] = None
+    optimize_heuristic: bool = True  # 🎯 启发式策略优化开关
 
 
 # 🎯 默认基准场景配置（消除硬编码）
@@ -256,8 +257,9 @@ def resolve_common_args(
             )
         strategies = filtered
     
-    # ?? 
+    # 🎯 获取optimize_heuristic参数
     central_resource = getattr(args, "central_resource", False)
+    optimize_heuristic = getattr(args, "optimize_heuristic", True)
 
     return CommonArgs(
         episodes=episodes,
@@ -268,6 +270,7 @@ def resolve_common_args(
         strategies=strategies,
         central_resource=central_resource,
         strategy_groups=strategy_groups,
+        optimize_heuristic=optimize_heuristic,
     )
 
 

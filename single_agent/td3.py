@@ -54,7 +54,7 @@ class TD3Config:
     
     # 探索参数（优化：平衡探索与收敛）
     exploration_noise: float = 0.15  # 🔧 提高初始探索噪声，充分探索状态空间
-    noise_decay: float = 0.9985  # 🔧 加快噪声衰减，促进后期收敛
+    noise_decay: float = 0.9992  # 🔧 优化：放缓噪声衰减（从0.9985提高），确保1500轮内持续探索
     min_noise: float = 0.01  # 🔧 保持最小噪声，防止过早陷入局部最优
     
     # 🔧 新增：梯度裁剪防止过拟合

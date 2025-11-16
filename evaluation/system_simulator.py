@@ -9,6 +9,7 @@ Complete system simulator for testing the full vehicular edge caching system.
 Provides high-fidelity simulation of vehicle, RSU, and UAV interactions.
 """
 
+import math
 import numpy as np
 import torch
 import random
@@ -30,6 +31,10 @@ from utils.spatial_index import SpatialIndex
 from decision.two_stage_planner import TwoStagePlanner, PlanEntry
 from decision.strategy_coordinator import StrategyCoordinator
 
+try:
+    from communication.bandwidth_allocator import BandwidthAllocator
+except Exception:  # pragma: no cover - optional module
+    BandwidthAllocator = None
 
 class CentralResourcePool:
     """
@@ -250,6 +255,7 @@ class CompleteSystemSimulator:
         self.uav_nominal_capacity = float(getattr(queue_cfg, 'uav_nominal_capacity', 10.0)) if queue_cfg is not None else 10.0
         self.queue_overflow_margin = float(getattr(queue_cfg, 'overflow_margin', 1.2)) if queue_cfg is not None else 1.2
         self.cache_config = getattr(self.sys_config, 'cache', None)
+        self.communication_config = getattr(self.sys_config, 'communication', None)
         self.cache_pressure_guard = float(getattr(self.cache_config, 'pressure_guard_ratio', 0.05)) if self.cache_config is not None else 0.05
         delay_clip_from_cfg = getattr(self.stats_config, 'delay_clip_upper', None) if self.stats_config is not None else None
         self.delay_clip_upper = float(delay_clip_from_cfg if delay_clip_from_cfg is not None else self.config.get('delay_clip_upper', 0.0) or 0.0)
@@ -302,6 +308,7 @@ class CompleteSystemSimulator:
         # Initialize components (vehicles, RSUs, UAVs, etc.)
         self.initialize_components()
         self._reset_runtime_states()
+        self._init_dynamic_bandwidth_support()
     
     def get_default_config(self) -> Dict:
         """
@@ -508,7 +515,7 @@ class CompleteSystemSimulator:
     
     def apply_resource_allocation(self, allocation_dict: Dict[str, np.ndarray]):
         """
-        应用中央智能体的资源分配决策（Phase 1 → Phase 2）
+        应用中央智能体的资源分配决策（Phase 1 -> Phase 2）
         
         Args:
             allocation_dict: 中央智能体生成的资源分配字典
@@ -517,10 +524,21 @@ class CompleteSystemSimulator:
                 - 'rsu_compute': [num_rsus]  RSU计算分配比例
                 - 'uav_compute': [num_uavs]  UAV计算分配比例
         """
-        # 更新资源池
-        self.resource_pool.update_allocation(allocation_dict)
+        alloc_dict = dict(allocation_dict)
+        base_bandwidth = self._prepare_bandwidth_vector(alloc_dict.get('bandwidth'))
+        alloc_dict['bandwidth'] = base_bandwidth
+        if self.dynamic_bandwidth_enabled:
+            adjusted_bandwidth, stats = self._apply_dynamic_bandwidth(base_bandwidth)
+            alloc_dict['bandwidth'] = adjusted_bandwidth
+            self._last_dynamic_bandwidth = adjusted_bandwidth.copy()
+            if stats:
+                self.stats['bandwidth_allocator_utilization'] = stats.get('utilization', 0.0)
+                self.stats['bandwidth_allocator_avg_bw'] = stats.get('avg_bandwidth', 0.0)
+                self.stats['bandwidth_allocator_num_links'] = stats.get('num_links', 0)
+                self.stats['bandwidth_allocator_updates'] = self.stats.get('bandwidth_allocator_updates', 0) + 1
         
-        # 应用到各节点
+        self.resource_pool.update_allocation(alloc_dict)
+        
         for i, vehicle in enumerate(self.vehicles):
             vehicle['allocated_bandwidth'] = self.resource_pool.get_vehicle_bandwidth(i)
             vehicle['cpu_freq'] = self.resource_pool.get_vehicle_compute(i)
@@ -530,7 +548,200 @@ class CompleteSystemSimulator:
         
         for i, uav in enumerate(self.uavs):
             uav['allocated_compute'] = self.resource_pool.get_uav_compute(i)
-    
+
+    def _init_dynamic_bandwidth_support(self) -> None:
+        """配置并初始化动态带宽分配功能。"""
+        self.dynamic_bandwidth_enabled = False
+        self.bandwidth_allocator = None
+        self._bandwidth_allocator_mode = 'hybrid'
+        self._bandwidth_allocation_blend = 0.6
+        self._bandwidth_demand_floor_bits = 0.5e6 * 8.0
+        self._bandwidth_idle_demand_bits = 0.1e6 * 8.0
+        self._last_dynamic_bandwidth = np.ones(max(1, self.num_vehicles), dtype=float) / max(1, self.num_vehicles)
+
+        env_blend = os.environ.get('BANDWIDTH_ALLOCATOR_BLEND')
+        if env_blend:
+            try:
+                self._bandwidth_allocation_blend = float(env_blend)
+            except ValueError:
+                pass
+        self._bandwidth_allocation_blend = float(np.clip(self._bandwidth_allocation_blend, 0.0, 1.0))
+
+        comm_cfg_flag = bool(getattr(self.communication_config, 'use_bandwidth_allocator', False)) if self.communication_config is not None else False
+        dict_flag = bool(self.config.get('use_bandwidth_allocator', False))
+        env_flag = os.environ.get('USE_BANDWIDTH_ALLOCATOR')
+        env_flag_active = bool(env_flag and env_flag.lower() in {'1', 'true', 'yes', 'on'})
+        config_flag = False
+        if self.sys_config is not None:
+            try:
+                from config import config as global_config  # type: ignore
+                config_flag = bool(getattr(global_config.communication, 'use_bandwidth_allocator', False))
+            except Exception:
+                config_flag = False
+
+        should_enable = comm_cfg_flag or dict_flag or env_flag_active or config_flag
+        if should_enable and BandwidthAllocator is None:
+            logging.warning("BandwidthAllocator module unavailable, dynamic bandwidth disabled.")
+            should_enable = False
+        if not should_enable:
+            self.stats['dynamic_bandwidth_enabled'] = False
+            return
+
+        total_bw = float(getattr(self.resource_pool, 'total_bandwidth', max(1e6, self.bandwidth)))
+        if self.communication_config is not None:
+            min_channel = float(getattr(self.communication_config, 'channel_bandwidth', total_bw / max(1, self.num_vehicles)))
+        else:
+            min_channel = total_bw / max(1, self.num_vehicles)
+        min_channel = max(0.25 * min_channel, 0.5e6)
+        if BandwidthAllocator is None:
+            logging.warning("BandwidthAllocator is not available")
+            self.bandwidth_allocator = None
+            self.stats['dynamic_bandwidth_enabled'] = False
+            return
+        try:
+            self.bandwidth_allocator = BandwidthAllocator(total_bandwidth=total_bw, min_bandwidth=min_channel)
+        except Exception as exc:
+            logging.warning("Failed to initialize BandwidthAllocator: %s", exc)
+            self.bandwidth_allocator = None
+            self.stats['dynamic_bandwidth_enabled'] = False
+            return
+
+        self.dynamic_bandwidth_enabled = True
+        self.stats['dynamic_bandwidth_enabled'] = True
+        print("✅ 动态带宽分配器已启用：结合RL动作与实时队列/SINR需求自动调整带宽")
+
+    def _prepare_bandwidth_vector(self, raw_vector: Optional[np.ndarray]) -> np.ndarray:
+        """归一化中央智能体输出的带宽向量，保证维度一致。"""
+        if raw_vector is None:
+            base = np.array(self.resource_pool.bandwidth_allocation, copy=True)
+            return self._normalize_vector(base)
+        arr = np.asarray(raw_vector, dtype=float).flatten()
+        if arr.size == self.num_vehicles:
+            base = arr
+        else:
+            base = np.ones(self.num_vehicles, dtype=float)
+            limit = min(arr.size, self.num_vehicles)
+            if limit > 0:
+                base[:limit] = arr[:limit]
+            if limit < self.num_vehicles and limit > 0:
+                base[limit:] = np.mean(arr[:limit])
+        return self._normalize_vector(base)
+
+    def _apply_dynamic_bandwidth(self, base_vector: np.ndarray) -> Tuple[np.ndarray, Optional[Dict[str, Any]]]:
+        """执行动态带宽分配并与RL提议混合。"""
+        if not self.dynamic_bandwidth_enabled or self.bandwidth_allocator is None:
+            return base_vector, None
+        requests = self._collect_bandwidth_requests(base_vector)
+        if not requests:
+            return base_vector, None
+        allocations = self.bandwidth_allocator.allocate_bandwidth(
+            requests, allocation_mode=self._bandwidth_allocator_mode
+        )
+        if not allocations:
+            return base_vector, None
+
+        dyn_vector = np.zeros_like(base_vector)
+        total_bw = max(1e-9, float(self.bandwidth_allocator.total_bandwidth))
+        for idx, vehicle in enumerate(self.vehicles):
+            dyn_vector[idx] = float(allocations.get(vehicle['id'], 0.0)) / total_bw
+        dyn_vector = self._normalize_vector(dyn_vector)
+        blended = np.clip(
+            self._bandwidth_allocation_blend * dyn_vector + (1.0 - self._bandwidth_allocation_blend) * base_vector,
+            0.0,
+            1.0,
+        )
+        blended = self._normalize_vector(blended)
+        stats = self.bandwidth_allocator.get_allocation_stats(allocations)
+        return blended, stats
+
+    def _collect_bandwidth_requests(self, base_vector: np.ndarray) -> List[Dict[str, float]]:
+        """构建带宽分配器需要的活跃链路描述。"""
+        if self.num_vehicles <= 0:
+            return []
+        requests: List[Dict[str, float]] = []
+        for idx, vehicle in enumerate(self.vehicles):
+            queue = vehicle.get('task_queue_by_priority', {})
+            total_bits = 0.0
+            highest_priority = 4
+            for priority in range(1, 5):
+                tasks = queue.get(priority, [])
+                if tasks and highest_priority == 4:
+                    highest_priority = priority
+                for task in tasks:
+                    data_bytes = task.get('data_size_bytes')
+                    if data_bytes is None:
+                        data_bytes = task.get('data_size', 1.0) * 1e6
+                    total_bits += max(0.0, float(data_bytes)) * 8.0
+            if total_bits <= 0.0:
+                total_bits = self._bandwidth_idle_demand_bits
+            else:
+                total_bits = max(total_bits, self._bandwidth_demand_floor_bits)
+            rl_bias = float(base_vector[idx]) if idx < base_vector.size else 0.0
+            total_bits *= max(0.2, 0.7 + 0.6 * rl_bias)
+            request = {
+                'task_id': vehicle['id'],
+                'priority': min(max(highest_priority, 1), 4),
+                'sinr': self._estimate_vehicle_sinr(vehicle),
+                'data_size': total_bits,
+                'node_type': 'vehicle',
+            }
+            requests.append(request)
+        return requests
+
+    def _estimate_vehicle_sinr(self, vehicle: Dict[str, Any]) -> float:
+        """基于最近的RSU/UAV距离估算车辆链路SINR。"""
+        if not (self.rsus or self.uavs):
+            return 10.0
+        vehicle_pos = vehicle.get('position')
+        if vehicle_pos is None:
+            return 10.0
+        position = np.asarray(vehicle_pos, dtype=float)
+        freq_hz = self._get_comm_value('carrier_frequency', 3.5e9)
+        freq_ghz = max(freq_hz / 1e9, 0.5)
+        noise_density_dbm = self._get_comm_value('thermal_noise_density', -174.0)
+        per_vehicle_bw = max(
+            1e6, float(getattr(self.resource_pool, 'total_bandwidth', self.bandwidth)) / max(1, self.num_vehicles)
+        )
+        noise_dbm = noise_density_dbm + 10.0 * math.log10(per_vehicle_bw)
+        best_linear = 0.5
+        for node in list(self.rsus) + list(self.uavs):
+            node_pos = node.get('position')
+            if node_pos is None:
+                continue
+            dist = float(self.calculate_distance(position, np.asarray(node_pos, dtype=float)))
+            d_km = max(dist / 1000.0, 0.001)
+            path_loss_db = 32.4 + 21.0 * math.log10(d_km) + 20.0 * math.log10(freq_ghz)
+            if node in self.rsus:
+                tx_power_dbm = self._get_comm_value('rsu_tx_power', 46.0)
+                tx_gain = self._get_comm_value('antenna_gain_rsu', 15.0)
+            else:
+                tx_power_dbm = self._get_comm_value('uav_tx_power', 30.0)
+                tx_gain = self._get_comm_value('antenna_gain_uav', 5.0)
+            rx_gain = self._get_comm_value('antenna_gain_vehicle', 3.0)
+            rx_power_dbm = tx_power_dbm + tx_gain + rx_gain - path_loss_db
+            sinr_db = rx_power_dbm - noise_dbm
+            best_linear = max(best_linear, 10.0 ** (sinr_db / 10.0))
+        return float(max(0.1, best_linear))
+
+    def _get_comm_value(self, attr: str, default: float) -> float:
+        """从通信配置中安全获取参数。"""
+        cfg = self.communication_config
+        if cfg is not None and hasattr(cfg, attr):
+            try:
+                return float(getattr(cfg, attr))
+            except Exception:
+                return float(default)
+        return float(default)
+
+    def _normalize_vector(self, vector: np.ndarray) -> np.ndarray:
+        """通用归一化工具，确保向量求和为1。"""
+        if vector.size == 0:
+            return vector
+        vec = np.clip(vector.astype(float), 0.0, None)
+        total = vec.sum()
+        if total <= 1e-9:
+            return np.ones_like(vec) / len(vec)
+        return vec / total
     def vehicle_priority_scheduling(self, vehicle: Dict):
         """
         车辆端优先级队列调度（Phase 2执行层）
@@ -704,6 +915,7 @@ class CompleteSystemSimulator:
         # 重新初始化组件（如果需要）
         self.initialize_components()
         self._reset_runtime_states()
+        self._init_dynamic_bandwidth_support()
         print("初始化了 6 个缓存管理器")
 
     def _fresh_stats_dict(self) -> Dict[str, Any]:

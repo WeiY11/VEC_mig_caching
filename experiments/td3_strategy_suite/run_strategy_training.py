@@ -275,11 +275,11 @@ STRATEGY_PRESETS: "OrderedDict[str, StrategyPreset]" = OrderedDict(
         (
             "local-only",
             _make_preset(
-                description="All tasks execute locally; edge nodes and migration are disabled.",
-                scenario_key="layered_multi_edge",
+                description="🎯 Local-only baseline: all tasks execute locally via policy preference (no forced mode).",
+                scenario_key="layered_multi_edge",  # 保持相同场景以保证对比公平
                 use_enhanced_cache=False,
                 disable_migration=True,
-                enforce_offload_mode="local_only",
+                enforce_offload_mode=None,  # 🔧 移除强制模式，纯策略决策
                 algorithm="heuristic",
                 heuristic_name="local_only",
                 flags=("cache_off", "migration_off", "local_only"),
@@ -289,42 +289,42 @@ STRATEGY_PRESETS: "OrderedDict[str, StrategyPreset]" = OrderedDict(
         (
             "remote-only",
             _make_preset(
-                description="Edge-only baseline with multi-edge; tasks always offload.",
-                scenario_key="layered_multi_edge_remote",
+                description="🎯 Remote-only baseline: always offload to edge (RSU/UAV) with intelligent load balancing.",
+                scenario_key="layered_multi_edge",  # 🔧 改为通用场景
                 use_enhanced_cache=False,
                 disable_migration=True,
-                enforce_offload_mode="remote_only",
+                enforce_offload_mode=None,  # 🔧 移除强制模式，由RSUOnlyPolicy实现
                 algorithm="heuristic",
-                heuristic_name="rsu_only",
-                flags=("cache_off", "migration_off", "forced_remote"),
+                heuristic_name="rsu_only",  # 使用重构后RSUOnlyPolicy
+                flags=("cache_off", "migration_off", "edge_only"),
                 group="baseline",
             ),
         ),
         (
             "offloading-only",
             _make_preset(
-                description="Layered policy: multi-edge offloading between local and RSU/UAV.",
+                description="🎯 Offloading-only: intelligent offloading with multi-factor awareness (queue, comm, energy).",
                 scenario_key="layered_multi_edge",
                 use_enhanced_cache=False,
                 disable_migration=True,
                 enforce_offload_mode=None,
                 algorithm="heuristic",
-                heuristic_name="greedy",
-                flags=("cache_off", "migration_off", "multi_edge"),
+                heuristic_name="greedy",  # 使用重构后GreedyPolicy
+                flags=("cache_off", "migration_off", "smart_offload"),
                 group="layered",
             ),
         ),
         (
             "resource-only",
             _make_preset(
-                description="Multi-edge load balancing with migration disabled and local execution blocked.",
-                scenario_key="layered_multi_edge_remote",
+                description="🎯 Resource-only: multi-dimensional resource allocation (queue+cache+comm+energy) on edge nodes.",
+                scenario_key="layered_multi_edge",  # 🔧 改为通用场景
                 use_enhanced_cache=True,
                 disable_migration=True,
-                enforce_offload_mode="remote_only",
+                enforce_offload_mode=None,  # 🔧 移除强制模式，RemoteGreedyPolicy会拒绝本地
                 algorithm="heuristic",
-                heuristic_name="remote_greedy",
-                flags=("cache_on", "migration_off", "multi_edge"),
+                heuristic_name="remote_greedy",  # 使用重构后RemoteGreedyPolicy
+                flags=("cache_on", "migration_off", "resource_alloc"),
                 group="layered",
             ),
         ),
@@ -357,46 +357,123 @@ STRATEGY_PRESETS: "OrderedDict[str, StrategyPreset]" = OrderedDict(
 
 
 class RemoteGreedyPolicy(HeuristicPolicy):
-    """Heuristic that always prefers the lightest remote node."""
+    """Intelligent resource allocation policy for edge nodes.
+    
+    🎯 设计目标：提供真正的资源分配基线，验证CAMTD3的缓存和迁移优势
+    
+    📊 对比价值：
+    - 时延：中低（边缘计算+负载均衡）
+    - 能耗：中等（优化通信+计算）
+    - 完成率：中高（智能资源匹配）
+    
+    🔧 重构要点：
+    - 真正的多维资源评估：计算、缓存、带宽、队列
+    - 支持RSU资源变化适应（通过状态负载感知）
+    - 充分利用缓存状态（use_enhanced_cache=True）
+    """
 
     def __init__(self) -> None:
         super().__init__("RemoteGreedy")
+        # 🔧 多维资源权重（体现“资源分配”核心）
+        self.queue_weight = 1.8      # 队列负载权重
+        self.cache_weight = 1.2      # 缓存命中权重（负利益）
+        self.comm_weight = 1.0       # 通信成本权重
+        self.energy_weight = 0.7     # 能耗权重
 
     def select_action(self, state) -> np.ndarray:
         veh, rsu, uav = self._structured_state(state)
-        anchor = np.mean(veh[:, :2], axis=0) if veh.size else np.zeros(2, dtype=np.float32)
-
-        def _evaluate(arr: np.ndarray, fallback_load: float) -> tuple[int, float]:
-            if arr.size == 0 or arr.ndim != 2:
-                return -1, float("inf")
-            loads = arr[:, 3] if arr.shape[1] > 3 else np.full(arr.shape[0], fallback_load, dtype=np.float32)
-            coords = arr[:, :2] if arr.shape[1] >= 2 else np.zeros((arr.shape[0], 2), dtype=np.float32)
-            distances = np.linalg.norm(coords - anchor, axis=1)
-            scores = loads + 0.2 * distances
-            idx = int(np.argmin(scores))
-            return idx, float(scores[idx])
-
-        rsu_idx, rsu_score = _evaluate(rsu, 0.7)
-        uav_idx, uav_score = _evaluate(uav, 0.8)
-
-        if uav_idx >= 0 and uav_score < rsu_score:
+        
+        # 计算车辆质心位置
+        anchor = np.mean(veh[:, :2], axis=0) if veh.size > 0 else np.zeros(2, dtype=np.float32)
+        
+        candidates = []
+        
+        # 🔧 重构：评估所有RSU（资源感知）
+        if rsu.size > 0 and rsu.ndim == 2:
+            for i in range(rsu.shape[0]):
+                score = self._evaluate_rsu_resource(rsu[i], anchor)
+                candidates.append(('rsu', i, score))
+        
+        # 🔧 重构：评估所有UAV（资源感知）
+        if uav.size > 0 and uav.ndim == 2:
+            for i in range(uav.shape[0]):
+                score = self._evaluate_uav_resource(uav[i], anchor)
+                candidates.append(('uav', i, score))
+        
+        if not candidates:
+            # 无边缘节点，极强拒绝本地（与remote-only语义一致）
             return self._action_from_preference(
-                local_score=-4.0,
-                rsu_score=-3.5,
-                uav_score=4.0,
-                uav_index=uav_idx,
+                local_score=-5.0, 
+                rsu_score=0.0, 
+                uav_score=0.0
             )
-
-        if rsu_idx >= 0:
+        
+        # 选择资源成本最低的边缘节点
+        kind, idx, _ = min(candidates, key=lambda x: x[2])
+        
+        if kind == 'rsu':
             return self._action_from_preference(
-                local_score=-4.0,
-                rsu_score=4.0,
-                uav_score=-3.5,
-                rsu_index=rsu_idx,
+                local_score=-5.0,
+                rsu_score=5.0,
+                uav_score=-3.0,
+                rsu_index=idx,
             )
-
-        # No edge nodes available; fall back to discouraging local as much as possible.
-        return self._action_from_preference(local_score=-4.0, rsu_score=3.0, uav_score=3.0)
+        else:  # UAV
+            return self._action_from_preference(
+                local_score=-5.0,
+                rsu_score=-3.0,
+                uav_score=5.0,
+                uav_index=idx,
+            )
+    
+    def _evaluate_rsu_resource(self, rsu_state: np.ndarray, veh_pos: np.ndarray) -> float:
+        """🔧 多维度RSU资源评估：队列 + 缓存 + 通信 + 能耗"""
+        # 队列负载（列3）
+        queue_load = float(rsu_state[3]) if rsu_state.size > 3 else 0.6
+        
+        # 缓存利用率（列2）- 缓存命中为负成本
+        cache_util = float(rsu_state[2]) if rsu_state.size > 2 else 0.5
+        cache_benefit = -(1.0 - cache_util)  # 命中越高，成本越低
+        
+        # 通信成本（基于距离）
+        rsu_pos = rsu_state[:2] if rsu_state.size >= 2 else veh_pos
+        distance = float(np.linalg.norm(rsu_pos - veh_pos))
+        comm_cost = distance / 1000.0
+        
+        # 能耗状态（列4）
+        energy = float(rsu_state[4]) if rsu_state.size > 4 else 0.5
+        
+        # 🎯 综合资源成本
+        total_cost = (
+            self.queue_weight * queue_load +
+            self.cache_weight * cache_benefit +  # 缓存是负成本
+            self.comm_weight * comm_cost +
+            self.energy_weight * energy * 0.5
+        )
+        
+        return float(total_cost)
+    
+    def _evaluate_uav_resource(self, uav_state: np.ndarray, veh_pos: np.ndarray) -> float:
+        """🔧 多维度UAV资源评估：队列 + 通信 + 悬停能耗"""
+        # 队列负载
+        queue_load = float(uav_state[3]) if uav_state.size > 3 else 0.7
+        
+        # 通信成本（UAV空中信道衰减更快）
+        uav_pos = uav_state[:2] if uav_state.size >= 2 else veh_pos
+        distance = float(np.linalg.norm(uav_pos - veh_pos))
+        comm_cost = distance / 800.0  # UAV通信范围较小
+        
+        # 悬停能耗（列4）
+        energy = float(uav_state[4]) if uav_state.size > 4 else 0.8
+        
+        # UAV无缓存，能耗权重更高
+        total_cost = (
+            self.queue_weight * queue_load +
+            self.comm_weight * comm_cost * 1.3 +  # 空中通信惩罚
+            self.energy_weight * energy * 1.2  # UAV能耗惩罚更高
+        )
+        
+        return float(total_cost)
 
 
 def _resolve_heuristic_policy(name: Optional[str], seed: int) -> HeuristicPolicy:

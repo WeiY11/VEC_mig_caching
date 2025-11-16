@@ -69,43 +69,40 @@ def tail_mean(values: Iterable[float]) -> float:
     return float(np.mean(seq))
 
 
-def compute_cost(avg_delay: float, avg_energy: float) -> float:
+def compute_cost(avg_delay: float, avg_energy: float, avg_reward: Optional[float] = None) -> float:
     """
     计算统一代价函数值（与训练时的奖励函数一致）
     
-    【功能】
-    使用统一奖励计算器计算归一化的加权代价，确保与训练时使用的
-    奖励函数完全一致。该函数用于策略对比实验的性能评估。
+    【核心原理】
+    训练时: reward = -cost (成本越低，奖励越高)
+    因此:   raw_cost = -reward
+    
+    【优先使用avg_reward】
+    如果提供了avg_reward，直接使用: raw_cost = -avg_reward
+    否则回退到手动计算（保持向后兼容）
     
     【参数】
     avg_delay: float - 平均任务时延（秒）
     avg_energy: float - 平均总能耗（焦耳）
+    avg_reward: float - 平均奖励（可选，优先使用）
     
     【返回值】
     float - 归一化的加权代价（越小越好）
     
-    【计算公式】
-    Cost = ω_T · (T / T_target) + ω_E · (E / E_target)
-    其中：
-    - ω_T = 2.0（时延权重）
-    - ω_E = 1.2（能耗权重）
-    - T_target = 0.4s（时延目标值，用于归一化）
-    - E_target = 1200J（能耗目标值，用于归一化）
-    
     【修复说明】
-    ✅ 修复后：使用latency_target和energy_target，与训练时的奖励计算完全一致
-    ✅ 修复前：错误使用了delay_normalizer(0.2)和energy_normalizer(1000)
-    ✅ 确保评估指标与训练指标可比
-    
-    【重要提示】
-    🎯 归一化基准必须与UnifiedRewardCalculator一致
-    🎯 修改此函数时必须同步更新utils/unified_reward_calculator.py
-    🎯 不同实验配置下，raw_cost应该可比（基于相同的归一化基准）
+    ✅ 优先从reward计算: raw_cost = -avg_reward
+    ✅ 回退计算: raw_cost = w_T·(T/T_target) + w_E·(E/E_target)
+    ✅ 与train_single_agent.py完全一致
     """
+    # 🎯 优先使用reward（与训练一致）
+    if avg_reward is not None:
+        return -avg_reward
+    
+    # 回退：手动计算（向后兼容）
     weight_delay = float(config.rl.reward_weight_delay)
     weight_energy = float(config.rl.reward_weight_energy)
     
-    # ✅ 修复：使用与训练时完全一致的归一化因子
+    # ✅ 使用与训练时完全一致的归一化因子
     calc = _get_reward_calculator()
     delay_normalizer = calc.latency_target  # 0.4（与训练一致）
     energy_normalizer = calc.energy_target  # 1200.0（与训练一致）
@@ -236,7 +233,22 @@ def _run_strategy_suite_internal(
         avg_delay = tail_mean(episode_metrics.get("avg_delay", []))
         avg_energy = tail_mean(episode_metrics.get("total_energy", []))
         completion_rate = tail_mean(episode_metrics.get("task_completion_rate", []))
-        raw_cost = compute_cost(avg_delay, avg_energy)
+        
+        # 🎯 优先从奖励计算raw_cost（与train_single_agent.py一致）
+        episode_rewards = outcome.get("episode_rewards", [])
+        if episode_rewards and len(episode_rewards) > 0:
+            # 使用后50%数据（收敛后）
+            if len(episode_rewards) >= 100:
+                half_point = len(episode_rewards) // 2
+                avg_reward = float(np.mean(episode_rewards[half_point:]))
+            elif len(episode_rewards) >= 50:
+                avg_reward = float(np.mean(episode_rewards[-30:]))
+            else:
+                avg_reward = float(np.mean(episode_rewards))
+            raw_cost = compute_cost(avg_delay, avg_energy, avg_reward)
+        else:
+            # 回退：从时延和能耗计算
+            raw_cost = compute_cost(avg_delay, avg_energy)
 
         results[key] = {
             "avg_delay": avg_delay,
@@ -366,9 +378,18 @@ def evaluate_configs(
                 }
             )
             detail_path.write_text(json.dumps(metrics_to_save, indent=2, ensure_ascii=False), encoding="utf-8")
+            
+            # 🎯 显示成本计算来源（检查episode_metrics中是否有reward数据）
+            has_rewards = False
+            if episode_metrics and isinstance(episode_metrics, dict):
+                ep_rewards = episode_metrics.get('episode_rewards', [])
+                if ep_rewards and len(ep_rewards) > 0:
+                    has_rewards = True
+            cost_source = "(-reward)" if has_rewards else "(delay+energy)"
             print(
                 f"  - {strategy_label(strat_key)}: "
-                f"Cost={metrics['raw_cost']:.4f} Delay={metrics['avg_delay']:.4f}s "
+                f"Cost={metrics['raw_cost']:.4f} {cost_source} "
+                f"Delay={metrics['avg_delay']:.4f}s "
                 f"Energy={metrics['avg_energy']:.2f}J"
             )
 

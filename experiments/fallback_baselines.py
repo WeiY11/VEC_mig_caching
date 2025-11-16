@@ -130,34 +130,108 @@ class RandomPolicy(HeuristicPolicy):
 
 
 class LocalOnlyPolicy(HeuristicPolicy):
-    """Always favour local processing."""
+    """Always favour local processing.
+    
+    🎯 设计目标：提供纯本地处理基线，验证边缘卸载的必要性
+    
+    📊 对比价值：
+    - 时延：高（受限于车载CPU）
+    - 能耗：中等（本地计算功耗）
+    - 完成率：低（高负载下易丢弃任务）
+    
+    ⚠️ 重构要点：
+    - 移除enforce_offload_mode依赖，仅通过策略决策实现本地处理
+    - 在高负载下也坚持本地处理，体现策略特性
+    """
 
     def __init__(self) -> None:
         super().__init__("LocalOnly")
+        self.local_preference = 5.0  # 强烈偏好本地
 
     def select_action(self, state) -> np.ndarray:
-        return self._action_from_preference(local_score=4.0, rsu_score=-4.0, uav_score=-4.0)
+        # 🔧 重构：始终返回强本地偏好，不依赖外部强制模式
+        return self._action_from_preference(
+            local_score=self.local_preference, 
+            rsu_score=-5.0,  # 强烈拒绝RSU
+            uav_score=-5.0   # 强烈拒绝UAV
+        )
 
 
 class RSUOnlyPolicy(HeuristicPolicy):
-    """Always prefer the least-loaded RSU when available."""
+    """Always prefer edge nodes (RSU/UAV), with intelligent load balancing.
+    
+    🎯 设计目标：提供纯边缘处理基线，验证本地计算的价值
+    
+    📊 对比价值：
+    - 时延：中等（受通信时延影响）
+    - 能耗：高（上行传输能耗）
+    - 完成率：中等（RSU过载时下降）
+    
+    🔧 重构要点：
+    - 同时考虑RSU和UAV（原实现忽略UAV）
+    - 综合负载、距离、资源能力进行决策
+    - 增加通信成本感知
+    """
 
     def __init__(self) -> None:
         super().__init__("RSUOnly")
+        self.edge_preference = 5.0
+        self.distance_weight = 0.3  # 距离权重
 
     def select_action(self, state) -> np.ndarray:
-        vehicles, rsus, _ = self._structured_state(state)
-        if rsus.size == 0:
-            return self._action_from_preference(local_score=3.0, rsu_score=-3.0, uav_score=-3.0)
-
-        loads = rsus[:, 3] if rsus.ndim == 2 and rsus.shape[1] >= 4 else np.full(rsus.shape[0], 0.5, dtype=np.float32)
-        target = int(np.argmin(loads))
-        pref = self._action_from_preference(local_score=-3.0, rsu_score=4.0, uav_score=-3.0, rsu_index=target)
-
-        # If vehicles are extremely congested, slightly increase RSU preference.
-        if vehicles.size and float(np.mean(vehicles[:, 3])) > 0.6:
-            pref[1] += 1.0
-        return pref
+        vehicles, rsus, uavs = self._structured_state(state)
+        
+        # 计算车辆质心位置
+        veh_center = np.mean(vehicles[:, :2], axis=0) if vehicles.size > 0 else np.zeros(2)
+        
+        # 🔧 重构：评估所有边缘节点（RSU + UAV）
+        candidates = []
+        
+        # 评估RSU
+        if rsus.size > 0 and rsus.ndim == 2:
+            for i in range(rsus.shape[0]):
+                load = rsus[i, 3] if rsus.shape[1] > 3 else 0.5
+                pos = rsus[i, :2] if rsus.shape[1] >= 2 else veh_center
+                distance = np.linalg.norm(pos - veh_center)
+                # 综合评分：负载 + 距离惩罚
+                score = load + self.distance_weight * (distance / 1000.0)
+                candidates.append(('rsu', i, score))
+        
+        # 评估UAV
+        if uavs.size > 0 and uavs.ndim == 2:
+            for i in range(uavs.shape[0]):
+                load = uavs[i, 3] if uavs.shape[1] > 3 else 0.6
+                pos = uavs[i, :2] if uavs.shape[1] >= 2 else veh_center
+                distance = np.linalg.norm(pos - veh_center)
+                # UAV距离惩罚稍高（空中通信衰减）
+                score = load + (self.distance_weight * 1.2) * (distance / 800.0)
+                candidates.append(('uav', i, score))
+        
+        # 选择最佳边缘节点
+        if not candidates:
+            # 无边缘节点可用，被迫本地处理
+            return self._action_from_preference(
+                local_score=0.0, 
+                rsu_score=-5.0, 
+                uav_score=-5.0
+            )
+        
+        kind, idx, _ = min(candidates, key=lambda x: x[2])
+        
+        if kind == 'rsu':
+            return self._action_from_preference(
+                local_score=-self.edge_preference,
+                rsu_score=self.edge_preference,
+                uav_score=-3.0,
+                rsu_index=idx
+            )
+        else:  # UAV
+            return self._action_from_preference(
+                local_score=-self.edge_preference,
+                rsu_score=-3.0,
+                uav_score=self.edge_preference,
+                uav_index=idx
+            )
 
 
 class RoundRobinPolicy(HeuristicPolicy):
@@ -361,43 +435,125 @@ class WeightedPreferencePolicy(HeuristicPolicy):
 
 
 class GreedyPolicy(HeuristicPolicy):
-    """Greedy baseline: pick the least-loaded compute target.
-
-    Uses the 4th column (index 3) of node feature vectors as a proxy for queue/load.
-    Falls back to 0.5 when unavailable. Chooses among local aggregate, per-RSU, per-UAV.
+    """Intelligent offloading policy with multi-factor awareness.
+    
+    🎯 设计目标：提供智能卸载基线，验证TD3学习的必要性
+    
+    📊 对比价值：
+    - 时延：中等（考虑负载和通信）
+    - 能耗：中等（动态平衡本地和卸载）
+    - 完成率：中等（基于贪心决策）
+    
+    🔧 重构要点：
+    - 综合考虑：队列负载、通信成本、计算能力
+    - 支持RSU资源变化适应（通过状态感知）
+    - 增加任务特性感知（通过能耗列）
     """
 
     def __init__(self) -> None:
         super().__init__("Greedy")
+        # 多因素权重
+        self.queue_weight = 1.5      # 队列负载权重
+        self.comm_weight = 0.8       # 通信成本权重
+        self.energy_weight = 0.6     # 能耗权重
 
     def select_action(self, state) -> np.ndarray:
         veh, rsu, uav = self._structured_state(state)
-
-        def _mean_col(arr, idx: int, default: float) -> float:
-            if arr.size == 0 or arr.ndim != 2 or arr.shape[1] <= idx:
-                return default
-            return float(np.mean(arr[:, idx]))
-
-        def _argmin_col(arr, idx: int) -> int:
-            if arr.size == 0 or arr.ndim != 2 or arr.shape[1] <= idx:
-                return -1
-            return int(np.argmin(arr[:, idx]))
-
-        local_load = _mean_col(veh, 3, 0.5)
-        best_rsu_idx = _argmin_col(rsu, 3)
-        rsu_load = float(rsu[best_rsu_idx, 3]) if best_rsu_idx >= 0 else 0.7
-        best_uav_idx = _argmin_col(uav, 3)
-        uav_load = float(uav[best_uav_idx, 3]) if best_uav_idx >= 0 else 0.8
-
-        # Select the minimum-load family
-        loads = [("local", local_load), ("rsu", rsu_load), ("uav", uav_load)]
-        kind, _ = min(loads, key=lambda kv: kv[1])
-
-        if kind == "rsu" and best_rsu_idx >= 0:
-            return self._action_from_preference(local_score=-1.5, rsu_score=4.0, uav_score=-1.5, rsu_index=best_rsu_idx)
-        if kind == "uav" and best_uav_idx >= 0:
-            return self._action_from_preference(local_score=-1.0, rsu_score=-1.0, uav_score=4.0, uav_index=best_uav_idx)
-        return self._action_from_preference(local_score=4.0, rsu_score=-2.0, uav_score=-2.0)
+        
+        # 计算车辆质心
+        veh_center = np.mean(veh[:, :2], axis=0) if veh.size > 0 else np.zeros(2)
+        
+        candidates = []
+        
+        # 🔧 重构：评估本地处理（考虑队列和能耗）
+        local_score = self._evaluate_local(veh)
+        candidates.append(('local', None, local_score))
+        
+        # 🔧 重构：评估所有RSU（负载+距离+能耗）
+        if rsu.size > 0 and rsu.ndim == 2:
+            for i in range(rsu.shape[0]):
+                score = self._evaluate_rsu(rsu[i], veh_center)
+                candidates.append(('rsu', i, score))
+        
+        # 🔧 重构：评估所有UAV（负载+距离+悬停能耗）
+        if uav.size > 0 and uav.ndim == 2:
+            for i in range(uav.shape[0]):
+                score = self._evaluate_uav(uav[i], veh_center)
+                candidates.append(('uav', i, score))
+        
+        # 选择成本最低的方案
+        kind, idx, _ = min(candidates, key=lambda x: x[2])
+        
+        if kind == 'local':
+            return self._action_from_preference(
+                local_score=4.0, 
+                rsu_score=-2.0, 
+                uav_score=-2.0
+            )
+        elif kind == 'rsu':
+            return self._action_from_preference(
+                local_score=-1.5, 
+                rsu_score=4.0, 
+                uav_score=-1.5, 
+                rsu_index=idx
+            )
+        else:  # UAV
+            return self._action_from_preference(
+                local_score=-1.0, 
+                rsu_score=-1.0, 
+                uav_score=4.0, 
+                uav_index=idx
+            )
+    
+    def _evaluate_local(self, veh: np.ndarray) -> float:
+        """评估本地处理成本：队列负载 + 能耗"""
+        if veh.size == 0 or veh.ndim != 2:
+            return 0.6
+        
+        # 队列负载（列3）
+        queue = float(np.mean(veh[:, 3])) if veh.shape[1] > 3 else 0.5
+        # 能耗状态（列4）
+        energy = float(np.mean(veh[:, 4])) if veh.shape[1] > 4 else 0.5
+        
+        return float(self.queue_weight * queue + self.energy_weight * energy)
+    
+    def _evaluate_rsu(self, rsu_state: np.ndarray, veh_pos: np.ndarray) -> float:
+        """评估RSU卸载成本：队列 + 通信距离 + 能耗"""
+        # 队列负载
+        queue = float(rsu_state[3]) if rsu_state.size > 3 else 0.6
+        
+        # 通信成本（基于距离）
+        rsu_pos = rsu_state[:2] if rsu_state.size >= 2 else veh_pos
+        distance = float(np.linalg.norm(rsu_pos - veh_pos))
+        comm_cost = distance / 1000.0  # 归一化到[0, 1]范围
+        
+        # 能耗状态
+        energy = float(rsu_state[4]) if rsu_state.size > 4 else 0.5
+        
+        return float(
+            self.queue_weight * queue +
+            self.comm_weight * comm_cost +
+            self.energy_weight * energy * 0.5  # RSU能耗权重降低
+        )
+    
+    def _evaluate_uav(self, uav_state: np.ndarray, veh_pos: np.ndarray) -> float:
+        """评估UAV卸载成本：队列 + 通信距离 + 悬停能耗"""
+        # 队列负载
+        queue = float(uav_state[3]) if uav_state.size > 3 else 0.7
+        
+        # 通信成本（UAV距离衰减更快）
+        uav_pos = uav_state[:2] if uav_state.size >= 2 else veh_pos
+        distance = float(np.linalg.norm(uav_pos - veh_pos))
+        comm_cost = distance / 800.0  # UAV通信范围较小
+        
+        # 悬停能耗
+        energy = float(uav_state[4]) if uav_state.size > 4 else 0.7
+        
+        return float(
+            self.queue_weight * queue +
+            self.comm_weight * comm_cost * 1.2 +  # 空中通信惩罚
+            self.energy_weight * energy * 0.8  # UAV能耗权重较高
+        )
 
 
 def create_baseline_algorithm(name: str, **kwargs):

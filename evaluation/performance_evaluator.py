@@ -6,7 +6,7 @@
 
 import numpy as np
 import matplotlib.pyplot as plt
-from typing import Dict, List, Tuple
+from typing import Dict, List, Tuple, Optional
 import json
 from datetime import datetime
 
@@ -208,7 +208,7 @@ class PerformanceEvaluator:
         
         return report
     
-    def plot_performance_comparison(self, comparison_results: Dict, save_path: str = None):
+    def plot_performance_comparison(self, comparison_results: Dict, save_path: Optional[str] = None):
         """绘制性能对比图"""
         algorithms = list(comparison_results['individual_performance'].keys())
         

@@ -17,17 +17,9 @@ CAMTD3 = 基于中央资源分配的缓存感知任务迁移系统
 python train_single_agent.py --algorithm TD3 --episodes 200
 python train_single_agent.py --algorithm SAC --episodes 200
 
-✅ 方式1：启用所有通信增强（推荐）
-python train_single_agent.py --algorithm TD3 --episodes 200 --comm-enhancements
-✅ 方式2：单独启用某个功能
-# 只启用快衰落
-python train_single_agent.py --algorithm TD3 --episodes 200 --fast-fading
-# 只启用系统级干扰
-python train_single_agent.py --algorithm TD3 --episodes 200 --system-interference
-# 只启用动态带宽分配
+✅# 只启用动态带宽分配
 python train_single_agent.py --algorithm TD3 --episodes 200 --dynamic-bandwidth
-# 组合启用
-python train_single_agent.py --algorithm TD3 --episodes 200 --fast-fading --system-interference --dynamic-bandwidth
+
 
 # 如需禁用中央资源分配（不推荐，仅用于消融实验）
 python train_single_agent.py --algorithm TD3 --episodes 200 --no-central-resource
@@ -764,7 +756,13 @@ class SingleAgentTrainingEnvironment:
             'mm1_delay_error': [],
             'normalized_delay': [],
             'normalized_energy': [],
-            'normalized_reward': []
+            'normalized_reward': [],
+            # 🎯 新增：RSU资源利用率和卸载率统计（修复bug）
+            'rsu_utilization': [],
+            'offload_ratio': [],  # remote_execution_ratio (rsu+uav)
+            'rsu_offload_ratio': [],
+            'uav_offload_ratio': [],
+            'local_offload_ratio': [],
         }
         
         # 性能追踪器
@@ -1396,11 +1394,26 @@ class SingleAgentTrainingEnvironment:
             local_offload_ratio = float(local_tasks_count) / float(total_offload_tasks)
             rsu_offload_ratio = float(rsu_tasks_count) / float(total_offload_tasks)
             uav_offload_ratio = float(uav_tasks_count) / float(total_offload_tasks)
+            # 🎯 修复：计算总远程卸载比例（RSU+UAV）
+            remote_execution_ratio = rsu_offload_ratio + uav_offload_ratio
         else:
             # 默认值：全部本地处理
             local_offload_ratio = 1.0
             rsu_offload_ratio = 0.0
             uav_offload_ratio = 0.0
+            remote_execution_ratio = 0.0
+        
+        # 🎯 修复：计算RSU资源利用率（计算队列占用率）
+        rsu_total_utilization = 0.0
+        rsu_count = len(self.simulator.rsus) if hasattr(self.simulator, 'rsus') else 0
+        if rsu_count > 0:
+            for rsu in self.simulator.rsus:
+                queue_len = len(rsu.get('computation_queue', []))
+                queue_capacity = rsu.get('queue_capacity', 20)  # 默认容量20
+                rsu_total_utilization += float(queue_len) / max(1.0, float(queue_capacity))
+            rsu_utilization = rsu_total_utilization / float(rsu_count)
+        else:
+            rsu_utilization = 0.0
         
         # 迁移成功率（来自仿真器统计）
         migrations_executed = int(safe_get('migrations_executed', 0))
@@ -1557,6 +1570,10 @@ class SingleAgentTrainingEnvironment:
             'local_tasks_count': local_tasks_count,
             'rsu_tasks_count': rsu_tasks_count,
             'uav_tasks_count': uav_tasks_count,
+            # 🎯 修夏bug：添加关键指标
+            'rsu_utilization': rsu_utilization,  # RSU资源利用率
+            'offload_ratio': remote_execution_ratio,  # 总远程卸载比例（RSU+UAV）
+            'remote_execution_ratio': remote_execution_ratio,  # 别名，兼容旧代码
         }
 
     def _normalize_reward_value(self, reward: float) -> float:
@@ -1618,6 +1635,12 @@ class SingleAgentTrainingEnvironment:
             'avg_energy_downlink': 'avg_energy_downlink',
             'avg_energy_cache': 'avg_energy_cache',
             'queue_overflow_drops': 'queue_overflow_drops',
+            # 🎯 修夏bug：添加关键指标映射
+            'rsu_utilization': 'rsu_utilization',
+            'offload_ratio': 'offload_ratio',
+            'rsu_offload_ratio': 'rsu_offload_ratio',
+            'uav_offload_ratio': 'uav_offload_ratio',
+            'local_offload_ratio': 'local_offload_ratio',
         }
 
         def _coerce_scalar(value: Any) -> Optional[float]:
@@ -2812,6 +2835,36 @@ def _calculate_stable_completion_average(training_env: SingleAgentTrainingEnviro
     return training_env.performance_tracker['recent_completion'].get_average()
 
 
+def _calculate_raw_cost_for_training(training_env: SingleAgentTrainingEnvironment) -> float:
+    """
+    从训练奖励计算raw_cost（奖励本身就是负成本）
+    
+    训练时：reward = -cost（成本越低，奖励越高）
+    因此：raw_cost = -reward
+    
+    Returns:
+        float: raw_cost（正值，越小越好）
+    """
+    # 获取收敛后的平均奖励
+    if hasattr(training_env, 'episode_rewards') and len(training_env.episode_rewards) > 0:
+        rewards = training_env.episode_rewards
+        if len(rewards) >= 100:
+            # 使用后50%数据（收敛后）
+            half_point = len(rewards) // 2
+            converged_rewards = rewards[half_point:]
+            avg_reward = float(np.mean(converged_rewards))
+        elif len(rewards) >= 50:
+            avg_reward = float(np.mean(rewards[-30:]))
+        else:
+            avg_reward = float(np.mean(rewards))
+    else:
+        avg_reward = training_env.performance_tracker['recent_rewards'].get_average()
+    
+    # reward是负成本，所以raw_cost = -reward
+    raw_cost = -avg_reward
+    return float(raw_cost)
+
+
 def save_single_training_results(algorithm: str, training_env: SingleAgentTrainingEnvironment, 
                                 training_time: float,
                                 override_scenario: Optional[Dict[str, Any]] = None) -> Dict:
@@ -2918,7 +2971,11 @@ def save_single_training_results(algorithm: str, training_env: SingleAgentTraini
             
             # 🔧 修复：使用更稳定的平均方法，避免MovingAverage(100)的波动影响
             'avg_delay': _calculate_stable_delay_average(training_env),
-            'avg_completion': _calculate_stable_completion_average(training_env)
+            'avg_completion': _calculate_stable_completion_average(training_env),
+            
+            # 🎯 新增：添加avg_energy和raw_cost，用于与对比实验一致
+            'avg_energy': float(np.mean(training_env.episode_metrics['total_energy'][len(training_env.episode_metrics['total_energy'])//2:])) if training_env.episode_metrics.get('total_energy') else 0.0,
+            'raw_cost': _calculate_raw_cost_for_training(training_env),
         }
     }
     
@@ -2926,6 +2983,15 @@ def save_single_training_results(algorithm: str, training_env: SingleAgentTraini
     print(f"   系统拓扑: {num_vehicles}车辆, {num_rsus}RSU, {num_uavs}UAV")
     print(f"   网络配置: 带宽{config.network.bandwidth/1e6:.0f}MHz, 频率{config.communication.carrier_frequency/1e9:.1f}GHz")
     print(f"   任务参数: 到达率{config.task.arrival_rate:.1f}, 数据量{sum(config.task.data_size_range)/2/1e6:.1f}MB")
+    
+    # 🎯 打印关键性能指标
+    final_perf = results['final_performance']
+    print(f"\n🎯 最终性能指标:")
+    print(f"   Raw Cost: {final_perf.get('raw_cost', 'N/A'):.4f} (= -avg_reward，与对比实验一致)")
+    print(f"   Avg Reward: {final_perf.get('avg_reward', 0):.4f} (= -raw_cost，训练优化目标)")
+    print(f"   Avg Delay: {final_perf.get('avg_delay', 0):.4f}s")
+    print(f"   Avg Energy: {final_perf.get('avg_energy', 0):.2f}J")
+    print(f"   Completion Rate: {final_perf.get('avg_completion', 0):.1%}")
     
     # 使用时间戳文件名
     filename = get_timestamped_filename("training_results")
