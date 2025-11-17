@@ -4,11 +4,17 @@
 from __future__ import annotations
 
 import contextlib
+import logging
 import os
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence, Tuple
 
 import numpy as np
+
+from experiments.td3_strategy_suite.strategy_runner import compute_cost
+
+# 配置日志记录器
+logger = logging.getLogger(__name__)
 
 OverrideBuilder = Callable[[float], Tuple[Dict[str, Any], Dict[str, Any]]]
 
@@ -147,10 +153,16 @@ class ComparisonSuite:
         seed: int,
     ) -> Dict[str, Any]:
         print(f"  运行: {mode.name}")
+        logger.info(f"Starting mode: {mode.name}, episodes={episodes}, seed={seed}")
+        
         env_overrides = mode.env_overrides()
         env_overrides["RANDOM_SEED"] = str(seed)
+        logger.debug(f"Environment overrides: {env_overrides}")
 
-        with _temporary_environ(env_overrides):
+        # 类型转换：Dict[str, str] -> Dict[str, Optional[str]]
+        env_overrides_optional: Dict[str, Optional[str]] = {k: v for k, v in env_overrides.items()}
+        
+        with _temporary_environ(env_overrides_optional):
             try:
                 self.seed_fn()
                 scenario_override = dict(override_config) if override_config else None
@@ -162,9 +174,30 @@ class ComparisonSuite:
                     disable_migration=mode.disable_migration,
                     enforce_offload_mode=mode.enforce_offload_mode,
                 )
-            except Exception as exc:  # pragma: no cover - diagnostic path
+            except ValueError as exc:
+                # 配置错误（如无效的参数范围）
+                error_msg = f"配置错误: {exc}"
+                logger.error(f"Mode {mode.name} failed with ValueError: {exc}", exc_info=True)
+                print(f"  ❌ 模式 {mode.name} 配置错误: {exc}")
+                return {"success": False, "error": error_msg, "error_type": "ValueError"}
+            except RuntimeError as exc:
+                # 运行时错误（如训练失败、GPU内存不足）
+                error_msg = f"运行时错误: {exc}"
+                logger.error(f"Mode {mode.name} failed with RuntimeError: {exc}", exc_info=True)
+                print(f"  ❌ 模式 {mode.name} 运行失败: {exc}")
+                return {"success": False, "error": error_msg, "error_type": "RuntimeError"}
+            except KeyError as exc:
+                # 缺少必要的配置项或指标
+                error_msg = f"缺少配置项: {exc}"
+                logger.error(f"Mode {mode.name} failed with KeyError: {exc}", exc_info=True)
+                print(f"  ❌ 模式 {mode.name} 缺少配置: {exc}")
+                return {"success": False, "error": error_msg, "error_type": "KeyError"}
+            except Exception as exc:
+                # 其他未知错误
+                error_msg = f"未知错误: {type(exc).__name__}: {exc}"
+                logger.error(f"Mode {mode.name} failed with unexpected error: {exc}", exc_info=True)
                 print(f"  ⚠️ 模式 {mode.name} 运行失败: {exc}")
-                return {"success": False, "error": str(exc)}
+                return {"success": False, "error": error_msg, "error_type": type(exc).__name__}
 
         return self._summarise_training(result, mode.name)
 
@@ -183,13 +216,11 @@ class ComparisonSuite:
         completion_rate = tail_mean(episode_metrics.get("task_completion_rate", []))
         cache_hit_rate = tail_mean(episode_metrics.get("cache_hit_rate", []))
 
-        weight_delay = float(getattr(self.reward_config, "reward_weight_delay", 1.0))
-        weight_energy = float(getattr(self.reward_config, "reward_weight_energy", 1.0))
-        avg_cost = weight_delay * avg_delay + weight_energy * avg_energy
+        avg_cost = compute_cost(avg_delay, avg_energy)
 
         print(
             f"    ✅ {mode_name} 完成 - 成本:{avg_cost:.3f} "
-            f"(时延 {avg_delay:.3f}s ×{weight_delay:.1f} + 能耗 {avg_energy:.1f}J ×{weight_energy:.1f}) "
+            f"(时延 {avg_delay:.3f}s, 能耗 {avg_energy:.1f}J) "
             f"完成率 {completion_rate * 100:.1f}%"
         )
 

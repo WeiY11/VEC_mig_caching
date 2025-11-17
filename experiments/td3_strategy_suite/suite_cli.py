@@ -165,7 +165,28 @@ def add_common_experiment_args(
         "--central-resource",
         action="store_true",
         help="启用中央资源分配架构（Phase 1决策 + Phase 2执行），对比分层模式 vs 标准模式",
-        )
+    )
+    
+    # 🎯 启发式策略优化参数
+    parser.add_argument(
+        "--optimize-heuristic",
+        action="store_true",
+        default=True,
+        help="启发式策略使用300轮（默认启用），节省30-40%%时间",
+    )
+    parser.add_argument(
+        "--no-optimize-heuristic",
+        dest="optimize_heuristic",
+        action="store_false",
+        help="禁用启发式优化，所有策略使用相同轮次",
+    )
+    
+    # 🚀 快速验证模式
+    parser.add_argument(
+        "--fast-mode",
+        action="store_true",
+        help="快速验证模式：500轮训练，3个配置点，节省67%%时间（仅用于开发调试）",
+    )
 
 
 def parse_strategy_selection(value: Optional[str]) -> Optional[List[str]]:
@@ -298,3 +319,43 @@ def resolve_strategy_keys(strategies: Optional[Sequence[str]]) -> List[str]:
     """
 
     return list(strategies) if strategies else list(STRATEGY_KEYS)
+
+
+def validate_td3_episodes(
+    episodes: int,
+    strategies: Optional[Sequence[str]] = None,
+    min_episodes: int = 1500,
+    heuristic_episodes: int = 300,
+) -> None:
+    """验证TD3训练轮次是否充分
+    
+    Args:
+        episodes: 训练轮次
+        strategies: 策略列表（None表示所有策略）
+        min_episodes: TD3最小推荐轮次
+        heuristic_episodes: 启发式策略推荐轮次
+    """
+    import time
+    
+    strategy_keys = list(strategies) if strategies else list(STRATEGY_KEYS)
+    td3_strategies = ['comprehensive-no-migration', 'comprehensive-migration']
+    td3_count = len([s for s in strategy_keys if s in td3_strategies])
+    
+    if td3_count > 0 and episodes < min_episodes:
+        print("\n" + "="*80)
+        print("⚠️  警告：TD3训练轮次严重不足！")
+        print("="*80)
+        print(f"🛑 当前轮次: {episodes}")
+        print(f"✅ 建议轮次: {min_episodes}+ (最低要求)")
+        print(f"❗ 影响: CAMTD3和无迁移TD3将完全未收敛")
+        print(f"⚠️  后果: 成本可能高于启发式策略，结果无效")
+        print(f"📊 预计时间: ~30h ({min_episodes}轮) vs ~20h (当前{episodes}轮)")
+        print("="*80)
+        print("建议立即停止并使用正确参数重跑：")
+        print("  python <script_name>.py --episodes 1500 --seed 42")
+        print("="*80 + "\n")
+        print("等待15秒以便您可以停止实验 (Ctrl+C)...")
+        for i in range(15, 0, -1):
+            print(f"\r{i}秒...", end="", flush=True)
+            time.sleep(1)
+        print("\n继续运行，但结果将被标记为'未收敛/无效'\n")

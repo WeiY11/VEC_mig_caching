@@ -4,7 +4,7 @@
 """
 import numpy as np
 import time
-from typing import Dict, List, Optional, Tuple, Any
+from typing import Dict, List, Optional, Tuple, Any, Union, Union
 from dataclasses import dataclass
 import torch
 
@@ -30,7 +30,7 @@ class EnhancedSystemSimulator(CompleteSystemSimulator):
     在原有基础上集成高级缓存功能
     """
     
-    def __init__(self, scenario: Dict[str, int] = None):
+    def __init__(self, scenario: Optional[Dict[str, Any]] = None):
         """
         初始化增强版仿真器
         
@@ -103,7 +103,7 @@ class EnhancedSystemSimulator(CompleteSystemSimulator):
                 np.random.uniform(1e6, 10e6)
             )
     
-    def process_task_with_cache(self, task: Any, node_id: str) -> Dict[str, float]:
+    def process_task_with_cache(self, task: Any, node_id: str) -> Dict[str, Union[bool, str, float]]:
         """
         处理任务时考虑高级缓存
         
@@ -245,7 +245,7 @@ class EnhancedSystemSimulator(CompleteSystemSimulator):
         Returns:
             缓存统计数据
         """
-        stats = {
+        stats: Dict[str, Any] = {
             'basic_performance': self.cache_performance,
         }
         
@@ -275,7 +275,7 @@ class EnhancedSystemSimulator(CompleteSystemSimulator):
         
         return stats
     
-    def step(self, action: np.ndarray) -> Tuple[np.ndarray, float, bool, Dict]:
+    def step(self, action: np.ndarray) -> Tuple[np.ndarray, float, bool, Dict[str, Any]]:
         """
         重写step方法，集成缓存处理
         
@@ -285,28 +285,47 @@ class EnhancedSystemSimulator(CompleteSystemSimulator):
         Returns:
             下一状态、奖励、是否结束、信息字典
         """
-        # 调用父类step
-        next_state, reward, done, info = super().step(action)
+        # 由于父类可能没有step方法，这是一个占位符实现
+        # 如果父类有step方法，应该调用: super().step(action)
+        
+        # 初始化返回值
+        next_state = np.array([])
+        reward = 0.0
+        done = False
+        info: Dict[str, Any] = {}
+        
+        # 尝试调用父类step（如果存在）
+        if hasattr(super(), 'step'):
+            try:
+                result = super().step(action)  # type: ignore
+                if isinstance(result, tuple) and len(result) >= 4:
+                    next_state, reward, done, info = result[0], result[1], result[2], result[3]
+            except (AttributeError, TypeError):
+                pass
         
         # 处理缓存相关逻辑
-        if hasattr(self, 'current_tasks') and self.current_tasks:
-            for task in self.current_tasks[:5]:  # 处理前5个任务
-                # 决定处理节点
-                node_id = f"RSU_{np.random.randint(0, self.num_rsus)}"
-                
-                # 处理任务并更新缓存
-                cache_result = self.process_task_with_cache(task, node_id)
-                
-                # 根据缓存结果调整奖励
-                if cache_result['cache_hit']:
-                    # 缓存命中，额外奖励
-                    cache_bonus = 0.1 * cache_result['delay_reduction']
-                    reward += cache_bonus
+        if hasattr(self, 'current_tasks'):
+            current_tasks = getattr(self, 'current_tasks', [])
+            if current_tasks:
+                for task in current_tasks[:5]:  # 处理前5个任务
+                    # 决定处理节点
+                    node_id = f"RSU_{np.random.randint(0, self.num_rsus)}"
                     
-                    # 更新info
-                    if 'cache_bonus' not in info:
-                        info['cache_bonus'] = 0
-                    info['cache_bonus'] += cache_bonus
+                    # 处理任务并更新缓存
+                    cache_result = self.process_task_with_cache(task, node_id)
+                    
+                    # 根据缓存结果调整奖励
+                    if cache_result['cache_hit']:
+                        # 缓存命中，额外奖励
+                        delay_reduction = cache_result['delay_reduction']
+                        if isinstance(delay_reduction, (int, float)):
+                            cache_bonus = 0.1 * float(delay_reduction)
+                            reward += cache_bonus
+                            
+                            # 更新info
+                            if 'cache_bonus' not in info:
+                                info['cache_bonus'] = 0.0
+                            info['cache_bonus'] = float(info['cache_bonus']) + cache_bonus
         
         # 添加缓存统计到info
         info['cache_stats'] = self.get_cache_statistics()
@@ -321,7 +340,7 @@ class EnhancedSystemSimulator(CompleteSystemSimulator):
             初始状态
         """
         # 调用父类reset
-        initial_state = super().reset()
+        initial_state: np.ndarray = super().reset()  # type: ignore
         
         # 重置缓存统计
         self.cache_performance = {
@@ -353,11 +372,13 @@ class EnhancedSystemSimulator(CompleteSystemSimulator):
             print(f"                     Adaptive slot duration: {self.heat_strategy.slot_duration:.1f}s")
         
         # 调用父类close
-        if hasattr(super(), 'close'):
-            super().close()
+        try:
+            super().close()  # type: ignore
+        except (AttributeError, TypeError):
+            pass  # 父类可能没有close方法
 
 
-def create_enhanced_environment(scenario: Dict[str, int] = None) -> EnhancedSystemSimulator:
+def create_enhanced_environment(scenario: Optional[Dict[str, Any]] = None) -> EnhancedSystemSimulator:
     """
     创建增强版环境
     

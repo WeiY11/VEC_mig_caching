@@ -145,8 +145,8 @@ def main():
     parser.add_argument(
         "--episodes",
         type=int,
-        default=400,
-        help="每个实验的训练轮数 (默认: 400)",
+        default=1500,
+        help="每个实验的训练轮数 (默认: 1500，建议≥1500确保TD3充分收敛)",
     )
     parser.add_argument(
         "--silent",
@@ -178,6 +178,35 @@ def main():
     )
     
     args = parser.parse_args()
+    
+    # 🎯 训练轮数检查：确保策略充分收敛
+    if args.episodes < 1500:
+        print("\n" + "="*70)
+        print("⚠️  训练轮数警告")
+        print("="*70)
+        print(f"当前配置轮数: {args.episodes}")
+        print(f"建议最低轮数: 1500")
+        print()
+        print("【风险提示】")
+        print("  - TD3算法收敛较慢，<1500轮可能导致策略未充分收敛")
+        print("  - 在不同RSU资源配置下，低轮数影响策略质量和结果稳定性")
+        print("  - 实验结果可能出现性能异常或波动过大")
+        print()
+        print("【推荐配置】")
+        print("  - 正式实验: --episodes 1500 或更高")
+        print("  - 快速验证: --episodes 500（仅用于代码调试）")
+        print()
+        print("示例命令:")
+        print(f"  python {Path(__file__).name} --episodes 1500")
+        print("="*70)
+        
+        # 倒计时确认（给用户5秒考虑）
+        import time
+        for i in range(5, 0, -1):
+            print(f"\r将在 {i} 秒后继续执行...", end="", flush=True)
+            time.sleep(1)
+        print("\r执行中...                    ")
+        print()
     
     # 解析要运行的实验
     exp_indices = [int(x.strip()) - 1 for x in args.experiments.split(",") if x.strip()]

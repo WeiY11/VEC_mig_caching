@@ -188,9 +188,9 @@ EXPERIMENTS = {
 
 
 MODES = {
-    "quick": {"episodes": 10, "desc": "快速测试（10轮，约10-20分钟/实验）"},
-    "medium": {"episodes": 100, "desc": "中等测试（100轮，约1.5-3小时/实验）"},
-    "full": {"episodes": 500, "desc": "完整实验（500轮，约7-15小时/实验）"},
+    "quick": {"episodes": 500, "desc": "快速验证（500轮，仅用于代码调试，约20-40分钟/实验）"},
+    "medium": {"episodes": 1000, "desc": "中等测试（1000轮，约2-4小时/实验）"},
+    "full": {"episodes": 1500, "desc": "完整实验（1500轮，建议轮数，约3-6小时/实验）"},
 }
 
 # ========== 颜色输出（可选）==========
@@ -200,6 +200,11 @@ try:
     USE_COLOR = True
 except ImportError:
     USE_COLOR = False
+    # 为类型检查器提供占位类
+    class Fore:  # type: ignore
+        RED = GREEN = YELLOW = BLUE = CYAN = MAGENTA = ""
+    class Style:  # type: ignore
+        RESET_ALL = ""
 
 def colored(text: str, color: str = "") -> str:
     """

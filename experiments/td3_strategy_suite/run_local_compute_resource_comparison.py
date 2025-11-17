@@ -74,6 +74,8 @@ from experiments.td3_strategy_suite.suite_cli import (
     resolve_strategy_keys,
     suite_path as build_suite_path,
     get_default_scenario_overrides,
+,
+    validate_td3_episodes,
 )
 from experiments.td3_strategy_suite.parameter_presets import default_vehicle_compute_levels
 from utils.unified_reward_calculator import UnifiedRewardCalculator
@@ -327,6 +329,9 @@ def main() -> None:
         )
     
     # ========== 运行实验 ==========
+    # 🎯 验证TD3训练轮次
+    validate_td3_episodes(common.episodes, strategy_keys)
+    
     suite_dir = build_suite_path(common)
     results = evaluate_configs(
         configs=configs,

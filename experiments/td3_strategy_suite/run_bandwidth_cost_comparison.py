@@ -42,10 +42,14 @@ from experiments.td3_strategy_suite.suite_cli import (
     resolve_common_args,
     resolve_strategy_keys,
     suite_path as build_suite_path,
-    get_default_scenario_overrides,  # 🎯 消除硬编码
+    get_default_scenario_overrides,
+    validate_td3_episodes,
 )
 from experiments.td3_strategy_suite.parameter_presets import (
     default_rsu_compute_levels,
+)
+from experiments.td3_strategy_suite.result_validation import (
+    validate_experiment_results,
 )
 
 DEFAULT_EPISODES = 1500  # 🎯 优化：从800增加到1500，确保TD3充分收敛
@@ -448,48 +452,23 @@ def run_experiment_suite(
         time_saved = int((1 - DEFAULT_EPISODES_HEURISTIC/common_args.episodes) * heuristic_count / len(strategy_keys) * 100)
         print(f"  - 预计时间节省: ~{time_saved}%\n")
 
-    # 🎯 为每个策略单独设置episodes
-    def get_strategy_episodes(strategy_key: str) -> int:
-        """Return the appropriate number of episodes for this strategy"""
-        if common_args.optimize_heuristic and strategy_key in heuristic_strategies:
-            return DEFAULT_EPISODES_HEURISTIC
-        return common_args.episodes
-    
-    # 🎯 修复：分别调用evaluate_configs，为启发式策略和RL策略使用不同的episodes
-    results = []
-    for cfg_idx, cfg in enumerate(configs):
-        cfg_results = {}
-        
-        for strategy_key in strategy_keys:
-            strategy_episodes = get_strategy_episodes(strategy_key)
-            
-            # 🎯 单独运行该策略
-            single_result = evaluate_configs(
-                configs=[cfg],
-                episodes=strategy_episodes,
-                seed=common_args.seed,
-                silent=common_args.silent,
-                suite_path=exp_dir,
-                strategies=[strategy_key],
-                per_strategy_hook=metrics_enrichment_hook,
-                central_resource=common_args.central_resource,
-            )
-            
-            # 🎯 合并结果
-            from typing import cast
-            cfg_results[strategy_key] = cast(Dict[str, object], single_result[0]['strategies'])[strategy_key]
-        
-        # 🎯 构建完整结果
-        results.append({
-            **cfg,
-            'strategies': cfg_results,
-            'episodes': common_args.episodes,  # 记录默认episodes
-            'seed': common_args.seed,
-        })
-    
-    # 🎯 修复：应用全局归一化，确保跨配置可比
-    from experiments.td3_strategy_suite.strategy_runner import attach_normalized_costs
-    attach_normalized_costs(results)
+    strategy_episode_overrides: Dict[str, int] = {}
+    if common_args.optimize_heuristic:
+        for key in strategy_keys:
+            if key in heuristic_strategies:
+                strategy_episode_overrides[key] = DEFAULT_EPISODES_HEURISTIC
+
+    results = evaluate_configs(
+        configs=configs,
+        episodes=common_args.episodes,
+        seed=common_args.seed,
+        silent=common_args.silent,
+        suite_path=exp_dir,
+        strategies=strategy_keys,
+        per_strategy_hook=metrics_enrichment_hook,
+        central_resource=common_args.central_resource,
+        strategy_episode_overrides=strategy_episode_overrides or None,
+    )
 
     plot_results(
         results,
@@ -704,104 +683,12 @@ def main() -> None:
         print('No experiments were selected; exiting.')
         return
 
-    # 🎯 优化：添加结果验证检查
-    print("\n" + "="*80)
-    print("✅ 结果验证检查")
-    print("="*80)
-    
-    import numpy as np  # 👍 提前导入
-    
+    # 🎯 结果验证检查
     for run in executed_runs:
         exp_name = run['experiment']
         results_obj = run.get('results', [])
-        
-        # 👍 类型转换
-        if not isinstance(results_obj, list):
-            continue
-        results = cast(List[Dict[str, object]], results_obj)
-        
-        if not results:
-            continue
-        
-        print(f"\n🔍 验证实验: {exp_name}")
-        print("-" * 80)
-        
-        # 验证1: local-only 策略在所有配置下性能一致
-        local_only_costs = []
-        for result in results:
-            strategies = result.get('strategies', {})
-            if not isinstance(strategies, dict):
-                continue
-            local_strategy = strategies.get('local-only', {})
-            if isinstance(local_strategy, dict):
-                cost_val = local_strategy.get('raw_cost', 0.0)
-                if isinstance(cost_val, (int, float)):
-                    local_only_costs.append(float(cost_val))
-        
-        if len(local_only_costs) > 1:
-            cost_std = float(np.std(local_only_costs))
-            cost_mean = float(np.mean(local_only_costs))
-            cv = cost_std / max(cost_mean, 1e-6)
-            
-            if cv < 0.1:  # 变异系数 < 10%
-                print(f"  ✅ local-only 策略性能一致性: CV={cv:.3f} (< 0.1)")
-            else:
-                print(f"  ⚠️  local-only 策略性能变异较大: CV={cv:.3f}")
-        
-        # 验证2: comprehensive-migration 性能随资源增加而提升
-        if exp_name == "rsu_compute":
-            camtd3_costs: List[float] = []
-            config_values: List[float] = []
-            
-            for result in results:
-                rsu_val = result.get('rsu_compute_ghz', 0.0)
-                if isinstance(rsu_val, (int, float)):
-                    config_values.append(float(rsu_val))
-                    
-                strategies = result.get('strategies', {})
-                if not isinstance(strategies, dict):
-                    continue
-                camtd3_strategy = strategies.get('comprehensive-migration', {})
-                if isinstance(camtd3_strategy, dict):
-                    cost_val = camtd3_strategy.get('raw_cost', 0.0)
-                    if isinstance(cost_val, (int, float)):
-                        camtd3_costs.append(float(cost_val))
-            
-            if len(camtd3_costs) >= 3 and len(config_values) >= 3:
-                # 检查是否随资源增加而成本下降（或保持稳定）
-                sorted_indices = np.argsort(config_values)
-                sorted_costs = [camtd3_costs[i] for i in sorted_indices]
-                
-                # 简单的单调性检查：至少不递增
-                increasing_count = sum(1 for i in range(len(sorted_costs)-1) if sorted_costs[i+1] > sorted_costs[i])
-                
-                if increasing_count <= 1:  # 允许1次上升
-                    print(f"  ✅ CAMTD3 性能随 RSU 资源增加而改善")
-                else:
-                    print(f"  ⚠️  CAMTD3 性能未能随 RSU 资源一致改善 (上升{increasing_count}次)")
-        
-        # 验证3: 高资源配置下任务完成率检查
-        if len(results) > 0:
-            last_config = results[-1]  # 最高资源配置
-            strategies = last_config.get('strategies', {})
-            
-            if isinstance(strategies, dict):
-                low_completion_strategies: List[tuple[str, float]] = []
-                for key, metrics_obj in strategies.items():
-                    if not isinstance(metrics_obj, dict):
-                        continue
-                    completion_val = metrics_obj.get('completion_rate', 0.0)
-                    if isinstance(completion_val, (int, float)):
-                        completion = float(completion_val)
-                        if completion < 0.95:  # 完成率 < 95%
-                            low_completion_strategies.append((str(key), completion))
-                
-                if not low_completion_strategies:
-                    print(f"  ✅ 高资源配置下所有策略完成率 ≥ 95%")
-                else:
-                    print(f"  ⚠️  以下策略完成率较低:")
-                    for key, completion in low_completion_strategies:
-                        print(f"      - {strategy_label(key)}: {completion:.2%}")
+        if isinstance(results_obj, list):
+            validate_experiment_results(results_obj, exp_name)
 
     print("\n" + "="*80)
     print("🎯 所有实验完成！输出摘要:")

@@ -26,6 +26,7 @@ from experiments.td3_strategy_suite.run_strategy_training import (  # noqa: E402
     _run_heuristic_strategy,
 )
 from utils.unified_reward_calculator import UnifiedRewardCalculator  # noqa: E402
+from experiments.td3_strategy_suite.metrics_enrichment import enrich_strategy_metrics  # noqa: E402
 # 缓存系统已禁用
 # from experiments.td3_strategy_suite.strategy_model_cache import get_global_cache  # noqa: E402
 
@@ -78,8 +79,8 @@ def compute_cost(avg_delay: float, avg_energy: float, avg_reward: Optional[float
     因此:   raw_cost = -reward
     
     【优先使用avg_reward】
-    如果提供了avg_reward，直接使用: raw_cost = -avg_reward
-    否则回退到手动计算（保持向后兼容）
+    如果提供了avg_reward，直接使用: raw_cost = -avg_reward（默认行为）
+    否则回退到手动计算（仅在没有reward数据时）
     
     【参数】
     avg_delay: float - 平均任务时延（秒）
@@ -90,15 +91,15 @@ def compute_cost(avg_delay: float, avg_energy: float, avg_reward: Optional[float
     float - 归一化的加权代价（越小越好）
     
     【修复说明】
-    ✅ 优先从reward计算: raw_cost = -avg_reward
-    ✅ 回退计算: raw_cost = w_T·(T/T_target) + w_E·(E/E_target)
-    ✅ 与train_single_agent.py完全一致
+    ✅ 默认使用: raw_cost = -avg_reward（与train_single_agent.py完全一致）
+    ✅ 回退计算: raw_cost = w_T·(T/T_target) + w_E·(E/E_target)（仅在无reward时）
+    ✅ 统一对比实验和单独训练的成本计算方式
     """
-    # 🎯 优先使用reward（与训练一致）
+    # 🎯 优先模式：基于奖励计算（默认启用，与train_single_agent.py一致）
     if avg_reward is not None:
         return -avg_reward
     
-    # 回退：手动计算（向后兼容）
+    # 回退：手动计算（仅在没有reward数据时使用，保持向后兼容）
     weight_delay = float(config.rl.reward_weight_delay)
     weight_energy = float(config.rl.reward_weight_energy)
     
@@ -141,6 +142,7 @@ def run_strategy_suite(
     silent: bool,
     strategies: Optional[Iterable[str]] = None,
     central_resource: bool = False,
+    strategy_episode_overrides: Optional[Dict[str, int]] = None,
 ) -> Dict[str, Dict[str, float]]:
     return _run_strategy_suite_internal(
         override_scenario=override_scenario,
@@ -150,6 +152,7 @@ def run_strategy_suite(
         strategies=strategies,
         include_episode_metrics=False,
         central_resource=central_resource,
+        strategy_episode_overrides=strategy_episode_overrides,
     )
 
 
@@ -160,6 +163,7 @@ def run_strategy_suite_with_details(
     silent: bool,
     strategies: Optional[Iterable[str]] = None,
     central_resource: bool = False,
+    strategy_episode_overrides: Optional[Dict[str, int]] = None,
 ) -> Dict[str, Dict[str, float]]:
     return _run_strategy_suite_internal(
         override_scenario=override_scenario,
@@ -169,6 +173,7 @@ def run_strategy_suite_with_details(
         strategies=strategies,
         include_episode_metrics=True,
         central_resource=central_resource,
+        strategy_episode_overrides=strategy_episode_overrides,
     )
 
 
@@ -180,11 +185,17 @@ def _run_strategy_suite_internal(
     strategies: Optional[Iterable[str]],
     include_episode_metrics: bool,
     central_resource: bool = False,
+    strategy_episode_overrides: Optional[Dict[str, int]] = None,
 ) -> Dict[str, Dict[str, float]]:
     keys = list(strategies) if strategies is not None else STRATEGY_KEYS
     results: Dict[str, Dict[str, float]] = {}
 
     for key in keys:
+        episodes_for_strategy = (
+            strategy_episode_overrides.get(key, episodes)
+            if strategy_episode_overrides
+            else episodes
+        )
         preset = STRATEGY_PRESETS[key]
         preset_override = preset.get("override_scenario")
         if preset_override:
@@ -212,7 +223,7 @@ def _run_strategy_suite_internal(
         if algorithm_kind == "heuristic":
             outcome = _run_heuristic_strategy(
                 preset=preset,
-                episodes=episodes,
+                episodes=episodes_for_strategy,
                 seed=seed,
                 extra_override=merged_override,
                 env_options=env_options,
@@ -220,7 +231,7 @@ def _run_strategy_suite_internal(
         else:
             outcome = train_single_algorithm(
                 preset["algorithm"],
-                num_episodes=episodes,
+                num_episodes=episodes_for_strategy,
                 silent_mode=silent,
                 override_scenario=merged_override,
                 use_enhanced_cache=preset["use_enhanced_cache"],
@@ -236,6 +247,7 @@ def _run_strategy_suite_internal(
         
         # 🎯 优先从奖励计算raw_cost（与train_single_agent.py一致）
         episode_rewards = outcome.get("episode_rewards", [])
+        avg_reward: Optional[float] = None
         if episode_rewards and len(episode_rewards) > 0:
             # 使用后50%数据（收敛后）
             if len(episode_rewards) >= 100:
@@ -245,10 +257,7 @@ def _run_strategy_suite_internal(
                 avg_reward = float(np.mean(episode_rewards[-30:]))
             else:
                 avg_reward = float(np.mean(episode_rewards))
-            raw_cost = compute_cost(avg_delay, avg_energy, avg_reward)
-        else:
-            # 回退：从时延和能耗计算
-            raw_cost = compute_cost(avg_delay, avg_energy)
+        raw_cost = compute_cost(avg_delay, avg_energy, avg_reward)
 
         results[key] = {
             "avg_delay": avg_delay,
@@ -259,6 +268,8 @@ def _run_strategy_suite_internal(
             "seed": seed,
             "from_cache": False,
         }
+        if avg_reward is not None:
+            results[key]["avg_reward"] = avg_reward
         if include_episode_metrics:
             results[key]["episode_metrics"] = episode_metrics
 
@@ -308,6 +319,7 @@ def evaluate_configs(
     strategies: Optional[Iterable[str]] = None,
     per_strategy_hook: Optional[Callable[[str, Dict[str, float], Dict[str, object], Dict[str, List[float]]], None]] = None,
     central_resource: bool = False,
+    strategy_episode_overrides: Optional[Dict[str, int]] = None,
 ) -> List[Dict[str, object]]:
     suite_path.mkdir(parents=True, exist_ok=True)
     evaluated: List[Dict[str, object]] = []
@@ -335,6 +347,7 @@ def evaluate_configs(
             silent=silent,
             strategies=keys,
             central_resource=central_resource,
+            strategy_episode_overrides=strategy_episode_overrides,
         )
         from typing import cast
         enriched = enrich_with_normalized_costs(cast(Dict[str, Dict[str, float]], raw))
@@ -363,6 +376,12 @@ def evaluate_configs(
             else:
                 multiplier = 1.0
             metrics["resource_multiplier_required"] = multiplier
+            
+            # 🎯 默认启用指标增强（如果没有自定义hook）
+            if not per_strategy_hook and episode_metrics:
+                from typing import cast
+                ep_metrics = cast(Dict[str, List[float]], episode_metrics)
+                enrich_strategy_metrics(strat_key, cast(Dict[str, float], metrics), cfg_copy, ep_metrics)
 
             if per_strategy_hook:
                 from typing import cast
@@ -379,13 +398,9 @@ def evaluate_configs(
             )
             detail_path.write_text(json.dumps(metrics_to_save, indent=2, ensure_ascii=False), encoding="utf-8")
             
-            # 🎯 显示成本计算来源（检查episode_metrics中是否有reward数据）
-            has_rewards = False
-            if episode_metrics and isinstance(episode_metrics, dict):
-                ep_rewards = episode_metrics.get('episode_rewards', [])
-                if ep_rewards and len(ep_rewards) > 0:
-                    has_rewards = True
-            cost_source = "(-reward)" if has_rewards else "(delay+energy)"
+            # 🎯 显示成本计算来源（检查是否有reward数据）
+            use_reward_cost = metrics.get("avg_reward") is not None
+            cost_source = "(-reward)" if use_reward_cost else "(delay+energy)"
             print(
                 f"  - {strategy_label(strat_key)}: "
                 f"Cost={metrics['raw_cost']:.4f} {cost_source} "
@@ -403,5 +418,8 @@ def evaluate_configs(
             "strategy_groups": sorted({strategy_group(k) for k in keys}),
         }
         evaluated.append(cfg_entry)
+
+    if evaluated:
+        attach_normalized_costs(evaluated)
 
     return evaluated

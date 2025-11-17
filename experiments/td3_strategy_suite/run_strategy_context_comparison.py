@@ -38,6 +38,9 @@ from experiments.td3_strategy_suite.suite_cli import (
     resolve_common_args,
     resolve_strategy_keys,
     suite_path as build_suite_path,
+,
+    validate_td3_episodes,
+    get_default_scenario_overrides,
 )
 
 DEFAULT_EPISODES = 500
@@ -167,6 +170,9 @@ def main() -> None:
     strategy_keys = resolve_strategy_keys(common.strategies)
 
     scenarios = parse_scenarios_argument(args.scenarios)
+    # 🎯 验证TD3训练轮次
+    validate_td3_episodes(common.episodes, strategy_keys)
+    
     suite_dir = build_suite_path(common)
     suite_dir.mkdir(parents=True, exist_ok=True)
 

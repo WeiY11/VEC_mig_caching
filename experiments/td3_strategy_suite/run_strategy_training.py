@@ -76,9 +76,9 @@ def _get_reward_calculator() -> UnifiedRewardCalculator:
         _reward_calculator = UnifiedRewardCalculator(algorithm="general")
     return _reward_calculator
 
-# ========== 榛樿瀹為獙鍙傛暟 ==========
-DEFAULT_EPISODES = 800   # 榛樿璁粌杞暟锛堝钩琛℃敹鏁涜川閲忎笌鏃堕棿鎴愭湰锛?
-DEFAULT_SEED = 42        # 榛樿闅忔満绉嶅瓙锛堜繚璇佸疄楠屽彲閲嶅鎬э級
+# ========== 默认实验参数 ==========
+DEFAULT_EPISODES = 1500  # 默认训练轮数（建议≥1500确保TD3充分收敛）
+DEFAULT_SEED = 42        # 默认随机种子（保证实验可重复性）
 
 # ========== 绛栫暐鎵ц椤哄簭 ==========
 # 鎸夌収澶嶆潅搴﹂€掑鎺掑垪锛氫粠鍗曚竴鍔熻兘鍒板畬鏁寸郴缁?
@@ -247,7 +247,7 @@ STRATEGY_PRESETS: "OrderedDict[str, StrategyPreset]" = OrderedDict(
         (
             "random",
             _make_preset(
-                description="Random offloading baseline: fully random action selection.",
+                description="Random baseline",
                 scenario_key="layered_multi_edge",
                 use_enhanced_cache=False,
                 disable_migration=True,
@@ -261,7 +261,7 @@ STRATEGY_PRESETS: "OrderedDict[str, StrategyPreset]" = OrderedDict(
         (
             "round-robin",
             _make_preset(
-                description="Round-robin baseline: cycle through local, RSU, UAV targets.",
+                description="Round-robin baseline",
                 scenario_key="layered_multi_edge",
                 use_enhanced_cache=False,
                 disable_migration=True,
@@ -275,7 +275,7 @@ STRATEGY_PRESETS: "OrderedDict[str, StrategyPreset]" = OrderedDict(
         (
             "local-only",
             _make_preset(
-                description="🎯 Local-only baseline: all tasks execute locally via policy preference (no forced mode).",
+                description="Local-only baseline",
                 scenario_key="layered_multi_edge",  # 保持相同场景以保证对比公平
                 use_enhanced_cache=False,
                 disable_migration=True,
@@ -289,7 +289,7 @@ STRATEGY_PRESETS: "OrderedDict[str, StrategyPreset]" = OrderedDict(
         (
             "remote-only",
             _make_preset(
-                description="🎯 Remote-only baseline: always offload to edge (RSU/UAV) with intelligent load balancing.",
+                description="Remote-only baseline",
                 scenario_key="layered_multi_edge",  # 🔧 改为通用场景
                 use_enhanced_cache=False,
                 disable_migration=True,
@@ -303,7 +303,7 @@ STRATEGY_PRESETS: "OrderedDict[str, StrategyPreset]" = OrderedDict(
         (
             "offloading-only",
             _make_preset(
-                description="🎯 Offloading-only: intelligent offloading with multi-factor awareness (queue, comm, energy).",
+                description="Offloading-only",
                 scenario_key="layered_multi_edge",
                 use_enhanced_cache=False,
                 disable_migration=True,
@@ -317,7 +317,7 @@ STRATEGY_PRESETS: "OrderedDict[str, StrategyPreset]" = OrderedDict(
         (
             "resource-only",
             _make_preset(
-                description="🎯 Resource-only: multi-dimensional resource allocation (queue+cache+comm+energy) on edge nodes.",
+                description="Resource-only",
                 scenario_key="layered_multi_edge",  # 🔧 改为通用场景
                 use_enhanced_cache=True,
                 disable_migration=True,
@@ -331,7 +331,7 @@ STRATEGY_PRESETS: "OrderedDict[str, StrategyPreset]" = OrderedDict(
         (
             "comprehensive-no-migration",
             _make_preset(
-                description="Layered TD3: offloading + resource allocation, migration disabled.",
+                description="Layered TD3",
                 scenario_key="layered_multi_edge",
                 use_enhanced_cache=True,
                 disable_migration=True,
@@ -530,6 +530,7 @@ def _run_heuristic_strategy(
     completion_records: List[float] = []
     cache_records: List[float] = []
     migration_records: List[float] = []
+    reward_records: List[float] = []  # 🎯 新增：收集奖励
 
     for _ in range(episodes):
         state = env.reset_environment()
@@ -537,10 +538,12 @@ def _run_heuristic_strategy(
             controller.reset()
 
         last_info: Dict[str, Any] = {}
+        episode_reward = 0.0  # 🎯 新增：累积episode奖励
         for _ in range(max_steps):
             action_vec = controller.select_action(state)
             actions_dict = env._build_actions_from_vector(action_vec)
             next_state, reward, done, info = env.step(action_vec, state, actions_dict)
+            episode_reward += reward  # 🎯 新增：累积奖励
             state = next_state
             last_info = info
             if done:
@@ -552,6 +555,7 @@ def _run_heuristic_strategy(
         completion_records.append(float(metrics.get("task_completion_rate", 0.0)))
         cache_records.append(float(metrics.get("cache_hit_rate", 0.0)))
         migration_records.append(float(metrics.get("migration_success_rate", 0.0)))
+        reward_records.append(episode_reward)  # 🎯 新增：记录episode奖励
 
     episode_metrics = {
         "avg_delay": delay_records,
@@ -560,11 +564,42 @@ def _run_heuristic_strategy(
         "cache_hit_rate": cache_records,
         "migration_success_rate": migration_records,
     }
+    if hasattr(env, "episode_metrics"):
+        env_metrics: Dict[str, Any] = getattr(env, "episode_metrics", {}) or {}
+
+        def _coerce_numeric_series(series: Any) -> List[float]:
+            if series is None:
+                return []
+            if not isinstance(series, list):
+                series = [series]
+            cleaned: List[float] = []
+            for item in series:
+                if isinstance(item, (list, tuple)):
+                    for sub_item in item:
+                        try:
+                            cleaned.append(float(sub_item))
+                        except (TypeError, ValueError):
+                            continue
+                    continue
+                try:
+                    cleaned.append(float(item))
+                except (TypeError, ValueError):
+                    if isinstance(item, np.ndarray) and item.size == 1:
+                        cleaned.append(float(item.item()))
+            return cleaned
+
+        for key, values in env_metrics.items():
+            if key in episode_metrics:
+                continue
+            numeric_values = _coerce_numeric_series(values)
+            if numeric_values:
+                episode_metrics[key] = numeric_values
 
     return {
         "algorithm": "heuristic",
         "timestamp": datetime.now().isoformat(),
         "episode_metrics": episode_metrics,
+        "episode_rewards": reward_records,  # 🎯 新增：返回奖励列表
         "artifacts": {},
     }
 
@@ -974,4 +1009,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

@@ -41,6 +41,8 @@ from experiments.td3_strategy_suite.suite_cli import (
     resolve_common_args,
     resolve_strategy_keys,
     suite_path as build_suite_path,
+    validate_td3_episodes,
+    get_default_scenario_overrides,
 )
 
 DEFAULT_EPISODES = 500
@@ -119,12 +121,9 @@ def main() -> None:
     vehicle_counts = parse_vehicle_counts(args.vehicle_counts)
     configs: List[Dict[str, object]] = []
     for count in vehicle_counts:
-        overrides = {
-            "num_vehicles": count,
-            "num_rsus": 4,
-            "num_uavs": 2,
-            "override_topology": True,
-        }
+        overrides = get_default_scenario_overrides(
+            num_vehicles=count,
+        )
         configs.append(
             {
                 "key": f"{count}veh",
@@ -133,6 +132,9 @@ def main() -> None:
                 "num_vehicles": count,
             }
         )
+    
+    # 🎯 验证TD3训练轮次
+    validate_td3_episodes(common.episodes, strategy_keys)
 
     suite_dir = build_suite_path(common)
     results = evaluate_configs(
