@@ -520,17 +520,6 @@ def main() -> None:
         help="选择要运行的实验: bandwidth,rsu_compute,uav_compute 或 'all'（默认）。",
     )
     parser.add_argument(
-        "--fast-mode",
-        action="store_true",
-        help="🚀 快速验证模式：使用500轮训练，3个配置点，节省67%%时间",
-    )
-    parser.add_argument(
-        "--optimize-heuristic",
-        action="store_true",
-        default=True,
-        help="🎯 启发式策略优化：启发式策略使用300轮（默认启用），TD3使用完整轮次",
-    )
-    parser.add_argument(
         "--bandwidths",
         type=str,
         default="default",
@@ -685,7 +674,7 @@ def main() -> None:
 
     # 🎯 结果验证检查
     for run in executed_runs:
-        exp_name = run['experiment']
+        exp_name = str(run['experiment'])  # 确保类型为str
         results_obj = run.get('results', [])
         if isinstance(results_obj, list):
             validate_experiment_results(results_obj, exp_name)
