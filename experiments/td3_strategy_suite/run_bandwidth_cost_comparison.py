@@ -286,34 +286,55 @@ def plot_results(
     x_positions = range(len(results))
     saved_paths: List[Path] = []
 
-    def make_chart(metric: str, ylabel: str, suffix: str) -> None:
-        plt.figure(figsize=(10, 6))
+    def make_chart(metric: str, ylabel: str, suffix: str, highlight_adaptive: bool = False) -> None:
+        plt.figure(figsize=(12, 7))
+        
+        # 🎯 分组绘制：突出TD3策略的自适应能力
+        adaptive_strategies = ['comprehensive-no-migration', 'comprehensive-migration']
+        baseline_strategies = ['local-only', 'remote-only', 'offloading-only', 'resource-only']
+        heuristic_strategies = ['random', 'round-robin']
+        
         for strat_key in strategy_keys:
             values: List[float] = []
             for r in results:
                 strategies_dict = cast(Dict[str, object], r["strategies"])
                 strat_dict = cast(Dict[str, object], strategies_dict[strat_key])
                 values.append(float(cast(float, strat_dict[metric])))
+            
             group_name = strategy_group(strat_key)
             style = GROUP_STYLE.get(group_name, GROUP_STYLE["default"])
             label = f"{strategy_label(strat_key)} ({group_name})"
             color = STRATEGY_COLORS.get(strat_key, style.get("color"))
             linestyle = style.get("linestyle", "-")
+            
+            # 🎯 突出显示TD3策略
+            if highlight_adaptive and strat_key in adaptive_strategies:
+                linewidth = 3.0
+                markersize = 10
+                alpha = 1.0
+            else:
+                linewidth = 2.0 if strat_key in baseline_strategies else 1.5
+                markersize = 8 if strat_key in baseline_strategies else 6
+                alpha = 0.7 if strat_key in heuristic_strategies else 1.0
+            
             plt.plot(
                 x_positions,
                 values,
                 marker="o",
-                linewidth=2,
+                linewidth=linewidth,
+                markersize=markersize,
                 label=label,
                 color=color,
                 linestyle=linestyle,
+                alpha=alpha,
             )
-        plt.xticks(x_positions, cast(List[str], labels))
-        plt.xlabel(x_label)
-        plt.ylabel(ylabel)
-        plt.title(f"Impact of {title_prefix} on {ylabel}")
-        plt.grid(alpha=0.3)
-        plt.legend(fontsize=10)
+        
+        plt.xticks(x_positions, cast(List[str], labels), fontsize=11)
+        plt.xlabel(x_label, fontsize=13, fontweight='bold')
+        plt.ylabel(ylabel, fontsize=13, fontweight='bold')
+        plt.title(f"Impact of {title_prefix} on {ylabel}", fontsize=14, fontweight='bold')
+        plt.grid(alpha=0.3, linestyle='--')
+        plt.legend(fontsize=10, loc='best', framealpha=0.95)
         plt.tight_layout()
         filename = f"{chart_prefix}_vs_{suffix}.png"
         out_path = suite_dir / filename
@@ -324,7 +345,7 @@ def plot_results(
     # 🎯 基础性能指标
     make_chart("raw_cost", "Average Cost", "total_cost")
     make_chart("avg_delay", "Average Delay (s)", "delay")
-    make_chart("normalized_cost", "Normalized Cost", "normalized_cost")
+    make_chart("normalized_cost", "Normalized Cost", "normalized_cost", highlight_adaptive=True)  # 突出TD3适应性
     make_chart("avg_throughput_mbps", "Average Throughput (Mbps)", "throughput")
     
     # 🎯 优化：新增资源利用率图表

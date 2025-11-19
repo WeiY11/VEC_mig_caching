@@ -1862,9 +1862,10 @@ class CompleteSystemSimulator:
                 self._accumulate_delay('delay_downlink', down_delay)
                 self._accumulate_energy('energy_transmit_downlink', down_energy)
 
-            # 🔥 深度修复：使用真实的CMOS动态功耗模型计算RSU/UAV能耗
+            # 🔥 深度修复：正确的CMOS能耗模型
             # E_total = (P_dynamic + P_static) × t_processing
-            # P_dynamic = κ × f³
+            # P_dynamic = κ × f³，但 t_processing = C / f
+            # 因此能耗应随频率增加而优化，而非暴涨
             
             if node_type == 'RSU':
                 # RSU能耗参数
@@ -1877,8 +1878,19 @@ class CompleteSystemSimulator:
                     kappa = getattr(self.sys_config.compute, 'rsu_kappa', kappa)
                     static_power = getattr(self.sys_config.compute, 'rsu_static_power', static_power)
                 
+                # 🔧 修复：计算实际处理时间（假设任务需要固定计算周期）
+                # work_capacity已经是处理时间，我们需要反推计算周期数
+                # 假设基准频率12.5GHz下，work_capacity就是实际时间
+                base_freq = 12.5e9  # 基准频率
+                # 计算周期数（相对于基准频率）
+                total_cycles = work_capacity * base_freq
+                # 实际处理时间 = 周期数 / 实际频率
+                actual_processing_time = total_cycles / cpu_freq
+                
+                # 动态功耗 = κ × f³
                 dynamic_power = kappa * (cpu_freq ** 3)
-                processing_power = dynamic_power + static_power
+                # 总能耗 = (动态功耗 + 静态功耗) × 实际处理时间
+                task_energy = (dynamic_power + static_power) * actual_processing_time
                 
             elif node_type == 'UAV':
                 # UAV能耗参数（包含悬停功耗）
@@ -1893,14 +1905,19 @@ class CompleteSystemSimulator:
                     static_power = getattr(self.sys_config.compute, 'uav_static_power', static_power)
                     hover_power = getattr(self.sys_config.compute, 'uav_hover_power', hover_power)
                 
+                # 🔧 修复：UAV同样需要考虑实际处理时间
+                base_freq = 2.5e9  # UAV基准频率
+                total_cycles = work_capacity * base_freq
+                actual_processing_time = total_cycles / cpu_freq
+                
+                # 动态功耗 = κ × f³
                 dynamic_power = kappa3 * (cpu_freq ** 3)
-                # UAV总功耗 = 计算动态功耗 + 静态功耗 + 悬停功耗
-                processing_power = dynamic_power + static_power + hover_power
+                # UAV总能耗 = (动态 + 静态 + 悬停) × 实际处理时间
+                task_energy = (dynamic_power + static_power + hover_power) * actual_processing_time
                 
             else:
-                processing_power = 10.0
-
-            task_energy = processing_power * work_capacity
+                # 其他节点类型使用简化模型
+                task_energy = 10.0 * work_capacity
             self._accumulate_energy('energy_compute', task_energy)
             node['energy_consumed'] = node.get('energy_consumed', 0.0) + task_energy
 
@@ -2483,7 +2500,13 @@ class CompleteSystemSimulator:
             power = float(self.config.get('vehicle_static_power', power))
 
         requirement = float(task.get('computation_requirement', 1500.0)) * 1e6  # cycles
-        processing_time = requirement / max(cpu_freq, 1e6)
+        # 🔧 修复问题2：应用并行效率参数（与能耗模型保持一致）
+        parallel_eff = 0.8
+        if self.sys_config is not None:
+            parallel_eff = getattr(self.sys_config.compute, 'parallel_efficiency', 0.8)
+        else:
+            parallel_eff = float(self.config.get('parallel_efficiency', 0.8))
+        processing_time = requirement / max(cpu_freq * parallel_eff, 1e6)
         # Allow genuine compute latency to surface by avoiding artificial clipping
         processing_time = max(float(processing_time), 1e-6)
         

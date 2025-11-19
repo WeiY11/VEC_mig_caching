@@ -628,7 +628,7 @@ def tail_mean(values: Any) -> float:
     return float(sum(subset) / max(1, len(subset)))
 
 
-def compute_raw_cost(delay_mean: float, energy_mean: float) -> float:
+def compute_raw_cost(delay_mean: float, energy_mean: float, completion_rate: Optional[float] = None) -> float:
     """
     璁＄畻缁熶竴浠ｄ环鍑芥暟鐨勫師濮嬪€?    
     銆愬姛鑳姐€?    浣跨敤缁熶竴濂栧姳璁＄畻鍣ㄨ绠椾唬浠凤紝纭繚涓庤缁冩椂浣跨敤鐨勫鍔卞嚱鏁板畬鍏ㄤ竴鑷淬€?    璇ュ嚱鏁扮敤浜庣瓥鐣ラ棿鐨勫叕骞冲姣斻€?    
@@ -654,10 +654,18 @@ def compute_raw_cost(delay_mean: float, energy_mean: float) -> float:
     delay_normalizer = reward_calc.latency_target  # 0.4锛堜笌璁粌涓€鑷达級
     energy_normalizer = reward_calc.energy_target  # 1200.0锛堜笌璁粌涓€鑷达級
     
-    return (
+    
+    base_cost = (
         weight_delay * (delay_mean / max(delay_normalizer, 1e-6))
         + weight_energy * (energy_mean / max(energy_normalizer, 1e-6))
     )
+    
+    if completion_rate is not None and completion_rate > 0:
+        import math
+        completion_penalty = 1.0 + 0.5 * math.log(1.0 / max(completion_rate, 0.5))
+        return base_cost * completion_penalty
+    
+    return base_cost
 
 
 def update_summary(
@@ -869,7 +877,7 @@ def run_strategy(strategy: str, args: argparse.Namespace) -> None:
     delay_mean = tail_mean(episode_metrics.get("avg_delay", []))
     energy_mean = tail_mean(episode_metrics.get("total_energy", []))
     completion_mean = tail_mean(episode_metrics.get("task_completion_rate", []))
-    raw_cost = compute_raw_cost(delay_mean, energy_mean)
+    raw_cost = compute_raw_cost(delay_mean, energy_mean, completion_mean)
 
     # ========== 姝ラ6: 鍑嗗杈撳嚭鐩綍 ==========
     suite_id = args.suite_id or datetime.now().strftime("%Y%m%d_%H%M%S")

@@ -1035,9 +1035,10 @@ class IntegratedCommunicationComputeModel:
         elif processing_mode in ["rsu", "uav"]:
             # 远程处理 - 通信 + 计算
             
-            # 🔧 修复问题8：从target_node_info读取动态分配的带宽，如果未指定则使用默认值
-            # 默认分配策略：总带宽除以典型活跃链路数（保守估计为4）
-            default_bandwidth = config.communication.total_bandwidth / 4
+            # 🔧 修复问题1：根据实际车辆数量动态调整默认带宽分配
+            # 默认分配策略：总带宽除以活跃车辆数（而非固定4个链路）
+            num_active_vehicles = getattr(config.network, 'num_vehicles', 12)
+            default_bandwidth = config.communication.total_bandwidth / max(num_active_vehicles, 4)
             allocated_uplink_bw = target_node_info.get('allocated_uplink_bandwidth', default_bandwidth)
             allocated_downlink_bw = target_node_info.get('allocated_downlink_bandwidth', default_bandwidth)
             
@@ -1077,8 +1078,9 @@ class IntegratedCommunicationComputeModel:
                 task, link_info, "vehicle", processing_mode)
             
             # 2. 计算时延和能耗
+            # 🔧 修复问题4：应用并行效率（与本地计算保持一致）
             cpu_freq = target_node_info.get('cpu_frequency', config.compute.rsu_cpu_freq)
-            processing_time = task.compute_cycles / cpu_freq
+            processing_time = task.compute_cycles / (cpu_freq * self.compute_energy_model.parallel_efficiency)
             
             if processing_mode == "rsu":
                 compute_energy_info = self.compute_energy_model.calculate_rsu_compute_energy(

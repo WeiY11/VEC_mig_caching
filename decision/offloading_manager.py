@@ -363,11 +363,13 @@ class ProcessingModeEvaluator:
                 reserved_comm_time=down
             ))
         else:
-            proc = task.compute_cycles / max(1e-9, st.cpu_frequency)
+            # 🔧 修复问题4：RSU计算时延应用并行效率
+            proc = task.compute_cycles / max(1e-9, st.cpu_frequency * config.compute.parallel_efficiency)
             wait = self._wait(st)
             total = up + wait + proc + down
             comm_energy = self._tx_energy(task.data_size + task.result_size, up + down)
-            rsu_dynamic_power = config.compute.rsu_kappa2 * (st.cpu_frequency ** 3)
+            # 🔧 修复问题5：使用正确的RSU能耗系数rsu_kappa（而非rsu_kappa2）
+            rsu_dynamic_power = config.compute.rsu_kappa * (st.cpu_frequency ** 3)
             rsu_dynamic_energy = rsu_dynamic_power * proc
             slot_duration = config.network.time_slot_duration
             rsu_static_energy = config.compute.rsu_static_power * max(proc, slot_duration)
@@ -395,7 +397,8 @@ class ProcessingModeEvaluator:
             if float(getattr(s, 'load_factor', 0.0)) <= config.migration.rsu_overload_threshold:
                 continue
             mig = (task.data_size * 8.0) / max(1e-9, config.migration.migration_bandwidth)
-            proc = task.compute_cycles / max(1e-9, tgt.cpu_frequency)
+            # 🔧 修复问题4：RSU计算时延应用并行效率
+            proc = task.compute_cycles / max(1e-9, tgt.cpu_frequency * config.compute.parallel_efficiency)
             wait = self._wait(tgt)
             total = mig + wait + proc
             rsu_tx_power_w = dbm_to_watts(config.communication.rsu_tx_power)
@@ -428,7 +431,8 @@ class ProcessingModeEvaluator:
         wait = self._wait(uv)
         total = up + wait + proc + down
         comm_energy = self._tx_energy(task.data_size + task.result_size, up + down)
-        dynamic_energy = config.compute.uav_kappa3 * (eff ** 2) * proc
+        # 🔧 修复问题5：UAV能耗应使用f³模型（与论文式570和能耗模型一致）
+        dynamic_energy = config.compute.uav_kappa3 * (eff ** 3) * proc
         slot_duration = config.network.time_slot_duration
         static_energy = config.compute.uav_static_power * max(proc, slot_duration)
         # 🔧 UAV优化修正:悬停能耗持续存在,UAV空闲时也消耗(原逻辑正确)
@@ -469,8 +473,8 @@ class ProcessingModeEvaluator:
     def _energy_local(self, task: Task, st) -> float:
         proc = task.compute_cycles / max(1e-9, (st.cpu_frequency * config.compute.parallel_efficiency))
         util = min(1.0, proc / max(1e-9, config.network.time_slot_duration))
+        # 🔧 修复问题3：统一为f³模型，移除kappa2项（与能耗模型保持一致）
         dyn = (config.compute.vehicle_kappa1 * (st.cpu_frequency ** 3) +
-               config.compute.vehicle_kappa2 * (st.cpu_frequency ** 2) * util +
                config.compute.vehicle_static_power)
         return dyn * proc
 
@@ -603,7 +607,8 @@ class ProcessingModeEvaluator:
             u2r_energy = uav_tx_power * u2r_delay
             
             # 阶段4：RSU处理
-            proc = task.compute_cycles / max(1e-9, rsu_state.cpu_frequency)
+            # 🔧 修复问题4：RSU计算时延应用并行效率
+            proc = task.compute_cycles / max(1e-9, rsu_state.cpu_frequency * config.compute.parallel_efficiency)
             wait = self._wait(rsu_state)
             
             # 阶段5：RSU -> UAV -> 车辆（结果返回）
@@ -618,7 +623,8 @@ class ProcessingModeEvaluator:
                           result_down_u2r + relay_delay + result_down_v2u)
             
             # 总能耗：车辆发送 + UAV转发 + RSU计算 + 结果返回
-            rsu_dynamic_power = config.compute.rsu_kappa2 * (rsu_state.cpu_frequency ** 3)
+            # 🔧 修复问题5：使用正确的RSU能耗系数rsu_kappa（而非rsu_kappa2）
+            rsu_dynamic_power = config.compute.rsu_kappa * (rsu_state.cpu_frequency ** 3)
             rsu_compute_energy = rsu_dynamic_power * proc
             rsu_static_energy = config.compute.rsu_static_power * max(proc, config.network.time_slot_duration)
             

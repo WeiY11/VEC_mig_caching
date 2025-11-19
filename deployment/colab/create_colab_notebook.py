@@ -1,7 +1,287 @@
 #!/usr/bin/env python3
-"""生成Colab笔记本的脚本"""
+"""生成Kaggle笔记本的脚本"""
 import json
 import os
+
+# Kaggle笔记本结构
+notebook = {
+    "nbformat": 4,
+    "nbformat_minor": 0,
+    "metadata": {
+        "kernelspec": {
+            "display_name": "Python 3",
+            "language": "python",
+            "name": "python3"
+        },
+        "language_info": {
+            "name": "python",
+            "version": "3.10.0"
+        }
+    },
+    "cells": []
+}
+
+# 单元格1: 标题说明
+notebook["cells"].append({
+    "cell_type": "markdown",
+    "metadata": {},
+    "source": [
+        "# 🚀 VEC系统 - RSU计算资源对比实验 (Kaggle)\n",
+        "\n",
+        "## 📋 实验配置\n",
+        "- **实验类型**: RSU计算资源敏感性分析\n",
+        "- **训练轮次**: 1500 episodes\n",
+        "- **随机种子**: 42\n",
+        "- **预计时长**: 2-3小时 (P100 GPU)\n",
+        "\n",
+        "## ⚙️ 使用前准备\n",
+        "1. 右侧设置面板选择 **GPU P100** 或 **GPU T4**\n",
+        "2. 开启 **Internet** 连接\n",
+        "3. 按顺序运行下面的单元格"
+    ]
+})
+
+# 单元格2: 加载项目代码
+notebook["cells"].append({
+    "cell_type": "markdown",
+    "metadata": {},
+    "source": ["## 📦 步骤1：加载项目代码"]
+})
+
+notebook["cells"].append({
+    "cell_type": "code",
+    "execution_count": None,
+    "metadata": {},
+    "outputs": [],
+    "source": [
+        "# 方法1：从GitHub克隆（推荐）\n",
+        "import os\n",
+        "import subprocess\n",
+        "\n",
+        "# 📌 修改这里：填入你的Git仓库地址\n",
+        "GIT_REPO_URL = 'https://github.com/WeiY11/VEC_mig_caching.git'  # ← 修改为你的仓库\n",
+        "\n",
+        "# 切换到工作目录\n",
+        "os.chdir('/kaggle/working')\n",
+        "\n",
+        "# 删除旧目录（如果存在）\n",
+        "!rm -rf VEC_mig_caching\n",
+        "\n",
+        "print(f'📦 正在克隆: {GIT_REPO_URL}')\n",
+        "result = subprocess.run(['git', 'clone', GIT_REPO_URL, 'VEC_mig_caching'], \n",
+        "                       capture_output=True, text=True)\n",
+        "\n",
+        "if result.returncode != 0:\n",
+        "    print('❌ 克隆失败！')\n",
+        "    print('错误信息:', result.stderr)\n",
+        "    print('\\n💡 可能的原因:')\n",
+        "    print('1. 仓库是私有的 → 需要使用Token（见下方备用代码）')\n",
+        "    print('2. 仓库地址错误 → 检查GIT_REPO_URL')\n",
+        "    print('3. 网络问题 → 检查Kaggle的Internet设置是否开启')\n",
+        "else:\n",
+        "    os.chdir('VEC_mig_caching')\n",
+        "    print(f'✅ 项目目录: {os.getcwd()}')\n",
+        "    !ls -la | head -15"
+    ]
+})
+
+# 备用：私有仓库克隆
+notebook["cells"].append({
+    "cell_type": "code",
+    "execution_count": None,
+    "metadata": {},
+    "outputs": [],
+    "source": [
+        "# 方法2：克隆私有仓库（需要Token）\n",
+        "# 如果上面的克隆失败，取消下面的注释\n",
+        "\n",
+        "# from getpass import getpass\n",
+        "# import os\n",
+        "# import subprocess\n",
+        "# \n",
+        "# os.chdir('/kaggle/working')\n",
+        "# !rm -rf VEC_mig_caching\n",
+        "# \n",
+        "# GITHUB_USERNAME = 'WeiY11'\n",
+        "# REPO_NAME = 'VEC_mig_caching'\n",
+        "# \n",
+        "# print('🔑 请输入GitHub Token:')\n",
+        "# print('   获取地址: https://github.com/settings/tokens')\n",
+        "# print('   需要权限: repo (Full control of private repositories)')\n",
+        "# TOKEN = getpass('Token: ')\n",
+        "# \n",
+        "# repo_url = f'https://{TOKEN}@github.com/{GITHUB_USERNAME}/{REPO_NAME}.git'\n",
+        "# result = subprocess.run(['git', 'clone', repo_url, 'VEC_mig_caching'],\n",
+        "#                        capture_output=True, text=True)\n",
+        "# \n",
+        "# if result.returncode == 0:\n",
+        "#     os.chdir('VEC_mig_caching')\n",
+        "#     print(f'✅ 项目目录: {os.getcwd()}')\n",
+        "#     !ls -la | head -15\n",
+        "# else:\n",
+        "#     print('❌ 克隆失败:', result.stderr)"
+    ]
+})
+
+# 备用：Dataset方式
+notebook["cells"].append({
+    "cell_type": "code",
+    "execution_count": None,
+    "metadata": {},
+    "outputs": [],
+    "source": [
+        "# 方法2：从Kaggle Dataset加载（如果你上传了Dataset）\n",
+        "# 取消下面的注释来使用\n",
+        "\n",
+        "# import shutil\n",
+        "# import os\n",
+        "# \n",
+        "# dataset_path = '/kaggle/input/vec-migration-caching'  # ← 修改为Dataset名称\n",
+        "# work_path = '/kaggle/working/VEC_mig_caching'\n",
+        "# \n",
+        "# if os.path.exists(work_path):\n",
+        "#     shutil.rmtree(work_path)\n",
+        "# shutil.copytree(dataset_path, work_path)\n",
+        "# os.chdir(work_path)\n",
+        "# print(f'✅ 项目加载完成: {os.getcwd()}')"
+    ]
+})
+
+# 单元格3：安装依赖
+notebook["cells"].append({
+    "cell_type": "markdown",
+    "metadata": {},
+    "source": ["## 🔧 步骤2：安装依赖"]
+})
+
+notebook["cells"].append({
+    "cell_type": "code",
+    "execution_count": None,
+    "metadata": {},
+    "outputs": [],
+    "source": [
+        "# 安装依赖\n",
+        "!pip install flask-socketio pyyaml -q\n",
+        "\n",
+        "# 创建目录\n",
+        "!mkdir -p results/td3_strategy_suite academic_figures\n",
+        "\n",
+        "print('✅ 依赖安装完成')"
+    ]
+})
+
+notebook["cells"].append({
+    "cell_type": "code",
+    "execution_count": None,
+    "metadata": {},
+    "outputs": [],
+    "source": [
+        "# 验证GPU\n",
+        "import torch\n",
+        "print(f'PyTorch: {torch.__version__}')\n",
+        "print(f'CUDA: {torch.cuda.is_available()}')\n",
+        "if torch.cuda.is_available():\n",
+        "    print(f'GPU: {torch.cuda.get_device_name(0)}')"
+    ]
+})
+
+# 单元格4：运行实验
+notebook["cells"].append({
+    "cell_type": "markdown",
+    "metadata": {},
+    "source": ["## 🎯 步骤3：运行RSU计算资源实验"]
+})
+
+notebook["cells"].append({
+    "cell_type": "code",
+    "execution_count": None,
+    "metadata": {},
+    "outputs": [],
+    "source": [
+        "# 🚀 运行完整实验（1500轮）\n",
+        "!python experiments/td3_strategy_suite/run_bandwidth_cost_comparison.py \\\n",
+        "    --experiment-types rsu_compute \\\n",
+        "    --rsu-compute-levels default \\\n",
+        "    --episodes 1500 \\\n",
+        "    --seed 42"
+    ]
+})
+
+notebook["cells"].append({
+    "cell_type": "code",
+    "execution_count": None,
+    "metadata": {},
+    "outputs": [],
+    "source": [
+        "# 💡 快速验证模式（500轮，仅用于测试）\n",
+        "# !python experiments/td3_strategy_suite/run_bandwidth_cost_comparison.py \\\n",
+        "#     --experiment-types rsu_compute \\\n",
+        "#     --rsu-compute-levels default \\\n",
+        "#     --episodes 500 \\\n",
+        "#     --seed 42"
+    ]
+})
+
+# 单元格5：查看结果
+notebook["cells"].append({
+    "cell_type": "markdown",
+    "metadata": {},
+    "source": ["## 📊 步骤4：查看结果"]
+})
+
+notebook["cells"].append({
+    "cell_type": "code",
+    "execution_count": None,
+    "metadata": {},
+    "outputs": [],
+    "source": [
+        "# 查看结果文件\n",
+        "print('📁 实验结果:')\n",
+        "!ls -lh results/td3_strategy_suite/ | grep rsu_compute\n",
+        "\n",
+        "print('\\n📊 生成图表:')\n",
+        "!ls -lh academic_figures/ | tail -10"
+    ]
+})
+
+# 单元格6：保存结果
+notebook["cells"].append({
+    "cell_type": "markdown",
+    "metadata": {},
+    "source": ["## 💾 步骤5：保存结果"]
+})
+
+notebook["cells"].append({
+    "cell_type": "code",
+    "execution_count": None,
+    "metadata": {},
+    "outputs": [],
+    "source": [
+        "# 打包结果\n",
+        "from datetime import datetime\n",
+        "import shutil\n",
+        "\n",
+        "timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')\n",
+        "result_zip = f'rsu_results_{timestamp}'\n",
+        "figure_zip = f'rsu_figures_{timestamp}'\n",
+        "\n",
+        "shutil.make_archive(result_zip, 'zip', 'results/td3_strategy_suite')\n",
+        "shutil.make_archive(figure_zip, 'zip', 'academic_figures')\n",
+        "\n",
+        "print(f'✅ 结果已打包：')\n",
+        "print(f'   {result_zip}.zip')\n",
+        "print(f'   {figure_zip}.zip')\n",
+        "print('\\n📂 可在Kaggle Output中下载')"
+    ]
+})
+
+# 保存笔记本
+output_dir = os.path.dirname(__file__)
+kaggle_output = os.path.join(os.path.dirname(output_dir), 'kaggle', 'VEC_RSU_Compute_Kaggle.ipynb')
+with open(kaggle_output, 'w', encoding='utf-8') as f:
+    json.dump(notebook, f, ensure_ascii=False, indent=2)
+
+print(f"✅ Kaggle笔记本已生成: {kaggle_output}")
 
 # Colab笔记本结构
 notebook = {

@@ -70,7 +70,8 @@ def tail_mean(values: Iterable[float]) -> float:
     return float(np.mean(seq))
 
 
-def compute_cost(avg_delay: float, avg_energy: float, avg_reward: Optional[float] = None) -> float:
+def compute_cost(avg_delay: float, avg_energy: float, avg_reward: Optional[float] = None, 
+                completion_rate: Optional[float] = None) -> float:
     """
     计算统一代价函数值（与训练时的奖励函数一致）
     
@@ -86,6 +87,7 @@ def compute_cost(avg_delay: float, avg_energy: float, avg_reward: Optional[float
     avg_delay: float - 平均任务时延（秒）
     avg_energy: float - 平均总能耗（焦耳）
     avg_reward: float - 平均奖励（可选，优先使用）
+    completion_rate: float - 任务完成率（可选，用于惩罚低完成率）
     
     【返回值】
     float - 归一化的加权代价（越小越好）
@@ -94,24 +96,46 @@ def compute_cost(avg_delay: float, avg_energy: float, avg_reward: Optional[float
     ✅ 默认使用: raw_cost = -avg_reward（与train_single_agent.py完全一致）
     ✅ 回退计算: raw_cost = w_T·(T/T_target) + w_E·(E/E_target)（仅在无reward时）
     ✅ 统一对比实验和单独训练的成本计算方式
+    ✅ 完成率惩罚：低完成率会适度增加成本（防止通过丢弃任务作弊）
+    
+    【完成率惩罚示例】（使用平滑的对数惩罚）
+    - 100%完成率: 成本×1.00（无惩罚）
+    - 95%完成率: 成本×1.03（轻微惩罚）
+    - 90%完成率: 成本×1.05（中等惩罚）
+    - 80%完成率: 成本×1.11（较高惩罚）
+    - 70%完成率: 成本×1.18（高惩罚）
+    - 50%完成率: 成本×1.35（严重惩罚）
     """
     # 🎯 优先模式：基于奖励计算（默认启用，与train_single_agent.py一致）
     if avg_reward is not None:
-        return -avg_reward
+        base_cost = -avg_reward
+    else:
+        # 回退：手动计算（仅在没有reward数据时使用，保持向后兼容）
+        weight_delay = float(config.rl.reward_weight_delay)
+        weight_energy = float(config.rl.reward_weight_energy)
+        
+        # ✅ 使用与训练时完全一致的归一化因子
+        calc = _get_reward_calculator()
+        delay_normalizer = calc.latency_target  # 0.4（与训练一致）
+        energy_normalizer = calc.energy_target  # 1200.0（与训练一致）
+        
+        base_cost = (
+            weight_delay * (avg_delay / max(delay_normalizer, 1e-6))
+            + weight_energy * (avg_energy / max(energy_normalizer, 1e-6))
+        )
     
-    # 回退：手动计算（仅在没有reward数据时使用，保持向后兼容）
-    weight_delay = float(config.rl.reward_weight_delay)
-    weight_energy = float(config.rl.reward_weight_energy)
+    # 🔧 修复：完成率惩罚机制（防止通过丢弃任务作弊）
+    # 使用平滑的对数惩罚函数，避免过度惩罚
+    if completion_rate is not None and completion_rate > 0:
+        # 完成率惩罚因子：使用对数函数平滑惩罚
+        # penalty = 1 + 0.5 * log(1 / completion_rate)
+        # 例如：60%完成率 → penalty ≈ 1.26，90%完成率 → penalty ≈ 1.05
+        import math
+        completion_penalty = 1.0 + 0.5 * math.log(1.0 / max(completion_rate, 0.5))
+        adjusted_cost = base_cost * completion_penalty
+        return adjusted_cost
     
-    # ✅ 使用与训练时完全一致的归一化因子
-    calc = _get_reward_calculator()
-    delay_normalizer = calc.latency_target  # 0.4（与训练一致）
-    energy_normalizer = calc.energy_target  # 1200.0（与训练一致）
-    
-    return (
-        weight_delay * (avg_delay / max(delay_normalizer, 1e-6))
-        + weight_energy * (avg_energy / max(energy_normalizer, 1e-6))
-    )
+    return base_cost
 
 
 def normalize_costs(cost_map: Dict[str, float]) -> Dict[str, float]:
@@ -257,7 +281,7 @@ def _run_strategy_suite_internal(
                 avg_reward = float(np.mean(episode_rewards[-30:]))
             else:
                 avg_reward = float(np.mean(episode_rewards))
-        raw_cost = compute_cost(avg_delay, avg_energy, avg_reward)
+        raw_cost = compute_cost(avg_delay, avg_energy, avg_reward, completion_rate)
 
         results[key] = {
             "avg_delay": avg_delay,
