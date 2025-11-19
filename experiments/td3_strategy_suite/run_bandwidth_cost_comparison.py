@@ -56,8 +56,8 @@ DEFAULT_EPISODES = 1500  # 🎯 优化：从800增加到1500，确保TD3充分�
 DEFAULT_EPISODES_FAST = 500  # 🚀 快速验证模式：500轮，约1/3时间
 DEFAULT_EPISODES_HEURISTIC = 300  # 🎯 启发式策略优化：300轮即可稳定
 DEFAULT_SEED = 42
-# 🎯 默认运行的五档参数
-DEFAULT_BANDWIDTHS = [20.0, 30.0, 40.0, 50.0, 60.0]  # MHz
+# 🎯 默认运行的5档参数（硬编码，不受config影响）
+DEFAULT_BANDWIDTHS = [30.0, 40.0, 50.0, 60.0, 70.0]  # MHz
 DEFAULT_RSU_COMPUTE_GHZ = default_rsu_compute_levels()
 DEFAULT_UAV_COMPUTE_GHZ = [6.0, 7.0, 8.0, 9.0, 10.0]  # GHz
 EXPERIMENT_CHOICES = ("bandwidth", "rsu_compute", "uav_compute")
@@ -215,8 +215,7 @@ def build_bandwidth_configs(bandwidths: List[float]) -> List[Dict[str, object]]:
         bw_hz = float(bw) * 1e6  # 转换为Hz (e.g., 10MHz -> 10e6 Hz)
         # 🎯 使用统一的默认配置，消除硬编码
         overrides = get_default_scenario_overrides(
-            bandwidth=bw_hz,
-            total_bandwidth=bw_hz,
+            total_bandwidth=bw_hz,  # 统一使用 total_bandwidth
             assumed_tasks_per_step=12,
         )
         configs.append(
