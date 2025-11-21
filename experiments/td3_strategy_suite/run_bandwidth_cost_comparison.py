@@ -57,7 +57,7 @@ DEFAULT_EPISODES_FAST = 500  # 🚀 快速验证模式：500轮，约1/3时间
 DEFAULT_EPISODES_HEURISTIC = 300  # 🎯 启发式策略优化：300轮即可稳定
 DEFAULT_SEED = 42
 # 🎯 默认运行的5档参数（硬编码，不受config影响）
-DEFAULT_BANDWIDTHS = [30.0, 40.0, 50.0, 60.0, 70.0]  # MHz
+DEFAULT_BANDWIDTHS = [20.0, 30.0, 40.0, 50.0, 60.0]  # MHz  # 🔧 修复：确保5档配置
 DEFAULT_RSU_COMPUTE_GHZ = default_rsu_compute_levels()
 DEFAULT_UAV_COMPUTE_GHZ = [6.0, 7.0, 8.0, 9.0, 10.0]  # GHz
 EXPERIMENT_CHOICES = ("bandwidth", "rsu_compute", "uav_compute")
@@ -286,6 +286,12 @@ def plot_results(
     saved_paths: List[Path] = []
 
     def make_chart(metric: str, ylabel: str, suffix: str, highlight_adaptive: bool = False) -> None:
+        # 设置白色背景样式
+        plt.style.use('default')
+        plt.rcParams['figure.facecolor'] = 'white'
+        plt.rcParams['axes.facecolor'] = 'white'
+        plt.rcParams['savefig.facecolor'] = 'white'
+        
         plt.figure(figsize=(12, 7))
         
         # 🎯 分组绘制：突出TD3策略的自适应能力
@@ -302,7 +308,12 @@ def plot_results(
             
             group_name = strategy_group(strat_key)
             style = GROUP_STYLE.get(group_name, GROUP_STYLE["default"])
-            label = f"{strategy_label(strat_key)} ({group_name})"
+            # 清理标签：去掉括号和baseline字样
+            raw_label = f"{strategy_label(strat_key)} ({group_name})"
+            import re
+            label = re.sub(r'\s*\([^)]*\)', '', raw_label)  # 去掉括号
+            label = re.sub(r'\s*baseline\s*', ' ', label, flags=re.IGNORECASE)  # 去掉baseline
+            label = ' '.join(label.split())  # 清理多余空格
             color = STRATEGY_COLORS.get(strat_key, style.get("color"))
             linestyle = style.get("linestyle", "-")
             

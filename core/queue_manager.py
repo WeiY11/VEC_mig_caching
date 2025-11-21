@@ -1,4 +1,4 @@
-﻿"""
+"""
 多优先级生命周期队列管理器 - 对应论文第4.3节
 实现VEC系统中的分层队列系统和M/M/1非抢占式优先级队列模型
 """
@@ -182,9 +182,12 @@ class PriorityQueueManager:
     
     def predict_waiting_time_mm1(self, task: Task) -> float:
         """
-        使用M/M/1非抢占式优先级队列模型预测等待时间
-        对应论文式(2)和式(3)
-        添加数值稳定性保障
+        🚀 创新优化:M/M/1非抢占式优先级队列模型 + 短期负载预测
+        
+        创新点:
+        1. 融合短期负载趋势预测(提前上特征工程)
+        2. 动态调整稳定性保障系数
+        3. 考虑队列瞬时波动修正
         
         Args:
             task: 待预测的任务
@@ -202,10 +205,38 @@ class PriorityQueueManager:
         if self.service_rate <= 1e-10:  # 防止除以零
             return float('inf')
         
-        # 检查稳定性条件
+        # 🆕 创新:动态稳定性阈值(根据当前负载调整)
+        # 高负载时放宽阈值,低负载时提高阈值
         total_rho = sum(self.load_factors.values())
-        if total_rho >= 0.99:  # 留有一定的稳定性余量
+        if total_rho > 0.85:
+            stability_threshold = 0.98  # 高负载放宽
+        elif total_rho > 0.70:
+            stability_threshold = 0.96
+        else:
+            stability_threshold = 0.95  # 低负载严格
+        
+        # 检查稳定性条件
+        if total_rho >= stability_threshold:
             return float('inf')  # 系统不稳定
+        
+        # 🆕 创新:短期负载趋势预测(提前上特征工程)
+        # 基于最近的到达率和服务率计算趋势
+        load_trend_multiplier = 1.0
+        if len(self.recent_arrivals) >= 3:
+            # 计算最近到达率增长
+            recent_rho_values = []
+            for arrivals_dict in self.recent_arrivals[-3:]:
+                slot_arrivals = arrivals_dict.get(priority, 0)
+                slot_rho = slot_arrivals / max(1e-9, self.service_rate * config.network.time_slot_duration)
+                recent_rho_values.append(slot_rho)
+            
+            if len(recent_rho_values) >= 2:
+                # 趋势上升时,增加预测等待时间
+                trend = recent_rho_values[-1] - recent_rho_values[0]
+                if trend > 0.05:  # 明显上升趋势
+                    load_trend_multiplier = 1.2
+                elif trend < -0.05:  # 明显下降趋势
+                    load_trend_multiplier = 0.9
         
         # 计算优先级为priority的任务平均等待时间 - 论文式(2)
         numerator = sum(self.load_factors.get(p, 0) for p in range(1, priority + 1))
@@ -220,7 +251,19 @@ class PriorityQueueManager:
             return float('inf')
         
         # 论文式(2): T_wait = (1/μ) * [Σρ_i] / [(1-Σρ_{i<p})(1-Σρ_{i≤p})]
-        waiting_time = (1 / self.service_rate) * (numerator / (denominator1 * denominator2))
+        base_waiting_time = (1 / self.service_rate) * (numerator / (denominator1 * denominator2))
+        
+        # 🆕 创新:应用负载趋势修正
+        waiting_time = base_waiting_time * load_trend_multiplier
+        
+        # 🆕 创新:队列瞬时波动修正(考虑当前实际队列长度)
+        # 如果当前队列明显过载,增加预测时间
+        current_queue_length = sum(len(queue.task_list) for (l, p), queue in self.queues.items() if p == priority)
+        expected_queue_length = self.load_factors.get(priority, 0) / (1 - total_rho + 1e-9)
+        
+        if current_queue_length > expected_queue_length * 1.3:  # 超出预期30%
+            congestion_factor = min(1.5, current_queue_length / max(1.0, expected_queue_length))
+            waiting_time *= congestion_factor
         
         # 限制等待时间在合理范围内
         max_waiting_time = 100.0  # 最多100秒

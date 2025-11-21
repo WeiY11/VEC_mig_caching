@@ -966,8 +966,8 @@ class CommunicationConfig:
         # 🔧 修复问题2/3/9：完善3GPP标准路径损耗参数（从硬编码移到配置）
         self.los_threshold = 50.0        # m - 3GPP TS 38.901视距临界距离
         self.los_decay_factor = 100.0    # m - LoS概率衰减因子
-        self.shadowing_std_los = 3.0     # dB - LoS阴影衰落标准差（3GPP UMi场景）
-        self.shadowing_std_nlos = 4.0    # dB - NLoS阴影衰落标准差（3GPP UMi场景）
+        self.shadowing_std_los = 4.0     # dB - LoS阴影衰落标准差（3GPP UMi场景）
+        self.shadowing_std_nlos = 7.82   # dB - NLoS阴影衰落标准差（3GPP UMi场景）
         self.min_distance = 0.5          # m - 3GPP最小距离（UMi场景为0.5米）
         
         # 🔧 修复问题5：编码效率提升至5G NR标准（Polar/LDPC编码）
@@ -1099,8 +1099,8 @@ class CacheConfig:
     def __init__(self):
         # 缓存容量配置
         self.vehicle_cache_capacity = 1e9  # 1 GB
-        self.rsu_cache_capacity = 10e9  # 10 GB
-        self.uav_cache_capacity = 2e9  # 2 GB
+        self.rsu_cache_capacity = 1e9  # 1 GB - 边缘服务器缓存
+        self.uav_cache_capacity = 200e6  # 200 MB - 轻量级UAV缓存
         
         # 🎯 P0-1优化：差异化缓存替换策略配置
         # 针对不同节点类型使用最优策略

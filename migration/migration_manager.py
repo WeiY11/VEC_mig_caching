@@ -35,6 +35,7 @@ class MigrationPlan:
     is_completed: bool = False
     downtime: float = 0.001  # Keep-Before-Break downtime (seconds)
     tasks_moved: int = 0
+    urgency_score: float = 0.5  # 🆕 创新:迁移紧急度评分
 
 
 
@@ -47,6 +48,18 @@ class TaskMigrationManager:
         self.rsu_overload_threshold = config.migration.rsu_overload_threshold
         self.uav_overload_threshold = config.migration.uav_overload_threshold
         self.uav_min_battery = config.migration.uav_min_battery
+        
+        # 🆕 创新:自适应阈值调整机制
+        self.adaptive_threshold_enabled = True
+        self.rsu_threshold_min = 0.70  # 最小阈值(激进迁移)
+        self.rsu_threshold_max = 0.90  # 最大阈值(保守迁移)
+        self.threshold_adjustment_rate = 0.02  # 每次调整幅度
+        
+        # 🆕 创新:性能反馈指标(用于阈值自适应)
+        self.recent_migration_success_rate = 0.0
+        self.recent_avg_delay_improvement = 0.0
+        self.threshold_adjustment_interval = 50  # 每50次迁移调整一次
+        self.migration_counter = 0
         
         # 鎴愭湰鍙傛暟
         self.alpha_comp = config.migration.migration_alpha_comp
@@ -72,9 +85,14 @@ class TaskMigrationManager:
         self.retry_queue: Dict[str, Dict[str, Any]] = {}
     
     def check_migration_needs(self, node_states: Dict, node_positions: Dict[str, Position]) -> List[MigrationPlan]:
-        """Check nodes and create migration plans."""
+        """🚀 创新优化:智能迁移需求检测 + 自适应阈值调整"""
         migration_plans = []
         current_time = get_simulation_time()
+        
+        # 🆕 创新:定期调整阈值(基于性能反馈)
+        self.migration_counter += 1
+        if self.adaptive_threshold_enabled and self.migration_counter % self.threshold_adjustment_interval == 0:
+            self._adjust_threshold_based_on_performance()
         
         for node_id, state in node_states.items():
             # 妫€鏌ュ喎鍗存湡
@@ -82,13 +100,20 @@ class TaskMigrationManager:
                 current_time - self.node_last_migration[node_id] < self.cooldown_period):
                 continue
             
-            if node_id.startswith("rsu_") and state.load_factor > self.rsu_overload_threshold:
-                # RSU杩囪浇锛屽鎵捐縼绉荤洰鏍?
-                target_node = self._find_best_target(node_id, "rsu", node_states, node_positions)
-                if target_node:
-                    plan = self._create_migration_plan(node_id, target_node, node_states, node_positions)
-                    if plan:
-                        migration_plans.append(plan)
+            # 🆕 创新:综合评估迁移必要性(不仅看负载,还看队列趋势)
+            if node_id.startswith("rsu_"):
+                should_migrate, urgency_score = self._evaluate_rsu_migration_need(
+                    node_id, state, node_states
+                )
+                if should_migrate:
+                    # 瀵绘壘杩佺Щ鐩爣
+                    target_node = self._find_best_target(node_id, "rsu", node_states, node_positions)
+                    if target_node:
+                        plan = self._create_migration_plan(node_id, target_node, node_states, node_positions)
+                        if plan:
+                            # 🆕 创新:根据紧急度调整迁移优先级
+                            plan.urgency_score = urgency_score
+                            migration_plans.append(plan)
             
             elif node_id.startswith("uav_"):
                 battery_level = getattr(state, 'battery_level', 1.0)
@@ -107,6 +132,9 @@ class TaskMigrationManager:
         
         # 🎯 P3优化：批量迁移优化
         migration_plans = self._batch_migrate_optimization(migration_plans)
+        
+        # 🆕 创新:按紧急度排序迁移计划
+        migration_plans.sort(key=lambda p: getattr(p, 'urgency_score', 0.5), reverse=True)
         
         return migration_plans
     
@@ -694,5 +722,62 @@ class TaskMigrationManager:
         
         total_cost = transmission_cost + computation_cost + latency_penalty
         return total_cost
+
+    def _evaluate_rsu_migration_need(self, node_id: str, state, node_states: Dict) -> Tuple[bool, float]:
+        """
+        🆕 创新:综合评估RSU迁移必要性
+        
+        基于多个因素判断:
+        1. 负载因子(当前负载 vs 阈值)
+        2. 负载趋势(是否持续上升)
+        3. 队列长度增长速度
+        
+        Returns:
+            (should_migrate, urgency_score): 是否迁移和紧急度评分[0,1]
+        """
+        load_factor = state.load_factor
+        
+        # 1. 基础判断:负载是否超阈值
+        if load_factor <= self.rsu_overload_threshold:
+            return False, 0.0
+        
+        # 2. 计算超载程度
+        overload_ratio = (load_factor - self.rsu_overload_threshold) / max(0.1, 1.0 - self.rsu_overload_threshold)
+        urgency_score = min(1.0, overload_ratio)
+        
+        # 3. 负载趋势判断(如果有历史数据)
+        # 简化版:基于队列长度估计趋势
+        queue_length = getattr(state, 'queue_length', 0)
+        if queue_length > 15:  # 队列过长,增加紧急度
+            urgency_score *= 1.2
+        
+        urgency_score = min(1.0, urgency_score)
+        return True, urgency_score
+    
+    def _adjust_threshold_based_on_performance(self) -> None:
+        """
+        🆕 创新:基于性能反馈调整迁移阈值
+        
+        策略:
+        - 如果迁移成功率高且效果好 -> 降低阈值(更激进)
+        - 如果迁移成功率低或效果差 -> 提高阈值(更保守)
+        """
+        success_rate = self.migration_stats['successful_migrations'] / max(1, self.migration_stats['total_attempts'])
+        self.recent_migration_success_rate = success_rate
+        
+        # 成功率高,且迁移有效 -> 降低阈值
+        if success_rate > 0.85:
+            self.rsu_overload_threshold = max(
+                self.rsu_threshold_min,
+                self.rsu_overload_threshold - self.threshold_adjustment_rate
+            )
+            self.logger.info(f"🔧 调整迁移阈值: {self.rsu_overload_threshold:.3f} (更激进,成功率={success_rate:.2%})")
+        # 成功率低 -> 提高阈值
+        elif success_rate < 0.65:
+            self.rsu_overload_threshold = min(
+                self.rsu_threshold_max,
+                self.rsu_overload_threshold + self.threshold_adjustment_rate
+            )
+            self.logger.info(f"🔧 调整迁移阈值: {self.rsu_overload_threshold:.3f} (更保守,成功率={success_rate:.2%})")
 
 

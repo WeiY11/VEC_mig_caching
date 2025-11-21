@@ -28,10 +28,24 @@ MANIFEST
 # Training results and models
 results/
 results_from_server/
+results_from_autodl/
 models/
 logs/
 checkpoints/
 *.log
+
+# Experiment result JSON files
+*_summary_*.json
+batch_full_*.json
+comprehensive-*.json
+local-only.json
+offloading-only.json
+random.json
+remote-only.json
+resource-only.json
+round-robin.json
+data_*_*.json
+training_results_*.json
 
 # Jupyter Notebook
 .ipynb_checkpoints

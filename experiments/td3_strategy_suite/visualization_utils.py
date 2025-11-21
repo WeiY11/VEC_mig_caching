@@ -1,4 +1,4 @@
-﻿#!/usr/bin/env python3
+﻿﻿#!/usr/bin/env python3
 """
 TD3策略对比实验 - 通用可视化工具
 ======================================
@@ -73,6 +73,23 @@ def add_line_charts(
     >>> print(f"生成了 {len(charts)} 张图表")
     """
     
+    # 设置白色背景样式
+    plt.style.use('default')
+    plt.rcParams['figure.facecolor'] = 'white'
+    plt.rcParams['axes.facecolor'] = 'white'
+    plt.rcParams['savefig.facecolor'] = 'white'
+    
+    # 清理标签函数
+    import re
+    def clean_strategy_label(strat_key: str) -> str:
+        raw_label = strategy_label(strat_key)
+        # 去掉括号及内容
+        label = re.sub(r'\s*\([^)]*\)', '', raw_label)
+        # 去掉baseline字样
+        label = re.sub(r'\s*baseline\s*', ' ', label, flags=re.IGNORECASE)
+        # 清理多余空格
+        return ' '.join(label.split())
+    
     scenario_labels = [record["scenario_label"] for record in results]
     n_scenarios = len(scenario_labels)
     x = np.arange(n_scenarios)
@@ -87,7 +104,7 @@ def add_line_charts(
     for i, strat_key in enumerate(strategy_keys):
         delays = [record["strategies"][strat_key]["avg_delay"] for record in results]
         ax.plot(x, delays, marker='o', linewidth=2.5, markersize=8, 
-                label=strategy_label(strat_key), color=colors[i], alpha=0.8)
+                label=clean_strategy_label(strat_key), color=colors[i], alpha=0.8)
     
     ax.set_xlabel(x_label, fontsize=13, fontweight='bold')
     ax.set_ylabel("Average Delay (s)", fontsize=13, fontweight='bold')
@@ -107,7 +124,7 @@ def add_line_charts(
     for i, strat_key in enumerate(strategy_keys):
         energies = [record["strategies"][strat_key]["avg_energy"] for record in results]
         ax.plot(x, energies, marker='s', linewidth=2.5, markersize=8, 
-                label=strategy_label(strat_key), color=colors[i], alpha=0.8)
+                label=clean_strategy_label(strat_key), color=colors[i], alpha=0.8)
     
     ax.set_xlabel(x_label, fontsize=13, fontweight='bold')
     ax.set_ylabel("Average Energy (J)", fontsize=13, fontweight='bold')
@@ -134,7 +151,7 @@ def add_line_charts(
             for record in results
         ]
         ax.plot(x, costs, marker='^', linewidth=2.5, markersize=8, 
-                label=strategy_label(strat_key), color=colors[i], alpha=0.8)
+                label=clean_strategy_label(strat_key), color=colors[i], alpha=0.8)
     
     ax.set_xlabel(x_label, fontsize=13, fontweight='bold')
     ax.set_ylabel("Total Cost", fontsize=13, fontweight='bold')
@@ -157,7 +174,7 @@ def add_line_charts(
             for record in results
         ]
         ax.plot(x, completion_rates, marker='D', linewidth=2.5, markersize=8, 
-                label=strategy_label(strat_key), color=colors[i], alpha=0.8)
+                label=clean_strategy_label(strat_key), color=colors[i], alpha=0.8)
     
     ax.set_xlabel(x_label, fontsize=13, fontweight='bold')
     ax.set_ylabel("Task Completion Rate (%)", fontsize=13, fontweight='bold')
@@ -219,7 +236,7 @@ def add_line_charts(
         ax.set_xlabel(x_label, fontsize=13, fontweight='bold')
         ax.set_ylabel("Normalized Value / Rate", fontsize=13, fontweight='bold')
         ax.set_title(
-            f"Multi-metric Performance: {strategy_label(representative_strategy)} - {x_label}", 
+            f"Multi-metric Performance: {clean_strategy_label(representative_strategy)} - {x_label}", 
             fontsize=15, fontweight='bold'
         )
         ax.set_xticks(x)
@@ -273,5 +290,4 @@ def print_chart_summary(
             elif "multiline" in chart:
                 desc = " (多指标综合对比)"
             print(f"  - {suite_dir / chart}{desc}")
-
 

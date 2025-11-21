@@ -1439,7 +1439,7 @@ class HTMLReportGenerator:
             return ['训练数据不足，无法生成建议。']
         
         # 基于收敛性的建议
-        last_episodes = rewards[-min(50, len(rewards)):]
+        last_episodes = rewards  # 使用全量奖励序列以生成完整曲线
         variance = np.var(last_episodes)
         mean_reward = np.mean(last_episodes)
         

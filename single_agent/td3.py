@@ -61,6 +61,13 @@ class TD3Config:
     gradient_clip_norm: float = 0.5  # 🔧 收紧梯度裁剪，减少参数震荡
     use_gradient_clip: bool = True   # 启用梯度裁剪
     use_reward_normalization: bool = True
+    # 🔬 保守/安全增强
+    cql_alpha: float = 0.12           # Conservative Q-Learning 正则强度
+    cql_num_samples: int = 4          # 每个状态采样随机动作数
+    uncertainty_weight: float = 0.05  # 双Q差异惩罚，降低策略不稳定
+    heuristic_blend_ratio: float = 0.35   # 轮询先验融合比例
+    heuristic_blend_margin: float = 0.05  # Q值低于基线的触发裕量
+    enable_heuristic_blend: bool = True   # 是否开启基线融合
     
     def __post_init__(self):
         """从环境变量读取配置，用于固定拓扑优化"""
@@ -112,6 +119,24 @@ class TD3Config:
                 "[TD3Config] 从环境变量读取 late_stage_noise_floor: "
                 f"{self.late_stage_noise_floor}"
             )
+        if 'TD3_CQL_ALPHA' in os.environ:
+            self.cql_alpha = float(os.environ['TD3_CQL_ALPHA'])
+            print(f"[TD3Config] 从环境变量读取 cql_alpha: {self.cql_alpha}")
+        if 'TD3_CQL_SAMPLES' in os.environ:
+            self.cql_num_samples = int(os.environ['TD3_CQL_SAMPLES'])
+            print(f"[TD3Config] 从环境变量读取 cql_num_samples: {self.cql_num_samples}")
+        if 'TD3_UNCERTAINTY_WEIGHT' in os.environ:
+            self.uncertainty_weight = float(os.environ['TD3_UNCERTAINTY_WEIGHT'])
+            print(f"[TD3Config] 从环境变量读取 uncertainty_weight: {self.uncertainty_weight}")
+        if 'TD3_HEURISTIC_BLEND' in os.environ:
+            self.enable_heuristic_blend = os.environ['TD3_HEURISTIC_BLEND'] != '0'
+            print(f"[TD3Config] 启用轮询先验融合: {self.enable_heuristic_blend}")
+        if 'TD3_BLEND_RATIO' in os.environ:
+            self.heuristic_blend_ratio = float(os.environ['TD3_BLEND_RATIO'])
+            print(f"[TD3Config] 轮询融合比例: {self.heuristic_blend_ratio}")
+        if 'TD3_BLEND_MARGIN' in os.environ:
+            self.heuristic_blend_margin = float(os.environ['TD3_BLEND_MARGIN'])
+            print(f"[TD3Config] 轮询融合裕量: {self.heuristic_blend_margin}")
     
     # PER 参数（优化以减少低质量样本影响）
     per_alpha: float = 0.6  # 🔧 回调优先级指数，减轻早期过度关注
@@ -629,12 +654,46 @@ class TD3ReplayBuffer:
             prios = self.priorities
         else:
             prios = self.priorities[:self.size]
+        
+        # 🔧 修复NaN问题：清理优先级中的异常值
+        prios = np.nan_to_num(prios, nan=1.0, posinf=1.0, neginf=1.0)
+        prios = np.maximum(prios, 1e-6)  # 确保所有优先级都大于0
+        
+        # 计算概率分布
         probs = prios ** self.alpha
-        probs /= probs.sum()
+        probs = np.nan_to_num(probs, nan=0.0, posinf=0.0, neginf=0.0)
+        
+        # 归一化前检查总和
+        prob_sum = probs.sum()
+        if prob_sum <= 0 or not np.isfinite(prob_sum):
+            # 如果概率总和无效，使用均匀分布
+            probs = np.ones(self.size, dtype=np.float32) / self.size
+        else:
+            probs /= prob_sum
+        
+        # 再次清理并确保概率有效
+        probs = np.nan_to_num(probs, nan=1.0/self.size, posinf=0.0, neginf=0.0)
+        probs = np.clip(probs, 0.0, 1.0)
+        
+        # 最终归一化
+        if probs.sum() > 0:
+            probs /= probs.sum()
+        else:
+            probs = np.ones(self.size, dtype=np.float32) / self.size
+        
+        # 采样
         indices = np.random.choice(self.size, batch_size, p=probs)
         
+        # 计算重要性权重
         weights = (self.size * probs[indices]) ** (-beta)
-        weights /= weights.max()  # 归一化到[0,1]
+        weights = np.nan_to_num(weights, nan=1.0, posinf=1.0, neginf=1.0)
+        
+        max_weight = weights.max()
+        if max_weight > 0 and np.isfinite(max_weight):
+            weights /= max_weight  # 归一化到[0,1]
+        else:
+            weights = np.ones_like(weights)
+        
         weights = weights.astype(np.float32)
         
         batch_states = torch.FloatTensor(self.states[indices])
@@ -753,6 +812,9 @@ class TD3Agent:
         self.guidance_ema: Dict[str, np.ndarray] = {}
         self.guidance_ema_decay = 0.6
         self.guidance_temperature_bounds = (0.7, 1.1)
+        self.enable_heuristic_blend = bool(getattr(config, "enable_heuristic_blend", True))
+        self.heuristic_blend_ratio = float(np.clip(getattr(config, "heuristic_blend_ratio", 0.35), 0.0, 1.0))
+        self.heuristic_blend_margin = float(getattr(config, "heuristic_blend_margin", 0.05))
         # 🔧 从全局config对象获取目标值（不是TD3Config）
         from config import config as global_config
         self.latency_target = float(getattr(global_config.rl, "latency_target", 0.4))
@@ -769,6 +831,7 @@ class TD3Agent:
         # 训练统计
         self.actor_losses = []
         self.critic_losses = []
+        self._polling_cache: Optional[torch.Tensor] = None
     
     def select_action(self, state: np.ndarray, training: bool = True) -> np.ndarray:
         """选择动作"""
@@ -777,6 +840,16 @@ class TD3Agent:
         with torch.no_grad():
             action_tensor = self.actor(state_tensor)
             raw_guidance = self.actor.get_latest_guidance()
+            if self.enable_heuristic_blend:
+                baseline_action = self._build_polling_action(batch_size=state_tensor.size(0))
+                try:
+                    q_policy = self.critic.q1(state_tensor, action_tensor).item()
+                    q_baseline = self.critic.q1(state_tensor, baseline_action).item()
+                    if q_policy + self.heuristic_blend_margin < q_baseline:
+                        blend = self.heuristic_blend_ratio
+                        action_tensor = blend * baseline_action + (1.0 - blend) * action_tensor
+                except Exception:
+                    pass
         processed_guidance = self._process_guidance(raw_guidance)
         self.latest_guidance = processed_guidance
         action = action_tensor.cpu().numpy()[0]
@@ -787,6 +860,17 @@ class TD3Agent:
             action = np.clip(action + noise, -1.0, 1.0)
         
         return action
+
+    def _build_polling_action(self, batch_size: int = 1) -> torch.Tensor:
+        """
+        构造基于轮询/均匀分配的安全先验动作，用于低Q时的策略融合。
+        全零向量在软max解码后对应均匀分配与中性缓存参数。
+        """
+        if self._polling_cache is not None and self._polling_cache.size(0) == batch_size:
+            return self._polling_cache.to(self.device)
+        base = torch.zeros(batch_size, self.action_dim, device=self.device)
+        self._polling_cache = base.detach()
+        return base
     
     def get_latest_guidance(self) -> Dict[str, np.ndarray]:
         if not self.latest_guidance:
@@ -976,6 +1060,24 @@ class TD3Agent:
         self.config.min_noise = max(self.config.min_noise, self.config.late_stage_noise_floor)
         # 限制现有噪声不低于新下限
         self.exploration_noise = max(self.exploration_noise, self.config.min_noise)
+
+    def _compute_cql_regularizer(self, states: torch.Tensor, current_q1: torch.Tensor, current_q2: torch.Tensor) -> Optional[torch.Tensor]:
+        """保守Q正则，压制随机/先验动作的过估计，防止策略劣于轮询。"""
+        cql_alpha = float(getattr(self.config, "cql_alpha", 0.0))
+        if cql_alpha <= 0:
+            return None
+        num_samples = max(1, int(getattr(self.config, "cql_num_samples", 1)))
+        rand_actions = torch.empty(states.size(0), num_samples, self.action_dim, device=self.device).uniform_(-1.0, 1.0)
+        policy_actions = torch.clamp(self.target_actor(states).detach(), -1.0, 1.0).unsqueeze(1)
+        candidates = torch.cat([rand_actions, policy_actions], dim=1)
+        expanded_states = states.unsqueeze(1).expand(-1, candidates.size(1), -1).reshape(-1, states.size(1))
+        flat_actions = candidates.reshape(-1, self.action_dim)
+        q1_rand, q2_rand = self.critic(expanded_states, flat_actions)
+        q1_rand = q1_rand.view(states.size(0), -1)
+        q2_rand = q2_rand.view(states.size(0), -1)
+        reg = (torch.logsumexp(q1_rand, dim=1) - current_q1.detach().squeeze(1)).mean()
+        reg += (torch.logsumexp(q2_rand, dim=1) - current_q2.detach().squeeze(1)).mean()
+        return reg
     
     def _update_critic(self, states: torch.Tensor, actions: torch.Tensor, 
                       rewards: torch.Tensor, next_states: torch.Tensor, 
@@ -1001,6 +1103,9 @@ class TD3Agent:
                     td_errors_q1 = torch.clamp(td_errors_q1, -clip_val, clip_val)
                     td_errors_q2 = torch.clamp(td_errors_q2, -clip_val, clip_val)
                 critic_loss = (weights * td_errors_q1.pow(2)).mean() + (weights * td_errors_q2.pow(2)).mean()
+                cql_reg = self._compute_cql_regularizer(states, current_q1, current_q2)
+                if cql_reg is not None:
+                    critic_loss = critic_loss + float(self.config.cql_alpha) * cql_reg
             
             self.critic_optimizer.zero_grad()
             self.scaler.scale(critic_loss).backward()
@@ -1027,6 +1132,9 @@ class TD3Agent:
                 td_errors_q1 = torch.clamp(td_errors_q1, -clip_val, clip_val)
                 td_errors_q2 = torch.clamp(td_errors_q2, -clip_val, clip_val)
             critic_loss = (weights * td_errors_q1.pow(2)).mean() + (weights * td_errors_q2.pow(2)).mean()
+            cql_reg = self._compute_cql_regularizer(states, current_q1, current_q2)
+            if cql_reg is not None:
+                critic_loss = critic_loss + float(self.config.cql_alpha) * cql_reg
             
             self.critic_optimizer.zero_grad()
             critic_loss.backward()
@@ -1044,7 +1152,11 @@ class TD3Agent:
         """更新Actor网络"""
         # 计算策略损失 (只使用Q1网络)
         actions = self.actor(states)
-        actor_loss = -self.critic.q1(states, actions).mean()
+        q1, q2 = self.critic(states, actions)
+        actor_loss = -q1.mean()
+        if getattr(self.config, "uncertainty_weight", 0.0) > 0:
+            uncertainty_penalty = (q1 - q2).pow(2).mean()
+            actor_loss = actor_loss + float(self.config.uncertainty_weight) * uncertainty_penalty
         
         # 更新Actor
         self.actor_optimizer.zero_grad()

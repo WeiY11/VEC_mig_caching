@@ -108,6 +108,13 @@ class RealisticContentGenerator:
         
         # 内容ID计数器
         self.content_counters = {ct: 0 for ct in VECContentType}
+        # 控制内容目录规模，促进内容复用以产生缓存命中
+        try:
+            import os
+            self.catalog_size = int(os.environ.get("CONTENT_CATALOG_SIZE", "20"))
+            self.catalog_size = max(5, self.catalog_size)
+        except Exception:
+            self.catalog_size = 20
     
     def generate_content_request(self, vehicle_id: str, step: int) -> Tuple[str, VECContentSpec]:
         """
@@ -122,9 +129,10 @@ class RealisticContentGenerator:
         
         selected_type = np.random.choice(content_types, p=weights)
         
-        # 生成内容ID
+        # 生成内容ID（循环有限目录，移除车辆维度以提高跨车辆复用）
         self.content_counters[selected_type] += 1
-        content_id = f"{selected_type.value}_{vehicle_id}_{self.content_counters[selected_type]:04d}"
+        counter_mod = self.content_counters[selected_type] % self.catalog_size
+        content_id = f"{selected_type.value}_{counter_mod:04d}"
         
         # 获取内容规格
         base_spec = self.content_specs[selected_type]

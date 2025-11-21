@@ -421,8 +421,8 @@ class CompleteSystemSimulator:
                 'position': rsu_positions[i],
                 'coverage_radius': self.coverage_radius,  # 覆盖半径(m)
                 'cache': {},  # 缓存字典
-                'cache_capacity': self.config['cache_capacity'],  # 缓存容量(MB)
-                'cache_capacity_bytes': (getattr(self.sys_config.cache, 'rsu_cache_capacity', 10e9) if self.sys_config is not None else 10e9),
+                'cache_capacity': 1000.0,  # 缓存容量(MB) - 1GB边缘服务器缓存
+                'cache_capacity_bytes': (getattr(self.sys_config.cache, 'rsu_cache_capacity', 1e9) if self.sys_config is not None else 1e9),
                 'cpu_freq': self.rsu_cpu_freq,  # 🆕 CPU频率(Hz)
                 'computation_queue': [],  # 计算任务队列
                 'energy_consumed': 0.0,  # 累计能耗(J)
@@ -460,8 +460,8 @@ class CompleteSystemSimulator:
                 'velocity': 0.0,  # 当前速度(m/s)
                 'coverage_radius': 350.0,  # 覆盖半径(m)
                 'cache': {},  # 缓存字典
-                'cache_capacity': self.config['cache_capacity'],  # 缓存容量(MB)
-                'cache_capacity_bytes': (getattr(self.sys_config.cache, 'uav_cache_capacity', 2e9) if self.sys_config is not None else 2e9),
+                'cache_capacity': 200.0,  # 缓存容量(MB) - 200MB轻量级UAV缓存
+                'cache_capacity_bytes': (getattr(self.sys_config.cache, 'uav_cache_capacity', 200e6) if self.sys_config is not None else 200e6),
                 'cpu_freq': self.uav_cpu_freq,  # 🆕 CPU频率(Hz)
                 'computation_queue': [],  # 计算任务队列
                 'energy_consumed': 0.0,  # 累计能耗(J)
@@ -1906,7 +1906,8 @@ class CompleteSystemSimulator:
                     hover_power = getattr(self.sys_config.compute, 'uav_hover_power', hover_power)
                 
                 # 🔧 修复：UAV同样需要考虑实际处理时间
-                base_freq = 2.5e9  # UAV基准频率
+                # 使用配置的UAV初始频率作为基准频率（而非硬编码2.5 GHz）
+                base_freq = getattr(self.sys_config.compute, 'uav_initial_freq', 3.5e9) if self.sys_config else 3.5e9
                 total_cycles = work_capacity * base_freq
                 actual_processing_time = total_cycles / cpu_freq
                 
@@ -2110,13 +2111,22 @@ class CompleteSystemSimulator:
                         capacity_limit
                     )
                 
-                # 如果决定缓存，执行淘汰和写入操作
-                if should_cache and cache_preference < 0.35:
-                    should_cache = False
-                elif not should_cache and cache_preference > 0.7 and available_capacity >= data_size:
+                # 缓存写入温启动：前warmup次请求尽量缓存，避免冷启动长期0命中
+                total_requests_so_far = cache_controller.cache_stats.get('total_requests', 0)
+                warmup_threshold = 100
+                if total_requests_so_far < warmup_threshold and available_capacity >= data_size:
+                    should_cache = True
+                    reason = reason or 'warmup_cache'
+                    evictions = []
+
+                # RL引导：概率缩放而不是硬性拦截
+                if not should_cache and cache_preference > 0.7 and available_capacity >= data_size:
                     should_cache = True
                     reason = reason or 'RL-guided cache'
                     evictions = []
+                elif should_cache and cache_preference < 0.2:
+                    # 在极低偏好时可放弃
+                    should_cache = False
                 elif should_cache and available_capacity < data_size and not evictions:
                     should_cache = False
 
@@ -2436,25 +2446,42 @@ class CompleteSystemSimulator:
             max(0.0, float(prefs.get('rsu', 0.0))) if rsu_available else 0.0,
             max(0.0, float(prefs.get('uav', 0.0))) if uav_available else 0.0,
         ], dtype=float)
+        
+        # 🔧 修复NaN问题：清理初始概率中的NaN值
+        probs = np.nan_to_num(probs, nan=0.0, posinf=0.0, neginf=0.0)
 
         guidance = actions.get('rl_guidance') or {}
         if isinstance(guidance, dict):
             guide_prior = np.array(guidance.get('offload_prior', []), dtype=float)
             if guide_prior.size >= 3:
-                probs *= np.clip(guide_prior[:3], 1e-4, None)
+                guide_prior = np.nan_to_num(guide_prior[:3], nan=1.0, posinf=1.0, neginf=1.0)
+                probs *= np.clip(guide_prior, 1e-4, None)
+                probs = np.nan_to_num(probs, nan=0.0, posinf=0.0, neginf=0.0)
+            
             distance_focus = np.array(guidance.get('distance_focus', []), dtype=float)
             if distance_focus.size >= 3:
-                probs *= np.clip(distance_focus[:3], 0.2, None)
+                distance_focus = np.nan_to_num(distance_focus[:3], nan=1.0, posinf=1.0, neginf=1.0)
+                probs *= np.clip(distance_focus, 0.2, None)
+                probs = np.nan_to_num(probs, nan=0.0, posinf=0.0, neginf=0.0)
+            
             cache_focus = np.array(guidance.get('cache_focus', []), dtype=float)
             if cache_focus.size >= 3:
-                probs *= np.clip(cache_focus[:3], 0.2, None)
+                cache_focus = np.nan_to_num(cache_focus[:3], nan=1.0, posinf=1.0, neginf=1.0)
+                probs *= np.clip(cache_focus, 0.2, None)
+                probs = np.nan_to_num(probs, nan=0.0, posinf=0.0, neginf=0.0)
+            
             energy_pressure_vec = guidance.get('energy_pressure')
             if isinstance(energy_pressure_vec, (list, tuple, np.ndarray)):
-                pressure = float(np.clip(np.asarray(energy_pressure_vec, dtype=float).reshape(-1)[0], 0.35, 1.8))
+                pressure_arr = np.asarray(energy_pressure_vec, dtype=float).reshape(-1)
+                pressure_arr = np.nan_to_num(pressure_arr, nan=1.0, posinf=1.0, neginf=1.0)
+                pressure = float(np.clip(pressure_arr[0], 0.35, 1.8))
                 energy_weights = np.array([1.0 / pressure, pressure, pressure], dtype=float)
+                energy_weights = np.nan_to_num(energy_weights, nan=1.0, posinf=1.0, neginf=1.0)
                 probs *= energy_weights
+                probs = np.nan_to_num(probs, nan=0.0, posinf=0.0, neginf=0.0)
 
-        if probs.sum() <= 0:
+        # 最终检查：如果概率总和仍然为0或无效，使用默认概率
+        if not np.isfinite(probs).all() or probs.sum() <= 0:
             probs = np.array([
                 0.34,
                 0.33 if rsu_available else 0.0,
@@ -2464,7 +2491,14 @@ class CompleteSystemSimulator:
         if probs.sum() <= 0:
             return 'local'
 
+        # 归一化前再次清理NaN
+        probs = np.nan_to_num(probs, nan=0.0, posinf=0.0, neginf=0.0)
         probs = probs / probs.sum()
+        
+        # 最后一次安全检查
+        if not np.isfinite(probs).all():
+            return 'local'
+        
         target_labels = np.array(['local', 'rsu', 'uav'])
         return str(np.random.choice(target_labels, p=probs))
 
@@ -2796,27 +2830,71 @@ class CompleteSystemSimulator:
         probs = np.ones_like(distances)
         rsu_pref = actions.get('rsu_selection_probs')
         if isinstance(rsu_pref, (list, tuple, np.ndarray)) and len(rsu_pref) == len(self.rsus):
-            probs *= np.array([max(0.0, float(rsu_pref[idx])) for idx in candidate_indices], dtype=float)
+            pref_values = np.array([max(0.0, float(rsu_pref[idx])) for idx in candidate_indices], dtype=float)
+            # 🔧 修复NaN问题：清理输入数据
+            pref_values = np.nan_to_num(pref_values, nan=1.0, posinf=1.0, neginf=1.0)
+            pref_values = np.maximum(pref_values, 1e-10)  # 确保不为0
+            probs *= pref_values
+            probs = np.nan_to_num(probs, nan=1.0, posinf=1.0, neginf=1.0)
 
         guidance = actions.get('rl_guidance') or {}
         if isinstance(guidance, dict):
             rsu_prior = np.array(guidance.get('rsu_prior', []), dtype=float)
             if rsu_prior.size >= len(self.rsus):
-                probs *= np.clip(rsu_prior[candidate_indices], 1e-4, None)
+                # 🔧 修复NaN问题：清理prior数据
+                rsu_prior = np.nan_to_num(rsu_prior, nan=1.0, posinf=1.0, neginf=1.0)
+                prior_vals = np.clip(rsu_prior[candidate_indices], 1e-4, None)
+                probs *= prior_vals
+                probs = np.nan_to_num(probs, nan=1.0, posinf=1.0, neginf=1.0)
+                probs = np.maximum(probs, 1e-10)  # 确保不为0
+            
             cache_focus = guidance.get('cache_focus')
             if isinstance(cache_focus, (list, tuple)) and len(cache_focus) >= 2:
                 cache_weight = float(np.clip(cache_focus[1], 0.0, 1.0))
-                probs = np.power(probs, 0.8 + 0.4 * cache_weight)
+                cache_weight = np.nan_to_num(cache_weight, nan=0.0)
+                power_val = 0.8 + 0.4 * cache_weight
+                # 🔧 修复NaN问题：确保 probs 为正后再做幂运算
+                probs = np.maximum(probs, 1e-10)
+                probs = np.power(probs, power_val)
+                probs = np.nan_to_num(probs, nan=1.0, posinf=1.0, neginf=1.0)
+                probs = np.maximum(probs, 1e-10)  # 再次确保
+            
             distance_focus = guidance.get('distance_focus')
             if isinstance(distance_focus, (list, tuple)) and len(distance_focus) >= 2:
                 distance_weight = float(np.clip(distance_focus[1], 0.0, 1.0))
-                probs = np.power(probs, 0.8 + 0.4 * distance_weight)
+                distance_weight = np.nan_to_num(distance_weight, nan=0.0)
+                power_val = 0.8 + 0.4 * distance_weight
+                # 🔧 修复NaN问题：确保 probs 为正后再做幂运算
+                probs = np.maximum(probs, 1e-10)
+                probs = np.power(probs, power_val)
+                probs = np.nan_to_num(probs, nan=1.0, posinf=1.0, neginf=1.0)
+                probs = np.maximum(probs, 1e-10)  # 再次确保
 
         weights = probs
-        if weights.sum() <= 0:
+        # 🔧 修复NaN问题：清理权重并确保有效
+        weights = np.nan_to_num(weights, nan=1.0, posinf=1.0, neginf=1.0)
+        weights = np.maximum(weights, 1e-10)  # 确保所有权重为正
+        
+        weight_sum = weights.sum()
+        if weight_sum <= 0 or not np.isfinite(weight_sum):
             weights = np.ones_like(weights)
+            weight_sum = weights.sum()
 
-        weights = weights / weights.sum()
+        weights = weights / weight_sum
+        # 最终检查
+        weights = np.nan_to_num(weights, nan=1.0/len(weights), posinf=0.0, neginf=0.0)
+        weights = np.clip(weights, 0.0, 1.0)
+        
+        # 确保概率总和为1
+        final_sum = weights.sum()
+        if final_sum > 0 and np.isfinite(final_sum):
+            weights = weights / final_sum
+        else:
+            weights = np.ones_like(weights) / len(weights)
+        
+        # 绝对最终检查
+        if not np.isfinite(weights).all():
+            weights = np.ones_like(weights) / len(weights)
         ordered_choices = list(np.random.choice(
             np.arange(len(candidate_indices)),
             size=len(candidate_indices),
@@ -2880,23 +2958,61 @@ class CompleteSystemSimulator:
         probs = np.ones_like(distances)
         uav_pref = actions.get('uav_selection_probs')
         if isinstance(uav_pref, (list, tuple, np.ndarray)) and len(uav_pref) == len(self.uavs):
-            probs *= np.array([max(0.0, float(uav_pref[idx])) for idx in candidate_indices], dtype=float)
+            pref_values = np.array([max(0.0, float(uav_pref[idx])) for idx in candidate_indices], dtype=float)
+            # 🔧 修复NaN问题：清理输入数据
+            pref_values = np.nan_to_num(pref_values, nan=1.0, posinf=1.0, neginf=1.0)
+            pref_values = np.maximum(pref_values, 1e-10)  # 确保不为0
+            probs *= pref_values
+            probs = np.nan_to_num(probs, nan=1.0, posinf=1.0, neginf=1.0)
 
         guidance = actions.get('rl_guidance') or {}
         if isinstance(guidance, dict):
             uav_prior = np.array(guidance.get('uav_prior', []), dtype=float)
             if uav_prior.size >= len(self.uavs):
-                probs *= np.clip(uav_prior[candidate_indices], 1e-4, None)
+                # 🔧 修复NaN问题：清理prior数据
+                uav_prior = np.nan_to_num(uav_prior, nan=1.0, posinf=1.0, neginf=1.0)
+                prior_vals = np.clip(uav_prior[candidate_indices], 1e-4, None)
+                probs *= prior_vals
+                probs = np.nan_to_num(probs, nan=1.0, posinf=1.0, neginf=1.0)
+                probs = np.maximum(probs, 1e-10)  # 确保不为0
+            
             distance_focus = guidance.get('distance_focus')
             if isinstance(distance_focus, (list, tuple)) and len(distance_focus) >= 3:
                 distance_weight = float(np.clip(distance_focus[2], 0.0, 1.0))
-                probs = np.power(probs, 0.8 + 0.4 * distance_weight)
+                distance_weight = np.nan_to_num(distance_weight, nan=0.0)
+                power_val = 0.8 + 0.4 * distance_weight
+                # 🔧 修复NaN问题：确保 probs 为正后再做幂运算
+                probs = np.maximum(probs, 1e-10)
+                probs = np.power(probs, power_val)
+                probs = np.nan_to_num(probs, nan=1.0, posinf=1.0, neginf=1.0)
+                probs = np.maximum(probs, 1e-10)  # 再次确保
 
         weights = probs
-        if weights.sum() <= 0:
+        # 🔧 修复NaN问题：清理权重并确保有效
+        weights = np.nan_to_num(weights, nan=1.0, posinf=1.0, neginf=1.0)
+        weights = np.maximum(weights, 1e-10)  # 确保所有权重为正
+        
+        weight_sum = weights.sum()
+        if weight_sum <= 0 or not np.isfinite(weight_sum):
             weights = np.ones_like(weights)
+            weight_sum = weights.sum()
 
-        weights = weights / weights.sum()
+        weights = weights / weight_sum
+        # 最终检查
+        weights = np.nan_to_num(weights, nan=1.0/len(weights), posinf=0.0, neginf=0.0)
+        weights = np.clip(weights, 0.0, 1.0)
+        
+        # 确保概率总和为1
+        final_sum = weights.sum()
+        if final_sum > 0 and np.isfinite(final_sum):
+            weights = weights / final_sum
+        else:
+            weights = np.ones_like(weights) / len(weights)
+        
+        # 绝对最终检查
+        if not np.isfinite(weights).all():
+            weights = np.ones_like(weights) / len(weights)
+        
         ordered_choices = list(np.random.choice(
             np.arange(len(candidate_indices)),
             size=len(candidate_indices),
@@ -3017,6 +3133,8 @@ class CompleteSystemSimulator:
             'data_size_bytes': task.get('data_size_bytes', 1e6),
             'content_id': task.get('content_id'),
             'computation_requirement': task.get('computation_requirement', 1500.0),
+            # 保留原始计算周期以便资源利用率统计（RSU/UAV compute_usage）
+            'compute_cycles': float(task.get('compute_cycles', 0.0) or task.get('computation_requirement', 1500.0) * 1e6),
             'work_remaining': work_units,
             'queued_at': self.current_time,
             'node_type': node_type,

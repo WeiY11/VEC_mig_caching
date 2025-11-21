@@ -353,6 +353,9 @@ class SingleAgentTrainingEnvironment:
                     network_comm_cfg = getattr(network_cfg, "communication_config", None)
                     if isinstance(network_comm_cfg, dict):
                         network_comm_cfg['bandwidth'] = float(bw_value)
+                    # 🔧 关键修复：同步到scenario_config，确保仿真器使用正确的带宽
+                    scenario_config['total_bandwidth'] = float(bw_value)
+                    scenario_config['bandwidth'] = float(bw_value)  # 兼容两种命名
                     print(f"🔧 [Override] 动态设置带宽: {float(bw_value)/1e6:.1f} MHz")
             
             # 🎯 总资源池参数（优先级高于单节点频率）
@@ -774,13 +777,13 @@ class SingleAgentTrainingEnvironment:
             'recent_completion': MovingAverage(100)
         }
         self._reward_baseline: Dict[str, float] = {}
-        self._energy_target_per_vehicle = float(os.environ.get('ENERGY_TARGET_PER_VEHICLE', 220.0))
-        self._dynamic_energy_target = float(getattr(config.rl, 'energy_target', 1200.0))
+        self._energy_target_per_vehicle = float(os.environ.get('ENERGY_TARGET_PER_VEHICLE', 180.0))
+        self._dynamic_energy_target = float(getattr(config.rl, 'energy_target', 2200.0))
         heuristic_energy_target = max(
             self._dynamic_energy_target,
             self.num_vehicles * self._energy_target_per_vehicle
         )
-        if heuristic_energy_target > self._dynamic_energy_target * 1.05:
+        if heuristic_energy_target > self._dynamic_energy_target * 1.02:
             self._dynamic_energy_target = heuristic_energy_target
             update_reward_targets(energy_target=heuristic_energy_target)
             print(
@@ -1232,10 +1235,18 @@ class SingleAgentTrainingEnvironment:
         reported_hit_rate = step_stats.get('cache_hit_rate')
         if reported_requests > 0:
             cache_requests_total = reported_requests
+        cache_hit_rate = normalize_ratio(cache_hits, cache_requests_total)
         if isinstance(reported_hit_rate, (int, float)):
             cache_hit_rate = float(np.clip(reported_hit_rate, 0.0, 1.0))
-        else:
-            cache_hit_rate = normalize_ratio(cache_hits, cache_requests_total)
+        # 🔧 回退到缓存控制器的统计，避免日志缺失导致0命中
+        cache_metrics = getattr(self, "adaptive_cache_controller", None)
+        if cache_metrics is not None:
+            cache_metrics = cache_metrics.get_cache_metrics()
+            cm_requests = int(cache_metrics.get('total_requests', 0) or 0)
+            cm_hit_rate = float(cache_metrics.get('hit_rate', 0.0) or 0.0)
+            if cm_requests > 0 and cache_hit_rate <= 0.0:
+                cache_requests_total = cm_requests
+                cache_hit_rate = float(np.clip(cm_hit_rate, 0.0, 1.0))
         local_cache_hits = int(safe_get('local_cache_hits', 0))
         
         # 🔧 修复：安全计算平均延迟 - 使用累计统计
@@ -1734,6 +1745,18 @@ class SingleAgentTrainingEnvironment:
             # 🎯 保存本步的step_stats供任务分布统计使用
             step_stats = info.get('step_stats', {})
             episode_step_stats.append(step_stats)
+
+            # 将队列/缓存压力传递给支持的智能体用于PER优先度放大
+            if hasattr(self.agent_env, 'update_priority_signal'):
+                try:
+                    queue_pressure = float(max(
+                        step_stats.get('queue_overload_flag', 0.0),
+                        step_stats.get('queue_rho_max', 0.0),
+                        step_stats.get('cache_eviction_rate', 0.0),
+                    ))
+                    self.agent_env.update_priority_signal(queue_pressure)  # type: ignore[attr-defined]
+                except Exception:
+                    pass
             
             # 初始化training_info
             training_info = {}
@@ -1925,7 +1948,9 @@ class SingleAgentTrainingEnvironment:
                     'local': float(probs[0]),
                     'rsu': float(probs[1] if probs.size > 1 else 0.33),
                     'uav': float(probs[2] if probs.size > 2 else 0.34)
-                }
+                },
+                # 记录原始softmax用于诊断
+                'offload_probs_raw': probs.tolist()
             }
             # RSU选择概率
             num_rsus = self.num_rsus

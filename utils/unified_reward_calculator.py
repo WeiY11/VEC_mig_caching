@@ -13,11 +13,58 @@ positive rewards, so we keep a small optional bonus for that case.
 
 from __future__ import annotations
 
+from dataclasses import dataclass, field
 from typing import Dict, Optional, List
 
 import numpy as np
 
 from config import config
+
+
+@dataclass
+class RewardMetrics:
+    """提取后的原始指标，便于后续统一计算。"""
+    avg_delay: float = 0.0
+    total_energy: float = 0.0
+    dropped_tasks: int = 0
+    completion_rate: float = 0.0
+    data_loss_ratio: float = 0.0
+    cache_utilization: float = 0.0
+    queue_overload_events: float = 0.0
+    remote_rejection_rate: float = 0.0
+    rsu_offload_ratio: float = 0.0
+    uav_offload_ratio: float = 0.0
+    cache_hit_rate: float = 0.0
+    cache_miss_rate: float = 0.0
+    migration_cost: float = 0.0
+    migration_effectiveness: float = 0.0
+    prefetch_events: float = 0.0
+    total_cache_requests: float = 1.0
+    prefetch_lead: float = 0.0
+    migration_backoff: float = 0.0
+
+
+@dataclass
+class RewardComponents:
+    """分解后的成本和奖励组成，便于调试与扩展。"""
+    norm_delay: float
+    norm_energy: float
+    core_cost: float
+    drop_penalty: float = 0.0
+    completion_gap_penalty: float = 0.0
+    data_loss_penalty: float = 0.0
+    cache_pressure_penalty: float = 0.0
+    queue_penalty: float = 0.0
+    remote_reject_penalty: float = 0.0
+    offload_bonus: float = 0.0
+    cache_penalty: float = 0.0
+    cache_bonus: float = 0.0
+    migration_penalty: float = 0.0
+    joint_coupling_penalty: float = 0.0
+    joint_bonus: float = 0.0
+    total_cost: float = 0.0
+    reward_pre_clip: float = 0.0
+    reward: float = 0.0
 
 
 class UnifiedRewardCalculator:
@@ -59,9 +106,12 @@ class UnifiedRewardCalculator:
         self.weight_queue_overload = float(getattr(config.rl, "reward_weight_queue_overload", 0.0))
         self.weight_remote_reject = float(getattr(config.rl, "reward_weight_remote_reject", 0.0))
         self.latency_target = float(getattr(config.rl, "latency_target", 0.4))
-        self.energy_target = float(getattr(config.rl, "energy_target", 1200.0))
+        self.energy_target = float(getattr(config.rl, "energy_target", 2200.0))
         self.latency_tolerance = float(getattr(config.rl, "latency_upper_tolerance", self.latency_target * 2.0))
         self.energy_tolerance = float(getattr(config.rl, "energy_upper_tolerance", self.energy_target * 1.5))
+        # 分段容错/钳位
+        self.total_cost_clip = float(getattr(config.rl, "reward_total_cost_clip", 120.0))
+        self.component_clip = float(getattr(config.rl, "reward_component_clip", 25.0))
 
         # 归一化任务优先级权重（如果存在）
         # Normalise priority weights if they exist.
@@ -193,8 +243,141 @@ class UnifiedRewardCalculator:
                 result.append(0.0)
         return result
 
+    @staticmethod
+    def _piecewise_ratio(value: float, target: float, tolerance: float) -> float:
+        """
+        分段容错的归一化比例：低于目标时半幅惩罚，目标-容差线性，超容差超线性。
+        """
+        v = max(0.0, float(value))
+        t = max(1e-6, float(target))
+        tol = max(t, float(tolerance))
+        if v <= t:
+            return 0.5 * (v / t)
+        if v <= tol:
+            return 1.0 + (v - t) / max(tol - t, 1e-6)
+        return 2.0 + (v - tol) / max(t, 1e-6)
+
     # ------------------------------------------------------------------ #
-    # 公共API / Public API
+    # ------------------------------------------------------------------ #
+    # ??API / Public API
+
+    def _extract_metrics(
+        self,
+        system_metrics: Dict,
+        cache_metrics: Optional[Dict],
+        migration_metrics: Optional[Dict],
+    ) -> RewardMetrics:
+        """?????????????????????"""
+        metrics = RewardMetrics()
+        metrics.avg_delay = max(0.0, self._safe_float(system_metrics.get("avg_task_delay")))
+        metrics.total_energy = max(0.0, self._safe_float(system_metrics.get("total_energy_consumption")))
+        metrics.dropped_tasks = max(0, self._safe_int(system_metrics.get("dropped_tasks")))
+        metrics.completion_rate = max(0.0, self._safe_float(system_metrics.get("task_completion_rate")))
+        metrics.data_loss_ratio = max(0.0, self._safe_float(system_metrics.get("data_loss_ratio_bytes")))
+        metrics.cache_utilization = max(0.0, self._safe_float(system_metrics.get("cache_utilization")))
+        metrics.queue_overload_events = max(0.0, self._safe_float(system_metrics.get("queue_overload_events")))
+        metrics.remote_rejection_rate = max(0.0, self._safe_float(system_metrics.get("remote_rejection_rate")))
+        metrics.rsu_offload_ratio = max(0.0, self._safe_float(system_metrics.get("rsu_offload_ratio")))
+        metrics.uav_offload_ratio = max(0.0, self._safe_float(system_metrics.get("uav_offload_ratio")))
+
+        if cache_metrics:
+            metrics.cache_hit_rate = float(max(0.0, min(1.0, self._safe_float(cache_metrics.get("hit_rate"), 0.0))))
+            metrics.cache_miss_rate = float(max(0.0, min(1.0, self._safe_float(cache_metrics.get("miss_rate"), 0.0))))
+            metrics.prefetch_events = max(0.0, self._safe_float(cache_metrics.get("prefetch_events"), 0.0))
+            metrics.total_cache_requests = max(1.0, self._safe_float(cache_metrics.get("total_requests"), 1.0))
+            cache_joint = cache_metrics.get("joint_params", {}) if isinstance(cache_metrics, dict) else {}
+            metrics.prefetch_lead = self._safe_float(cache_joint.get("prefetch_lead_time"), 0.0)
+        if migration_metrics:
+            metrics.migration_cost = max(0.0, self._safe_float(migration_metrics.get("migration_cost"), 0.0))
+            metrics.migration_effectiveness = float(max(0.0, min(1.0, self._safe_float(migration_metrics.get("effectiveness"), 0.0))))
+            migration_joint = migration_metrics.get("joint_params", {}) if isinstance(migration_metrics, dict) else {}
+            metrics.migration_backoff = float(max(0.0, min(1.0, self._safe_float(migration_joint.get("migration_backoff"), 0.0))))
+        return metrics
+
+    def _compute_components(self, m: RewardMetrics) -> RewardComponents:
+        """????/????????"""
+        norm_delay = self._piecewise_ratio(m.avg_delay, self.latency_target, self.latency_tolerance)
+        norm_energy = self._piecewise_ratio(m.total_energy, self.energy_target, self.energy_tolerance)
+        core_cost = self.weight_delay * norm_delay + self.weight_energy * norm_energy
+
+        drop_penalty = self.penalty_dropped * m.dropped_tasks
+        completion_gap_penalty = self.weight_completion_gap * max(0.0, self.completion_target - m.completion_rate) if self.weight_completion_gap > 0.0 else 0.0
+        data_loss_penalty = self.weight_loss_ratio * m.data_loss_ratio if self.weight_loss_ratio > 0.0 else 0.0
+        cache_pressure_penalty = 0.0
+        if self.weight_cache_pressure > 0.0 and m.cache_utilization > self.cache_pressure_threshold:
+            cache_pressure_penalty = self.weight_cache_pressure * (m.cache_utilization - self.cache_pressure_threshold)
+        queue_penalty = self.weight_queue_overload * m.queue_overload_events if self.weight_queue_overload > 0.0 else 0.0
+        remote_reject_penalty = self.weight_remote_reject * m.remote_rejection_rate if self.weight_remote_reject > 0.0 else 0.0
+
+        offload_bonus = self.weight_offload_bonus * (m.rsu_offload_ratio + m.uav_offload_ratio) if self.weight_offload_bonus > 0.0 else 0.0
+        cache_penalty = self.weight_cache * m.cache_miss_rate if self.weight_cache > 0.0 else 0.0
+        cache_bonus = self.weight_cache_bonus * m.cache_hit_rate if self.weight_cache_bonus > 0.0 else 0.0
+        migration_penalty = self.weight_migration * m.migration_cost if self.weight_migration > 0.0 else 0.0
+
+        joint_bonus = 0.0
+        joint_coupling_penalty = 0.0
+        if self.weight_joint > 0.0:
+            joint_bonus = self.weight_joint * (m.cache_hit_rate * m.migration_effectiveness)
+            prefetch_ratio = np.clip(m.prefetch_events / max(1.0, m.total_cache_requests), 0.0, 1.0)
+            coupling_penalty = max(0.0, 0.3 - prefetch_ratio) * 0.5
+            coupling_penalty += abs(m.prefetch_lead - 1.5) * 0.05
+            coupling_penalty += m.migration_backoff * 0.1
+            joint_coupling_penalty = self.weight_joint * coupling_penalty
+
+        def _clip(x: float) -> float:
+            return float(np.clip(x, -self.component_clip, self.component_clip))
+
+        total_cost = (
+            core_cost
+            + _clip(drop_penalty)
+            + _clip(completion_gap_penalty)
+            + _clip(data_loss_penalty)
+            + _clip(cache_pressure_penalty)
+            + _clip(queue_penalty)
+            + _clip(remote_reject_penalty)
+            + _clip(cache_penalty)
+            + _clip(migration_penalty)
+            + _clip(joint_coupling_penalty)
+            - _clip(offload_bonus)
+            - _clip(cache_bonus)
+            - _clip(joint_bonus)
+        )
+        total_cost = float(np.clip(total_cost, -self.total_cost_clip, self.total_cost_clip))
+
+        return RewardComponents(
+            norm_delay=norm_delay,
+            norm_energy=norm_energy,
+            core_cost=core_cost,
+            drop_penalty=drop_penalty,
+            completion_gap_penalty=completion_gap_penalty,
+            data_loss_penalty=data_loss_penalty,
+            cache_pressure_penalty=cache_pressure_penalty,
+            queue_penalty=queue_penalty,
+            remote_reject_penalty=remote_reject_penalty,
+            offload_bonus=offload_bonus,
+            cache_penalty=cache_penalty,
+            cache_bonus=cache_bonus,
+            migration_penalty=migration_penalty,
+            joint_coupling_penalty=joint_coupling_penalty,
+            joint_bonus=joint_bonus,
+            total_cost=total_cost,
+            reward_pre_clip=-total_cost,
+            reward=-total_cost,
+        )
+
+    def _compose_reward(self, components: RewardComponents, completion_rate: float) -> RewardComponents:
+        """????????????????"""
+        if self.algorithm == "SAC":
+            base_reward = 5.0
+            completion_bonus = (completion_rate - 0.95) * 10.0 if completion_rate > 0.95 else 0.0
+            reward_raw = base_reward + completion_bonus - components.total_cost
+            reward_clipped = float(np.clip(reward_raw, -15.0, 10.0))
+        else:
+            reward_raw = -components.total_cost
+            reward_clipped = float(np.clip(reward_raw, -20.0, 0.0))
+        components.reward_pre_clip = reward_raw
+        components.reward = reward_clipped
+        return components
 
     def calculate_reward(
         self,
@@ -202,165 +385,11 @@ class UnifiedRewardCalculator:
         cache_metrics: Optional[Dict] = None,
         migration_metrics: Optional[Dict] = None,
     ) -> float:
-        """
-        为强化学习智能体计算标量奖励。
-        
-        奖励计算基于系统性能指标，采用成本最小化原则：
-        - 延迟越低，奖励越高
-        - 能耗越低，奖励越高
-        - 任务丢弃越少，奖励越高
-        - 可选：缓存命中率越高，奖励越高
-        - 可选：迁移成本越低，奖励越高
-        
-        Args:
-            system_metrics: 系统性能指标字典，包含：
-                - avg_task_delay: 平均任务延迟（秒）
-                - total_energy_consumption: 总能耗（焦耳）
-                - dropped_tasks: 丢弃的任务数量
-                - task_completion_rate: 任务完成率
-            cache_metrics: 可选的缓存指标字典
-                - miss_rate: 缓存未命中率
-            migration_metrics: 可选的迁移指标字典
-                - migration_cost: 迁移成本
-                
-        Returns:
-            标量奖励值，范围由reward_clip_range定义
-        """
-
-        # 从系统指标中提取关键性能数据，确保非负值
-        avg_delay = max(0.0, self._safe_float(system_metrics.get("avg_task_delay")))
-        total_energy = max(
-            0.0, self._safe_float(system_metrics.get("total_energy_consumption"))
-        )
-        dropped_tasks = max(0, self._safe_int(system_metrics.get("dropped_tasks")))
-        completion_rate = max(
-            0.0, self._safe_float(system_metrics.get("task_completion_rate"))
-        )
-        data_loss_ratio = max(
-            0.0, self._safe_float(system_metrics.get("data_loss_ratio_bytes"))
-        )
-        cache_utilization = max(
-            0.0, self._safe_float(system_metrics.get("cache_utilization"))
-        )
-        queue_overload_events = max(
-            0.0, self._safe_float(system_metrics.get("queue_overload_events"))
-        )
-        remote_rejection_rate = max(
-            0.0, self._safe_float(system_metrics.get("remote_rejection_rate"))
-        )
-        # 🔧 新增：远程卸载利用率
-        rsu_offload_ratio = max(
-            0.0, self._safe_float(system_metrics.get("rsu_offload_ratio"))
-        )
-        uav_offload_ratio = max(
-            0.0, self._safe_float(system_metrics.get("uav_offload_ratio"))
-        )
-
-        # 🔧 修复问题6：使用 delay_normalizer 和 energy_normalizer 进行归一化
-        # ========== 核心归一化：使用normalizer进行尺度统一 ==========
-        # Objective = w_T × (delay/normalizer) + w_E × (energy/normalizer)
-        # 这样可以确保两个指标在同一尺度上，权重才有意义
-        
-        norm_delay = avg_delay / max(self.delay_normalizer, 1e-6)
-        norm_energy = total_energy / max(self.energy_normalizer, 1e-6)
-
-        # 计算核心成本：归一化后的加权和
-        core_cost = self.weight_delay * norm_delay + self.weight_energy * norm_energy
-        
-        # 任务丢弃惩罚（轻微惩罚，主要用于保证完成率）
-        drop_penalty = self.penalty_dropped * dropped_tasks
-        
-        # 总成本
-        total_cost = core_cost + drop_penalty
-
-        # 完成率差距惩罚
-        if self.weight_completion_gap > 0.0:
-            completion_gap = max(0.0, self.completion_target - completion_rate)
-            total_cost += self.weight_completion_gap * completion_gap
-
-        # 数据丢失率惩罚
-        if self.weight_loss_ratio > 0.0:
-            total_cost += self.weight_loss_ratio * data_loss_ratio
-
-        # 缓存压力惩罚（超过阈值才惩罚）
-        if self.weight_cache_pressure > 0.0 and cache_utilization > self.cache_pressure_threshold:
-            total_cost += self.weight_cache_pressure * (cache_utilization - self.cache_pressure_threshold)
-
-        # 队列过载事件惩罚
-        if self.weight_queue_overload > 0.0 and queue_overload_events > 0.0:
-            total_cost += self.weight_queue_overload * queue_overload_events
-
-        if self.weight_remote_reject > 0.0 and remote_rejection_rate > 0.0:
-            total_cost += self.weight_remote_reject * remote_rejection_rate
-
-        # 🔧 新增：远程卸载激励（鼓励使用边缘节点）
-        if self.weight_offload_bonus > 0.0:
-            # 计算总远程卸载率（RSU + UAV）
-            total_offload_ratio = rsu_offload_ratio + uav_offload_ratio
-            # 奖励：远程卸载率越高，成本越低
-            offload_bonus = self.weight_offload_bonus * total_offload_ratio
-            total_cost -= offload_bonus
-
-        # ========== 辅助指标（可选，权重较小）==========
-        # 注意：缓存和迁移是手段，不是优化目标，所以权重设为0
-        
-        # 可选的缓存惩罚（通常权重为0）
-        if cache_metrics and self.weight_cache > 0:
-            miss_rate = np.clip(self._safe_float(cache_metrics.get("miss_rate"), 0.0), 0.0, 1.0)
-            total_cost += self.weight_cache * miss_rate
-        if cache_metrics and self.weight_cache_bonus > 0:
-            hit_rate = np.clip(self._safe_float(cache_metrics.get("hit_rate"), 0.0), 0.0, 1.0)
-            total_cost -= self.weight_cache_bonus * hit_rate
-
-        # 可选的迁移惩罚（通常权重为0）
-        if migration_metrics and self.weight_migration > 0:
-            migration_cost = self._safe_float(migration_metrics.get("migration_cost"), 0.0)
-            total_cost += self.weight_migration * migration_cost
-
-        if cache_metrics and migration_metrics and self.weight_joint > 0:
-            hit_rate = np.clip(self._safe_float(cache_metrics.get("hit_rate"), 0.0), 0.0, 1.0)
-            effectiveness = np.clip(self._safe_float(migration_metrics.get("effectiveness"), 0.0), 0.0, 1.0)
-            joint_bonus = hit_rate * effectiveness
-
-            cache_joint = cache_metrics.get("joint_params", {}) if isinstance(cache_metrics, dict) else {}
-            migration_joint = migration_metrics.get("joint_params", {}) if isinstance(migration_metrics, dict) else {}
-            prefetch_lead = self._safe_float(cache_joint.get("prefetch_lead_time"), 0.0)
-            backoff_factor = np.clip(self._safe_float(migration_joint.get("migration_backoff"), 0.0), 0.0, 1.0)
-
-            total_requests = max(1.0, self._safe_float(cache_metrics.get("total_requests"), 1.0))
-            prefetch_events = max(0.0, self._safe_float(cache_metrics.get("prefetch_events"), 0.0))
-            prefetch_ratio = np.clip(prefetch_events / total_requests, 0.0, 1.0)
-
-            coupling_penalty = max(0.0, 0.3 - prefetch_ratio) * 0.5
-            coupling_penalty += abs(prefetch_lead - 1.5) * 0.05
-            coupling_penalty += backoff_factor * 0.1
-
-            total_cost -= self.weight_joint * joint_bonus
-            total_cost += self.weight_joint * coupling_penalty
-
-        # ========== 计算最终奖励 ==========
-        # 奖励 = -成本（成本越低，奖励越高）
-        
-        if self.algorithm == "SAC":
-            # SAC需要适度正向奖励，添加基础奖励
-            base_reward = 5.0  # 基础奖励
-            # 完成率高时额外奖励
-            completion_bonus = 0.0
-            if completion_rate > 0.95:
-                completion_bonus = (completion_rate - 0.95) * 10.0
-            reward = base_reward + completion_bonus - total_cost
-        else:
-            # TD3/DDPG/PPO等算法：直接使用负成本作为奖励
-            reward = -total_cost
-
-        # 裁剪奖励值（归一化后范围更小）
-        # 预期范围：-10 到 0（如果一切正常）
-        if self.algorithm == "SAC":
-            reward = float(np.clip(reward, -15.0, 10.0))
-        else:
-            reward = float(np.clip(reward, -20.0, 0.0))
-        
-        return reward
+        """???????????????"""
+        metrics = self._extract_metrics(system_metrics, cache_metrics, migration_metrics)
+        components = self._compute_components(metrics)
+        components = self._compose_reward(components, metrics.completion_rate)
+        return components.reward
 
     def update_targets(
         self,
@@ -381,48 +410,35 @@ class UnifiedRewardCalculator:
             )
             self.energy_bonus_scale = max(1e-6, self.energy_target)
 
-    def get_reward_breakdown(self, system_metrics: Dict) -> str:
-        """
-        获取奖励组成的人类可读分解报告。
-        
-        用于调试和分析，显示奖励的各个组成部分及其贡献。
-        
-        Args:
-            system_metrics: 系统性能指标字典
-            
-        Returns:
-            格式化的多行字符串，包含奖励详细分解
-        """
-        avg_delay = max(0.0, self._safe_float(system_metrics.get("avg_task_delay"), 0.0))
-        total_energy = max(0.0, self._safe_float(system_metrics.get("total_energy_consumption"), 0.0))
-        dropped_tasks = max(0, self._safe_int(system_metrics.get("dropped_tasks"), 0))
-        completion_rate = max(0.0, self._safe_float(system_metrics.get("task_completion_rate"), 0.0))
+    def get_reward_breakdown(
+        self,
+        system_metrics: Dict,
+        cache_metrics: Optional[Dict] = None,
+        migration_metrics: Optional[Dict] = None,
+    ) -> str:
+        """生成奖励分解，便于快速诊断各成本来源。"""
+        metrics = self._extract_metrics(system_metrics, cache_metrics, migration_metrics)
+        components = self._compute_components(metrics)
+        components = self._compose_reward(components, metrics.completion_rate)
 
-        # 计算归一化值
-        norm_delay = avg_delay / max(self.delay_normalizer, 1e-6)
-        norm_energy = total_energy / max(self.energy_normalizer, 1e-6)
-        
-        # 计算加权成本
-        weighted_delay = self.weight_delay * norm_delay
-        weighted_energy = self.weight_energy * norm_energy
-        core_cost = weighted_delay + weighted_energy
-        
-        reward = self.calculate_reward(system_metrics)
         lines = [
             f"Reward report ({self.algorithm}):",
-            f"  Total Reward        : {reward:.3f}",
+            f"  Total Reward        : {components.reward:.4f} (pre-clip {components.reward_pre_clip:.4f})",
+            f"  Core Cost (D+E)     : {components.core_cost:.4f}",
+            f"    - Delay (norm/w)  : {components.norm_delay:.4f} / w={self.weight_delay}",
+            f"    - Energy (norm/w) : {components.norm_energy:.4f} / w={self.weight_energy}",
+            f"  Drop Penalty        : {components.drop_penalty:.4f}",
+            f"  Completion Gap      : {components.completion_gap_penalty:.4f}",
+            f"  Data Loss Penalty   : {components.data_loss_penalty:.4f}",
+            f"  Cache Pressure      : {components.cache_pressure_penalty:.4f}",
+            f"  Queue Penalty       : {components.queue_penalty:.4f}",
+            f"  Remote Reject       : {components.remote_reject_penalty:.4f}",
+            f"  Cache Penalty/Bonus : {components.cache_penalty:.4f} / -{components.cache_bonus:.4f}",
+            f"  Migration Penalty   : {components.migration_penalty:.4f}",
+            f"  Joint Penalty/Bonus : {components.joint_coupling_penalty:.4f} / -{components.joint_bonus:.4f}",
+            f"  Offload Bonus       : -{components.offload_bonus:.4f}",
             f"  ----------------------------------------",
-            f"  Delay               : {avg_delay:.4f}s (target: {self.latency_target}s)",
-            f"  Normalized Delay    : {norm_delay:.4f}",
-            f"  Weighted Delay      : {weighted_delay:.4f} (w={self.weight_delay})",
-            f"  ----------------------------------------",
-            f"  Energy              : {total_energy:.2f}J (target: {self.energy_target:.0f}J)",
-            f"  Normalized Energy   : {norm_energy:.4f}",
-            f"  Weighted Energy     : {weighted_energy:.4f} (w={self.weight_energy})",
-            f"  ----------------------------------------",
-            f"  Core Cost (D+E)     : {core_cost:.4f}",
-            f"  Dropped Tasks       : {dropped_tasks} (penalty: {self.penalty_dropped * dropped_tasks:.4f})",
-            f"  Completion Rate     : {completion_rate:.1%}",
+            f"  Total Cost          : {components.total_cost:.4f}",
         ]
         return "\n".join(lines)
 

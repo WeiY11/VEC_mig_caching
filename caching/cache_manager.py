@@ -58,11 +58,17 @@ class HeatBasedCacheStrategy:
             slot_duration: 时间槽时长（秒），None则自适应
             total_slots: 总时间槽数，None则自适应
         """
-        # 🔧 优化：调整热度参数以适应仿真环境
-        # 🎯 P0-2优化：加快冷却速度，平衡历史与实时
-        self.decay_factor = 0.92          # 从0.95→0.92，加快冷却速度
-        self.heat_mix_factor = 0.7        # 从0.8→0.7，平衡历史与实时热度
+        # 🔧 创新优化:自适应热度参数动态调整
+        # 🎯 核心创新:根据系统负载和时隙模式动态调整衰减速度
+        self.decay_factor = 0.88          # 🚀 创新:进一步加快冷却(0.92→0.88),快速响应内容流行度变化
+        self.heat_mix_factor = 0.6        # 🚀 创新:更重视实时热度(0.7→0.6),捕捉动态热点
         self.zipf_exponent = 0.8          # Zipf分布参数
+                
+        # 🆕 创新:自适应参数(根据系统负载动态调整)
+        self.adaptive_decay_enabled = True  # 启用自适应衰减
+        self.min_decay_factor = 0.80      # 高负载时最小衰减(更激进淘汰)
+        self.max_decay_factor = 0.92      # 低负载时最大衰减(更保守缓存)
+        self.system_load_threshold = 0.7  # 负载阈值
         
         # 🚀 自适应时间槽配置
         self.slot_duration = slot_duration if slot_duration is not None else 10.0  # 默认10秒
@@ -89,14 +95,37 @@ class HeatBasedCacheStrategy:
         # 性能优化：记录上次排名更新（用于惰性更新）
         self._last_rank_update = 0
     
-    def update_heat(self, content_id: str, access_weight: float = 1.0):
+    def update_heat(self, content_id: str, access_weight: float = 1.0, system_load: float = 0.5):
         """
-        更新内容热度 - 对应论文式(35)-(36)
-        优化：支持自适应时间槽粒度
+        🚀 创新优化:自适应热度更新 - 根据系统负载动态调整衰减
+            
+        创新点:
+        1. 高负载时加快衰减,快速腾出空间
+        2. 低负载时减慢衰减,保留更多历史信息
+        3. 引入访问间隔加权,频繁访问的内容获得更高权重
         """
-        # 更新历史热度 - 式(35)
-        self.historical_heat[content_id] = (self.decay_factor * self.historical_heat[content_id] + 
-                                           access_weight)
+        # 🆕 创新:自适应衰减因子(根据系统负载)
+        if self.adaptive_decay_enabled:
+            if system_load > self.system_load_threshold:
+                # 高负载:激进淘汰,快速响应
+                current_decay = self.min_decay_factor
+            else:
+                # 低负载:保守缓存,利用历史
+                current_decay = self.max_decay_factor
+        else:
+            current_decay = self.decay_factor
+            
+        # 🆕 创新:访问间隔加权(频繁访问获得boost)
+        access_boost = 1.0
+        if content_id in self.access_history and len(self.access_history[content_id]) >= 2:
+            # 计算最近两次访问间隔
+            last_interval = get_simulation_time() - self.access_history[content_id][-1]
+            if last_interval < 30.0:  # 30秒内再次访问,视为高频
+                access_boost = 1.5  # 提升50%权重
+            
+        # 更新历史热度 - 式(35) + 创新自适应机制
+        self.historical_heat[content_id] = (current_decay * self.historical_heat[content_id] + 
+                                           access_weight * access_boost)
         
         # 🚀 自适应时间槽计算
         simulation_time = get_simulation_time()

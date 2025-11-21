@@ -606,16 +606,31 @@ def plot_objective_function_breakdown(training_env, algorithm: str, save_path: s
     ax1.legend(frameon=False, loc='best', fontsize=9)
     ax1.grid(True, alpha=0.3)
     
-    # 右图：总目标函数与奖励对比
+    # 右图：总目标函数与实际奖励对比
     if total_objectives:
         ax2.plot(episodes[:len(total_objectives)], total_objectives,
                 color=COLORS['warning'], linewidth=3, label='Objective (to minimize)')
         
-        # 对应的奖励（负目标函数）
-        rewards_from_obj = [-obj for obj in total_objectives]
-        ax2_twin = ax2.twinx()
-        ax2_twin.plot(episodes[:len(rewards_from_obj)], rewards_from_obj,
-                     color=COLORS['success'], linewidth=3, label='Reward (-Objective)')
+        # 使用实际记录的奖励值（而非简单的-objective）
+        # 注意：实际奖励可能包含其他惩罚项（任务丢弃、完成率等）
+        actual_rewards = []
+        for i in episodes:
+            idx = i - 1
+            if idx < len(training_env.episode_rewards):
+                # 获取平均每步奖励
+                episode_reward = training_env.episode_rewards[idx]
+                try:
+                    from config import config
+                    max_steps = config.experiment.max_steps_per_episode
+                except:
+                    max_steps = 200
+                per_step_reward = episode_reward / max_steps
+                actual_rewards.append(per_step_reward)
+        
+        if actual_rewards:
+            ax2_twin = ax2.twinx()
+            ax2_twin.plot(episodes[:len(actual_rewards)], actual_rewards,
+                         color=COLORS['success'], linewidth=3, label='Reward (Actual)')
         
         ax2.set_ylabel('Objective Value', color=COLORS['warning'])
         ax2_twin.set_ylabel('Reward Value', color=COLORS['success'])

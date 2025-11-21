@@ -331,7 +331,7 @@ STRATEGY_PRESETS: "OrderedDict[str, StrategyPreset]" = OrderedDict(
         (
             "comprehensive-no-migration",
             _make_preset(
-                description="Layered TD3",
+                description="TD3noMIG",
                 scenario_key="layered_multi_edge",
                 use_enhanced_cache=True,
                 disable_migration=True,
