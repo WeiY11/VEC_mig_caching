@@ -105,7 +105,8 @@ class TaskMigrationManager:
                 should_migrate, urgency_score = self._evaluate_rsu_migration_need(
                     node_id, state, node_states
                 )
-                if should_migrate:
+                # 🔧 修复：提高迁移触发阈值，减少频繁迁移
+                if should_migrate and urgency_score > 1.2:
                     # 瀵绘壘杩佺Щ鐩爣
                     target_node = self._find_best_target(node_id, "rsu", node_states, node_positions)
                     if target_node:
@@ -390,6 +391,9 @@ class TaskMigrationManager:
 
         if not moved_tasks:
             return
+        
+        # 🔧 修复：迁移前同步缓存内容，避免数据丢失
+        self._sync_cache_before_migration(source_node, target_node, moved_tasks)
 
         if hasattr(target_queue, 'extend'):
             target_queue.extend(moved_tasks)
@@ -632,6 +636,58 @@ class TaskMigrationManager:
         
         # 综合加权评分
         return 0.4 * load_score + 0.3 * distance_score + 0.2 * queue_score + 0.1 * bandwidth_score
+    
+    def _sync_cache_before_migration(self, source_node: Dict, target_node: Dict, tasks: List[Task]) -> None:
+        """
+        🔧 修复：迁移前同步缓存内容，确保数据不丢失
+        
+        将待迁移任务相关的缓存内容预先复制到目标节点
+        """
+        source_cache = source_node.get('cache', {})
+        if not source_cache or not tasks:
+            return
+        
+        target_cache = target_node.setdefault('cache', {})
+        target_capacity = target_node.get('cache_capacity', 1000.0)
+        
+        # 计算目标缓存可用空间
+        target_used = sum(float(item.get('size', 0) or 0) for item in target_cache.values())
+        target_available = max(0, target_capacity - target_used)
+        
+        # 收集需要同步的内容ID
+        content_ids_to_sync = set()
+        for task in tasks:
+            if not isinstance(task, Task):
+                continue
+            content_id = getattr(task, 'content_id', None) or getattr(task, 'input_content_id', None)
+            if content_id and content_id in source_cache:
+                content_ids_to_sync.add(content_id)
+        
+        # 同步缓存内容
+        synced_count = 0
+        synced_size = 0.0
+        for content_id in content_ids_to_sync:
+            if content_id in target_cache:
+                continue
+            
+            cache_item = source_cache.get(content_id)
+            if not cache_item:
+                continue
+            
+            item_size = float(cache_item.get('size', 1.0) or 1.0)
+            if target_available < item_size:
+                break
+            
+            # 复制缓存条目
+            import copy
+            target_cache[content_id] = copy.deepcopy(cache_item)
+            target_cache[content_id]['migrated'] = True
+            target_available -= item_size
+            synced_size += item_size
+            synced_count += 1
+        
+        if synced_count > 0:
+            self.logger.debug(f"🔄 迁移前同步缓存: {synced_count}项, {synced_size:.1f}MB")
     
     def _select_tasks_for_intelligent_migration(self, source_queue, max_count: int) -> List[Task]:
         """

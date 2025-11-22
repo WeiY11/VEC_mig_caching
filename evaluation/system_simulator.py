@@ -1009,6 +1009,25 @@ class CompleteSystemSimulator:
             incoming_tasks = max(1, int(step_summary.get('generated_tasks', 0)))
             decisions = scheduler.global_load_balance_scheduling(incoming_task_count=incoming_tasks)
             migrations = scheduler.intelligent_migration_coordination()
+            
+            # 🔧 修复：处理迁移指令并记录能耗与延迟
+            for cmd in migrations:
+                if 'wired_transmission' in cmd:
+                    wired_stats = cmd['wired_transmission']
+                    # 记录迁移能耗 (J)
+                    energy = wired_stats.get('energy_j', 0.0)
+                    self._accumulate_energy('rsu_migration_energy', energy)
+                    self.stats['energy_consumed'] = self.stats.get('energy_consumed', 0.0) + energy # 确保计入总能耗
+                    
+                    # 记录迁移延迟 (s) - 注意：这是后台传输延迟，不直接阻塞任务，但计入系统开销
+                    delay_ms = wired_stats.get('delay_ms', 0.0)
+                    delay_s = delay_ms / 1000.0
+                    self._accumulate_delay('rsu_migration_delay', delay_s)
+                    
+                    # 记录迁移数据量
+                    data_mb = wired_stats.get('data_size_mb', 0.0)
+                    self.stats['rsu_migration_data'] = self.stats.get('rsu_migration_data', 0.0) + data_mb
+            
             self.stats['central_scheduler_calls'] = self.stats.get('central_scheduler_calls', 0) + 1
             self.stats['central_scheduler_last_decisions'] = len(decisions)
             self.stats['central_scheduler_migrations'] = self.stats.get('central_scheduler_migrations', 0) + len(migrations)
@@ -1093,7 +1112,11 @@ class CompleteSystemSimulator:
                         
                         migration_count += len(tasks_to_move)
                         # 记录迁移开销 (简化)
+                        # 假设每任务迁移消耗 0.05J (无线信令开销)
+                        migration_energy = 0.05 * len(tasks_to_move)
                         self._accumulate_delay('migration_delay', 0.02 * len(tasks_to_move)) # 20ms per task
+                        self._accumulate_energy('uav_migration_energy', migration_energy) # 借用uav_migration_energy字段或新建字段
+                        self.stats['energy_consumed'] = self.stats.get('energy_consumed', 0.0) + migration_energy
                 else:
                     pass
                         
@@ -1960,15 +1983,24 @@ class CompleteSystemSimulator:
 
             vehicle_id = task.get('vehicle_id', 'V_0')
             vehicle = next((v for v in self.vehicles if v['id'] == vehicle_id), None)
-            if vehicle is not None:
-                node_pos = np.array(node.get('position', [0.0, 0.0, 0.0]))
-                vehicle_pos = np.array(vehicle.get('position', [0.0, 0.0, 0.0]))
-                distance = self.calculate_distance(node_pos, vehicle_pos)
-                result_size = task.get('data_size_bytes', task.get('data_size', 1.0) * 1e6) * 0.1
-                down_delay, down_energy = self._estimate_transmission(result_size, float(distance), node_type.lower())
-                self.stats['energy_downlink'] = self.stats.get('energy_downlink', 0.0) + down_energy
-                self._accumulate_delay('delay_downlink', down_delay)
-                self._accumulate_energy('energy_transmit_downlink', down_energy)
+
+            # 🔧 修复: 添加下行传输能耗和延迟 (Downlink Transmission)
+            if vehicle:
+                # 结果大小假设为输入的 5%
+                result_size = task.get('data_size_bytes', 1e6) * 0.05
+                if result_size > 0:
+                    v_pos = vehicle.get('position', (0,0))
+                    n_pos = node.get('position', (0,0))
+                    distance = self.calculate_distance(v_pos, n_pos)
+                    
+                    down_delay, down_energy = self._estimate_transmission(result_size, distance, node_type.lower())
+                    
+                    self.stats['energy_downlink'] = self.stats.get('energy_downlink', 0.0) + down_energy
+                    node['energy_consumed'] = node.get('energy_consumed', 0.0) + down_energy
+                    
+                    # 下行延迟计入总延迟
+                    actual_delay += down_delay
+                    self._accumulate_delay('delay_downlink', down_delay)
 
             # 🔥 深度修复：正确的CMOS能耗模型
             # E_total = (P_dynamic + P_static) × t_processing

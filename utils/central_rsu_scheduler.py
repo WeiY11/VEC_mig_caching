@@ -281,7 +281,7 @@ class CentralRSUScheduler:
             
             if load_factor > overload_threshold:
                 overloaded_rsus.append((rsu_id, load_info, load_factor))
-            elif load_factor < 0.3:  # 空闲阈值
+            elif load_factor < 0.25:  # 空闲阈值 - 🔧 修复：降低到0.25
                 underloaded_rsus.append((rsu_id, load_info, load_factor))
         
         # ⚖️ 执行负载均衡迁移
@@ -305,8 +305,8 @@ class CentralRSUScheduler:
                     best_target = max(target_candidates, key=lambda x: x[2])
                     target_rsu_id, target_load, _ = best_target
                     
-                    # 计算迁移任务数量
-                    migrate_count = max(1, int(source_load.queue_length * 0.3))
+                    # 计算迁移任务数量 - 🔧 修复：降低迁移比例从30%到15%
+                    migrate_count = max(1, int(source_load.queue_length * 0.15))
                     
                     # 🔌 计算有线传输成本
                     migration_data_size = migrate_count * 2.0  # MB per task
@@ -325,13 +325,13 @@ class CentralRSUScheduler:
                         wired_energy = 0.5   # 0.5J
                         total_cost = 1.0
                     
-                    # 🎯 评估迁移收益 (考虑有线传输成本)
-                    load_benefit = source_factor - target_load.cpu_usage  # 负载均衡收益
-                    transmission_cost = total_cost * 0.05  # 🔧 降低传输成本权重从0.1到0.05
+                    # 🎯 评估迁移收益 - 🔧 修复：提高收益阈值，减少无效迁移
+                    load_benefit = source_factor - target_load.cpu_usage
+                    transmission_cost = total_cost * 0.08
                     net_benefit = load_benefit - transmission_cost
                     
-                    # 🔧 降低收益阈值，更容易触发迁移
-                    if net_benefit > 0.05:  # 从0.1降低到0.05
+                    # 🔧 提高收益阈值从0.05到0.15
+                    if net_benefit > 0.15:
                         # 生成迁移指令
                         migration_cmd = {
                             'type': 'task_migration',

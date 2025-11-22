@@ -769,6 +769,9 @@ class SingleAgentTrainingEnvironment:
             'rsu_offload_ratio': [],
             'uav_offload_ratio': [],
             'local_offload_ratio': [],
+            # 🚀 新增：迁移能耗指标
+            'rsu_migration_energy': [],
+            'uav_migration_energy': [],
         }
         
         # 性能追踪器
@@ -875,35 +878,58 @@ class SingleAgentTrainingEnvironment:
 
     def _reset_reward_baseline(self, stats: Optional[Dict[str, Any]] = None) -> None:
         """初始化/重置奖励增量基线。"""
+        def _safe_scalar(value: Any, default: float = 0.0) -> float:
+            try:
+                val = float(value)
+            except (TypeError, ValueError):
+                return default
+            return val if np.isfinite(val) else default
+
+        def _safe_int(value: Any, default: int = 0) -> int:
+            try:
+                val = float(value)
+            except (TypeError, ValueError):
+                return default
+            return int(val) if np.isfinite(val) else default
+
         base = stats or {}
         self._reward_baseline = {
-            'processed': int(base.get('processed_tasks', 0) or 0),
-            'dropped': int(base.get('dropped_tasks', 0) or 0),
-            'delay': float(base.get('total_delay', 0.0) or 0.0),
-            'energy': float(base.get('total_energy', 0.0) or 0.0),
-            'generated_bytes': float(base.get('generated_data_bytes', 0.0) or 0.0),
-            'dropped_bytes': float(base.get('dropped_data_bytes', 0.0) or 0.0),
+            'processed': _safe_int(base.get('processed_tasks', 0)),
+            'dropped': _safe_int(base.get('dropped_tasks', 0)),
+            'delay': _safe_scalar(base.get('total_delay', 0.0)),
+            'energy': _safe_scalar(base.get('total_energy', 0.0)),
+            'generated_bytes': _safe_scalar(base.get('generated_data_bytes', 0.0)),
+            'dropped_bytes': _safe_scalar(base.get('dropped_data_bytes', 0.0)),
         }
         self._reward_ema_delay = None
         self._reward_ema_energy = None
 
     def _build_reward_snapshot(self, stats: Dict[str, Any]) -> Dict[str, float]:
         """基于累计统计计算单步奖励所需的增量指标。"""
-        baseline = getattr(self, '_reward_baseline', None) or {
-            'processed': 0,
-            'dropped': 0,
-            'delay': 0.0,
-            'energy': 0.0,
-            'generated_bytes': 0.0,
-            'dropped_bytes': 0.0,
+        safe_scalar = lambda v, d=0.0: float(v) if isinstance(v, (int, float, np.floating, np.integer)) and np.isfinite(float(v)) else d  # type: ignore[arg-type]
+        def safe_int(v: Any, default: int = 0) -> int:
+            try:
+                val = float(v)
+            except (TypeError, ValueError):
+                return default
+            return int(val) if np.isfinite(val) else default
+
+        raw_baseline = getattr(self, '_reward_baseline', None) or {}
+        baseline = {
+            'processed': safe_int(raw_baseline.get('processed', 0)),
+            'dropped': safe_int(raw_baseline.get('dropped', 0)),
+            'delay': safe_scalar(raw_baseline.get('delay', 0.0)),
+            'energy': safe_scalar(raw_baseline.get('energy', 0.0)),
+            'generated_bytes': safe_scalar(raw_baseline.get('generated_bytes', 0.0)),
+            'dropped_bytes': safe_scalar(raw_baseline.get('dropped_bytes', 0.0)),
         }
 
-        total_processed = int(stats.get('processed_tasks', 0) or 0)
-        total_dropped = int(stats.get('dropped_tasks', 0) or 0)
-        total_delay = float(stats.get('total_delay', 0.0) or 0.0)
-        total_energy = float(stats.get('total_energy', 0.0) or 0.0)
-        total_generated = float(stats.get('generated_data_bytes', 0.0) or 0.0)
-        total_dropped_bytes = float(stats.get('dropped_data_bytes', 0.0) or 0.0)
+        total_processed = safe_int(stats.get('processed_tasks', 0))
+        total_dropped = safe_int(stats.get('dropped_tasks', 0))
+        total_delay = safe_scalar(stats.get('total_delay', 0.0))
+        total_energy = safe_scalar(stats.get('total_energy', 0.0))
+        total_generated = safe_scalar(stats.get('generated_data_bytes', 0.0))
+        total_dropped_bytes = safe_scalar(stats.get('dropped_data_bytes', 0.0))
 
         delta_processed = max(0, total_processed - baseline['processed'])
         delta_dropped = max(0, total_dropped - baseline['dropped'])
@@ -919,8 +945,10 @@ class SingleAgentTrainingEnvironment:
         completion_rate = normalize_ratio(delta_processed, completion_total, default=1.0)
         loss_ratio = normalize_ratio(delta_loss_bytes, delta_generated)
 
-        avg_delay_for_reward = avg_delay_increment if avg_delay_increment > 0 else float(stats.get('avg_task_delay', 0.0) or 0.0)
+        avg_delay_increment = safe_scalar(avg_delay_increment)
+        avg_delay_for_reward = avg_delay_increment if avg_delay_increment > 0 else safe_scalar(stats.get('avg_task_delay', 0.0))
         energy_per_task = delta_energy / max(1, delta_processed) if delta_processed > 0 else 0.0
+        energy_per_task = safe_scalar(energy_per_task)
         smoothed_delay, smoothed_energy_per_task = self._apply_reward_smoothing(
             avg_delay_for_reward,
             energy_per_task
@@ -929,7 +957,7 @@ class SingleAgentTrainingEnvironment:
 
         reward_snapshot = {
             'avg_task_delay': smoothed_delay,
-            'total_energy_consumption': smoothed_energy_total if smoothed_energy_total > 0 else float(stats.get('total_energy_consumption', 0.0) or 0.0),
+            'total_energy_consumption': smoothed_energy_total if smoothed_energy_total > 0 else safe_scalar(stats.get('total_energy_consumption', 0.0)),
             'dropped_tasks': delta_dropped,
             'task_completion_rate': completion_rate,
             'data_loss_bytes': delta_loss_bytes,
@@ -949,17 +977,23 @@ class SingleAgentTrainingEnvironment:
 
     def _apply_reward_smoothing(self, delay_value: float, energy_per_task: float) -> Tuple[float, float]:
         """对奖励关键指标进行指数平滑，减小TD3训练噪声。"""
+        delay_value = float(delay_value) if np.isfinite(delay_value) else 0.0
+        energy_per_task = float(energy_per_task) if np.isfinite(energy_per_task) else 0.0
         if self._reward_smoothing_alpha <= 0.0:
             return delay_value, energy_per_task
         alpha = self._reward_smoothing_alpha
-        if self._reward_ema_delay is None:
+        if self._reward_ema_delay is None or not np.isfinite(self._reward_ema_delay):
             self._reward_ema_delay = delay_value
         else:
             self._reward_ema_delay = (1.0 - alpha) * self._reward_ema_delay + alpha * delay_value
-        if self._reward_ema_energy is None:
+            if not np.isfinite(self._reward_ema_delay):
+                self._reward_ema_delay = delay_value
+        if self._reward_ema_energy is None or not np.isfinite(self._reward_ema_energy):
             self._reward_ema_energy = energy_per_task
         else:
             self._reward_ema_energy = (1.0 - alpha) * self._reward_ema_energy + alpha * energy_per_task
+            if not np.isfinite(self._reward_ema_energy):
+                self._reward_ema_energy = energy_per_task
         return self._reward_ema_delay, self._reward_ema_energy
 
     def _maybe_update_dynamic_energy_target(self, episode: int, episode_energy: float) -> None:
@@ -1167,6 +1201,8 @@ class SingleAgentTrainingEnvironment:
 
         reward_source = system_metrics.get('reward_snapshot', system_metrics)
         reward = self.agent_env.calculate_reward(reward_source, cache_metrics, migration_metrics)
+        if not np.isfinite(reward):
+            reward = 0.0
         try:
             system_metrics['normalized_reward'] = self._normalize_reward_value(reward)
         except Exception:
@@ -1189,6 +1225,10 @@ class SingleAgentTrainingEnvironment:
         self.episode_metrics['rsu_hotspot_peak_series'].append(hotspot_peak)
         self.episode_metrics['mm1_queue_error'].append(float(system_metrics.get('mm1_queue_error', 0.0)))
         self.episode_metrics['mm1_delay_error'].append(float(system_metrics.get('mm1_delay_error', 0.0)))
+        
+        # 🚀 新增：记录迁移能耗
+        self.episode_metrics['rsu_migration_energy'].append(float(system_metrics.get('rsu_migration_energy', 0.0)))
+        self.episode_metrics['uav_migration_energy'].append(float(system_metrics.get('uav_migration_energy', 0.0)))
         
         # 判断是否结束
         done = False  # 单智能体环境通常不会提前结束
@@ -1588,6 +1628,9 @@ class SingleAgentTrainingEnvironment:
             'rsu_utilization': rsu_utilization,  # RSU资源利用率
             'offload_ratio': remote_execution_ratio,  # 总远程卸载比例（RSU+UAV）
             'remote_execution_ratio': remote_execution_ratio,  # 别名，兼容旧代码
+            # 🚀 新增：迁移能耗指标
+            'rsu_migration_energy': _episode_energy('rsu_migration_energy'),
+            'uav_migration_energy': _episode_energy('uav_migration_energy'),
         }
 
     def _normalize_reward_value(self, reward: float) -> float:
@@ -1797,6 +1840,10 @@ class SingleAgentTrainingEnvironment:
             if done:
                 break
         
+        episode_reward = float(episode_reward)
+        if not np.isfinite(episode_reward):
+            episode_reward = 0.0
+
         # 记录轮次统计
         system_metrics = info.get('system_metrics', {})
         self._record_episode_metrics(system_metrics, episode_steps=step + 1)
@@ -2429,6 +2476,11 @@ def train_single_algorithm(algorithm: str, num_episodes: Optional[int] = None, e
         
         # 运行训练轮次
         episode_result = training_env.run_episode(episode)
+        avg_reward_safe = float(episode_result.get('avg_reward', 0.0) or 0.0)
+        if not np.isfinite(avg_reward_safe):
+            avg_reward_safe = 0.0
+        episode_result['avg_reward'] = avg_reward_safe
+        episode_result['episode_reward'] = float(episode_result.get('episode_reward', avg_reward_safe) or avg_reward_safe)
         
         # 🎯 记录本episode内所有的step统计
         step_stats_list = episode_result.get('step_stats_list', [])
@@ -2803,6 +2855,19 @@ def evaluate_single_model(algorithm: str, training_env: SingleAgentTrainingEnvir
         'completion_rate': avg_completion
     }
 
+ 
+def _finite_mean(values: List[float], default: float = 0.0) -> float:
+    """计算有限值的均值，过滤掉NaN/Inf。"""
+    finite_values: List[float] = []
+    for v in values:
+        try:
+            val = float(v)
+        except (TypeError, ValueError):
+            continue
+        if np.isfinite(val):
+            finite_values.append(val)
+    return float(np.mean(finite_values)) if finite_values else default
+
 
 def _calculate_stable_delay_average(training_env: SingleAgentTrainingEnvironment) -> float:
     """
@@ -2824,16 +2889,17 @@ def _calculate_stable_delay_average(training_env: SingleAgentTrainingEnvironment
             # 使用后50%的数据（更成熟的策略）
             half_point = len(delay_history) // 2
             converged_delays = delay_history[half_point:]
-            return float(np.mean(converged_delays))
+            return _finite_mean(converged_delays, training_env.performance_tracker['recent_delays'].get_average())
         elif len(delay_history) >= 50:
             # 如果不足100轮，使用后30轮
-            return float(np.mean(delay_history[-30:]))
+            return _finite_mean(delay_history[-30:], training_env.performance_tracker['recent_delays'].get_average())
         elif len(delay_history) > 0:
             # 数据很少，使用全部
-            return float(np.mean(delay_history))
+            return _finite_mean(delay_history, training_env.performance_tracker['recent_delays'].get_average())
     
     # 回退：使用MovingAverage
-    return training_env.performance_tracker['recent_delays'].get_average()
+    recent_delay = training_env.performance_tracker['recent_delays'].get_average()
+    return _finite_mean([recent_delay], 0.0)
 
 
 def _calculate_stable_completion_average(training_env: SingleAgentTrainingEnvironment) -> float:
@@ -2851,16 +2917,17 @@ def _calculate_stable_completion_average(training_env: SingleAgentTrainingEnviro
             # 使用后50%的数据
             half_point = len(completion_history) // 2
             converged_completions = completion_history[half_point:]
-            return float(np.mean(converged_completions))
+            return _finite_mean(converged_completions, training_env.performance_tracker['recent_completion'].get_average())
         elif len(completion_history) >= 50:
             # 如果不足100轮，使用后30轮
-            return float(np.mean(completion_history[-30:]))
+            return _finite_mean(completion_history[-30:], training_env.performance_tracker['recent_completion'].get_average())
         elif len(completion_history) > 0:
             # 数据很少，使用全部
-            return float(np.mean(completion_history))
+            return _finite_mean(completion_history, training_env.performance_tracker['recent_completion'].get_average())
     
     # 回退：使用MovingAverage
-    return training_env.performance_tracker['recent_completion'].get_average()
+    recent_completion = training_env.performance_tracker['recent_completion'].get_average()
+    return _finite_mean([recent_completion], 0.0)
 
 
 def _calculate_raw_cost_for_training(training_env: SingleAgentTrainingEnvironment) -> float:
@@ -2875,18 +2942,28 @@ def _calculate_raw_cost_for_training(training_env: SingleAgentTrainingEnvironmen
     """
     # 获取收敛后的平均奖励
     if hasattr(training_env, 'episode_rewards') and len(training_env.episode_rewards) > 0:
-        rewards = training_env.episode_rewards
+        rewards = []
+        for r in training_env.episode_rewards:
+            try:
+                val = float(r)
+            except (TypeError, ValueError):
+                continue
+            if np.isfinite(val):
+                rewards.append(val)
+        if not rewards:
+            rewards = [training_env.performance_tracker['recent_rewards'].get_average()]
         if len(rewards) >= 100:
             # 使用后50%数据（收敛后）
             half_point = len(rewards) // 2
             converged_rewards = rewards[half_point:]
-            avg_reward = float(np.mean(converged_rewards))
+            avg_reward = _finite_mean(converged_rewards, 0.0)
         elif len(rewards) >= 50:
-            avg_reward = float(np.mean(rewards[-30:]))
+            avg_reward = _finite_mean(rewards[-30:], 0.0)
         else:
-            avg_reward = float(np.mean(rewards))
+            avg_reward = _finite_mean(rewards, 0.0)
     else:
-        avg_reward = training_env.performance_tracker['recent_rewards'].get_average()
+        recent_avg = training_env.performance_tracker['recent_rewards'].get_average()
+        avg_reward = _finite_mean([recent_avg], 0.0)
     
     # reward是负成本，所以raw_cost = -reward
     raw_cost = -avg_reward
@@ -2901,7 +2978,9 @@ def save_single_training_results(algorithm: str, training_env: SingleAgentTraini
     timestamp = generate_timestamp()
     
     # 🔧 同时提供Episode总奖励和Per-Step平均奖励
-    recent_episode_reward = training_env.performance_tracker['recent_rewards'].get_average()
+    reward_samples = list(training_env.episode_rewards[-100:]) if hasattr(training_env, 'episode_rewards') else []
+    reward_samples.append(training_env.performance_tracker['recent_rewards'].get_average())
+    recent_episode_reward = _finite_mean(reward_samples, 0.0)
     
     # 🔧 优化：使用实际平均步数计算 avg_step_reward
     if 'episode_steps' in training_env.episode_metrics and training_env.episode_metrics['episode_steps']:
@@ -2912,7 +2991,7 @@ def save_single_training_results(algorithm: str, training_env: SingleAgentTraini
         # 回退到配置的默认值
         avg_steps_per_episode = config.experiment.max_steps_per_episode
     
-    avg_step_reward = recent_episode_reward / avg_steps_per_episode
+    avg_step_reward = recent_episode_reward / avg_steps_per_episode if avg_steps_per_episode else 0.0
     
     # 获取网络拓扑信息
     num_vehicles = len(training_env.simulator.vehicles)
@@ -3002,7 +3081,11 @@ def save_single_training_results(algorithm: str, training_env: SingleAgentTraini
             'avg_completion': _calculate_stable_completion_average(training_env),
             
             # 🎯 新增：添加avg_energy和raw_cost，用于与对比实验一致
-            'avg_energy': float(np.mean(training_env.episode_metrics['total_energy'][len(training_env.episode_metrics['total_energy'])//2:])) if training_env.episode_metrics.get('total_energy') else 0.0,
+            'avg_energy': _finite_mean(
+                training_env.episode_metrics['total_energy'][len(training_env.episode_metrics['total_energy'])//2:]
+                if training_env.episode_metrics.get('total_energy') else [],
+                0.0
+            ),
             'raw_cost': _calculate_raw_cost_for_training(training_env),
         }
     }

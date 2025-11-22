@@ -20,12 +20,12 @@ class AdaptiveCacheController:
     def __init__(self, cache_capacity: float = 100.0):
         self.cache_capacity = cache_capacity
 
-        # 🔧 优化：调整智能体可控制的缓存参数为更合理的初始值
+        # 🔧 修复：降低缓存阈值，提高命中率
         self.agent_params = {
-            'heat_threshold_high': 0.7,      # 高热度阈值：70% [0.5-0.9]
-            'heat_threshold_medium': 0.35,   # 中热度阈值：35% [0.2-0.6]
-            'prefetch_ratio': 0.05,          # 预取比例：5% [0.02-0.15]
-            'collaboration_weight': 0.3      # 协作权重：30% [0.0-0.8]
+            'heat_threshold_high': 0.5,      # 降低高热度阈值：50% [从0.7降到0.5]
+            'heat_threshold_medium': 0.25,   # 降低中热度阈值：25% [从0.35降到0.25]
+            'prefetch_ratio': 0.08,          # 降低预取比例：8% [从0.05降到0.08，更积极缓存]
+            'collaboration_weight': 0.5      # 增加协作权重：50% [从0.3增到0.5]
         }
 
         # 🔧 优化：调整参数有效范围，更适合实际缓存场景
@@ -113,8 +113,8 @@ class AdaptiveCacheController:
         recent_accesses = [t for t in self.access_history[content_id] 
                           if current_time - t < 600]  # 10分钟内的访问，适应仿真时间
 
-        # 频率热度：使用平方根避免极端值dominance
-        frequency_heat = min(1.0, np.sqrt(len(recent_accesses) / 8.0))  # 8次访问达到满热度
+        # 频率热度：使用平方根避免极端值
+        frequency_heat = min(1.0, np.sqrt(len(recent_accesses) / 5.0))  # 🔧 从8次降到5次，更容易达到满热度
 
         # 最近性热度：指数衰减更平滑
         if self.access_history[content_id]:
@@ -213,7 +213,9 @@ class AdaptiveCacheController:
             reason += f">{medium_threshold:.2f})"
             return True, reason, eviction_candidates
 
-        if adjusted_heat > 0.1:
+        # 🔧 修复：更积极的缓存策略，降低阈值
+        # 对于热度>0.05的内容，就可能被缓存
+        if adjusted_heat > 0.05:
             collaboration_weight = self.agent_params['collaboration_weight']
             cache_probability = adjusted_heat * collaboration_weight * max(0.0, 1.2 - utilization)
             if np.random.random() < cache_probability:

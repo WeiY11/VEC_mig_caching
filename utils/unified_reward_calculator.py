@@ -192,7 +192,10 @@ class UnifiedRewardCalculator:
         if value is None:
             return default
         try:
-            return float(value)
+            val = float(value)
+            if not np.isfinite(val):
+                return default
+            return val
         except (TypeError, ValueError):
             return default
 
@@ -211,8 +214,10 @@ class UnifiedRewardCalculator:
         if value is None:
             return default
         try:
+            if isinstance(value, float) and not np.isfinite(value):
+                return default
             return int(value)
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, OverflowError):
             return default
 
     @staticmethod
@@ -376,7 +381,7 @@ class UnifiedRewardCalculator:
             reward_raw = -components.total_cost
             reward_clipped = float(np.clip(reward_raw, -20.0, 0.0))
         components.reward_pre_clip = reward_raw
-        components.reward = reward_clipped
+        components.reward = reward_clipped if np.isfinite(reward_clipped) else 0.0
         return components
 
     def calculate_reward(
@@ -389,7 +394,7 @@ class UnifiedRewardCalculator:
         metrics = self._extract_metrics(system_metrics, cache_metrics, migration_metrics)
         components = self._compute_components(metrics)
         components = self._compose_reward(components, metrics.completion_rate)
-        return components.reward
+        return components.reward if np.isfinite(components.reward) else 0.0
 
     def update_targets(
         self,
