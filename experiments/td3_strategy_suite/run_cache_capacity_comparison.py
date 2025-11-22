@@ -43,11 +43,12 @@ from experiments.td3_strategy_suite.suite_cli import (
     resolve_strategy_keys,
     suite_path as build_suite_path,
     get_default_scenario_overrides,
-,
     validate_td3_episodes,
 )
 
-DEFAULT_EPISODES = 500
+DEFAULT_EPISODES = 1500  # TD3 收敛推荐轮次
+DEFAULT_EPISODES_FAST = 500  # 快速验证模式
+DEFAULT_EPISODES_HEURISTIC = 300  # 启发式策略收敛所需轮次
 DEFAULT_SEED = 42
 DEFAULT_CACHE_LEVELS_MB = [256, 512, 768, 1024, 1536]  # MB (极小/小/中/大/极大)
 
@@ -135,17 +136,31 @@ def main() -> None:
     )
 
     args = parser.parse_args()
+    # 快速模式可降低轮次/配置，用于调试
+    if args.fast_mode:
+        print("\n" + "=" * 80)
+        print("🚀 快速验证模式已启用：")
+        print(f"  训练轮次: {DEFAULT_EPISODES} -> {DEFAULT_EPISODES_FAST}")
+        print(f"  配置点  : {len(DEFAULT_CACHE_LEVELS_MB)} -> 3 (min/median/max)")
+        print("=" * 80 + "\n")
+        default_episodes_to_use = DEFAULT_EPISODES_FAST
+    else:
+        default_episodes_to_use = DEFAULT_EPISODES
+
     common = resolve_common_args(
         args,
         default_suite_prefix="cache_capacity",
         default_output_root="results/parameter_sensitivity",
-        default_episodes=DEFAULT_EPISODES,
+        default_episodes=default_episodes_to_use,
         default_seed=DEFAULT_SEED,
         allow_strategies=True,
     )
     strategy_keys = resolve_strategy_keys(common.strategies)
 
     cache_levels = parse_cache_levels(args.cache_levels)
+    if args.fast_mode and cache_levels == DEFAULT_CACHE_LEVELS_MB:
+        midpoint = cache_levels[len(cache_levels) // 2]
+        cache_levels = [cache_levels[0], midpoint, cache_levels[-1]]
     configs: List[Dict[str, object]] = []
     for capacity_mb in cache_levels:
         overrides = get_default_scenario_overrides(
@@ -162,6 +177,21 @@ def main() -> None:
 
     # 🎯 验证TD3训练轮次
     validate_td3_episodes(common.episodes, strategy_keys)
+
+    # 🎯 启发式策略缩短轮次（保持公平同时节省时间）
+    heuristic_strategies = {"local-only", "remote-only", "offloading-only", "resource-only", "random", "round-robin"}
+    strategy_episode_overrides: Dict[str, int] = {}
+    if common.optimize_heuristic:
+        for key in strategy_keys:
+            if key in heuristic_strategies:
+                strategy_episode_overrides[key] = DEFAULT_EPISODES_HEURISTIC
+        if strategy_episode_overrides:
+            print("\n🎯 启发式策略优化已启用：")
+            print(f"  - 启发式策略轮次: {DEFAULT_EPISODES_HEURISTIC}")
+            print(f"  - TD3 策略轮次 : {common.episodes}")
+
+    total_runs = len(configs) * len(strategy_keys)
+    print(f"\n即将运行 {len(configs)} 个配置 × {len(strategy_keys)} 策略 = {total_runs} 次训练")
     
     suite_dir = build_suite_path(common)
     results = evaluate_configs(
@@ -172,6 +202,8 @@ def main() -> None:
         suite_path=suite_dir,
         strategies=strategy_keys,
         per_strategy_hook=cache_metrics_hook,
+        central_resource=common.central_resource,
+        strategy_episode_overrides=strategy_episode_overrides or None,
     )
 
     summary = {
@@ -209,4 +241,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

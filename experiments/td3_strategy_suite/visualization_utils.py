@@ -1,4 +1,4 @@
-﻿﻿#!/usr/bin/env python3
+﻿#!/usr/bin/env python3
 """
 TD3策略对比实验 - 通用可视化工具
 ======================================
@@ -290,4 +290,3 @@ def print_chart_summary(
             elif "multiline" in chart:
                 desc = " (多指标综合对比)"
             print(f"  - {suite_dir / chart}{desc}")
-

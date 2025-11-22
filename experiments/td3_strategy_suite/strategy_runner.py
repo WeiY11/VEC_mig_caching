@@ -288,7 +288,7 @@ def _run_strategy_suite_internal(
             "avg_energy": avg_energy,
             "completion_rate": completion_rate,
             "raw_cost": raw_cost,
-            "episodes": episodes,
+            "episodes": episodes_for_strategy,
             "seed": seed,
             "from_cache": False,
         }

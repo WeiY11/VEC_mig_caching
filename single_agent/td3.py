@@ -189,6 +189,7 @@ class GraphFeatureExtractor(nn.Module):
         node_feature_dim: int = 5,
         global_feature_dim: int = 8,
         embed_dim: int = 128,
+        central_dim: int = 0,
     ):
         super().__init__()
         self.num_vehicles = num_vehicles
@@ -197,6 +198,7 @@ class GraphFeatureExtractor(nn.Module):
         self.node_feature_dim = node_feature_dim
         self.global_feature_dim = global_feature_dim
         self.embed_dim = embed_dim
+        self.central_dim = max(int(central_dim), 0)
 
         self.node_encoder = nn.Sequential(
             nn.Linear(node_feature_dim, embed_dim),
@@ -222,14 +224,26 @@ class GraphFeatureExtractor(nn.Module):
             nn.ReLU(),
             nn.Linear(embed_dim, 1),
         )
+        self.central_encoder = (
+            nn.Sequential(
+                nn.Linear(self.central_dim, embed_dim),
+                nn.ReLU(),
+                nn.Linear(embed_dim, embed_dim),
+                nn.ReLU(),
+            )
+            if self.central_dim > 0
+            else None
+        )
         self.tradeoff_head = nn.Sequential(
             nn.Linear(embed_dim * 2, embed_dim),
             nn.ReLU(),
             nn.Linear(embed_dim, 2),
         )
 
-        # 群组嵌入(3) + 全局attention(1) + 距离/缓存上下文(2) + 权衡上下文(1) + 全局特征
+        # 群组嵌入(3) + 全局attention(1) + 距离/缓存上下文(2) + 权衡上下文(1) + （可选）中央特征 + 全局特征
         self.output_dim = embed_dim * 7 + global_feature_dim
+        if self.central_encoder is not None:
+            self.output_dim += embed_dim
 
         self._last_outputs: Dict[str, Optional[torch.Tensor]] = {}
 
@@ -241,6 +255,13 @@ class GraphFeatureExtractor(nn.Module):
             raise ValueError("状态向量长度不足以拆解节点特征")
 
         dynamic_segment = state[:, :dynamic_len]
+        central_segment = None
+        if self.central_dim > 0:
+            central_start = dynamic_len
+            central_end = central_start + self.central_dim
+            if central_end > state.size(1):
+                raise ValueError("状态向量长度不足以拆解中央资源特征")
+            central_segment = state[:, central_start:central_end]
         global_segment = state[:, -self.global_feature_dim :]
 
         offset = 0
@@ -336,19 +357,26 @@ class GraphFeatureExtractor(nn.Module):
             + tradeoff_weights[:, 1:] * cache_context
         )
 
-        fused = torch.cat(
-            [
-                vehicle_embed,
-                rsu_embed,
-                uav_embed,
-                attention_embed,
-                distance_context,
-                cache_context,
-                tradeoff_embed,
-                global_segment,
-            ],
-            dim=1,
+        central_context = (
+            self.central_encoder(central_segment)
+            if self.central_encoder is not None and central_segment is not None
+            else None
         )
+
+        fused_parts = [
+            vehicle_embed,
+            rsu_embed,
+            uav_embed,
+            attention_embed,
+            distance_context,
+            cache_context,
+            tradeoff_embed,
+        ]
+        if central_context is not None:
+            fused_parts.append(central_context)
+        fused_parts.append(global_segment)
+
+        fused = torch.cat(fused_parts, dim=1)
 
         self._last_outputs = {
             "vehicle_embed": vehicle_embed,
@@ -363,6 +391,8 @@ class GraphFeatureExtractor(nn.Module):
             "cache_weights": cache_weights,
             "global_segment": global_segment,
         }
+        if central_context is not None:
+            self._last_outputs["central_context"] = central_context
 
         return fused
 
@@ -385,6 +415,7 @@ class TD3Actor(nn.Module):
         num_uavs: int,
         global_dim: int = 8,
         graph_embed_dim: int = 128,
+        central_dim: int = 0,
         max_action: float = 1.0,
     ):
         super().__init__()
@@ -394,6 +425,7 @@ class TD3Actor(nn.Module):
         self.num_vehicles = num_vehicles
         self.num_rsus = num_rsus
         self.num_uavs = num_uavs
+        self.central_dim = max(int(central_dim), 0)
 
         self.encoder = GraphFeatureExtractor(
             num_vehicles=num_vehicles,
@@ -402,6 +434,7 @@ class TD3Actor(nn.Module):
             node_feature_dim=5,
             global_feature_dim=global_dim,
             embed_dim=graph_embed_dim,
+            central_dim=self.central_dim,
         )
         
         # CAMTD3: 添加特征注意力层
@@ -757,7 +790,8 @@ class TD3Agent:
                  num_uavs: Optional[int] = None,
                  global_dim: int = 8,
                  actor_cls: Optional[Any] = None,
-                 actor_kwargs: Optional[Dict[str, Any]] = None):
+                 actor_kwargs: Optional[Dict[str, Any]] = None,
+                 central_state_dim: Optional[int] = None):
         self.state_dim = state_dim
         self.action_dim = action_dim
         self.config = config
@@ -771,6 +805,7 @@ class TD3Agent:
         self.num_rsus = num_rsus
         self.num_uavs = num_uavs
         self.global_dim = global_dim
+        self.central_state_dim = int(central_state_dim or 0)
         
         # 性能优化 - 使用优化的批次大小
         self.optimized_batch_size = OPTIMIZED_BATCH_SIZES.get('TD3', config.batch_size)
@@ -804,6 +839,7 @@ class TD3Agent:
             "num_uavs": num_uavs,
             "global_dim": global_dim,
             "graph_embed_dim": config.graph_embed_dim,
+            "central_dim": max(self.central_state_dim, 0),
         }
         if actor_kwargs:
             base_actor_kwargs.update(actor_kwargs)
@@ -1312,7 +1348,8 @@ class TD3Environment:
             num_vehicles=self.num_vehicles,
             num_rsus=self.num_rsus,
             num_uavs=self.num_uavs,
-            global_dim=self.global_state_dim
+            global_dim=self.global_state_dim,
+            central_state_dim=self.central_state_dim,
         )
         
         # 训练统计
@@ -1350,7 +1387,8 @@ class TD3Environment:
         🔧 优化版状态向量构建
         状态组成: 车辆(N×5) + RSU(M×5) + UAV(K×5) + 全局(8) 维
         """
-        state_components = []
+        state_components: list[float] = []
+        segments: list[np.ndarray] = []
         
         # ========== 1. 局部节点状态 ==========
         
@@ -1384,23 +1422,34 @@ class TD3Environment:
             else:
                 state_components.extend([0.5, 0.5, 0.5, 0.0, 0.0])
         
+        # 动态节点特征
+        segments.append(np.array(state_components, dtype=np.float32))
+
+        # ========== 1.5 中央资源状态 (位于全局状态之前，保持尾部为全局块) ==========
+        if self.use_central_resource:
+            central_state = self._build_central_resource_state(resource_state)
+            central_state = np.nan_to_num(central_state, nan=0.0, posinf=1.0, neginf=0.0)
+            central_state = np.clip(central_state, 0.0, 1.0)
+            segments.append(central_state.astype(np.float32, copy=False))
+
         # ========== 2. 全局系统状态 (基础8维 + 任务类型8维) ==========
         global_state = self._build_global_state(node_states, system_metrics)
-        state_components.extend(global_state)
+        segments.append(global_state.astype(np.float32, copy=False))
         
         # ========== 3. 最终处理 ==========
-        state_vector = np.array(state_components[:self.state_dim], dtype=np.float32)
-        
-        # 维度不足时补齐
-        if len(state_vector) < self.state_dim:
-            padding_needed = self.state_dim - len(state_vector)
+        if segments:
+            state_vector = np.concatenate(segments, axis=0).astype(np.float32, copy=False)
+        else:
+            state_vector = np.zeros(self.state_dim, dtype=np.float32)
+
+        # 维度对齐：不足补齐，过长截断（保持末尾为全局特征）
+        if state_vector.size < self.state_dim:
+            padding_needed = self.state_dim - state_vector.size
             state_vector = np.pad(
                 state_vector, (0, padding_needed), mode='constant', constant_values=0.5
             )
-        
-        if self.use_central_resource:
-            central_state = self._build_central_resource_state(resource_state)
-            state_vector[-self.central_state_dim :] = central_state
+        elif state_vector.size > self.state_dim:
+            state_vector = state_vector[: self.state_dim]
         
         # 数值安全检查
         state_vector = np.nan_to_num(state_vector, nan=0.5, posinf=1.0, neginf=0.0)

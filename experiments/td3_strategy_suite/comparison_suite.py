@@ -11,7 +11,7 @@ from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence, Tupl
 
 import numpy as np
 
-from experiments.td3_strategy_suite.strategy_runner import compute_cost
+from experiments.td3_strategy_suite.strategy_runner import compute_cost, tail_mean
 
 # 配置日志记录器
 logger = logging.getLogger(__name__)
@@ -201,27 +201,28 @@ class ComparisonSuite:
 
         return self._summarise_training(result, mode.name)
 
-    def _summarise_training(self, result: Dict[str, Any], mode_name: str) -> Dict[str, Any]:
+    def _summarise_training(self, result: dict[str, Any], mode_name: str) -> dict[str, Any]:
         episode_metrics = result.get("episode_metrics") or {}
-
-        def tail_mean(values: Iterable[float]) -> float:
-            values = list(values or [])
-            if not values:
-                return 0.0
-            tail = values[len(values) // 2 :]
-            return float(np.mean(tail)) if tail else float(np.mean(values))
 
         avg_delay = tail_mean(episode_metrics.get("avg_delay", []))
         avg_energy = tail_mean(episode_metrics.get("total_energy", []))
         completion_rate = tail_mean(episode_metrics.get("task_completion_rate", []))
         cache_hit_rate = tail_mean(episode_metrics.get("cache_hit_rate", []))
+        episode_rewards = result.get("episode_rewards") or []
+        avg_reward = tail_mean(episode_rewards) if episode_rewards else None
 
-        avg_cost = compute_cost(avg_delay, avg_energy)
+        avg_cost = compute_cost(
+            avg_delay=avg_delay,
+            avg_energy=avg_energy,
+            avg_reward=avg_reward,
+            completion_rate=completion_rate,
+        )
+        cost_source = "(-reward)" if avg_reward is not None else "(delay+energy)"
 
         print(
-            f"    ✅ {mode_name} 完成 - 成本:{avg_cost:.3f} "
-            f"(时延 {avg_delay:.3f}s, 能耗 {avg_energy:.1f}J) "
-            f"完成率 {completion_rate * 100:.1f}%"
+            f"    -> {mode_name} ?? | Cost={avg_cost:.3f} {cost_source} "
+            f"Delay={avg_delay:.3f}s, ??{avg_energy:.1f}J, "
+            f"???{completion_rate * 100:.1f}%"
         )
 
         return {
@@ -229,7 +230,9 @@ class ComparisonSuite:
             "avg_delay": avg_delay,
             "avg_energy": avg_energy,
             "avg_cost": avg_cost,
+            "raw_cost": avg_cost,
             "completion_rate": completion_rate,
             "cache_hit_rate": cache_hit_rate,
+            "avg_reward": avg_reward,
             "final_reward": result.get("final_episode_reward", 0.0),
         }

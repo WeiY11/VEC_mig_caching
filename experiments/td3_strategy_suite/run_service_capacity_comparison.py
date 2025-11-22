@@ -44,7 +44,6 @@ from experiments.td3_strategy_suite.suite_cli import (
     resolve_strategy_keys,
     suite_path as build_suite_path,
     get_default_scenario_overrides,
-,
     validate_td3_episodes,
 )
 
@@ -226,4 +225,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-
