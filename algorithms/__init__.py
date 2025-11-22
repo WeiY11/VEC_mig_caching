@@ -5,6 +5,9 @@
 # MATD3算法
 from .matd3 import MATD3Agent, MATD3Environment, Actor, Critic, ReplayBuffer
 
+# CAMTD3算法 (创新优化)
+from .camtd3 import CAMTD3Agent, CAMActor, CAMCritic
+
 # MADDPG算法
 from .maddpg import MADDPGEnvironment, MADDPGAgent, MADDPGActor, MADDPGCritic, MADDPGReplayBuffer
 
@@ -20,6 +23,9 @@ from .sac_ma import SACMAEnvironment, SACMAAgent, SACActor, SACCritic, SACMARepl
 __all__ = [
     # MATD3
     'MATD3Agent', 'MATD3Environment', 'Actor', 'Critic', 'ReplayBuffer',
+    
+    # CAMTD3
+    'CAMTD3Agent', 'CAMActor', 'CAMCritic',
     
     # MADDPG
     'MADDPGEnvironment', 'MADDPGAgent', 'MADDPGActor', 'MADDPGCritic', 'MADDPGReplayBuffer',

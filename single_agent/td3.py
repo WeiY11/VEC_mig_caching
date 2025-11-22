@@ -31,6 +31,26 @@ from dataclasses import dataclass
 from config import config
 from .common_state_action import UnifiedStateActionSpace
 
+class FeatureAttention(nn.Module):
+    """
+    特征注意力模块 (Feature Attention Module)
+    用于动态加权状态特征的重要性 - CAMTD3核心创新
+    """
+    def __init__(self, input_dim: int, reduction_ratio: int = 4):
+        super(FeatureAttention, self).__init__()
+        self.fc1 = nn.Linear(input_dim, input_dim // reduction_ratio)
+        self.fc2 = nn.Linear(input_dim // reduction_ratio, input_dim)
+        self.sigmoid = nn.Sigmoid()
+        
+    def forward(self, x):
+        # Squeeze-and-Excitation style attention
+        # x: [batch_size, input_dim]
+        attention = F.relu(self.fc1(x))
+        attention = self.fc2(attention)
+        attention = self.sigmoid(attention)
+        return x * attention
+
+
 
 @dataclass
 class TD3Config:
@@ -383,6 +403,9 @@ class TD3Actor(nn.Module):
             global_feature_dim=global_dim,
             embed_dim=graph_embed_dim,
         )
+        
+        # CAMTD3: 添加特征注意力层
+        self.attention = FeatureAttention(self.encoder.output_dim)
 
         fused_dim = self.encoder.output_dim
         self.shared = nn.Sequential(
@@ -433,6 +456,10 @@ class TD3Actor(nn.Module):
 
     def forward(self, state: torch.Tensor) -> torch.Tensor:
         fused = self.encoder(state)
+        
+        # CAMTD3: 应用特征注意力
+        fused = self.attention(fused)
+        
         encoder_ctx = self.encoder.get_last_outputs()
         shared_feat = self.shared(fused)
 
@@ -566,6 +593,9 @@ class TD3Critic(nn.Module):
     def __init__(self, state_dim: int, action_dim: int, hidden_dim: int = 256):
         super(TD3Critic, self).__init__()
         
+        # CAMTD3: 特征注意力层 (仅对状态应用)
+        self.state_attention = FeatureAttention(state_dim)
+        
         # Q1网络
         self.q1_network = nn.Sequential(
             nn.Linear(state_dim + action_dim, hidden_dim),
@@ -600,7 +630,10 @@ class TD3Critic(nn.Module):
     
     def forward(self, state: torch.Tensor, action: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         """前向传播 - 返回两个Q值"""
-        sa = torch.cat([state, action], dim=1)
+        # CAMTD3: 对状态应用注意力
+        state_weighted = self.state_attention(state)
+        sa = torch.cat([state_weighted, action], dim=1)
+        
         
         q1 = self.q1_network(sa)
         q2 = self.q2_network(sa)
@@ -609,7 +642,9 @@ class TD3Critic(nn.Module):
     
     def q1(self, state: torch.Tensor, action: torch.Tensor) -> torch.Tensor:
         """只返回Q1值 (用于策略更新)"""
-        sa = torch.cat([state, action], dim=1)
+        # CAMTD3: 对状态应用注意力
+        state_weighted = self.state_attention(state)
+        sa = torch.cat([state_weighted, action], dim=1)
         return self.q1_network(sa)
 
 

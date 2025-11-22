@@ -1012,8 +1012,92 @@ class CompleteSystemSimulator:
             self.stats['central_scheduler_calls'] = self.stats.get('central_scheduler_calls', 0) + 1
             self.stats['central_scheduler_last_decisions'] = len(decisions)
             self.stats['central_scheduler_migrations'] = self.stats.get('central_scheduler_migrations', 0) + len(migrations)
+            
+            # 🚀 创新: 轨迹感知预迁移 (Trajectory-Aware Pre-Migration)
+            mobility_migrations = self._check_mobility_migration()
+            self.stats['mobility_migrations'] = self.stats.get('mobility_migrations', 0) + mobility_migrations
+            
         except Exception as exc:
             logging.debug("Central scheduler update failed: %s", exc)
+
+    def _check_mobility_migration(self) -> int:
+        """
+        🚀 创新: 轨迹感知预迁移机制
+        检测车辆是否即将离开当前RSU覆盖范围，如果是，则提前将任务迁移到下一个RSU。
+        """
+        migration_count = 0
+        if not self.rsus:
+            return 0
+            
+        for vehicle in self.vehicles:
+            # 1. 确定当前连接的RSU
+            v_pos = vehicle.get('position')
+            if v_pos is None:
+                continue
+            
+            current_rsu = None
+            min_dist = float('inf')
+            
+            # 找到最近的RSU
+            for rsu in self.rsus:
+                dist = self.calculate_distance(v_pos, rsu['position'])
+                if dist < min_dist:
+                    min_dist = dist
+                    current_rsu = rsu
+            
+            if not current_rsu or min_dist > current_rsu['coverage_radius']:
+                continue
+                
+            # 2. 检查是否在边缘区域 (覆盖半径的90%)
+            if min_dist > current_rsu['coverage_radius'] * 0.9:
+                # 车辆即将离开，触发预迁移
+                
+                # 3. 预测下一个RSU (基于移动方向)
+                direction = vehicle.get('direction', 0.0)
+                next_rsu = None
+                best_forward_dist = float('inf')
+                
+                for rsu in self.rsus:
+                    if rsu['id'] == current_rsu['id']:
+                        continue
+                        
+                    # 检查是否在前方
+                    dx = rsu['position'][0] - v_pos[0]
+                    # 如果向东(direction ~ 0)，dx应为正；向西(direction ~ pi)，dx应为负
+                    is_forward = (abs(direction) < 1.0 and dx > 0) or (abs(direction) > 2.0 and dx < 0)
+                    
+                    if is_forward:
+                        dist = self.calculate_distance(v_pos, rsu['position'])
+                        if dist < best_forward_dist:
+                            best_forward_dist = dist
+                            next_rsu = rsu
+                
+                if next_rsu:
+                    # 4. 执行迁移：将该车辆在当前RSU队列中的任务移动到下一个RSU
+                    queue = current_rsu.get('computation_queue', [])
+                    tasks_to_move = []
+                    
+                    remaining_queue = []
+                    for task in queue:
+                        # 检查任务归属
+                        tid = task.get('vehicle_id') or task.get('source_vehicle_id')
+                        if tid == vehicle['id']:
+                            tasks_to_move.append(task)
+                        else:
+                            remaining_queue.append(task)
+                    
+                    if tasks_to_move:
+                        # 更新队列
+                        current_rsu['computation_queue'] = remaining_queue
+                        next_rsu.setdefault('computation_queue', []).extend(tasks_to_move)
+                        
+                        migration_count += len(tasks_to_move)
+                        # 记录迁移开销 (简化)
+                        self._accumulate_delay('migration_delay', 0.02 * len(tasks_to_move)) # 20ms per task
+                else:
+                    pass
+                        
+        return migration_count
 
     def _accumulate_delay(self, bucket: str, value: float) -> None:
         """Ensure分项延迟与总延迟同步。"""
@@ -1120,8 +1204,11 @@ class CompleteSystemSimulator:
                                       cache_controller: Optional[Any]) -> bool:
         """尝试直接使用车载缓存提供内容。"""
         content_id = task.get('content_id')
-        if not content_id:
+        
+        # 🔧 优化5: 不可缓存任务直接跳过缓存检查
+        if not content_id or not task.get('is_cacheable', False):
             return False
+            
         cache = vehicle.get('device_cache') or {}
         cached_entry = cache.get(content_id)
         if cached_entry is None:
@@ -1455,40 +1542,62 @@ class CompleteSystemSimulator:
         task_cfg = getattr(self.sys_config, 'task', None) if self.sys_config is not None else None
         time_slot = getattr(self.sys_config.network, 'time_slot_duration', self.time_slot) if self.sys_config is not None else self.time_slot
 
-        # 默认场景参数
-        scenario_name = 'fallback'
-        relax_factor_applied = self.config.get('deadline_relax_fallback', 1.3)
-        initial_type = 3
-
-        if task_cfg is not None:
-            scenario = task_cfg.sample_scenario()
-            scenario_name = scenario.name
-            relax_factor_applied = scenario.relax_factor or task_cfg.deadline_relax_default
-
-            deadline_duration = np.random.uniform(scenario.min_deadline, scenario.max_deadline)
-            deadline_duration *= relax_factor_applied
-            max_delay_slots = max(1, int(deadline_duration / max(time_slot, 1e-6)))
-            initial_type = scenario.task_type or task_cfg.get_task_type(
-                max_delay_slots, time_slot=time_slot
-            )
-
-            profile = task_cfg.get_profile(initial_type)
-            data_min, data_max = profile.data_range
-            data_size_bytes = float(np.random.uniform(data_min, data_max))
-            compute_density = profile.compute_density
+        # 🔧 修复: 使用 RealisticContentGenerator 统一生成内容，确保高比例可缓存任务
+        from utils.realistic_content_generator import generate_realistic_content
+        
+        # 生成真实的 VEC 内容（包括 content_id, size, priority）
+        content_id, content_size_mb, content_priority = generate_realistic_content(vehicle_id, self.current_step)
+        
+        # 从 content_id 推断 VEC 场景类型（如 traffic_info, navigation 等）
+        # content_id 格式为 "{content_type}_{counter:04d}" (例如 "traffic_info_0012")
+        if '_' in content_id:
+            vec_content_type = content_id.split('_')[0] + '_' + content_id.split('_')[1]  # e.g., "traffic_info"
         else:
-            deadline_duration = np.random.uniform(0.5, 3.0) * relax_factor_applied
-            initial_type = int(np.random.randint(1, 5))
-            data_size_mb = np.random.exponential(0.5)
-            data_size_bytes = data_size_mb * 1e6
-            compute_density = self.config.get('task_compute_density', 400)
-            max_delay_slots = max(
-                1,
-                int(deadline_duration / max(self.config.get('time_slot', self.time_slot), 0.1)),
-            )
+            vec_content_type = 'general'
+        
+        # 映射 VEC 内容类型到仿真器场景名称（用于统计和日志）
+        # 这些都是可缓存的真实 VEC 场景
+        scenario_name = vec_content_type
+        
+        # 根据 VEC 内容类型设置计算和时延特性
+        vec_type_configs = {
+            'traffic_info': {'compute_density': 300, 'deadline_range': (0.2, 1.0), 'task_type': 4, 'cache_priority': 0.9},
+            'navigation': {'compute_density': 400, 'deadline_range': (0.5, 2.0), 'task_type': 3, 'cache_priority': 0.85},
+            'safety_alert': {'compute_density': 200, 'deadline_range': (0.1, 0.5), 'task_type': 4, 'cache_priority': 1.0},
+            'parking_info': {'compute_density': 350, 'deadline_range': (0.3, 1.5), 'task_type': 3, 'cache_priority': 0.7},
+            'weather_info': {'compute_density': 250, 'deadline_range': (1.0, 3.0), 'task_type': 2, 'cache_priority': 0.5},
+            'map_data': {'compute_density': 500, 'deadline_range': (1.0, 5.0), 'task_type': 2, 'cache_priority': 0.6},
+            'entertainment': {'compute_density': 600, 'deadline_range': (2.0, 10.0), 'task_type': 1, 'cache_priority': 0.3},
+            'sensor_data': {'compute_density': 350, 'deadline_range': (0.1, 0.8), 'task_type': 4, 'cache_priority': 0.75},
+        }
+        
+        # 获取该 VEC 类型的配置（如果未知类型则使用默认值）
+        vec_config = vec_type_configs.get(vec_content_type, {
+            'compute_density': 400,
+            'deadline_range': (0.5, 3.0),
+            'task_type': 3,
+            'cache_priority': 0.5
+        })
+        
+        # 设置任务参数
+        compute_density = vec_config['compute_density']
+        deadline_duration = np.random.uniform(*vec_config['deadline_range'])
+        initial_type = vec_config['task_type']
+        cache_priority = vec_config['cache_priority']
+        
+        # 使用从 RealisticContentGenerator 获得的真实数据大小
+        data_size_mb = content_size_mb
+        data_size_bytes = data_size_mb * 1e6
+        
+        # 时间槽配置
+        relax_factor_applied = self.config.get('deadline_relax_fallback', 1.3)
+        deadline_duration *= relax_factor_applied
+        max_delay_slots = max(
+            1,
+            int(deadline_duration / max(self.config.get('time_slot', self.time_slot), 0.1)),
+        )
 
         # 任务复杂度控制
-        data_size_mb = data_size_bytes / 1e6
         effective_density = compute_density
         complexity_multiplier = 1.0
 
@@ -1503,20 +1612,9 @@ class CompleteSystemSimulator:
         adjusted_cycles = base_cycles * complexity_multiplier
         computation_mips = adjusted_cycles / 1e6
 
-        cacheable_hint = scenario_name in {'video_process', 'image_recognition', 'data_analysis', 'ml_training'}
-        if task_cfg is not None:
-            refined_type = task_cfg.get_task_type(
-                max_delay_slots,
-                data_size=data_size_bytes,
-                compute_cycles=adjusted_cycles,
-                compute_density=effective_density,
-                time_slot=time_slot,
-                system_load=self.config.get('system_load_hint'),
-                is_cacheable=cacheable_hint,
-            )
-            task_type = max(initial_type, refined_type)
-        else:
-            task_type = initial_type
+        # 所有 VEC 内容都是可缓存的（这是 VEC 缓存的核心）
+        cacheable_hint = True
+        task_type = initial_type
 
         task = {
             'id': f'task_{self.task_counter}',
@@ -1527,7 +1625,9 @@ class CompleteSystemSimulator:
             'computation_requirement': computation_mips,
             'compute_cycles': adjusted_cycles,
             'deadline': self.current_time + deadline_duration,
-            'content_id': f'content_{np.random.randint(0, 100)}',
+            'content_id': content_id,  # 🔧 优化: 仅可缓存任务有content_id
+            'is_cacheable': cacheable_hint,  # 🔧 优化3: 添加明确的缓存标记
+            'cache_priority': cache_priority,  # 🔧 优化4: 添加缓存优先级
             'priority': np.random.uniform(0.1, 1.0),
             'task_type': task_type,
             'app_scenario': scenario_name,
@@ -1568,6 +1668,18 @@ class CompleteSystemSimulator:
                 f"   当前任务: {scenario_name}, {deadline_duration:.2f}s → "
                 f"类型{task_type}, 数据{data_size_mb:.2f}MB"
             )
+            
+            # 🔧 优化7: 添加缓存统计实时监控
+            cache_hits = self.stats.get('cache_hits', 0)
+            cache_misses = self.stats.get('cache_misses', 0)
+            total_cache_requests = cache_hits + cache_misses
+            if total_cache_requests > 0:
+                cache_hit_rate = cache_hits / total_cache_requests
+                local_hits = self.stats.get('local_cache_hits', 0)
+                print(
+                    f"   💾 缓存统计: 命中率={cache_hit_rate:.2%} "
+                    f"(总命中:{cache_hits}, 本地:{local_hits}, 未命中:{cache_misses})"
+                )
 
         return task
     
@@ -1849,13 +1961,9 @@ class CompleteSystemSimulator:
             vehicle_id = task.get('vehicle_id', 'V_0')
             vehicle = next((v for v in self.vehicles if v['id'] == vehicle_id), None)
             if vehicle is not None:
-                node_pos = node.get('position', np.zeros(3))
-                if len(node_pos) == 2:
-                    node_pos = np.append(node_pos, 0.0)
-                vehicle_pos = vehicle.get('position', np.zeros(3))
-                if len(vehicle_pos) == 2:
-                    vehicle_pos = np.append(vehicle_pos, 0.0)
-                distance = np.linalg.norm(node_pos - vehicle_pos)
+                node_pos = np.array(node.get('position', [0.0, 0.0, 0.0]))
+                vehicle_pos = np.array(vehicle.get('position', [0.0, 0.0, 0.0]))
+                distance = self.calculate_distance(node_pos, vehicle_pos)
                 result_size = task.get('data_size_bytes', task.get('data_size', 1.0) * 1e6) * 0.1
                 down_delay, down_energy = self._estimate_transmission(result_size, float(distance), node_type.lower())
                 self.stats['energy_downlink'] = self.stats.get('energy_downlink', 0.0) + down_energy
@@ -1921,6 +2029,29 @@ class CompleteSystemSimulator:
                 task_energy = 10.0 * work_capacity
             self._accumulate_energy('energy_compute', task_energy)
             node['energy_consumed'] = node.get('energy_consumed', 0.0) + task_energy
+
+            # 🔧 修复：添加下行传输能耗（将处理结果传回车辆）
+            # Fix: Add downlink transmission energy (return result to vehicle)
+            result_size = task.get('data_size_bytes', 1e6) * 0.05  # Result is typically 5% of input
+            if result_size > 0:
+                # Find the vehicle to calculate distance
+                vehicle_id = task.get('vehicle_id', 'V_0')
+                vehicle = next((v for v in self.vehicles if v['id'] == vehicle_id), None)
+                
+                if vehicle:
+                    v_pos = np.array(vehicle.get('position', [0.0, 0.0, 0.0]))
+                    n_pos = np.array(node.get('position', [0.0, 0.0, 0.0]))
+                    distance = self.calculate_distance(v_pos, n_pos)
+                    
+                    down_delay, down_energy = self._estimate_transmission(
+                        result_size, distance, node_type.lower()
+                    )
+                    
+                    # Accumulate downlink delay and energy
+                    self._accumulate_delay('delay_downlink', down_delay)
+                    self._accumulate_energy('energy_transmit_downlink', down_energy)
+                    self.stats['energy_downlink'] = self.stats.get('energy_downlink', 0.0) + down_energy
+                    node['energy_consumed'] = node.get('energy_consumed', 0.0) + down_energy
 
             task['completed'] = True
 
@@ -2023,7 +2154,8 @@ class CompleteSystemSimulator:
         content_id: str,
         node: Dict,
         agents_actions: Optional[Dict] = None,
-        node_type: str = 'RSU'
+        node_type: str = 'RSU',
+        task: Optional[Dict] = None  # 🔧 优化9: 添加task参数以获取cache_priority
     ) -> bool:
         """
         🌟 智能体控制的自适应缓存检查
@@ -2045,10 +2177,17 @@ class CompleteSystemSimulator:
             
         Adaptive cache checking with intelligent caching controller.
         """
+        # 🔧 优化6: 不可缓存内容直接返回未命中，不参与统计
+        if not content_id:
+            return False
+        
         # 基础缓存检查
         # Basic cache check
         cache = node.get('cache', {})
         cache_hit = bool(content_id and cache and content_id in cache)
+        
+        # 🔧 修复：只统计有content_id的任务，避免统计扭曲
+        # 不可缓存的任务不应该影响缓存命中率统计
         self._register_cache_request(cache_hit)
         
         # 更新统计
@@ -2103,12 +2242,15 @@ class CompleteSystemSimulator:
                     reason = 'pressure_guard'
                     evictions = []
                 else:
+                    # 🔧 优化10: 传入cache_priority加强缓存决策
+                    cache_priority = task.get('cache_priority', 0.0) if task else 0.0
                     should_cache, reason, evictions = cache_controller.should_cache_content(
                         content_id,
                         data_size,
                         available_capacity,
                         node.get('cache', {}),
-                        capacity_limit
+                        capacity_limit,
+                        cache_priority  # 传入优先级
                     )
                 
                 # 缓存写入温启动：前warmup次请求尽量缓存，避免冷启动长期0命中
@@ -3077,10 +3219,11 @@ class CompleteSystemSimulator:
         cache_hit = False
 
         # 检查缓存命中
+        # 🔧 优化11: 传入task参数以使用cache_priority
         if node_type == 'RSU':
-            cache_hit = self.check_cache_hit_adaptive(task['content_id'], node, actions, node_type='RSU')
+            cache_hit = self.check_cache_hit_adaptive(task['content_id'], node, actions, node_type='RSU', task=task)
         else:
-            cache_hit = self.check_cache_hit_adaptive(task['content_id'], node, actions, node_type='UAV')
+            cache_hit = self.check_cache_hit_adaptive(task['content_id'], node, actions, node_type='UAV', task=task)
 
         if cache_hit:
             # ✅ 修复：缓存命中几乎无能耗，只有极短的内存访问延迟

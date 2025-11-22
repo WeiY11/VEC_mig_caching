@@ -140,20 +140,49 @@ class PriorityQueueManager:
     def get_next_task(self) -> Optional[Task]:
         """
         获取下一个待处理任务
-        按照非抢占式优先级调度策略
+        🚀 创新优化: 引入动态优先级老化机制 (Dynamic Priority Aging)
+        防止低优先级任务饥饿，基于等待时间动态提升优先级
         """
-        # 按优先级从高到低遍历 (priority=1是最高优先级)
+        current_time = 0.0
+        # 尝试获取当前时间（如果Task有记录）
+        # 注意：这里假设调用时能获取到仿真时间，或者通过Task的waiting_delay估算
+        
+        best_task = None
+        best_effective_priority = float('inf')
+        best_queue_key = None
+        
+        # 老化因子：每等待0.1秒，优先级数值减少0.5 (提升优先级)
+        # 原始优先级: 1(高) ~ 4(低)
+        AGING_FACTOR = 5.0 
+        
+        # 遍历所有非空队列
         for priority in range(1, self.num_priorities + 1):
-            # 在同一优先级内，按生命周期紧迫程度遍历
             for lifetime in range(1, self.max_lifetime + 1):
                 queue_key = (lifetime, priority)
                 if queue_key in self.queues and not self.queues[queue_key].is_empty():
-                    # 找到下一个任务
                     queue = self.queues[queue_key]
-                    task = queue.get_next_task()
-                    if task:
-                        return task
+                    # 只检查队首任务 (FIFO)
+                    task = queue.task_list[0]
+                    
+                    # 计算有效优先级
+                    # Effective Priority = Base Priority - (Waiting Time * Factor)
+                    # 数值越小，优先级越高
+                    waiting_time = task.waiting_delay  # 假设外部已更新此字段
+                    effective_priority = priority - (waiting_time * AGING_FACTOR)
+                    
+                    # 截止时间紧急度修正 (即将过期的任务优先级更高)
+                    if task.remaining_lifetime_slots <= 1:
+                        effective_priority -= 2.0
+                        
+                    if effective_priority < best_effective_priority:
+                        best_effective_priority = effective_priority
+                        best_task = task
+                        best_queue_key = queue_key
         
+        if best_task and best_queue_key:
+            # 从对应队列移除
+            return self.queues[best_queue_key].remove_task(best_task.task_id)
+            
         return None
     
     def remove_task(self, task: Task) -> bool:

@@ -69,8 +69,6 @@ class ModernVisualizer:
         fig.suptitle(f'{algorithm} Training Overview', fontsize=16, fontweight='bold', y=0.95)
         
         # 1. 奖励收敛曲线（左上）- 🔧 修改为平均每步奖励
-        episodes = range(1, len(training_env.episode_rewards) + 1)
-        
         # 获取每episode的步数（默认200步）
         max_steps = getattr(training_env, 'max_steps_per_episode', 200)
         if hasattr(training_env, 'episode_steps'):
@@ -85,46 +83,69 @@ class ModernVisualizer:
                 max_steps = 200
             step_counts = [max_steps] * len(training_env.episode_rewards)
         
-        # 🔧 计算平均每步奖励
+        # 🆕 计算平均每步奖励 + 添加NaN过滤
         avg_step_rewards = []
+        valid_episodes = []
+        nan_count = 0
+        
         for i, episode_reward in enumerate(training_env.episode_rewards):
             steps = step_counts[i] if i < len(step_counts) else max_steps
-            avg_step_reward = episode_reward / max(1, steps)
-            avg_step_rewards.append(avg_step_reward)
+            if steps > 0 and np.isfinite(episode_reward):
+                avg_step_reward = episode_reward / steps
+                if np.isfinite(avg_step_reward):  # 验证计算结果
+                    avg_step_rewards.append(avg_step_reward)
+                    valid_episodes.append(i + 1)  # episode从1开始
+                else:
+                    nan_count += 1
+            else:
+                nan_count += 1
         
-        # 原始平均每步奖励（淡色）
-        ax1.plot(episodes, avg_step_rewards, 
-                color=COLORS['neutral'], alpha=0.4, linewidth=1, label='Raw Avg Step Reward')
-        
-        # 移动平均（突出显示）+ 置信区间
-        if len(avg_step_rewards) > 10:
-            window = max(5, len(avg_step_rewards) // 20)
-            moving_avg = np.convolve(avg_step_rewards, 
-                                   np.ones(window)/window, mode='valid')
+        if not avg_step_rewards:
+            print("❌ Error: No valid reward data to plot")
+            ax1.text(0.5, 0.5, 'No Valid Reward Data', 
+                    ha='center', va='center', transform=ax1.transAxes, fontsize=14)
+            self._apply_modern_style(ax1, 'Reward Convergence (Per Step)')
+            # 继续绘制其他子图，不要返回
+        else:
+            if nan_count > 0:
+                print(f"⚠️ {nan_count} episodes with NaN/Inf rewards excluded from plot")
             
-            # 🎯 计算置信区间（使用滚动标准差）
-            moving_std = []
-            for i in range(len(moving_avg)):
-                window_data = avg_step_rewards[i:i+window]
-                moving_std.append(np.std(window_data))
-            moving_std = np.array(moving_std)
+            # 使用valid_episodes而不是全局episodes
+            episodes = valid_episodes
             
-            # 绘制移动平均线
-            episodes_ma = range(window, len(episodes) + 1)
-            ax1.plot(episodes_ma, moving_avg,
-                    color=COLORS['primary'], linewidth=3, label=f'{window}-Episode Avg')
+            # 原始平均每步奖励（淡色）
+            ax1.plot(episodes, avg_step_rewards, 
+                    color=COLORS['neutral'], alpha=0.4, linewidth=1, label='Raw Avg Step Reward')
             
-            # 绘制置信区间（±1 标准差，约68%置信度）
-            ax1.fill_between(episodes_ma, 
-                            moving_avg - moving_std, 
-                            moving_avg + moving_std,
-                            color=COLORS['primary'], alpha=0.15, 
-                            label='±1σ Confidence Interval')
-        
-        self._apply_modern_style(ax1, 'Reward Convergence (Per Step)')
-        ax1.set_xlabel('Episode')
-        ax1.set_ylabel('Avg Reward per Step')
-        ax1.legend(frameon=False)
+            # 移动平均（突出显示）+ 置信区间
+            if len(avg_step_rewards) > 10:
+                window = max(5, len(avg_step_rewards) // 20)
+                moving_avg = np.convolve(avg_step_rewards, 
+                                       np.ones(window)/window, mode='valid')
+                
+                # 🎯 计算置信区间（使用滚动标准差）
+                moving_std = []
+                for j in range(len(moving_avg)):
+                    window_data = avg_step_rewards[j:j+window]
+                    moving_std.append(np.std(window_data))
+                moving_std = np.array(moving_std)
+                
+                # 绘制移动平均线
+                episodes_ma = [episodes[k] for k in range(window-1, len(episodes))]
+                ax1.plot(episodes_ma, moving_avg,
+                        color=COLORS['primary'], linewidth=3, label=f'{window}-Episode Avg')
+                
+                # 绘制置信区间（±1 标准差，约68%置信度）
+                ax1.fill_between(episodes_ma, 
+                                moving_avg - moving_std, 
+                                moving_avg + moving_std,
+                                color=COLORS['primary'], alpha=0.15, 
+                                label='±1σ Confidence Interval')
+            
+            self._apply_modern_style(ax1, 'Reward Convergence (Per Step)')
+            ax1.set_xlabel('Episode')
+            ax1.set_ylabel('Avg Reward per Step')
+            ax1.legend(frameon=False)
         
         # 2. 系统性能指标（右上）+ 置信区间
         metrics = ['task_completion_rate', 'avg_delay']
@@ -139,8 +160,11 @@ class ModernVisualizer:
                 if metric == 'task_completion_rate':
                     data = [x * 100 for x in data]  # 转为百分比
                 
+                # 🔧 为metric数据生成独立的episode索引
+                metric_episodes = list(range(1, len(data) + 1))
+                
                 # 绘制主线
-                ax2_twin.plot(episodes[:len(data)], data, 
+                ax2_twin.plot(metric_episodes, data, 
                             color=color, linewidth=2.5, label=name)
                 
                 # 🎯 添加置信区间（如果数据足够多）
@@ -153,7 +177,7 @@ class ModernVisualizer:
                         moving_std.append(np.std(window_data))
                     moving_std = np.array(moving_std)
                     
-                    episodes_ma = range(window, len(data) + 1)
+                    episodes_ma = list(range(window, len(data) + 1))
                     ax2_twin.fill_between(episodes_ma,
                                          moving_avg - moving_std,
                                          moving_avg + moving_std,
@@ -172,13 +196,17 @@ class ModernVisualizer:
             normalized_energy = [(x - min(energy_data)) / (max(energy_data) - min(energy_data)) 
                                 for x in energy_data] if len(set(energy_data)) > 1 else [0.5] * len(energy_data)
             
-            ax3.fill_between(episodes[:len(normalized_energy)], normalized_energy, 
+            # 🔧 为energy数据生成独立的episode索引
+            energy_episodes = list(range(1, len(normalized_energy) + 1))
+            ax3.fill_between(energy_episodes, normalized_energy, 
                            alpha=0.6, color=COLORS['secondary'], label='Energy Trend')
         
         if training_env.episode_metrics.get('cache_hit_rate'):
             cache_data = training_env.episode_metrics['cache_hit_rate']
             ax3_twin = ax3.twinx()
-            ax3_twin.plot(episodes[:len(cache_data)], 
+            # 🔧 为cache数据生成独立的episode索引
+            cache_episodes = list(range(1, len(cache_data) + 1))
+            ax3_twin.plot(cache_episodes, 
                          [x * 100 for x in cache_data],
                          color=COLORS['primary'], linewidth=2.5, label='Cache Hit Rate (%)')
             ax3_twin.set_ylabel('Cache Hit Rate (%)', color=COLORS['primary'])
@@ -220,7 +248,9 @@ class ModernVisualizer:
             # 时延曲线（左轴）
             if training_env.episode_metrics.get('avg_delay'):
                 delay_data = training_env.episode_metrics['avg_delay']
-                ax5.plot(episodes[:len(delay_data)], delay_data, 
+                # 🔧 为delay数据生成独立的episode索引
+                delay_episodes = list(range(1, len(delay_data) + 1))
+                ax5.plot(delay_episodes, delay_data, 
                         color=COLORS['warning'], linewidth=2.5, label='Avg Delay (s)')
                 ax5.set_ylabel('Avg Delay (s)', color=COLORS['warning'])
                 ax5.tick_params(axis='y', labelcolor=COLORS['warning'])
@@ -237,7 +267,9 @@ class ModernVisualizer:
                     normalized_energy = [(e - q25) / iqr_range * 5 + 2.5 for e in energy_data]  # 映射到2.5-7.5范围
                 else:
                     normalized_energy = [5.0] * len(energy_data)  # 常数情况
-                ax5_twin.plot(episodes[:len(normalized_energy)], normalized_energy,
+                # 🔧 为energy数据生成独立的episode索引
+                energy_norm_episodes = list(range(1, len(normalized_energy) + 1))
+                ax5_twin.plot(energy_norm_episodes, normalized_energy,
                              color=COLORS['secondary'], linewidth=2.5, label='Energy (robust norm)')
                 ax5_twin.set_ylabel('Robust Normalized Energy', color=COLORS['secondary'])
                 ax5_twin.tick_params(axis='y', labelcolor=COLORS['secondary'])
@@ -256,7 +288,9 @@ class ModernVisualizer:
             if training_env.episode_metrics.get('task_completion_rate'):
                 completion_data = training_env.episode_metrics['task_completion_rate']
                 loss_data = [(1.0 - c) * 100 for c in completion_data]  # 转为丢失率百分比
-                ax6.plot(episodes[:len(loss_data)], loss_data,
+                # 🔧 为loss数据生成独立的episode索引
+                loss_episodes = list(range(1, len(loss_data) + 1))
+                ax6.plot(loss_episodes, loss_data,
                         color=COLORS['warning'], linewidth=2.5, label='Data Loss Rate (%)')
                 ax6.set_ylabel('Data Loss Rate (%)', color=COLORS['warning'])
                 ax6.tick_params(axis='y', labelcolor=COLORS['warning'])
@@ -266,7 +300,9 @@ class ModernVisualizer:
                 migration_data = training_env.episode_metrics['migration_success_rate']
                 ax6_twin = ax6.twinx()
                 migration_percent = [m * 100 for m in migration_data]
-                ax6_twin.plot(episodes[:len(migration_percent)], migration_percent,
+                # 🔧 为migration数据生成独立的episode索引
+                migration_episodes = list(range(1, len(migration_percent) + 1))
+                ax6_twin.plot(migration_episodes, migration_percent,
                              color=COLORS['success'], linewidth=2.5, label='Migration Success (%)')
                 ax6_twin.set_ylabel('Migration Success (%)', color=COLORS['success'])
                 ax6_twin.tick_params(axis='y', labelcolor=COLORS['success'])
@@ -694,29 +730,65 @@ def get_summary_text(training_env, algorithm: str) -> str:
     except:
         max_steps = 200
     
-    # 转换为平均每步奖励
-    avg_step_rewards = [reward / max_steps for reward in training_env.episode_rewards]
+    # 🆕 添加数据验证和NaN过滤
+    valid_avg_step_rewards = []
+    nan_count = 0
     
-    final_step_reward = avg_step_rewards[-1]
-    max_step_reward = max(avg_step_rewards)
-    step_improvement = final_step_reward - avg_step_rewards[0] if len(avg_step_rewards) > 1 else 0
+    for i, reward in enumerate(training_env.episode_rewards):
+        if max_steps > 0 and np.isfinite(reward):  # 检查有限性
+            avg_step_reward = reward / max_steps
+            if np.isfinite(avg_step_reward):  # 再次验证结果
+                valid_avg_step_rewards.append(avg_step_reward)
+            else:
+                nan_count += 1
+        else:
+            nan_count += 1
+    
+    if not valid_avg_step_rewards:
+        return f"❌ Error: All {len(training_env.episode_rewards)} reward data contains NaN/Inf values"
+    
+    # 如果有NaN值被过滤，打印警告
+    if nan_count > 0:
+        print(f"⚠️ Warning: {nan_count} episodes with NaN/Inf rewards were excluded from summary")
+    
+    # 使用过滤后的数据
+    final_step_reward = valid_avg_step_rewards[-1]
+    max_step_reward = max(valid_avg_step_rewards)
+    step_improvement = final_step_reward - valid_avg_step_rewards[0] if len(valid_avg_step_rewards) > 1 else 0
     
     # 计算收敛状态（基于平均每步奖励方差）
-    if len(avg_step_rewards) > 20:
-        recent_var = np.var(avg_step_rewards[-20:])
+    if len(valid_avg_step_rewards) > 20:
+        recent_var = np.var(valid_avg_step_rewards[-20:])
         convergence_status = "Converged" if recent_var < 2 else "Converging" if recent_var < 10 else "Exploring"
     else:
         convergence_status = "Insufficient Data"
     
+    # 根据系统健康状况调整描述
+    completion_rate = 0.0
+    if hasattr(training_env, 'episode_metrics') and 'task_completion_rate' in training_env.episode_metrics:
+        recent_completions = training_env.episode_metrics['task_completion_rate'][-30:]
+        if recent_completions:
+            completion_rate = np.mean(recent_completions)
+    
+    if completion_rate >= 0.97:
+        health_status = " 💚 系统健康状态: excellent"
+    elif completion_rate >= 0.90:
+        health_status = " 🟡 系统健康状态: good"
+    elif completion_rate >= 0.80:
+        health_status = " 🟠 系统健康状态: fair"
+    else:
+        health_status = " 🔴 系统健康状态: poor"
+    
     summary = f"""
 {algorithm} Training Summary (Per-Step Rewards)
 ═══════════════════════════════════════
-Episodes: {len(training_env.episode_rewards)}
+Episodes: {len(valid_avg_step_rewards)} (valid) / {len(training_env.episode_rewards)} (total)
 Final Avg Step Reward: {final_step_reward:.3f}
 Best Avg Step Reward: {max_step_reward:.3f}
 Step Reward Improvement: {step_improvement:+.3f}
 Status: {convergence_status}
 Steps per Episode: {max_steps}
+{health_status}
     """
     
     return summary.strip()

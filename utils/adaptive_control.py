@@ -133,10 +133,21 @@ class AdaptiveCacheController:
         data_size: float,
         available_capacity: float,
         cache_snapshot: Dict,
-        total_capacity_mb: float
+        total_capacity_mb: float,
+        cache_priority: float = 0.0  # 🔧 优化8: 添加缓存优先级参数
     ) -> Tuple[bool, str, List[str]]:
-        """Decide whether to cache a content item. Returns eviction candidates when needed."""
+        """
+        Decide whether to cache a content item. Returns eviction candidates when needed.
+        
+        🔧 优化: 结合任务的cache_priority进行更智能的决策
+        - 高优先级任务更容易被缓存
+        - 低优先级任务需要更高的热度
+        """
         heat = self.content_heat.get(content_id, 0.0)
+        
+        # 🔧 优化: 结合cache_priority调整热度
+        # 高优先级任务（如video_process）即使热度较低也可能被缓存
+        adjusted_heat = heat + cache_priority * 0.3  # cache_priority提供最多30%加成
 
         high_threshold = self.agent_params['heat_threshold_high']
         medium_threshold = self.agent_params['heat_threshold_medium']
@@ -183,19 +194,28 @@ class AdaptiveCacheController:
                     break
             return removed
 
-        if heat > high_threshold:
+        # 🔧 优化: 使用adjusted_heat进行决策
+        if adjusted_heat > high_threshold:
             if available_capacity > data_size:
-                return True, f"High-heat cache (heat:{heat:.2f}>{high_threshold:.2f})", eviction_candidates
+                reason = f"High-heat cache (heat:{heat:.2f}"
+                if cache_priority > 0:
+                    reason += f"+priority:{cache_priority:.2f}"
+                reason += f">{high_threshold:.2f})"
+                return True, reason, eviction_candidates
             eviction_candidates = _select_evictions(data_size - available_capacity)
             if eviction_candidates:
                 return True, f"High-heat cache with eviction x{len(eviction_candidates)}", eviction_candidates
 
-        if heat > medium_threshold and available_capacity > max(data_size, capacity_threshold):
-            return True, f"Medium-heat prefetch (heat:{heat:.2f}>{medium_threshold:.2f})", eviction_candidates
+        if adjusted_heat > medium_threshold and available_capacity > max(data_size, capacity_threshold):
+            reason = f"Medium-heat prefetch (heat:{heat:.2f}"
+            if cache_priority > 0:
+                reason += f"+priority:{cache_priority:.2f}"
+            reason += f">{medium_threshold:.2f})"
+            return True, reason, eviction_candidates
 
-        if heat > 0.1:
+        if adjusted_heat > 0.1:
             collaboration_weight = self.agent_params['collaboration_weight']
-            cache_probability = heat * collaboration_weight * max(0.0, 1.2 - utilization)
+            cache_probability = adjusted_heat * collaboration_weight * max(0.0, 1.2 - utilization)
             if np.random.random() < cache_probability:
                 if available_capacity > data_size:
                     return True, f"Collaborative cache (p={cache_probability:.2f})", eviction_candidates
@@ -203,7 +223,7 @@ class AdaptiveCacheController:
                 if eviction_candidates:
                     return True, f"Collaborative cache with eviction x{len(eviction_candidates)}", eviction_candidates
 
-        return False, f"Skip cache (heat:{heat:.2f}, free:{available_capacity:.1f}MB)", eviction_candidates
+        return False, f"Skip cache (heat:{heat:.2f}, priority:{cache_priority:.2f}, free:{available_capacity:.1f}MB)", eviction_candidates
 
     def record_cache_result(self, content_id: str, was_hit: bool):
         """记录缓存结果"""

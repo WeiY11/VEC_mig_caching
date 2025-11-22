@@ -169,6 +169,10 @@ class NodeState:
     node_type: NodeType
     position: Position = field(default_factory=Position)
     
+    # 🆕 创新: 轨迹感知支持
+    velocity: float = 0.0               # 速度 (m/s)
+    direction: float = 0.0              # 方向 (rad)
+    
     # 计算资源
     cpu_frequency: float = 0.0          # f_n: 计算能力 (cycles/秒)
     cpu_utilization: float = 0.0        # CPU利用率 (0-1)

@@ -115,6 +115,9 @@ from single_agent.sac import SACEnvironment
 # 导入HTML报告生成器
 from utils.html_report_generator import HTMLReportGenerator
 
+# 导入训练结果保存和绘图工具
+from utils.training_results import save_single_training_results, plot_single_training_curves
+
 # 🌐 导入实时可视化模块
 try:
     from scripts.visualize.realtime_visualization import create_visualizer
@@ -134,7 +137,7 @@ except ImportError:
 # 尝试导入PyTorch以设置随机种子；如果不可用则跳过
 try:
     import torch
-except ImportError:  # pragma: no cover - 容错处理
+except ImportError:  # pragma: no cover -容错处理
     torch = None
 
 
