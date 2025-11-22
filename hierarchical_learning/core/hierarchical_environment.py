@@ -55,6 +55,12 @@ class HierarchicalEnvironment:
         self.current_state = {}
         self.episode_step = 0
         self.max_episode_steps = env_config.get('max_episode_steps', 1000)
+        self.time_slot = float(env_config.get('time_slot', getattr(config, 'time_slot', 0.1)))
+        self.rsu_service_rate = float(env_config.get('rsu_service_rate', 5.0))  # tasks per second
+        self.uav_service_rate = float(env_config.get('uav_service_rate', 3.0))  # tasks per second
+        queue_cfg = getattr(config, 'queue', None)
+        default_max_queue = getattr(queue_cfg, 'max_queue_size', 100) if queue_cfg is not None else 100
+        self.max_queue_length = float(env_config.get('max_queue_length', default_max_queue))
         
         # 性能指标
         self.performance_metrics = {
@@ -330,74 +336,78 @@ class HierarchicalEnvironment:
         return state
     
     def _update_vehicle_associations(self, state: Dict):
-        """更新车辆与RSU/UAV的关联关系"""
+        """Update vehicle associations with RSUs and UAVs"""
         for vehicle in state['vehicles']:
+            vehicle['serving_rsu'] = -1
+            vehicle['in_uav_coverage'] = False
+            vehicle['latency'] = 0.0
+            vehicle['signal_strength'] = 0.0
+            vehicle['data_rate'] = 0.0
+            vehicle['distance_to_rsu'] = 0.0
+            vehicle['distance_to_uav'] = 0.0
+
             vehicle_pos = vehicle['position']
-            
-            # 计算与RSU的距离并分配最近的RSU
+
+            # ???????RSU
             min_rsu_distance = float('inf')
             closest_rsu = -1
-            
+
             for rsu in state['rsus']:
                 rsu_pos = rsu['position']
-                distance = np.sqrt((vehicle_pos[0] - rsu_pos[0])**2 + 
-                                 (vehicle_pos[1] - rsu_pos[1])**2)
-                
-                if distance < min_rsu_distance and distance <= 500:  # RSU覆盖范围500m
+                distance = np.sqrt((vehicle_pos[0] - rsu_pos[0])**2 +
+                                   (vehicle_pos[1] - rsu_pos[1])**2)
+
+                if distance < min_rsu_distance and distance <= 500:  # RSU????500m
                     min_rsu_distance = distance
                     closest_rsu = rsu['id']
-            
+
             if closest_rsu != -1:
+                rsu = state['rsus'][closest_rsu]
                 vehicle['serving_rsu'] = closest_rsu
                 vehicle['distance_to_rsu'] = min_rsu_distance
                 vehicle['signal_strength'] = max(0.1, 1.0 - min_rsu_distance / 500.0)
                 vehicle['data_rate'] = vehicle['signal_strength'] * 100  # Mbps
-                
-                # 计算延迟
-                rsu = state['rsus'][closest_rsu]
-                propagation_delay = min_rsu_distance / 3e8 * 1000  # 传播延迟(ms)
-                processing_delay = rsu['cpu_usage'] * 20 + np.random.uniform(1, 5)  # 处理延迟(ms)
-                queuing_delay = rsu['queue_length'] * 2  # 排队延迟(ms)
-                transmission_delay = vehicle['data_size'] / vehicle['data_rate'] * 8  # 传输延迟(ms)
-                
+
+                propagation_delay = min_rsu_distance / 3e8 * 1000  # ????(ms)
+                processing_delay = rsu['cpu_usage'] * 20 + np.random.uniform(1, 5)  # ????(ms)
+                queuing_delay = rsu['queue_length'] * 2  # ????(ms)
+                transmission_delay = vehicle['data_size'] / max(vehicle['data_rate'], 1e-6) * 8  # ????(ms)
+
                 vehicle['latency'] = propagation_delay + processing_delay + queuing_delay + transmission_delay
-                
-                # 更新RSU的服务车辆数和队列
-                state['rsus'][closest_rsu]['served_vehicles'] += 1
-                state['rsus'][closest_rsu]['coverage_vehicles'] += 1
-                state['rsus'][closest_rsu]['queue_length'] += 1
-            
-            # 检查UAV覆盖（UAV覆盖范围更大）
+
+                rsu['served_vehicles'] += 1
+                rsu['coverage_vehicles'] = rsu.get('coverage_vehicles', 0) + 1
+                rsu['queue_length'] = min(self.max_queue_length, rsu.get('queue_length', 0.0) + 1)
+
+            # ?????RSU???UAV
+            connected_to_uav = False
             for uav in state['uavs']:
                 uav_pos = uav['position']
-                distance_2d = np.sqrt((vehicle_pos[0] - uav_pos[0])**2 + 
-                                    (vehicle_pos[1] - uav_pos[1])**2)
+                distance_2d = np.sqrt((vehicle_pos[0] - uav_pos[0])**2 +
+                                      (vehicle_pos[1] - uav_pos[1])**2)
                 distance_3d = np.sqrt(distance_2d**2 + uav_pos[2]**2)
-                
-                if distance_2d <= 1000:  # UAV覆盖范围1000m
+
+                if distance_2d <= 1000:  # UAV????1000m
                     vehicle['in_uav_coverage'] = True
                     vehicle['distance_to_uav'] = distance_3d
-                    vehicle['elevation_angle'] = np.arctan(uav_pos[2] / distance_2d) * 180 / np.pi
-                    
-                    # 计算UAV通信延迟（通常比RSU稍高）
-                    if vehicle['serving_rsu'] == -1:  # 如果没有RSU服务，则使用UAV
-                        propagation_delay = distance_3d / 3e8 * 1000  # 传播延迟(ms)
-                        processing_delay = uav['cpu_usage'] * 25 + np.random.uniform(2, 8)  # 处理延迟(ms)
-                        queuing_delay = uav['queue_length'] * 3  # 排队延迟(ms)
-                        air_interface_delay = 5 + np.random.uniform(1, 3)  # 空口接入延迟(ms)
-                        
-                        # UAV的数据速率受信号质量影响
+                    vehicle['elevation_angle'] = np.arctan(uav_pos[2] / max(distance_2d, 1e-6)) * 180 / np.pi
+
+                    if vehicle['serving_rsu'] == -1 and not connected_to_uav:
+                        propagation_delay = distance_3d / 3e8 * 1000  # ????(ms)
+                        processing_delay = uav['cpu_usage'] * 25 + np.random.uniform(2, 8)  # ????(ms)
+                        queuing_delay = uav['queue_length'] * 3  # ????(ms)
+                        air_interface_delay = 5 + np.random.uniform(1, 3)  # ??????(ms)
+
                         signal_quality = max(0.3, 1.0 - distance_2d / 1000.0)
                         uav_data_rate = signal_quality * 80  # Mbps
-                        transmission_delay = vehicle['data_size'] / uav_data_rate * 8  # 传输延迟(ms)
-                        
+                        transmission_delay = vehicle['data_size'] / max(uav_data_rate, 1e-6) * 8  # ????(ms)
+
                         vehicle['latency'] = propagation_delay + processing_delay + queuing_delay + air_interface_delay + transmission_delay
-                        uav['queue_length'] += 1
-                    
-                    # 更新UAV的服务车辆数
-                    uav['served_vehicles'] += 1
+                        uav['queue_length'] = min(self.max_queue_length, uav.get('queue_length', 0.0) + 1)
+                        uav['served_vehicles'] += 1
+                        connected_to_uav = True
                     break
-    
+
     def _get_hierarchical_states(self) -> Dict[str, Dict[str, np.ndarray]]:
         """获取各层的状态表示"""
         hierarchical_states = {}
@@ -436,11 +446,30 @@ class HierarchicalEnvironment:
             'real_time_metrics': self.current_state['real_time_metrics']
         }
         hierarchical_states['operational'] = self.operational_layer.process_state(operational_raw_state)
-        
+
         return hierarchical_states
-    
-    def step(self, actions: Optional[Dict] = None) -> Tuple[Dict[str, Dict[str, np.ndarray]], 
-                                                          Dict[str, float], bool, Dict]:
+
+    def _service_queue(self, node: Dict, service_rate: float) -> None:
+        """Process queued tasks based on node service rate."""
+        queue_length = float(node.get('queue_length', 0.0))
+        processed = service_rate * self.time_slot
+        node['queue_length'] = max(0.0, queue_length - processed)
+
+    def _reset_step_counters(self) -> None:
+        """Reset per-step counters and decay queues before new assignments."""
+        for rsu in self.current_state.get('rsus', []):
+            rsu['served_vehicles'] = 0
+            rsu['coverage_vehicles'] = 0
+            self._service_queue(rsu, self.rsu_service_rate)
+            rsu['queue_length'] = min(self.max_queue_length, rsu.get('queue_length', 0.0))
+
+        for uav in self.current_state.get('uavs', []):
+            uav['served_vehicles'] = 0
+            self._service_queue(uav, self.uav_service_rate)
+            uav['queue_length'] = min(self.max_queue_length, uav.get('queue_length', 0.0))
+
+    def step(self, actions: Optional[Dict] = None) -> Tuple[Dict[str, Dict[str, np.ndarray]],
+                                                           Dict[str, float], bool, Dict]:
         """
         执行一步环境交互
         
@@ -454,6 +483,7 @@ class HierarchicalEnvironment:
             info: 额外信息
         """
         self.episode_step += 1
+        self._reset_step_counters()
         
         # 获取当前状态
         current_hierarchical_states = self._get_hierarchical_states()
@@ -521,30 +551,29 @@ class HierarchicalEnvironment:
     
     def _execute_actions(self, strategic_actions: Dict, tactical_actions: Dict, 
                         operational_actions: Dict):
-        """执行各层动作并更新环境状态"""
+        """???????????????????"""
         
-        # 更新车辆移动
+        
+        # ??????????
         self._update_vehicle_mobility()
         
-        # 应用执行层控制命令
+        # ??????????????
         control_commands = self.operational_layer.get_control_commands()
         self._apply_control_commands(control_commands)
         
-        # 更新系统性能指标
-        self._update_performance_metrics()
-        
-        # 更新车辆关联关系
+        # ??????????????
         self._update_vehicle_associations(self.current_state)
-    
+        
+        # ?????????????
+        self._update_performance_metrics()
     def _update_vehicle_mobility(self):
         """更新车辆移动状态"""
         for vehicle in self.current_state['vehicles']:
             # 简单的移动模型
             velocity = vehicle['velocity']
             direction = vehicle['direction']
-            
-            # 计算位移
-            dt = 1.0  # 时间步长1秒
+            # Update displacement
+            dt = self.time_slot  # time step (s)
             dx = velocity * np.cos(np.radians(direction)) * dt
             dy = velocity * np.sin(np.radians(direction)) * dt
             

@@ -33,7 +33,7 @@ from decision.strategy_coordinator import StrategyCoordinator
 
 try:
     from communication.bandwidth_allocator import BandwidthAllocator
-except Exception:  # pragma: no cover - optional module
+except ImportError:  # pragma: no cover - optional module
     BandwidthAllocator = None
 
 class CentralResourcePool:
@@ -207,7 +207,8 @@ class CompleteSystemSimulator:
         try:
             from config import config as sys_config
             self.sys_config = sys_config
-        except Exception:
+        except (ImportError, AttributeError, ModuleNotFoundError) as e:
+            logging.debug(f"System config not available: {e}")
             self.sys_config = None
         
         # 网络拓扑参数：车辆、RSU、UAV数量
@@ -222,9 +223,15 @@ class CompleteSystemSimulator:
             self.num_uavs = self.config.get('num_uavs', 2)
         if self.sys_config is not None and not self.override_topology:
             default_radius = getattr(self.sys_config.network, 'coverage_radius', 300)
+            default_uav_radius = getattr(self.sys_config.network, 'uav_coverage_radius', 350)
+            default_uav_altitude = getattr(self.sys_config.network, 'uav_altitude', 120.0)
         else:
             default_radius = getattr(self.sys_config.network, 'coverage_radius', 300) if self.sys_config is not None else 300
+            default_uav_radius = getattr(self.sys_config.network, 'uav_coverage_radius', 350) if self.sys_config is not None else 350
+            default_uav_altitude = getattr(self.sys_config.network, 'uav_altitude', 120.0) if self.sys_config is not None else 120.0
         self.coverage_radius = self.config.get('coverage_radius', default_radius)
+        self.uav_coverage_radius = self.config.get('uav_coverage_radius', default_uav_radius)
+        self.uav_altitude = self.config.get('uav_altitude', default_uav_altitude)
 
         # 仿真参数：时间、时隙、任务到达率
         # Simulation parameters: time, time slot, task arrival rate
@@ -440,8 +447,8 @@ class CompleteSystemSimulator:
         if self.num_uavs <= 2:
             # 原始2枚UAV的部署位置
             uav_positions = [
-                np.array([300.0, 500.0, 120.0]),  # x, y, z(高度)
-                np.array([700.0, 500.0, 120.0]),
+                np.array([300.0, 500.0, self.uav_altitude]),  # 🔧 修复: 使用配置的高度
+                np.array([700.0, 500.0, self.uav_altitude]),
             ]
         else:
             # 动态生成UAV位置，均匀分布在道路上方
@@ -449,7 +456,7 @@ class CompleteSystemSimulator:
             spacing = 600.0 / (self.num_uavs - 1)  # 均匀间隔
             for i in range(self.num_uavs):
                 x_pos = 200.0 + i * spacing
-                uav_positions.append(np.array([x_pos, 500.0, 120.0]))
+                uav_positions.append(np.array([x_pos, 500.0, self.uav_altitude]))  # 🔧 修复: 使用配置的高度
         
         # 创建UAV节点
         # Create UAV nodes with configuration
@@ -458,7 +465,7 @@ class CompleteSystemSimulator:
                 'id': f'UAV_{i}',
                 'position': uav_positions[i],  # 固定悬停位置
                 'velocity': 0.0,  # 当前速度(m/s)
-                'coverage_radius': 350.0,  # 覆盖半径(m)
+                'coverage_radius': self.uav_coverage_radius,  # 🔧 修复: 从配置读取覆盖半径
                 'cache': {},  # 缓存字典
                 'cache_capacity': 200.0,  # 缓存容量(MB) - 200MB轻量级UAV缓存
                 'cache_capacity_bytes': (getattr(self.sys_config.cache, 'uav_cache_capacity', 200e6) if self.sys_config is not None else 200e6),
@@ -482,8 +489,8 @@ class CompleteSystemSimulator:
             central_rsu_id = f"RSU_{2 if self.num_rsus > 2 else 0}"
             self.central_scheduler = create_central_scheduler(central_rsu_id)
             print(f"中央RSU调度器已启用: {central_rsu_id}")
-        except Exception as e:
-            print(f"中央调度器加载失败: {e}")
+        except (ImportError, AttributeError, RuntimeError) as e:
+            logging.warning(f"中央调度器加载失败: {e}")
             self.central_scheduler = None
         
         # 懒加载迁移管理器
@@ -492,7 +499,8 @@ class CompleteSystemSimulator:
             from migration.migration_manager import TaskMigrationManager
             if not hasattr(self, 'migration_manager') or self.migration_manager is None:
                 self.migration_manager = TaskMigrationManager()
-        except Exception:
+        except (ImportError, AttributeError) as e:
+            logging.debug(f"Migration manager not available: {e}")
             self.migration_manager = None
         
         # 一致性自检（不强制终止，仅提示）
@@ -505,8 +513,8 @@ class CompleteSystemSimulator:
                     f"recommended {expected_rsus}/{expected_uavs} to match the paper setup."
                 )
             print("[Topology] Central RSU configured as RSU_2 for coordination.")
-        except Exception:
-            pass
+        except (ValueError, TypeError) as e:
+            logging.warning(f"Topology consistency check failed: {e}")
 
         self._init_mm1_predictor()
         self._refresh_spatial_index(update_static=True, update_vehicle=True)
@@ -600,8 +608,8 @@ class CompleteSystemSimulator:
             return
         try:
             self.bandwidth_allocator = BandwidthAllocator(total_bandwidth=total_bw, min_bandwidth=min_channel)
-        except Exception as exc:
-            logging.warning("Failed to initialize BandwidthAllocator: %s", exc)
+        except (TypeError, ValueError, AttributeError) as exc:
+            logging.warning(f"Failed to initialize BandwidthAllocator: {exc}")
             self.bandwidth_allocator = None
             self.stats['dynamic_bandwidth_enabled'] = False
             return
@@ -1250,8 +1258,8 @@ class CompleteSystemSimulator:
         if cache_controller is not None:
             try:
                 cache_controller.record_cache_result(content_id, was_hit=True)
-            except Exception:
-                pass
+            except (AttributeError, TypeError, ValueError) as e:
+                logging.debug(f"Cache controller update failed: {e}")
         return True
 
     def _reset_runtime_states(self):
@@ -1751,9 +1759,9 @@ class CompleteSystemSimulator:
                 self.spatial_index.update_static_nodes(self.rsus, self.uavs)
             if update_vehicle and self.spatial_index is not None:
                 self.spatial_index.update_vehicle_nodes(self.vehicles)
-        except Exception:
+        except (AttributeError, TypeError, ValueError) as e:
             # 索引刷新失败时回退至朴素遍历逻辑
-            pass
+            logging.debug(f"Spatial index update failed, falling back to brute force: {e}")
     
     
     def _find_least_loaded_node(self, node_type: str, exclude_node: Optional[Dict] = None) -> Optional[Dict]:
@@ -1896,29 +1904,31 @@ class CompleteSystemSimulator:
 
         # 根据节点类型获取处理能力配置
         # Get processing capacity configuration based on node type
+        # 🔧 修复: 增强配置一致性检查
         if node_type == 'RSU':
-            if self.service_config:
+            if self.service_config and hasattr(self.service_config, 'rsu_base_service'):
                 base_capacity = int(self.service_config.rsu_base_service)  # 基础处理能力
-                max_service = int(self.service_config.rsu_max_service)  # 最大处理能力
-                boost_divisor = float(self.service_config.rsu_queue_boost_divisor)  # 动态提升除数
-                work_capacity_cfg = float(self.service_config.rsu_work_capacity)  # 工作容量
+                max_service = int(getattr(self.service_config, 'rsu_max_service', 9))  # 最大处理能力
+                boost_divisor = float(getattr(self.service_config, 'rsu_queue_boost_divisor', 5.0))  # 动态提升除数
+                work_capacity_cfg = float(getattr(self.service_config, 'rsu_work_capacity', 2.5))  # 工作容量
             else:
                 base_capacity = int(self.config.get('rsu_base_service', 4))
                 max_service = int(self.config.get('rsu_max_service', 9))
                 boost_divisor = 5.0
                 work_capacity_cfg = float(self.config.get('rsu_work_capacity', 2.5))
         elif node_type == 'UAV':
-            if self.service_config:
+            if self.service_config and hasattr(self.service_config, 'uav_base_service'):
                 base_capacity = int(self.service_config.uav_base_service)
-                max_service = int(self.service_config.uav_max_service)
-                boost_divisor = float(self.service_config.uav_queue_boost_divisor)
-                work_capacity_cfg = float(self.service_config.uav_work_capacity)
+                max_service = int(getattr(self.service_config, 'uav_max_service', 6))
+                boost_divisor = float(getattr(self.service_config, 'uav_queue_boost_divisor', 4.0))
+                work_capacity_cfg = float(getattr(self.service_config, 'uav_work_capacity', 1.7))
             else:
                 base_capacity = int(self.config.get('uav_base_service', 3))
                 max_service = int(self.config.get('uav_max_service', 6))
                 boost_divisor = 4.0
                 work_capacity_cfg = float(self.config.get('uav_work_capacity', 1.7))
         else:
+            # 未知节点类型使用默认值
             base_capacity = 2
             max_service = 4
             boost_divisor = 5.0
@@ -1984,24 +1994,6 @@ class CompleteSystemSimulator:
             vehicle_id = task.get('vehicle_id', 'V_0')
             vehicle = next((v for v in self.vehicles if v['id'] == vehicle_id), None)
 
-            # 🔧 修复: 添加下行传输能耗和延迟 (Downlink Transmission)
-            if vehicle:
-                # 结果大小假设为输入的 5%
-                result_size = task.get('data_size_bytes', 1e6) * 0.05
-                if result_size > 0:
-                    v_pos = vehicle.get('position', (0,0))
-                    n_pos = node.get('position', (0,0))
-                    distance = self.calculate_distance(v_pos, n_pos)
-                    
-                    down_delay, down_energy = self._estimate_transmission(result_size, distance, node_type.lower())
-                    
-                    self.stats['energy_downlink'] = self.stats.get('energy_downlink', 0.0) + down_energy
-                    node['energy_consumed'] = node.get('energy_consumed', 0.0) + down_energy
-                    
-                    # 下行延迟计入总延迟
-                    actual_delay += down_delay
-                    self._accumulate_delay('delay_downlink', down_delay)
-
             # 🔥 深度修复：正确的CMOS能耗模型
             # E_total = (P_dynamic + P_static) × t_processing
             # P_dynamic = κ × f³，但 t_processing = C / f
@@ -2013,7 +2005,8 @@ class CompleteSystemSimulator:
                 kappa = 5.0e-32  # W/(Hz)³
                 static_power = 25.0  # W
                 
-                if self.sys_config is not None:
+                # 🔧 修复: 增强配置一致性检查
+                if self.sys_config is not None and hasattr(self.sys_config, 'compute'):
                     cpu_freq = getattr(self.sys_config.compute, 'rsu_cpu_freq', cpu_freq)
                     kappa = getattr(self.sys_config.compute, 'rsu_kappa', kappa)
                     static_power = getattr(self.sys_config.compute, 'rsu_static_power', static_power)
@@ -2033,21 +2026,31 @@ class CompleteSystemSimulator:
                 task_energy = (dynamic_power + static_power) * actual_processing_time
                 
             elif node_type == 'UAV':
+                # 🔧 优化: 统一从配置读取UAV能耗参数
                 # UAV能耗参数（包含悬停功耗）
-                cpu_freq = node.get('cpu_freq', 2.5e9)  # 2.5 GHz
-                kappa3 = 8.89e-31  # W/(Hz)³
-                static_power = 2.5  # W
-                hover_power = 25.0  # W - 悬停功耗（持续存在）
                 
-                if self.sys_config is not None:
-                    cpu_freq = getattr(self.sys_config.compute, 'uav_cpu_freq', cpu_freq)
-                    kappa3 = getattr(self.sys_config.compute, 'uav_kappa3', kappa3)
-                    static_power = getattr(self.sys_config.compute, 'uav_static_power', static_power)
-                    hover_power = getattr(self.sys_config.compute, 'uav_hover_power', hover_power)
+                # 默认值：基于NVIDIA Jetson Xavier NX
+                default_cpu_freq = 3.5e9   # 3.5 GHz（匹配配置）
+                default_kappa3 = 8.89e-31  # W/(Hz)³
+                default_static = 2.5       # W
+                default_hover = 15.0       # W - 轻量级四旋翼（匹配配置）
+                
+                # 优先从配置读取
+                if self.sys_config is not None and hasattr(self.sys_config, 'compute'):
+                    cpu_freq = getattr(self.sys_config.compute, 'uav_cpu_freq', default_cpu_freq)
+                    kappa3 = getattr(self.sys_config.compute, 'uav_kappa3', default_kappa3)
+                    static_power = getattr(self.sys_config.compute, 'uav_static_power', default_static)
+                    hover_power = getattr(self.sys_config.compute, 'uav_hover_power', default_hover)
+                    base_freq = getattr(self.sys_config.compute, 'uav_initial_freq', default_cpu_freq)
+                else:
+                    cpu_freq = node.get('cpu_freq', default_cpu_freq)
+                    kappa3 = default_kappa3
+                    static_power = default_static
+                    hover_power = default_hover
+                    base_freq = default_cpu_freq
                 
                 # 🔧 修复：UAV同样需要考虑实际处理时间
-                # 使用配置的UAV初始频率作为基准频率（而非硬编码2.5 GHz）
-                base_freq = getattr(self.sys_config.compute, 'uav_initial_freq', 3.5e9) if self.sys_config else 3.5e9
+                # 使用配置的UAV初始频率作为基准频率
                 total_cycles = work_capacity * base_freq
                 actual_processing_time = total_cycles / cpu_freq
                 
@@ -2535,6 +2538,61 @@ class CompleteSystemSimulator:
     # ==================== 新增：一步仿真涉及的核心辅助函数 ====================
     # Core helper functions for single-step simulation
 
+    def _update_node_connections(self):
+        """
+        🔧 修复: 更新RSU和UAV的即时连接计数
+        
+        根据当前车辆位置计算哪些车辆在各节点的覆盖范围内，
+        并更新 served_vehicles 和 coverage_vehicles 计数器。
+        
+        优先级：RSU > UAV（避免重复计数）
+        
+        Update immediate connection counts for RSUs and UAVs based on coverage.
+        Priority: RSU > UAV (avoid double counting).
+        """
+        # 清空连接列表（已经在run_simulation_step开头重置了计数器）
+        for rsu in self.rsus:
+            rsu['connected_vehicles'] = []
+        for uav in self.uavs:
+            uav['connected_vehicles'] = []
+        
+        # 遍历所有车辆，检查覆盖
+        for vehicle in self.vehicles:
+            v_pos = vehicle.get('position')
+            if v_pos is None or len(v_pos) < 2:
+                continue
+            
+            vehicle_id = vehicle.get('id', '')
+            connected_to_rsu = False
+            
+            # 1. 检查RSU覆盖（优先级最高）
+            for rsu in self.rsus:
+                distance = self.calculate_distance(v_pos, rsu['position'])
+                rsu_radius = rsu.get('coverage_radius', self.coverage_radius)
+                if distance <= rsu_radius:
+                    rsu['served_vehicles'] += 1
+                    rsu['coverage_vehicles'] += 1
+                    rsu['connected_vehicles'].append(vehicle_id)
+                    connected_to_rsu = True
+                    break  # 只连接到最近的RSU
+            
+            # 2. 如果没有RSU覆盖，检查UAV覆盖
+            if not connected_to_rsu:
+                for uav in self.uavs:
+                    uav_pos = uav['position']
+                    # 3D距离计算
+                    if len(uav_pos) >= 3 and len(v_pos) == 2:
+                        distance_2d = np.sqrt((v_pos[0] - uav_pos[0])**2 + (v_pos[1] - uav_pos[1])**2)
+                        distance_3d = np.sqrt(distance_2d**2 + uav_pos[2]**2)
+                    else:
+                        distance_3d = self.calculate_distance(v_pos, uav_pos[:2] if len(uav_pos) >= 2 else uav_pos)
+                    
+                    uav_radius = uav.get('coverage_radius', self.uav_coverage_radius)
+                    if distance_3d <= uav_radius:
+                        uav['served_vehicles'] += 1
+                        uav['connected_vehicles'].append(vehicle_id)
+                        break  # 只连接到最近的UAV
+
     def _update_vehicle_positions(self):
         """
         简单更新车辆位置，模拟车辆沿主干道移动
@@ -2606,6 +2664,10 @@ class CompleteSystemSimulator:
             vehicle['position'][1] = new_y
 
         self._refresh_spatial_index(update_static=False, update_vehicle=True)
+        
+        # 🔧 修复2: 更新RSU/UAV的即时连接计数
+        # Update immediate connection counts after vehicle movement
+        self._update_node_connections()
 
     def _sample_arrivals(self) -> int:
         """鎸夋硦鏉捐繃绋嬮噰鏍锋瘡杞︽瘡鏃堕殭鐨勪换鍔″埌杈炬暟"""
@@ -2700,7 +2762,8 @@ class CompleteSystemSimulator:
         """浼拌鏈湴澶勭悊鐨勫欢杩熶笌鑳借€?"""
         cpu_freq = 2.5e9
         power = 6.5
-        if self.sys_config is not None:
+        # 🔧 修复: 增强配置一致性检查
+        if self.sys_config is not None and hasattr(self.sys_config, 'compute'):
             cpu_freq = getattr(self.sys_config.compute, 'vehicle_cpu_freq', cpu_freq)
             power = getattr(self.sys_config.compute, 'vehicle_static_power', power)
         else:
@@ -2710,7 +2773,7 @@ class CompleteSystemSimulator:
         requirement = float(task.get('computation_requirement', 1500.0)) * 1e6  # cycles
         # 🔧 修复问题2：应用并行效率参数（与能耗模型保持一致）
         parallel_eff = 0.8
-        if self.sys_config is not None:
+        if self.sys_config is not None and hasattr(self.sys_config, 'compute'):
             parallel_eff = getattr(self.sys_config.compute, 'parallel_efficiency', 0.8)
         else:
             parallel_eff = float(self.config.get('parallel_efficiency', 0.8))
@@ -2722,7 +2785,7 @@ class CompleteSystemSimulator:
         # E_total = P_dynamic × t_active + P_static × t_active
         # P_dynamic = κ₁ × f³
         kappa1 = 1.5e-28  # W/(Hz)³ - 动态功耗系数
-        if self.sys_config is not None:
+        if self.sys_config is not None and hasattr(self.sys_config, 'compute'):
             kappa1 = getattr(self.sys_config.compute, 'vehicle_kappa1', kappa1)
         else:
             kappa1 = float(self.config.get('vehicle_kappa1', kappa1))
@@ -2737,14 +2800,22 @@ class CompleteSystemSimulator:
         """
         估计上传耗时与能耗
         
-        🔧 修复v2：使用固定的base_rate（基于实际硬件测量）
+        🔧 修复v3：从配置读取UAV/RSU下行带宽，确保配置一致性
         """
-        # 基础速率（bit/s）- 这些值是基于实际网络环境校准的
+        # 🔧 优化：从配置读取下行带宽参数
         if link == 'uav':
-            base_rate = 60e6  # 60 Mbps - UAV链路（优化后提升传输速率）
+            # UAV下行带宽：优先从配置读取，默认50 MHz
+            if self.sys_config is not None and hasattr(self.sys_config, 'communication'):
+                base_rate = getattr(self.sys_config.communication, 'uav_downlink_bandwidth', 50e6)
+            else:
+                base_rate = float(self.config.get('uav_downlink_bandwidth', 50e6))
             power_w = 0.12
         else:  # RSU
-            base_rate = 80e6  # 80 Mbps - RSU链路（更稳定的固定链路）
+            # RSU下行带宽：优先从配置读取，默认1000 MHz (1 GHz)
+            if self.sys_config is not None and hasattr(self.sys_config, 'communication'):
+                base_rate = getattr(self.sys_config.communication, 'rsu_downlink_bandwidth', 1000e6)
+            else:
+                base_rate = float(self.config.get('rsu_downlink_bandwidth', 1000e6))
             power_w = 0.18
 
         # 考虑距离衰减
@@ -2786,7 +2857,12 @@ class CompleteSystemSimulator:
                 by_type = drop_stats.setdefault('by_type', {})
                 by_scenario = drop_stats.setdefault('by_scenario', {})
                 stats_cfg = getattr(self, 'stats_config', None)
-                log_interval = stats_cfg.drop_log_interval if stats_cfg is not None else self.config.get('drop_log_interval', 400)
+                # 🔧 修复: 增强配置一致性检查
+                log_interval = 400  # 默认值
+                if stats_cfg is not None and hasattr(stats_cfg, 'drop_log_interval'):
+                    log_interval = stats_cfg.drop_log_interval
+                else:
+                    log_interval = self.config.get('drop_log_interval', 400)
                 log_interval = max(1, int(log_interval))
                 for task in queue:
                     # 🔧 修复:检查任务是否已经被丢弃,避免重复计数
@@ -3465,7 +3541,8 @@ class CompleteSystemSimulator:
         if collaborative_system is not None and hasattr(collaborative_system, 'get_hotspot_intensity'):
             try:
                 hotspot_map = collaborative_system.get_hotspot_intensity()
-            except Exception:
+            except (AttributeError, TypeError, RuntimeError) as e:
+                logging.debug(f"Failed to get hotspot intensity: {e}")
                 hotspot_map = {}
         
         # 馃攳 鏀堕泦鎵€鏈夎妭鐐圭姸鎬佺敤浜庨偦灞呮瘮杈?
@@ -3540,8 +3617,8 @@ class CompleteSystemSimulator:
                 if coordinator is not None:
                     try:
                         coordinator.notify_migration_triggered(node_id, reason, urgency, current_state)
-                    except Exception as exc:
-                        print(f"⚠️ 联合策略协调器记录RSU迁移异常: {exc}")
+                    except (AttributeError, RuntimeError) as exc:
+                        logging.warning(f"⚠️ 联合策略协调器记录RSU迁移异常: {exc}")
                 
                 # 鎵цRSU闂磋縼绉?
                 result = self.execute_rsu_migration(i, urgency, coordinator=coordinator, joint_params=joint_params)
@@ -3557,8 +3634,8 @@ class CompleteSystemSimulator:
                             bool(result.get('success')),
                             {'type': 'rsu', 'metadata': result}
                         )
-                    except Exception as exc:
-                        print(f"⚠️ 联合策略协调器记录RSU迁移结果异常: {exc}")
+                    except (AttributeError, RuntimeError) as exc:
+                        logging.warning(f"⚠️ 联合策略协调器记录RSU迁移结果异常: {exc}")
         
         # 馃殎 UAV杩佺Щ妫€鏌?
         for i, uav in enumerate(self.uavs):
@@ -3579,8 +3656,8 @@ class CompleteSystemSimulator:
                 if coordinator is not None:
                     try:
                         coordinator.notify_migration_triggered(node_id, reason, urgency, current_state)
-                    except Exception as exc:
-                        print(f"⚠️ 联合策略协调器记录UAV迁移异常: {exc}")
+                    except (AttributeError, RuntimeError) as exc:
+                        logging.warning(f"⚠️ 联合策略协调器记录UAV迁移异常: {exc}")
                 
                 # UAV杩佺Щ鍒癛SU
                 result = self.execute_uav_migration(i, urgency, coordinator=coordinator, joint_params=joint_params)
@@ -3596,8 +3673,8 @@ class CompleteSystemSimulator:
                             bool(result.get('success')),
                             {'type': 'uav', 'metadata': result}
                         )
-                    except Exception as exc:
-                        print(f"⚠️ 联合策略协调器记录UAV迁移结果异常: {exc}")
+                    except (AttributeError, RuntimeError) as exc:
+                        logging.warning(f"⚠️ 联合策略协调器记录UAV迁移结果异常: {exc}")
         
         # 馃殫 杞﹁締璺熼殢杩佺Щ妫€鏌?
         self._check_vehicle_handover_migration(migration_controller)
@@ -3770,11 +3847,21 @@ class CompleteSystemSimulator:
         actions = actions or {}
         self._update_scheduling_params(actions.get('scheduling_params'))
         self._prepare_step_usage_counters()
+        
+        # 🔧 修复1: 重置RSU/UAV即时连接计数器
+        # Reset immediate connection counters for RSUs and UAVs at the start of each step
+        for rsu in self.rsus:
+            rsu['served_vehicles'] = 0
+            rsu['coverage_vehicles'] = 0
+        
+        for uav in self.uavs:
+            uav['served_vehicles'] = 0
+        
         if self._central_resource_enabled and hasattr(self, 'resource_pool'):
             try:
                 self.execute_phase2_scheduling()
-            except Exception as exc:
-                logging.debug("Phase-2 scheduling execution failed: %s", exc)
+            except (AttributeError, RuntimeError) as exc:
+                logging.debug(f"Phase-2 scheduling execution failed: {exc}")
 
         # 推进仿真时间
         advance_simulation_time()
@@ -3894,7 +3981,7 @@ class CompleteSystemSimulator:
                     if ok:
                         step_summary['remote_tasks'] += 1
                         return True
-        except Exception:
+        except (AttributeError, TypeError, ValueError):
             # On any failure, fall back to legacy path
             pass
 
@@ -3985,8 +4072,8 @@ class CompleteSystemSimulator:
         if coordinator is not None and migrated_tasks:
             try:
                 coordinator.prepare_prefetch(source_rsu, target_rsu, migrated_tasks, urgency)
-            except Exception as exc:
-                print(f"⚠️ 迁移前预取协调失败({source_rsu_id}->{target_rsu_id}): {exc}")
+            except (AttributeError, RuntimeError) as exc:
+                logging.warning(f"⚠️ 迁移前预取协调失败({source_rsu_id}->{target_rsu_id}): {exc}")
 
         source_rsu['computation_queue'] = source_queue[tasks_to_migrate:]
         target_rsu['computation_queue'].extend(migrated_tasks)
@@ -4002,7 +4089,8 @@ class CompleteSystemSimulator:
             self.stats['rsu_migration_energy'] = self.stats.get('rsu_migration_energy', 0.0) + wired_energy
             self.stats['rsu_migration_data'] = self.stats.get('rsu_migration_data', 0.0) + total_data_size
             migration_cost = (self.migration_energy_weight * wired_energy) + (self.migration_delay_weight * wired_delay)
-        except Exception:
+        except (ImportError, AttributeError, ValueError) as e:
+            logging.debug(f"Wired backhaul model not available, using fallback: {e}")
             migration_cost = total_data_size * 0.2
 
         return {
@@ -4098,8 +4186,8 @@ class CompleteSystemSimulator:
         if coordinator is not None and migrated_tasks:
             try:
                 coordinator.prepare_prefetch(source_uav, target_rsu, migrated_tasks, urgency)
-            except Exception as exc:
-                print(f"⚠️ UAV迁移前预取协调失败(UAV_{source_uav_idx}->{target_rsu.get('id')}): {exc}")
+            except (AttributeError, RuntimeError) as exc:
+                logging.warning(f"⚠️ UAV迁移前预取协调失败(UAV_{source_uav_idx}->{target_rsu.get('id')}): {exc}")
 
         total_data_size = sum(task.get('data_size', 1.0) for task in migrated_tasks)
         if total_data_size <= 0.0:
