@@ -877,6 +877,22 @@ class TD3Agent:
         # 探索噪声
         self.exploration_noise = config.exploration_noise
         self.step_count = 0
+        # 高维动作空间下放缓噪声衰减，抬高噪声下限，避免过早冻结
+        if self.action_dim >= 40:
+            boosted_noise = max(self.exploration_noise, 0.25)
+            boosted_min = max(self.config.min_noise, 0.05)
+            boosted_decay = max(self.config.noise_decay, 0.99998)
+            if boosted_noise != self.exploration_noise or boosted_min != self.config.min_noise or boosted_decay != self.config.noise_decay:
+                print(
+                    f"[TD3] Large action space ({self.action_dim}D): "
+                    f"exploration_noise {self.exploration_noise:.3f}->{boosted_noise:.3f}, "
+                    f"min_noise {self.config.min_noise:.3f}->{boosted_min:.3f}, "
+                    f"noise_decay {self.config.noise_decay:.6f}->{boosted_decay:.6f}"
+                )
+            self.exploration_noise = boosted_noise
+            self.config.exploration_noise = boosted_noise
+            self.config.min_noise = boosted_min
+            self.config.noise_decay = boosted_decay
         self.update_count = 0
         self.late_stage_applied = False
         self.latest_guidance: Dict[str, np.ndarray] = {}

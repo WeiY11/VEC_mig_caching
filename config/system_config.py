@@ -234,26 +234,30 @@ class RLConfig:
         self.min_noise = 0.01          # 最小探索噪声
         
         # 🎯 优化后奖励权重：平衡收敛性与稳定性
-        # 降低权重值，减少奖励方差，提高收敛稳定性
-        self.reward_weight_delay = 1.0  # 🔧 时延权重（减小以降低奖励方差）
-        self.reward_weight_energy = 1.2  # 🔧 能耗权重（适度降低，保持相对重要性）
+        # 调高时延激励，弱化能耗和未命中惩罚，引导策略更关注降低端到端时延与缓存命中
+        self.reward_weight_delay = 1.3  # 🔧 时延权重（提升以更强压制高延迟）
+        self.reward_weight_energy = 0.9  # 🔧 能耗权重（适度下调，给延迟让路）
         self.reward_penalty_dropped = 0.1  # 🔧 丢弃惩罚（提高以确保完成率）
         self.completion_target = 0.88  # ✅ 务实目标（高负载下88%为合理目标）
         self.reward_weight_completion_gap = 1.0  # 🔧 温和惩罚，减少方差
         self.reward_weight_loss_ratio = 2.0  # 🔧 数据丢失率权重（降低以减少方差）
         self.cache_pressure_threshold = 0.9  # 缓存利用率软阈值（允许更高占用）
         self.reward_weight_cache_pressure = 0.5  # 🔧 更温和的缓存压力权重
-        self.reward_weight_cache_bonus = 0.4  # 命中奖励权重，鼓励缓存复用
+        self.reward_weight_cache_bonus = 0.8  # 命中奖励权重，强力鼓励缓存复用
         self.reward_weight_queue_overload = 0.01  # 🔧 降低队列过载惩罚，减少噪声
 
         # ⚠️ 已弃用参数（保留以兼容旧代码）
-        self.reward_weight_loss = 0.0      # 已移除：data_loss是时延的衍生指标
+        self.reward_weight_loss = 0.0      # 已移除：data_loss是时延的衡生指标
         self.reward_weight_completion = 0.0  # 已集成到dropped_penalty
-        # 🏆 最优：缓存权重适度提升，激励智能缓存
-        self.reward_weight_cache = 0.5  # 🏆 提升：更重视缓存策略学习（目标缓存率>65%）
+        # 缓存权重适度提升，激励智能缓存
+        self.reward_weight_cache = 0.2  # 降低未命中惩罚，避免因0命中导致奖励崩塔
         self.reward_weight_migration = 0.0
-        self.reward_weight_joint = 0.02   # 联动奖励权重（限制激进联合动作）
+        self.reward_weight_joint = 0.02   # 联动奖励权重
         self.reward_weight_remote_reject = 0.5  # 远端拒绝惩罚
+        # 边缘计算卸载奖励：大幅提高激励RSU/UAV处理
+        self.reward_weight_offload_bonus = 2.5  # 大幅提高卸载奖励，激励边缘计算
+        # 本地处理能耗惩罚：额外惩罚本地计算的高能耗
+        self.reward_weight_local_penalty = 0.8  # 本地处理额外能耗惩罚
 
         # 🎯 延时-能耗优化目标阈值（供算法动态调整）
         # 🏆 12车辆高负载场景目标（基于设计文档）

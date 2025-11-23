@@ -34,6 +34,7 @@ class RewardMetrics:
     remote_rejection_rate: float = 0.0
     rsu_offload_ratio: float = 0.0
     uav_offload_ratio: float = 0.0
+    local_offload_ratio: float = 0.0  # 本地处理占比
     cache_hit_rate: float = 0.0
     cache_miss_rate: float = 0.0
     migration_cost: float = 0.0
@@ -57,6 +58,7 @@ class RewardComponents:
     queue_penalty: float = 0.0
     remote_reject_penalty: float = 0.0
     offload_bonus: float = 0.0
+    local_penalty: float = 0.0  # 本地处理额外惩罚
     cache_penalty: float = 0.0
     cache_bonus: float = 0.0
     migration_penalty: float = 0.0
@@ -92,12 +94,14 @@ class UnifiedRewardCalculator:
         self.weight_delay = float(config.rl.reward_weight_delay)  # 延迟权重
         self.weight_energy = float(config.rl.reward_weight_energy)  # 能耗权重
         self.penalty_dropped = float(config.rl.reward_penalty_dropped)  # 任务丢弃惩罚
-        self.weight_cache = float(getattr(config.rl, "reward_weight_cache", 0.0))  # 缓存权重
+        self.weight_cache = float(getattr(config.rl, "reward_weight_cache", 0.0))
         self.weight_cache_bonus = float(getattr(config.rl, "reward_weight_cache_bonus", 0.0))
-        self.weight_migration = float(getattr(config.rl, "reward_weight_migration", 0.0))  # 迁移权重
-        self.weight_joint = float(getattr(config.rl, "reward_weight_joint", 0.05))  # 缓存-迁移联动权重
-        # 🔧 新增：远程卸载激励权重
-        self.weight_offload_bonus = float(getattr(config.rl, "reward_weight_offload_bonus", 0.15))  # 边缘计算利用奖励
+        self.weight_migration = float(getattr(config.rl, "reward_weight_migration", 0.0))
+        self.weight_joint = float(getattr(config.rl, "reward_weight_joint", 0.05))
+        # 边缘计算卸载奖励：大幅提高激励远程处理
+        self.weight_offload_bonus = float(getattr(config.rl, "reward_weight_offload_bonus", 2.5))
+        # 本地处理惩罚：额外惩罚本地计算
+        self.weight_local_penalty = float(getattr(config.rl, "reward_weight_local_penalty", 0.8))
         self.completion_target = float(getattr(config.rl, "completion_target", 0.95))
         self.weight_completion_gap = float(getattr(config.rl, "reward_weight_completion_gap", 0.0))
         self.weight_loss_ratio = float(getattr(config.rl, "reward_weight_loss_ratio", 0.0))
@@ -284,6 +288,7 @@ class UnifiedRewardCalculator:
         metrics.remote_rejection_rate = max(0.0, self._safe_float(system_metrics.get("remote_rejection_rate")))
         metrics.rsu_offload_ratio = max(0.0, self._safe_float(system_metrics.get("rsu_offload_ratio")))
         metrics.uav_offload_ratio = max(0.0, self._safe_float(system_metrics.get("uav_offload_ratio")))
+        metrics.local_offload_ratio = max(0.0, self._safe_float(system_metrics.get("local_offload_ratio", 0.0)))
 
         if cache_metrics:
             metrics.cache_hit_rate = float(max(0.0, min(1.0, self._safe_float(cache_metrics.get("hit_rate"), 0.0))))
@@ -315,6 +320,8 @@ class UnifiedRewardCalculator:
         remote_reject_penalty = self.weight_remote_reject * m.remote_rejection_rate if self.weight_remote_reject > 0.0 else 0.0
 
         offload_bonus = self.weight_offload_bonus * (m.rsu_offload_ratio + m.uav_offload_ratio) if self.weight_offload_bonus > 0.0 else 0.0
+        # 本地处理惩罚：额外惩罚本地计算的高能耗
+        local_penalty = self.weight_local_penalty * m.local_offload_ratio if self.weight_local_penalty > 0.0 else 0.0
         cache_penalty = self.weight_cache * m.cache_miss_rate if self.weight_cache > 0.0 else 0.0
         cache_bonus = self.weight_cache_bonus * m.cache_hit_rate if self.weight_cache_bonus > 0.0 else 0.0
         migration_penalty = self.weight_migration * m.migration_cost if self.weight_migration > 0.0 else 0.0
@@ -343,6 +350,7 @@ class UnifiedRewardCalculator:
             + _clip(cache_penalty)
             + _clip(migration_penalty)
             + _clip(joint_coupling_penalty)
+            + _clip(local_penalty)  # 本地处理惩罚
             - _clip(offload_bonus)
             - _clip(cache_bonus)
             - _clip(joint_bonus)
@@ -360,6 +368,7 @@ class UnifiedRewardCalculator:
             queue_penalty=queue_penalty,
             remote_reject_penalty=remote_reject_penalty,
             offload_bonus=offload_bonus,
+            local_penalty=local_penalty,  # 本地处理惩罚
             cache_penalty=cache_penalty,
             cache_bonus=cache_bonus,
             migration_penalty=migration_penalty,

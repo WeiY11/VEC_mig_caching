@@ -2,5 +2,6 @@
     "kiroAgent.configureMCP": "Disabled",
     "chatgpt.openOnStartup": true,
     "chatgpt.preferWsl": true,
-    "editor.cursorStyle": "line"
+    "editor.cursorStyle": "line",
+    "git.ignoreLimitWarning": true
 }

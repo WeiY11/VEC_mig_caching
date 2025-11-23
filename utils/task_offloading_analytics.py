@@ -261,13 +261,21 @@ class TaskOffloadingAnalytics:
         # 🔧 关键修复：step_result中的dropped_tasks是累积值，需要计算增量
         # 获取当前累积统计
         current_dropped_cumulative = int(step_result.get('dropped_tasks', 0))
+        current_cache_hits = int(step_result.get('cache_hits', 0))
+        current_cache_misses = int(step_result.get('cache_misses', 0))
         
         # 计算单步增量
         previous_dropped = self._cumulative_baseline.get('dropped_tasks', 0)
         step_dropped_increment = max(0, current_dropped_cumulative - previous_dropped)
+        prev_hits = self._cumulative_baseline.get('cache_hits', 0)
+        prev_misses = self._cumulative_baseline.get('cache_misses', 0)
+        step_cache_hits = max(0, current_cache_hits - prev_hits)
+        step_cache_misses = max(0, current_cache_misses - prev_misses)
         
         # 更新基线
         self._cumulative_baseline['dropped_tasks'] = current_dropped_cumulative
+        self._cumulative_baseline['cache_hits'] = current_cache_hits
+        self._cumulative_baseline['cache_misses'] = current_cache_misses
         
         # 提取step_result中的任务分布信息（其他字段是单步值）
         dist = TaskDistribution(
@@ -279,7 +287,7 @@ class TaskOffloadingAnalytics:
             # 注意：当前system_simulator未分离RSU和UAV，需要增强
             uav_processed=0,  # 待改进：需要从simulator分离出UAV任务数
             dropped_tasks=step_dropped_increment,  # 🔧 使用增量值而非累积值
-            rsu_cache_hits=int(step_result.get('local_cache_hits', 0)),  # 这是本地缓存
+            rsu_cache_hits=step_cache_hits,
         )
         
         # 尝试从step_result中获取更详细的统计（如果有）
@@ -291,6 +299,8 @@ class TaskOffloadingAnalytics:
             dist.rsu_cache_hits = int(step_result['rsu_cache_hits'])
         if 'rsu_cache_misses' in step_result:
             dist.rsu_cache_misses = int(step_result['rsu_cache_misses'])
+        if dist.rsu_cache_misses == 0 and step_cache_misses > 0:
+            dist.rsu_cache_misses = step_cache_misses
         
         # 更新episode统计
         self.current_episode.update_from_step(dist)

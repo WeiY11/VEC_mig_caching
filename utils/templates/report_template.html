@@ -1,0 +1,873 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="light">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>{{ algorithm }} 训练报告 - {{ generated_at }}</title>
+
+    <!-- Plotly.js -->
+    <script
+      src="https://cdn.plot.ly/plotly-2.27.0.min.js"
+      charset="utf-8"
+    ></script>
+    <!-- FontAwesome -->
+    <link
+      rel="stylesheet"
+      href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css"
+    />
+    <!-- Google Fonts -->
+    <link
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap"
+      rel="stylesheet"
+    />
+
+    <style>
+      :root {
+        /* Light Theme */
+        --primary: #4f46e5;
+        --primary-dark: #4338ca;
+        --secondary: #8b5cf6;
+        --success: #10b981;
+        --warning: #f59e0b;
+        --danger: #ef4444;
+        --info: #3b82f6;
+
+        --bg-body: #f3f4f6;
+        --bg-card: #ffffff;
+        --bg-sidebar: #ffffff;
+        --text-main: #1f2937;
+        --text-muted: #6b7280;
+        --border: #e5e7eb;
+
+        --shadow-sm: 0 1px 2px 0 rgba(0, 0, 0, 0.05);
+        --shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1),
+          0 2px 4px -1px rgba(0, 0, 0, 0.06);
+        --shadow-lg: 0 10px 15px -3px rgba(0, 0, 0, 0.1),
+          0 4px 6px -2px rgba(0, 0, 0, 0.05);
+
+        --radius: 0.75rem;
+        --transition: all 0.3s ease;
+      }
+
+      [data-theme="dark"] {
+        /* Dark Theme */
+        --primary: #6366f1;
+        --primary-dark: #4f46e5;
+        --secondary: #a78bfa;
+        --bg-body: #111827;
+        --bg-card: #1f2937;
+        --bg-sidebar: #1f2937;
+        --text-main: #f9fafb;
+        --text-muted: #9ca3af;
+        --border: #374151;
+      }
+
+      * {
+        margin: 0;
+        padding: 0;
+        box-sizing: border-box;
+      }
+
+      body {
+        font-family: "Inter", sans-serif;
+        background-color: var(--bg-body);
+        color: var(--text-main);
+        transition: var(--transition);
+        display: flex;
+        min-height: 100vh;
+      }
+
+      /* Sidebar */
+      .sidebar {
+        width: 260px;
+        background-color: var(--bg-sidebar);
+        border-right: 1px solid var(--border);
+        position: fixed;
+        height: 100vh;
+        overflow-y: auto;
+        transition: var(--transition);
+        z-index: 50;
+        display: flex;
+        flex-direction: column;
+      }
+
+      .sidebar-header {
+        padding: 1.5rem;
+        border-bottom: 1px solid var(--border);
+        display: flex;
+        align-items: center;
+        gap: 0.75rem;
+      }
+
+      .logo-icon {
+        width: 32px;
+        height: 32px;
+        background: linear-gradient(135deg, var(--primary), var(--secondary));
+        border-radius: 8px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        color: white;
+        font-weight: bold;
+      }
+
+      .app-title {
+        font-weight: 700;
+        font-size: 1.1rem;
+        color: var(--text-main);
+      }
+
+      .nav-links {
+        padding: 1.5rem 1rem;
+        flex: 1;
+      }
+
+      .nav-item {
+        display: flex;
+        align-items: center;
+        padding: 0.75rem 1rem;
+        color: var(--text-muted);
+        text-decoration: none;
+        border-radius: var(--radius);
+        margin-bottom: 0.25rem;
+        transition: var(--transition);
+        font-weight: 500;
+      }
+
+      .nav-item:hover,
+      .nav-item.active {
+        background-color: rgba(79, 70, 229, 0.1);
+        color: var(--primary);
+      }
+
+      .nav-item i {
+        margin-right: 0.75rem;
+        width: 20px;
+        text-align: center;
+      }
+
+      .sidebar-footer {
+        padding: 1rem;
+        border-top: 1px solid var(--border);
+        font-size: 0.875rem;
+        color: var(--text-muted);
+        text-align: center;
+      }
+
+      /* Main Content */
+      .main-content {
+        flex: 1;
+        margin-left: 260px;
+        padding: 2rem;
+        transition: var(--transition);
+      }
+
+      .header {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        margin-bottom: 2rem;
+      }
+
+      .page-title h1 {
+        font-size: 1.875rem;
+        font-weight: 700;
+        margin-bottom: 0.5rem;
+      }
+
+      .page-title p {
+        color: var(--text-muted);
+      }
+
+      .actions {
+        display: flex;
+        gap: 1rem;
+      }
+
+      .btn {
+        padding: 0.5rem 1rem;
+        border-radius: var(--radius);
+        font-weight: 500;
+        cursor: pointer;
+        border: none;
+        display: flex;
+        align-items: center;
+        gap: 0.5rem;
+        transition: var(--transition);
+        font-size: 0.875rem;
+      }
+
+      .btn-primary {
+        background-color: var(--primary);
+        color: white;
+      }
+
+      .btn-primary:hover {
+        background-color: var(--primary-dark);
+      }
+
+      .btn-outline {
+        background-color: transparent;
+        border: 1px solid var(--border);
+        color: var(--text-main);
+      }
+
+      .btn-outline:hover {
+        background-color: var(--bg-card);
+        border-color: var(--text-muted);
+      }
+
+      /* Cards */
+      .card {
+        background-color: var(--bg-card);
+        border-radius: var(--radius);
+        padding: 1.5rem;
+        box-shadow: var(--shadow);
+        margin-bottom: 1.5rem;
+        border: 1px solid var(--border);
+      }
+
+      .card-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        margin-bottom: 1.5rem;
+      }
+
+      .card-title {
+        font-size: 1.1rem;
+        font-weight: 600;
+        color: var(--text-main);
+        display: flex;
+        align-items: center;
+        gap: 0.5rem;
+      }
+
+      /* Metrics Grid */
+      .metrics-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+        gap: 1.5rem;
+        margin-bottom: 2rem;
+      }
+
+      .metric-card {
+        background-color: var(--bg-card);
+        padding: 1.5rem;
+        border-radius: var(--radius);
+        box-shadow: var(--shadow);
+        border: 1px solid var(--border);
+        display: flex;
+        flex-direction: column;
+      }
+
+      .metric-icon {
+        width: 40px;
+        height: 40px;
+        border-radius: 10px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        margin-bottom: 1rem;
+        font-size: 1.25rem;
+      }
+
+      .metric-label {
+        color: var(--text-muted);
+        font-size: 0.875rem;
+        font-weight: 500;
+        margin-bottom: 0.25rem;
+      }
+
+      .metric-value {
+        font-size: 1.5rem;
+        font-weight: 700;
+        color: var(--text-main);
+      }
+
+      .metric-trend {
+        display: flex;
+        align-items: center;
+        gap: 0.25rem;
+        font-size: 0.875rem;
+        margin-top: 0.5rem;
+        font-weight: 500;
+      }
+
+      .trend-up {
+        color: var(--success);
+      }
+      .trend-down {
+        color: var(--danger);
+      }
+      .trend-neutral {
+        color: var(--text-muted);
+      }
+
+      /* Tables */
+      .table-container {
+        overflow-x: auto;
+      }
+
+      table {
+        width: 100%;
+        border-collapse: collapse;
+      }
+
+      th {
+        text-align: left;
+        padding: 1rem;
+        background-color: rgba(0, 0, 0, 0.02);
+        color: var(--text-muted);
+        font-weight: 600;
+        font-size: 0.875rem;
+        border-bottom: 1px solid var(--border);
+      }
+
+      td {
+        padding: 1rem;
+        border-bottom: 1px solid var(--border);
+        color: var(--text-main);
+        font-size: 0.9rem;
+      }
+
+      tr:last-child td {
+        border-bottom: none;
+      }
+
+      /* Badges */
+      .badge {
+        padding: 0.25rem 0.75rem;
+        border-radius: 9999px;
+        font-size: 0.75rem;
+        font-weight: 600;
+        display: inline-block;
+      }
+
+      .badge-success {
+        background-color: rgba(16, 185, 129, 0.1);
+        color: var(--success);
+      }
+      .badge-warning {
+        background-color: rgba(245, 158, 11, 0.1);
+        color: var(--warning);
+      }
+      .badge-danger {
+        background-color: rgba(239, 68, 68, 0.1);
+        color: var(--danger);
+      }
+      .badge-info {
+        background-color: rgba(59, 130, 246, 0.1);
+        color: var(--info);
+      }
+
+      /* Insights */
+      .insight-box {
+        padding: 1rem;
+        border-radius: var(--radius);
+        margin-bottom: 1rem;
+        border-left: 4px solid;
+      }
+
+      .insight-success {
+        background-color: rgba(16, 185, 129, 0.05);
+        border-color: var(--success);
+      }
+      .insight-warning {
+        background-color: rgba(245, 158, 11, 0.05);
+        border-color: var(--warning);
+      }
+      .insight-danger {
+        background-color: rgba(239, 68, 68, 0.05);
+        border-color: var(--danger);
+      }
+
+      .insight-title {
+        font-weight: 600;
+        margin-bottom: 0.5rem;
+        display: flex;
+        align-items: center;
+        gap: 0.5rem;
+      }
+
+      /* Tabs */
+      .tab-nav {
+        display: flex;
+        gap: 1rem;
+        border-bottom: 1px solid var(--border);
+        margin-bottom: 1.5rem;
+        overflow-x: auto;
+      }
+
+      .tab-btn {
+        padding: 0.75rem 1rem;
+        background: none;
+        border: none;
+        border-bottom: 2px solid transparent;
+        color: var(--text-muted);
+        font-weight: 500;
+        cursor: pointer;
+        transition: var(--transition);
+        white-space: nowrap;
+      }
+
+      .tab-btn:hover {
+        color: var(--primary);
+      }
+
+      .tab-btn.active {
+        color: var(--primary);
+        border-bottom-color: var(--primary);
+      }
+
+      .tab-content {
+        display: none;
+        animation: fadeIn 0.3s ease;
+      }
+
+      .tab-content.active {
+        display: block;
+      }
+
+      @keyframes fadeIn {
+        from { opacity: 0; transform: translateY(5px); }
+        to { opacity: 1; transform: translateY(0); }
+      }
+
+      /* Responsive */
+      @media (max-width: 1024px) {
+        .sidebar {
+          transform: translateX(-100%);
+        }
+        .sidebar.active {
+          transform: translateX(0);
+        }
+        .main-content {
+          margin-left: 0;
+        }
+        .menu-toggle {
+          display: block;
+        }
+      }
+
+      .menu-toggle {
+        display: none;
+        font-size: 1.5rem;
+        cursor: pointer;
+        margin-right: 1rem;
+      }
+    </style>
+  </head>
+  <body>
+    <!-- Sidebar -->
+    <aside class="sidebar" id="sidebar">
+      <div class="sidebar-header">
+        <div class="logo-icon">AI</div>
+        <div class="app-title">VEC Training</div>
+      </div>
+      <nav class="nav-links">
+        <a href="#overview" class="nav-item active"><i class="fas fa-home"></i> 总览</a>
+        <a href="#smart-analysis" class="nav-item"><i class="fas fa-brain"></i> 智能分析</a>
+        <a href="#training-curves" class="nav-item"><i class="fas fa-chart-line"></i> 训练曲线</a>
+        <a href="#performance-metrics" class="nav-item"><i class="fas fa-tachometer-alt"></i> 性能指标</a>
+        <a href="#system-stats" class="nav-item"><i class="fas fa-server"></i> 系统统计</a>
+      </nav>
+      <div class="sidebar-footer">Generated by Antigravity</div>
+    </aside>
+
+    <!-- Main Content -->
+    <main class="main-content">
+      <div class="header">
+        <div style="display: flex; align-items: center">
+          <div class="menu-toggle" id="menuToggle">
+            <i class="fas fa-bars"></i>
+          </div>
+          <div class="page-title">
+            <h1>{{ algorithm }} 训练报告</h1>
+            <p>生成时间: {{ generated_at }}</p>
+          </div>
+        </div>
+        <div class="actions">
+          <button class="btn btn-outline" id="themeToggle">
+            <i class="fas fa-moon"></i> 深色模式
+          </button>
+          <button class="btn btn-primary" onclick="window.print()">
+            <i class="fas fa-print"></i> 打印报告
+          </button>
+        </div>
+      </div>
+
+      <!-- 1. Overview Section -->
+      <section id="overview">
+        <div class="metrics-grid">
+          <div class="metric-card">
+            <div class="metric-icon" style="background-color: rgba(79, 70, 229, 0.1); color: var(--primary);">
+              <i class="fas fa-layer-group"></i>
+            </div>
+            <div class="metric-label">训练轮次</div>
+            <div class="metric-value">{{ num_episodes }}</div>
+            <div class="metric-trend trend-neutral">
+              <i class="fas fa-clock"></i> {{ training_time_hours }} 小时
+            </div>
+          </div>
+
+          <div class="metric-card">
+            <div class="metric-icon" style="background-color: rgba(16, 185, 129, 0.1); color: var(--success);">
+              <i class="fas fa-trophy"></i>
+            </div>
+            <div class="metric-label">最终平均奖励</div>
+            <div class="metric-value">{{ "%.2f"|format(final_perf.avg_episode_reward) }}</div>
+            <div class="metric-trend {{ 'trend-up' if reward_improvement > 0 else 'trend-down' }}">
+              <i class="fas fa-arrow-{{ 'up' if reward_improvement > 0 else 'down' }}"></i>
+              {{ "%.1f"|format(reward_improvement) }}% 提升
+            </div>
+          </div>
+
+          <div class="metric-card">
+            <div class="metric-icon" style="background-color: rgba(245, 158, 11, 0.1); color: var(--warning);">
+              <i class="fas fa-stopwatch"></i>
+            </div>
+            <div class="metric-label">平均时延</div>
+            <div class="metric-value">{{ "%.3f"|format(final_perf.avg_delay) }}s</div>
+            <div class="metric-trend trend-neutral">目标: < 1.0s</div>
+          </div>
+
+          <div class="metric-card">
+            <div class="metric-icon" style="background-color: rgba(59, 130, 246, 0.1); color: var(--info);">
+              <i class="fas fa-check-circle"></i>
+            </div>
+            <div class="metric-label">任务完成率</div>
+            <div class="metric-value">{{ "%.1f"|format(final_perf.avg_completion * 100) }}%</div>
+            <div class="metric-trend {{ 'trend-up' if final_perf.avg_completion > 0.9 else 'trend-down' }}">
+              {{ "优秀" if final_perf.avg_completion > 0.95 else "良好" if final_perf.avg_completion > 0.9 else "需改进" }}
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- 2. Smart Analysis -->
+      <section id="smart-analysis" class="card">
+        <div class="card-header">
+          <div class="card-title">
+            <i class="fas fa-brain"></i> 智能分析洞察
+          </div>
+        </div>
+
+        {% for insight in smart_insights %}
+        <div class="insight-box insight-{{ insight.level }}">
+          <div class="insight-title">
+            <i class="fas fa-{{ 'check-circle' if insight.level == 'success' else 'exclamation-triangle' if insight.level == 'warning' else 'times-circle' }}"></i>
+            {{ insight.title }}
+          </div>
+          <p>{{ insight.description }}</p>
+        </div>
+        {% endfor %}
+        
+        {% if recommendations %}
+        <div class="insight-box insight-info" style="border-left-color: var(--info); background-color: rgba(59, 130, 246, 0.05);">
+          <div class="insight-title">
+            <i class="fas fa-lightbulb"></i> 优化建议
+          </div>
+          <ul style="margin-left: 1.5rem; margin-top: 0.5rem">
+            {% for rec in recommendations %}
+            <li>{{ rec }}</li>
+            {% endfor %}
+          </ul>
+        </div>
+        {% endif %}
+      </section>
+
+      <!-- 3. Training Curves (Tabbed) -->
+      <section id="training-curves" class="card">
+        <div class="card-header">
+          <div class="card-title">
+            <i class="fas fa-chart-line"></i> 训练过程可视化
+          </div>
+        </div>
+
+        <div class="tab-nav">
+          <button class="tab-btn active" onclick="switchTab('overview-charts')">核心指标</button>
+          <button class="tab-btn" onclick="switchTab('offload-charts')">任务卸载</button>
+          <button class="tab-btn" onclick="switchTab('migration-charts')">迁移分析</button>
+          <button class="tab-btn" onclick="switchTab('system-charts')">系统状态</button>
+        </div>
+
+        <!-- Tab 1: Overview -->
+        <div id="overview-charts" class="tab-content active">
+            <div id="rewardChart" style="width:100%; height:400px; margin-bottom: 2rem;"></div>
+            <div id="metricsChart" style="width:100%; height:400px;"></div>
+        </div>
+
+        <!-- Tab 2: Offloading -->
+        <div id="offload-charts" class="tab-content">
+            <div id="offloadChart" style="width:100%; height:450px;"></div>
+        </div>
+
+        <!-- Tab 3: Migration -->
+        <div id="migration-charts" class="tab-content">
+            <div id="migrationChart" style="width:100%; height:450px;"></div>
+        </div>
+
+        <!-- Tab 4: System Stats -->
+        <div id="system-charts" class="tab-content">
+            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 2rem;">
+                <div id="cacheChart" style="width:100%; height:400px;"></div>
+                <div id="loadChart" style="width:100%; height:400px;"></div>
+            </div>
+        </div>
+      </section>
+
+      <!-- 4. Detailed Metrics Table -->
+      <section id="performance-metrics" class="card">
+        <div class="card-header">
+          <div class="card-title">
+            <i class="fas fa-table"></i> 详细性能数据
+          </div>
+        </div>
+        <div class="table-container">
+          <table>
+            <thead>
+              <tr>
+                <th>指标</th>
+                <th>平均值</th>
+                <th>标准差</th>
+                <th>最小值</th>
+                <th>最大值</th>
+                <th>评级</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for metric in detailed_metrics %}
+              <tr>
+                <td>{{ metric.name }}</td>
+                <td>{{ metric.mean }}</td>
+                <td>{{ metric.std }}</td>
+                <td>{{ metric.min }}</td>
+                <td>{{ metric.max }}</td>
+                <td><span class="badge badge-{{ metric.rating_color }}">{{ metric.rating }}</span></td>
+              </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <!-- 5. System Stats -->
+      <section id="system-stats" class="metrics-grid">
+        <div class="card" style="margin-bottom: 0">
+          <div class="card-header">
+            <div class="card-title">缓存性能</div>
+          </div>
+          <div style="text-align: center">
+            <div style="font-size: 2rem; font-weight: bold; color: var(--primary);">{{ "%.1f"|format(cache_stats.hit_rate * 100) }}%</div>
+            <div style="color: var(--text-muted)">平均命中率</div>
+          </div>
+        </div>
+
+        <div class="card" style="margin-bottom: 0">
+          <div class="card-header">
+            <div class="card-title">卸载比例</div>
+          </div>
+          <div style="text-align: center">
+            <div style="font-size: 2rem; font-weight: bold; color: var(--success);">{{ "%.1f"|format(offload_stats.ratio * 100) }}%</div>
+            <div style="color: var(--text-muted)">远程执行比例</div>
+          </div>
+        </div>
+
+        <div class="card" style="margin-bottom: 0">
+          <div class="card-header">
+            <div class="card-title">RSU利用率</div>
+          </div>
+          <div style="text-align: center">
+            <div style="font-size: 2rem; font-weight: bold; color: var(--warning);">{{ "%.1f"|format(rsu_stats.utilization * 100) }}%</div>
+            <div style="color: var(--text-muted)">平均负载</div>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <script>
+      // Tab Switching Logic
+      function switchTab(tabId) {
+          // Hide all contents
+          document.querySelectorAll('.tab-content').forEach(el => el.classList.remove('active'));
+          // Deactivate all buttons
+          document.querySelectorAll('.tab-btn').forEach(el => el.classList.remove('active'));
+          
+          // Activate selected
+          document.getElementById(tabId).classList.add('active');
+          // Find button that triggered this and activate it
+          const buttons = document.querySelectorAll('.tab-btn');
+          buttons.forEach(btn => {
+            if(btn.getAttribute('onclick').includes(tabId)) {
+                btn.classList.add('active');
+            }
+          });
+          
+          // Trigger Plotly resize
+          window.dispatchEvent(new Event('resize'));
+      }
+
+      // Theme Toggle
+      const themeToggle = document.getElementById('themeToggle');
+      const html = document.documentElement;
+
+      if (localStorage.getItem('theme') === 'dark') {
+          html.setAttribute('data-theme', 'dark');
+          themeToggle.innerHTML = '<i class="fas fa-sun"></i> 浅色模式';
+      }
+
+      themeToggle.addEventListener('click', () => {
+          if (html.getAttribute('data-theme') === 'dark') {
+              html.setAttribute('data-theme', 'light');
+              localStorage.setItem('theme', 'light');
+              themeToggle.innerHTML = '<i class="fas fa-moon"></i> 深色模式';
+          } else {
+              html.setAttribute('data-theme', 'dark');
+              localStorage.setItem('theme', 'dark');
+              themeToggle.innerHTML = '<i class="fas fa-sun"></i> 浅色模式';
+          }
+          setTimeout(() => window.dispatchEvent(new Event('resize')), 100);
+      });
+
+      // Mobile Menu
+      const menuToggle = document.getElementById('menuToggle');
+      const sidebar = document.getElementById('sidebar');
+
+      menuToggle.addEventListener('click', () => {
+          sidebar.classList.toggle('active');
+      });
+
+      document.addEventListener('click', (e) => {
+          if (window.innerWidth <= 1024) {
+              if (!sidebar.contains(e.target) && !menuToggle.contains(e.target)) {
+                  sidebar.classList.remove('active');
+              }
+          }
+      });
+
+      // Render Charts using Plotly
+      const rewardData = {{ chart_data.rewards | tojson }};
+      const episodes = Array.from({length: rewardData.length}, (_, i) => i + 1);
+      const commonLayout = {
+            paper_bgcolor: 'rgba(0,0,0,0)',
+            plot_bgcolor: 'rgba(0,0,0,0)',
+            font: { color: getComputedStyle(document.body).getPropertyValue('--text-main') },
+            xaxis: { title: 'Episode', gridcolor: getComputedStyle(document.body).getPropertyValue('--border') },
+            margin: { t: 40, r: 20, l: 50, b: 40 }
+        };
+
+      const traceReward = {
+          x: episodes,
+          y: rewardData,
+          type: 'scatter',
+          mode: 'lines',
+          name: 'Episode Reward',
+          line: {color: '#4f46e5', width: 2}
+      };
+
+      Plotly.newPlot('rewardChart', [traceReward], { ...commonLayout, title: '训练奖励曲线', yaxis: { title: 'Reward', gridcolor: getComputedStyle(document.body).getPropertyValue('--border') } }, {responsive: true});
+
+      // Metrics Chart
+      const delayData = {{ chart_data.delay | tojson }};
+      const energyData = {{ chart_data.energy | tojson }};
+
+      const traceDelay = {
+          x: episodes,
+          y: delayData,
+          type: 'scatter',
+          mode: 'lines',
+          name: 'Avg Delay (s)',
+          line: {color: '#f59e0b', width: 2},
+          yaxis: 'y1'
+      };
+
+      const traceEnergy = {
+          x: episodes,
+          y: energyData,
+          type: 'scatter',
+          mode: 'lines',
+          name: 'Total Energy (J)',
+          line: {color: '#10b981', width: 2},
+          yaxis: 'y2'
+      };
+
+      Plotly.newPlot('metricsChart', [traceDelay, traceEnergy], {
+          ...commonLayout,
+          title: '时延与能耗变化',
+          yaxis: { title: 'Delay (s)', side: 'left', gridcolor: getComputedStyle(document.body).getPropertyValue('--border') },
+          yaxis2: { title: 'Energy (J)', side: 'right', overlaying: 'y', showgrid: false },
+          legend: { x: 0, y: 1.1, orientation: 'h' }
+      }, {responsive: true});
+
+      // Offloading Chart
+      const offloadLocal = {{ chart_data.offload_local | tojson }};
+      const offloadRsu = {{ chart_data.offload_rsu | tojson }};
+      const offloadUav = {{ chart_data.offload_uav | tojson }};
+      
+      Plotly.newPlot('offloadChart', [
+          { x: episodes, y: offloadLocal, stackgroup: 'one', name: 'Local', fillcolor: '#9ca3af' },
+          { x: episodes, y: offloadRsu, stackgroup: 'one', name: 'RSU', fillcolor: '#4f46e5' },
+          { x: episodes, y: offloadUav, stackgroup: 'one', name: 'UAV', fillcolor: '#10b981' }
+      ], { ...commonLayout, title: '任务卸载分布', yaxis: { title: 'Ratio', range: [0, 1], gridcolor: getComputedStyle(document.body).getPropertyValue('--border') } }, {responsive: true});
+
+      // Migration Chart
+      const migSuccess = {{ chart_data.migration_success | tojson }};
+      const migCost = {{ chart_data.migration_cost | tojson }};
+      
+      Plotly.newPlot('migrationChart', [
+          { x: episodes, y: migSuccess, type: 'scatter', name: 'Success Rate', line: {color: '#10b981'} },
+          { x: episodes, y: migCost, type: 'scatter', name: 'Avg Cost', line: {color: '#ef4444'}, yaxis: 'y2' }
+      ], {
+          ...commonLayout,
+          title: '迁移性能分析',
+          yaxis: { title: 'Success Rate', side: 'left', range: [0, 1], gridcolor: getComputedStyle(document.body).getPropertyValue('--border') },
+          yaxis2: { title: 'Cost', side: 'right', overlaying: 'y', showgrid: false },
+          legend: { x: 0, y: 1.1, orientation: 'h' }
+      }, {responsive: true});
+
+      // Cache Chart
+      const cacheHit = {{ chart_data.cache_hit | tojson }};
+      const cacheUtil = {{ chart_data.cache_util | tojson }};
+      
+      Plotly.newPlot('cacheChart', [
+          { x: episodes, y: cacheHit, type: 'scatter', name: 'Hit Rate', line: {color: '#8b5cf6'} },
+          { x: episodes, y: cacheUtil, type: 'scatter', name: 'Utilization', line: {color: '#f59e0b', dash: 'dot'} }
+      ], { ...commonLayout, title: '缓存深度洞察', yaxis: { title: 'Ratio', range: [0, 1], gridcolor: getComputedStyle(document.body).getPropertyValue('--border') } }, {responsive: true});
+
+      // Load Chart
+      const rsuHotspot = {{ chart_data.rsu_hotspot | tojson }};
+      const queueOverload = {{ chart_data.queue_overload | tojson }};
+      
+      Plotly.newPlot('loadChart', [
+          { x: episodes, y: rsuHotspot, type: 'scatter', name: 'RSU Peak Load', line: {color: '#ef4444'} },
+          { x: episodes, y: queueOverload, type: 'bar', name: 'Overload Events', marker: {color: '#fca5a5'}, yaxis: 'y2', opacity: 0.5 }
+      ], {
+          ...commonLayout,
+          title: '负载均衡与热点',
+          yaxis: { title: 'Peak Load', side: 'left', gridcolor: getComputedStyle(document.body).getPropertyValue('--border') },
+          yaxis2: { title: 'Events', side: 'right', overlaying: 'y', showgrid: false },
+          legend: { x: 0, y: 1.1, orientation: 'h' }
+      }, {responsive: true});
+
+      // Update charts on theme change
+      themeToggle.addEventListener('click', () => {
+          setTimeout(() => {
+              const textColor = getComputedStyle(document.body).getPropertyValue('--text-main');
+              const gridColor = getComputedStyle(document.body).getPropertyValue('--border');
+              
+              const update = {
+                  font: { color: textColor },
+                  'xaxis.gridcolor': gridColor,
+                  'yaxis.gridcolor': gridColor,
+                  'yaxis2.gridcolor': gridColor
+              };
+              
+              ['rewardChart', 'metricsChart', 'offloadChart', 'migrationChart', 'cacheChart', 'loadChart'].forEach(id => {
+                    Plotly.relayout(id, update);
+                });
+          }, 100);
+      });
+    </script>
+  </body>
+</html>

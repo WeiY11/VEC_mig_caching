@@ -183,6 +183,60 @@ def _maybe_apply_reward_smoothing_from_env() -> None:
     except Exception:
         pass
 
+
+def _apply_reward_overrides_from_env() -> None:
+    """Allow quick reward/target retuning via environment variables for hard scenarios."""
+    latency_target = os.environ.get("RL_LATENCY_TARGET")
+    energy_target = os.environ.get("RL_ENERGY_TARGET")
+    weight_overrides = {
+        "RL_WEIGHT_DELAY": "reward_weight_delay",
+        "RL_WEIGHT_ENERGY": "reward_weight_energy",
+        "RL_WEIGHT_CACHE": "reward_weight_cache",
+        "RL_WEIGHT_CACHE_PRESSURE": "reward_weight_cache_pressure",
+        "RL_WEIGHT_MIGRATION": "reward_weight_migration",
+        "RL_WEIGHT_QUEUE_OVERLOAD": "reward_weight_queue_overload",
+        "RL_WEIGHT_REMOTE_REJECT": "reward_weight_remote_reject",
+    }
+
+    def _try_set(env_key: str, attr: str) -> None:
+        val = os.environ.get(env_key)
+        if not val:
+            return
+        try:
+            setattr(config.rl, attr, float(val))
+            print(f"[RewardOverride] {attr} <- {val}")
+        except Exception:
+            pass
+
+    for env_key, attr in weight_overrides.items():
+        _try_set(env_key, attr)
+
+    # Targets need to sync with the reward calculator singletons
+    target_changed = False
+    try:
+        if latency_target is not None:
+            config.rl.latency_target = float(latency_target)
+            target_changed = True
+            print(f"[RewardOverride] latency_target <- {latency_target}")
+    except Exception:
+        pass
+    try:
+        if energy_target is not None:
+            config.rl.energy_target = float(energy_target)
+            target_changed = True
+            print(f"[RewardOverride] energy_target <- {energy_target}")
+    except Exception:
+        pass
+    if target_changed:
+        try:
+            update_reward_targets(
+                latency_target=config.rl.latency_target,
+                energy_target=config.rl.energy_target,
+            )
+        except Exception:
+            # keep training even if sync fails
+            pass
+
 def _build_scenario_config() -> Dict[str, Any]:
     """构建模拟环境配置，允许通过环境变量覆盖默认值"""
     # 🔧 支持从环境变量覆盖任务到达率（用于参数敏感性分析）
@@ -663,6 +717,10 @@ class SingleAgentTrainingEnvironment:
         if self.algorithm == "DDPG":
             self.agent_env = DDPGEnvironment(num_vehicles, num_rsus, num_uavs)
         elif self.algorithm == "TD3":
+            # TD3默认启用中央资源模式（可通过环境变量CENTRAL_RESOURCE=0禁用）
+            if not self.central_resource_enabled:
+                central_env_override = os.environ.get('CENTRAL_RESOURCE', '1')  # 默认启用
+                self.central_resource_enabled = central_env_override.strip() in {'1', 'true', 'True'}
             self.agent_env = TD3Environment(
                 num_vehicles,
                 num_rsus,
@@ -672,7 +730,14 @@ class SingleAgentTrainingEnvironment:
         elif self.algorithm == "TD3_LATENCY_ENERGY":
             self.agent_env = TD3LatencyEnergyEnvironment(num_vehicles, num_rsus, num_uavs)
         elif self.algorithm == "CAM_TD3":
-            self.agent_env = CAMTD3Environment(num_vehicles, num_rsus, num_uavs)
+            # CAM_TD3默认启用中央资源模式（可通过环境变量CENTRAL_RESOURCE=0禁用）
+            if not self.central_resource_enabled:
+                central_env_override = os.environ.get('CENTRAL_RESOURCE', '1')  # 默认启用
+                self.central_resource_enabled = central_env_override.strip() in {'1', 'true', 'True'}
+            self.agent_env = CAMTD3Environment(
+                num_vehicles, num_rsus, num_uavs,
+                use_central_resource=self.central_resource_enabled
+            )
         elif self.algorithm == "DQN":
             self.agent_env = DQNEnvironment(num_vehicles, num_rsus, num_uavs)
         elif self.algorithm == "PPO":
@@ -799,6 +864,10 @@ class SingleAgentTrainingEnvironment:
         self._energy_target_ema = self._dynamic_energy_target
         self._energy_target_warmup = max(40, int(config.experiment.num_episodes * 0.1))
         self._last_energy_target_update = 0
+        # 自适应延迟目标（高负载场景自动放宽，避免奖励饱和）
+        self._dynamic_latency_target = float(getattr(config.rl, 'latency_target', 0.4))
+        self._delay_target_ema = self._dynamic_latency_target
+        self._last_delay_target_update = 0
         self._reward_smoothing_alpha = float(getattr(config.rl, 'reward_smooth_alpha', 0.35))
         self._reward_ema_delay: Optional[float] = None
         self._reward_ema_energy: Optional[float] = None
@@ -1009,13 +1078,34 @@ class SingleAgentTrainingEnvironment:
         target = self._dynamic_energy_target
         ema = self._energy_target_ema
         if ema > target * 1.2:
-            new_target = min(ema * 0.95, target * 1.8)
+            new_target = min(ema * 0.95, target * 3.0)
             self._dynamic_energy_target = new_target
             self._last_energy_target_update = episode
             update_reward_targets(energy_target=new_target)
             print(
-                f"⚙️ 能耗EMA {ema:.1f}J 超过目标 {target:.1f}J，"
-                f"自动上调奖励阈值 -> {new_target:.1f}J (Episode {episode})"
+                f"[DynamicTarget] Energy EMA {ema:.1f}J > target {target:.1f}J -> {new_target:.1f}J (Episode {episode})"
+            )
+
+    def _maybe_update_dynamic_latency_target(self, episode: int, episode_delay: float) -> None:
+        """根据实际时延自动放宽目标，避免高负载场景奖励饱和。"""
+        if episode_delay <= 0:
+            return
+        decay = 0.9
+        self._delay_target_ema = decay * self._delay_target_ema + (1.0 - decay) * episode_delay
+        warmup = max(20, int(config.experiment.num_episodes * 0.05))
+        if episode < warmup:
+            return
+        if episode - self._last_delay_target_update < 5:
+            return
+        target = self._dynamic_latency_target
+        ema = self._delay_target_ema
+        if ema > target * 1.2:
+            new_target = min(ema * 0.95, target * 3.0)
+            self._dynamic_latency_target = new_target
+            self._last_delay_target_update = episode
+            update_reward_targets(latency_target=new_target)
+            print(
+                f"[DynamicTarget] Delay EMA {ema:.3f}s > target {target:.3f}s -> {new_target:.3f}s (Episode {episode})"
             )
 
     def reset_environment(self) -> np.ndarray:
@@ -1851,6 +1941,14 @@ class SingleAgentTrainingEnvironment:
             episode,
             float(system_metrics.get('total_energy_consumption', 0.0) or 0.0)
         )
+        self._maybe_update_dynamic_latency_target(
+            episode,
+            float(system_metrics.get('avg_task_delay', 0.0) or 0.0)
+        )
+        
+        # 调用CAM-TD3 episode结束回调，更新融合策略
+        if isinstance(self.agent_env, CAMTD3Environment) and hasattr(self.agent_env, 'on_episode_end'):
+            self.agent_env.on_episode_end(episode_reward)
         
         return {
             'episode_reward': episode_reward,
@@ -2304,6 +2402,9 @@ def train_single_algorithm(algorithm: str, num_episodes: Optional[int] = None, e
     # 使用配置中的默认值
     if num_episodes is None:
         num_episodes = config.experiment.num_episodes
+
+    # 允许用环境变量快速重设奖励权重/目标，便于高负载场景收敛
+    _apply_reward_overrides_from_env()
     
     # 🔧 自动调整评估间隔和保存间隔
     def auto_adjust_intervals(total_episodes: int):
@@ -3207,7 +3308,7 @@ def compare_single_algorithms(algorithms: List[str], num_episodes: Optional[int]
 def main():
     """主函数"""
     parser = argparse.ArgumentParser(description='单智能体算法训练脚本')
-    parser.add_argument('--algorithm', type=str, choices=['DDPG', 'TD3', 'TD3-LE', 'TD3_LE', 'TD3_LATENCY_ENERGY', 'DQN', 'PPO', 'SAC'],
+    parser.add_argument('--algorithm', type=str, choices=['DDPG', 'TD3', 'TD3-LE', 'TD3_LE', 'TD3_LATENCY_ENERGY', 'DQN', 'PPO', 'SAC', 'CAM_TD3'],
                        help='选择训练算法')
     parser.add_argument('--episodes', type=int, default=None, help=f'训练轮次 (默认: {config.experiment.num_episodes})')
     parser.add_argument('--eval_interval', type=int, default=None, help=f'评估间隔 (默认: {config.experiment.eval_interval})')

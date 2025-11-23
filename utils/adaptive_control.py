@@ -8,6 +8,7 @@ import numpy as np
 from typing import Dict, List, Tuple, Optional
 import time
 from collections import defaultdict
+import os
 # 🔧 修复：导入统一时间管理器
 from .unified_time_manager import get_simulation_time
 
@@ -686,7 +687,11 @@ def map_agent_actions_to_params(agent_actions: np.ndarray) -> Tuple[Dict, Dict, 
         agent_actions = np.pad(agent_actions, (0, 10 - len(agent_actions)), mode='constant', constant_values=0.0)
 
     clipped_actions = np.clip(agent_actions, -1.0, 1.0)
-    scaled_actions = clipped_actions * 0.6  # 压缩幅度，减弱极端联动动作
+    try:
+        action_scale = float(os.environ.get("CACHE_ACTION_SCALE", 1.0))
+    except Exception:
+        action_scale = 1.0
+    scaled_actions = clipped_actions * action_scale  # 放大可控幅度，提升缓存/迁移可调性
 
     def _map_to_range(value: float, low: float, high: float) -> float:
         value = np.clip(value, -1.0, 1.0)
