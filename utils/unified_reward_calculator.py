@@ -323,7 +323,10 @@ class UnifiedRewardCalculator:
         # 本地处理惩罚：额外惩罚本地计算的高能耗
         local_penalty = self.weight_local_penalty * m.local_offload_ratio if self.weight_local_penalty > 0.0 else 0.0
         cache_penalty = self.weight_cache * m.cache_miss_rate if self.weight_cache > 0.0 else 0.0
+        # 🚀 增强：大幅提高缓存命中奖励，使24%命中率带来显著收益
         cache_bonus = self.weight_cache_bonus * m.cache_hit_rate if self.weight_cache_bonus > 0.0 else 0.0
+        # 🚀 增强：奖励迁移成功，而不是仅惩罚成本
+        migration_bonus = 0.5 * m.migration_effectiveness if m.migration_effectiveness > 0.5 else 0.0
         migration_penalty = self.weight_migration * m.migration_cost if self.weight_migration > 0.0 else 0.0
 
         joint_bonus = 0.0
@@ -353,6 +356,7 @@ class UnifiedRewardCalculator:
             + _clip(local_penalty)  # 本地处理惩罚
             - _clip(offload_bonus)
             - _clip(cache_bonus)
+            - _clip(migration_bonus)  # 🚀 迁移成功奖励
             - _clip(joint_bonus)
         )
         total_cost = float(np.clip(total_cost, -self.total_cost_clip, self.total_cost_clip))

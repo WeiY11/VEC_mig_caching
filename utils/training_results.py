@@ -10,6 +10,7 @@ from typing import Dict, List, Any, Optional
 import numpy as np
 import matplotlib.pyplot as plt
 from pathlib import Path
+from config import config
 
 
 def generate_timestamp() -> str:
@@ -55,6 +56,11 @@ def save_single_training_results(
         "timestamp": generate_timestamp(),
         "episode_rewards": training_env.episode_rewards,
         "episode_metrics": {},
+        # 记录关键目标，便于后续分析与画图保持一致
+        "network_config": {
+            "delay_target": getattr(training_env, 'config', None) and getattr(training_env.config, 'rl', config.rl).latency_target or config.rl.latency_target,
+            "energy_target": getattr(training_env, 'config', None) and getattr(training_env.config, 'rl', config.rl).energy_target or config.rl.energy_target,
+        },
         "config": {
             "num_vehicles": training_env.simulator.num_vehicles,
             "num_rsus": training_env.simulator.num_rsus,

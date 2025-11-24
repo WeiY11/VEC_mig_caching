@@ -1165,18 +1165,6 @@ class SingleAgentTrainingEnvironment:
             delattr(self, '_last_total_energy')
 
         stats_snapshot = getattr(self.simulator, 'stats', None)
-        self._initialize_episode_counters(stats_snapshot)
-        self._reset_reward_baseline(stats_snapshot)
-        
-        resource_state = self._collect_resource_state()
-        # 仅TD3及其变种支持资源状态参数
-        if isinstance(self.agent_env, (TD3Environment, TD3LatencyEnergyEnvironment, CAMTD3Environment)):
-            state = self.agent_env.get_state_vector(node_states, system_metrics, resource_state)  # type: ignore[call-arg]
-        else:
-            state = self.agent_env.get_state_vector(node_states, system_metrics)  # type: ignore[call-arg]
-        
-        return state
-
     def step(self, action, state, actions_dict: Optional[Dict] = None) -> Tuple[np.ndarray, float, bool, Dict]:
         """执行一步仿真，应用智能体动作到仿真器"""
         # 🎯 使用固定卸载策略（如果设置）

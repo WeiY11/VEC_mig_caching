@@ -233,18 +233,17 @@ class RLConfig:
         self.noise_decay = 0.998       # 每轮噪声衰减率
         self.min_noise = 0.01          # 最小探索噪声
         
-        # 🎯 优化后奖励权重：平衡收敛性与稳定性
-        # 调高时延激励，弱化能耗和未命中惩罚，引导策略更关注降低端到端时延与缓存命中
-        self.reward_weight_delay = 1.3  # 🔧 时延权重（提升以更强压制高延迟）
-        self.reward_weight_energy = 0.9  # 🔧 能耗权重（适度下调，给延迟让路）
-        self.reward_penalty_dropped = 0.1  # 🔧 丢弃惩罚（提高以确保完成率）
-        self.completion_target = 0.88  # ✅ 务实目标（高负载下88%为合理目标）
-        self.reward_weight_completion_gap = 1.0  # 🔧 温和惩罚，减少方差
-        self.reward_weight_loss_ratio = 2.0  # 🔧 数据丢失率权重（降低以减少方差）
+        # 🎯 优化后奖励权重：更强压制延迟/丢失，适度放宽能耗，提升缓存激励
+        self.reward_weight_delay = 2.0  # 强化延迟惩罚
+        self.reward_weight_energy = 0.7  # 能耗权重让位延迟
+        self.reward_penalty_dropped = 0.1  # 保持丢弃惩罚
+        self.completion_target = 0.88  # 务实目标（高负载合理完成率）
+        self.reward_weight_completion_gap = 1.6  # 略强化完成率缺口惩罚
+        self.reward_weight_loss_ratio = 4.0  # 加大数据丢失惩罚
         self.cache_pressure_threshold = 0.9  # 缓存利用率软阈值（允许更高占用）
-        self.reward_weight_cache_pressure = 0.5  # 🔧 更温和的缓存压力权重
-        self.reward_weight_cache_bonus = 0.8  # 命中奖励权重，强力鼓励缓存复用
-        self.reward_weight_queue_overload = 0.01  # 🔧 降低队列过载惩罚，减少噪声
+        self.reward_weight_cache_pressure = 0.25  # 温和缓存压力惩罚
+        self.reward_weight_cache_bonus = 1.3  # 提高命中奖励
+        self.reward_weight_queue_overload = 0.03  # 略提高队列过载惩罚
 
         # ⚠️ 已弃用参数（保留以兼容旧代码）
         self.reward_weight_loss = 0.0      # 已移除：data_loss是时延的衡生指标
@@ -297,7 +296,7 @@ class QueueConfig:
         self.aging_factor = 0.25
         # 🔧 修复：提高超载阈值，允许合理排队（1.1 → 1.5）
         self.max_load_factor = 1.5
-        self.global_rho_threshold = float(os.environ.get('QUEUE_GLOBAL_RHO_THRESHOLD', '1.0'))
+        self.global_rho_threshold = float(os.environ.get('QUEUE_GLOBAL_RHO_THRESHOLD', '0.6'))
         self.stability_warning_ratio = float(os.environ.get('QUEUE_STABILITY_WARNING_RATIO', '0.9'))
         # 🔧 修复：大幅提高队列容量，匹配高负载场景需求
         # RSU: 20 → 50 (每个RSU需处理约180任务/episode，允许缓冲)
@@ -1183,8 +1182,9 @@ class NormalizationConfig:
         self.uav_energy_reference = float(os.environ.get('NORM_UAV_ENERGY_REF', '1000.0'))
 
         # 奖励归一化参考
-        self.delay_normalizer_value = float(os.environ.get('NORM_DELAY_NORMALIZER', '0.2'))
-        self.energy_normalizer_value = float(os.environ.get('NORM_ENERGY_NORMALIZER', '1000.0'))
+        # 默认直接对齐 RL 核心目标，避免奖励归一化与目标值不一致导致的偏置
+        self.delay_normalizer_value = float(os.environ.get('NORM_DELAY_NORMALIZER', '0.4'))
+        self.energy_normalizer_value = float(os.environ.get('NORM_ENERGY_NORMALIZER', '1200.0'))
 
         # 全局性能参考（供奖励/指标归一化使用）
         self.delay_reference = float(os.environ.get('NORM_DELAY_REFERENCE', '0.4'))

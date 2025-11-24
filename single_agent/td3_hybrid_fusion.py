@@ -31,9 +31,9 @@ class CAMTD3Environment(TD3Environment):
                 return float(os.environ.get(key, default))
             except Exception:
                 return default
-        # 优化融合权重：训练阶段大幅降低启发式干扰，让策略网络主导学习
-        self.fusion_weight_training = _read_env("CAM_FUSION_TRAIN_WEIGHT", 0.05)  # 降低到5%
-        self.fusion_weight_eval = _read_env("CAM_FUSION_EVAL_WEIGHT", 0.10)  # 降低到10%
+        # 优化融合权重：更依赖策略网络，启发式仅在早期提供轻量引导
+        self.fusion_weight_training = _read_env("CAM_FUSION_TRAIN_WEIGHT", 0.02)  # 默认2%
+        self.fusion_weight_eval = _read_env("CAM_FUSION_EVAL_WEIGHT", 0.05)  # 默认5%
         self.algorithm_label = "CAM-TD3"
         
         # 计算状态结构偏移量（支持中央资源模式）
@@ -66,12 +66,11 @@ class CAMTD3Environment(TD3Environment):
         control_params_start = 3 + self.num_rsus + self.num_uavs
         control_params = vehicle_vec[control_params_start:control_params_start + 10]
 
-        # 自适应融合权重：随训练进度逐步降低启发式影响
+        # 自适应融合权重：随训练进度快速衰减，让策略网络主导
         base_fusion_weight = self.fusion_weight_training if training else self.fusion_weight_eval
-        
-        # 前200轮：使用基础权重；200轮后逐步降低到0
-        if self.episode_count > 200:
-            decay_factor = max(0.0, 1.0 - (self.episode_count - 200) / 800.0)
+        if self.episode_count > 100:
+            # 100轮后开始衰减，600轮后基本关闭启发式
+            decay_factor = max(0.0, 1.0 - (self.episode_count - 100) / 500.0)
             fusion_weight = base_fusion_weight * decay_factor
         else:
             fusion_weight = base_fusion_weight
@@ -154,28 +153,22 @@ class CAMTD3Environment(TD3Environment):
         avg_queue = np.concatenate([vehicle_queue, rsu_queue, uav_queue]).mean()
         load_factor = np.clip(avg_queue, 0.0, 1.0)  # 系统负载因子
         
-        # 车辆得分：降低基础权重，避免过度偏向本地
-        # 考虑本地计算的高能耗成本（能耗权重提高到0.6）
-        vehicle_score = (1.0 - vehicle_queue.mean()) * 0.4 + (1.0 - vehicle_energy.mean()) * 0.6
-        # 添加本地计算惩罚因子（模拟本地资源受限）
-        local_penalty = 0.15  # 15%的基础惩罚
+        # 车辆得分：强化本地惩罚，鼓励卸载
+        vehicle_score = (1.0 - vehicle_queue.mean()) * 0.35 + (1.0 - vehicle_energy.mean()) * 0.65
+        local_penalty = 0.25  # 25%的基础惩罚
         vehicle_score = vehicle_score * (1.0 - local_penalty)
         
-        # RSU得分：提升基础权重，强化边缘计算优势
-        # 降低队列权重，提高缓存和计算资源权重
-        queue_weight = 0.5 + 0.1 * load_factor  # 降低队列权重
-        cache_weight = 0.3  # 固定缓存权重30%
-        compute_weight = 0.2 - 0.1 * load_factor  # 计算资源权重20%
+        # RSU得分：队列权重更高，计算权重随负载动态调整
+        queue_weight = min(0.8, 0.6 + 0.2 * load_factor)
+        cache_weight = 0.25
+        compute_weight = max(0.05, 0.25 - 0.15 * load_factor)
         rsu_scores = (1.0 - rsu_queue) * queue_weight + rsu_cache * cache_weight + rsu_compute * compute_weight
-        # 添加RSU协同处理奖励
-        rsu_bonus = 0.20  # 20%的协同奖励
+        rsu_bonus = 0.25  # 协同奖励
         rsu_scores = rsu_scores * (1.0 + rsu_bonus)
         
-        # UAV得分：提升权重，强化移动边缘计算能力
-        # 降低距离惩罚，UAV的移动性是优势而非劣势
-        uav_scores = (1.0 - uav_queue) * 0.5 + (1.0 - uav_distance) * 0.2 + uav_compute * 0.3
-        # 添加UAV灵活性奖励
-        uav_bonus = 0.25  # 25%的灵活性奖励
+        # UAV得分：提高队列/算力权重，降低距离影响
+        uav_scores = (1.0 - uav_queue) * 0.6 + uav_compute * 0.35 + (1.0 - uav_distance) * 0.05
+        uav_bonus = 0.25  # 灵活性奖励
         uav_scores = uav_scores * (1.0 + uav_bonus)
 
         target_weights = np.array([

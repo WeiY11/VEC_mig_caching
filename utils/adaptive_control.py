@@ -676,6 +676,7 @@ class AdaptiveMigrationController:
             'effectiveness': effectiveness,
             'avg_cost': avg_cost,
             'total_triggers': total_triggers,
+            'avg_delay_saved': self.migration_stats['avg_delay_saved'],
             'agent_params': dict(self.agent_params),
             'joint_params': self.get_joint_params_snapshot()
         }
