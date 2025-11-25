@@ -549,7 +549,9 @@ class CompleteSystemSimulator:
         
         for i, vehicle in enumerate(self.vehicles):
             vehicle['allocated_bandwidth'] = self.resource_pool.get_vehicle_bandwidth(i)
-            vehicle['cpu_freq'] = self.resource_pool.get_vehicle_compute(i)
+            # 🔧 P2修复：统一命名 cpu_freq → allocated_compute
+            vehicle['allocated_compute'] = self.resource_pool.get_vehicle_compute(i)
+            vehicle['cpu_freq'] = vehicle['allocated_compute']  # 保持向后兼容
         
         for i, rsu in enumerate(self.rsus):
             rsu['allocated_compute'] = self.resource_pool.get_rsu_compute(i)
@@ -988,6 +990,13 @@ class CompleteSystemSimulator:
             'central_scheduler_calls': 0,
             'central_scheduler_last_decisions': 0,
             'central_scheduler_migrations': 0,
+            # 按任务类别统计时延性能
+            'task_type_delay_stats': {
+                1: {'total_delay': 0.0, 'count': 0, 'max_delay': 0.0, 'deadline_violations': 0, 'deadline': 0.2},
+                2: {'total_delay': 0.0, 'count': 0, 'max_delay': 0.0, 'deadline_violations': 0, 'deadline': 0.3},
+                3: {'total_delay': 0.0, 'count': 0, 'max_delay': 0.0, 'deadline_violations': 0, 'deadline': 0.4},
+                4: {'total_delay': 0.0, 'count': 0, 'max_delay': 0.0, 'deadline_violations': 0, 'deadline': 0.6}
+            },
         }
 
     def _update_central_scheduler(self, step_summary: Dict[str, Any]) -> None:
@@ -1141,6 +1150,50 @@ class CompleteSystemSimulator:
         self.stats[bucket] = self.stats.get(bucket, 0.0) + amount
         self.stats['total_delay'] = self.stats.get('total_delay', 0.0) + amount
 
+    def _record_task_type_delay(self, task: Dict, actual_delay: float) -> None:
+        """
+        按任务类别记录时延统计
+        
+        Args:
+            task: 任务字典，必须包含 task_type 和 deadline 字段
+            actual_delay: 实际时延(秒)
+        """
+        task_type = task.get('task_type')
+        if task_type is None or task_type not in [1, 2, 3, 4]:
+            return
+        
+        # 获取该任务类别的统计数据
+        type_stats = self.stats['task_type_delay_stats'].get(task_type)
+        if type_stats is None:
+            # 如果不存在，创建默认统计
+            default_deadlines = {1: 0.2, 2: 0.3, 3: 0.4, 4: 0.6}
+            type_stats = {
+                'total_delay': 0.0,
+                'count': 0,
+                'max_delay': 0.0,
+                'deadline_violations': 0,
+                'deadline': default_deadlines.get(task_type, 0.5)
+            }
+            self.stats['task_type_delay_stats'][task_type] = type_stats
+        
+        # 更新统计数据
+        type_stats['total_delay'] += actual_delay
+        type_stats['count'] += 1
+        type_stats['max_delay'] = max(type_stats['max_delay'], actual_delay)
+        
+        # 检查是否超过deadline
+        task_deadline = task.get('deadline')  # 任务的实际deadline(绝对时间)
+        arrival_time = task.get('arrival_time', 0.0)
+        if task_deadline is not None:
+            # deadline是绝对时间，需要转换为相对时间限制
+            deadline_limit = task_deadline - arrival_time
+            if actual_delay > deadline_limit:
+                type_stats['deadline_violations'] += 1
+        else:
+            # 如果deadline不存在，使用类别默认deadline
+            if actual_delay > type_stats['deadline']:
+                type_stats['deadline_violations'] += 1
+
     def _accumulate_energy(self, bucket: str, value: float) -> None:
         """Ensure分项能耗与总能耗同步。"""
         try:
@@ -1254,6 +1307,10 @@ class CompleteSystemSimulator:
         self.stats['processed_tasks'] = self.stats.get('processed_tasks', 0) + 1
         self.stats['completed_tasks'] = self.stats.get('completed_tasks', 0) + 1
         step_summary['local_cache_hits'] = step_summary.get('local_cache_hits', 0) + 1
+        
+        # 按任务类别记录时延统计
+        self._record_task_type_delay(task, hit_delay)
+        
         cached_entry['timestamp'] = self.current_time
         if cache_controller is not None:
             try:
@@ -1990,6 +2047,9 @@ class CompleteSystemSimulator:
             if wait_delay > 0.0:
                 self._accumulate_delay('delay_waiting', wait_delay)
             self._record_mm1_service(node_type, node_idx, actual_delay)
+            
+            # 按任务类别记录时延统计
+            self._record_task_type_delay(task, actual_delay)
 
             vehicle_id = task.get('vehicle_id', 'V_0')
             vehicle = next((v for v in self.vehicles if v['id'] == vehicle_id), None)
@@ -2796,26 +2856,39 @@ class CompleteSystemSimulator:
         vehicle['energy_consumed'] = vehicle.get('energy_consumed', 0.0) + energy
         return processing_time, energy
 
-    def _estimate_transmission(self, data_size_bytes: float, distance: float, link: str) -> Tuple[float, float]:
+    def _estimate_transmission(self, data_size_bytes: float, distance: float, link: str, 
+                              vehicle: Optional[Dict] = None) -> Tuple[float, float]:
         """
         估计上传耗时与能耗
         
-        🔧 修复v3：从配置读取UAV/RSU下行带宽，确保配置一致性
+        🔧 P0修复：支持动态带宽分配，使用vehicle['allocated_bandwidth']
         """
-        # 🔧 优化：从配置读取下行带宽参数
+        # 🔧 P0修复：优先使用车辆的动态分配带宽
+        if vehicle is not None and 'allocated_bandwidth' in vehicle:
+            # 使用动态分配的带宽
+            allocated_bandwidth = float(vehicle['allocated_bandwidth'])
+            total_bandwidth = float(getattr(self.resource_pool, 'total_bandwidth', self.bandwidth))
+            base_rate = allocated_bandwidth * total_bandwidth
+            # print(f"✅ 使用动态分配带宽: {base_rate/1e6:.2f} MHz (ratio={allocated_bandwidth:.3f})")
+        else:
+            # 回退到默认带宽（从配置读取）
+            if link == 'uav':
+                # UAV下行带宽：优先从配置读取，默认50 MHz
+                if self.sys_config is not None and hasattr(self.sys_config, 'communication'):
+                    base_rate = getattr(self.sys_config.communication, 'uav_downlink_bandwidth', 50e6)
+                else:
+                    base_rate = float(self.config.get('uav_downlink_bandwidth', 50e6))
+            else:  # RSU
+                # RSU下行带宽：优先从配置读取，默认1000 MHz (1 GHz)
+                if self.sys_config is not None and hasattr(self.sys_config, 'communication'):
+                    base_rate = getattr(self.sys_config.communication, 'rsu_downlink_bandwidth', 1000e6)
+                else:
+                    base_rate = float(self.config.get('rsu_downlink_bandwidth', 1000e6))
+        
+        # 设置发射功率
         if link == 'uav':
-            # UAV下行带宽：优先从配置读取，默认50 MHz
-            if self.sys_config is not None and hasattr(self.sys_config, 'communication'):
-                base_rate = getattr(self.sys_config.communication, 'uav_downlink_bandwidth', 50e6)
-            else:
-                base_rate = float(self.config.get('uav_downlink_bandwidth', 50e6))
             power_w = 0.12
         else:  # RSU
-            # RSU下行带宽：优先从配置读取，默认1000 MHz (1 GHz)
-            if self.sys_config is not None and hasattr(self.sys_config, 'communication'):
-                base_rate = getattr(self.sys_config.communication, 'rsu_downlink_bandwidth', 1000e6)
-            else:
-                base_rate = float(self.config.get('rsu_downlink_bandwidth', 1000e6))
             power_w = 0.18
 
         # 考虑距离衰减
@@ -3354,6 +3427,10 @@ class CompleteSystemSimulator:
             self.stats['completed_tasks'] += 1
             self._accumulate_delay('delay_cache', delay)
             self._accumulate_energy('energy_cache', energy)
+            
+            # 按任务类别记录时延统计
+            self._record_task_type_delay(task, delay)
+            
             if energy > 0:
                 self.stats['energy_downlink'] = self.stats.get('energy_downlink', 0.0) + energy
                 node['energy_consumed'] = node.get('energy_consumed', 0.0) + energy
@@ -3366,7 +3443,10 @@ class CompleteSystemSimulator:
 
         # 缓存未命中：计算上传开销
         # Cache miss: calculate upload overhead
-        upload_delay, upload_energy = self._estimate_transmission(task.get('data_size_bytes', 1e6), distance, node_type.lower())
+        # 🔧 P0修复：传递vehicle参数以使用动态分配带宽
+        upload_delay, upload_energy = self._estimate_transmission(
+            task.get('data_size_bytes', 1e6), distance, node_type.lower(), vehicle=vehicle
+        )
         self._accumulate_delay('delay_uplink', upload_delay)
         self.stats['energy_uplink'] += upload_energy
         self._accumulate_energy('energy_transmit_uplink', upload_energy)
@@ -3481,6 +3561,10 @@ class CompleteSystemSimulator:
         self.stats['completed_tasks'] += 1
         self._accumulate_delay('delay_processing', processing_delay)
         self._accumulate_energy('energy_compute', energy)
+        
+        # 按任务类别记录时延统计
+        self._record_task_type_delay(task, processing_delay)
+        
         cpu_freq = float(vehicle.get('cpu_freq', self.vehicle_cpu_freq))
         cycles_consumed = processing_delay * cpu_freq
         vehicle['local_cycle_used'] = vehicle.get('local_cycle_used', 0.0) + cycles_consumed
@@ -4237,3 +4321,78 @@ class CompleteSystemSimulator:
         except Exception as exc:
             logging.debug("Central scheduling report failed: %s", exc)
             return {'status': 'error', 'message': str(exc)}
+
+    def get_task_type_delay_report(self) -> str:
+        """
+        生成按任务类别的时延性能报告
+        
+        Returns:
+            格式化的报告字符串
+        """
+        stats = self.stats.get('task_type_delay_stats', {})
+        if not stats:
+            return "⚠️ 未收集到按任务类别的时延统计数据"
+        
+        report_lines = []
+        report_lines.append("\n" + "="*80)
+        report_lines.append("📊 按任务类别的时延性能统计")
+        report_lines.append("="*80)
+        report_lines.append(f"{'Type':<10} {'Count':<10} {'Avg Delay(s)':<15} {'Max Delay(s)':<15} {'Violations':<12} {'Vio Rate':<10} {'Deadline(s)'}")
+        report_lines.append("-"*80)
+        
+        task_type_names = {
+            1: "极度敏感",
+            2: "敏感",
+            3: "中度容忍",
+            4: "容忍"
+        }
+        
+        total_tasks = 0
+        total_violations = 0
+        
+        for task_type in sorted(stats.keys()):
+            type_stats = stats[task_type]
+            count = type_stats.get('count', 0)
+            total_delay = type_stats.get('total_delay', 0.0)
+            max_delay = type_stats.get('max_delay', 0.0)
+            violations = type_stats.get('deadline_violations', 0)
+            deadline = type_stats.get('deadline', 0.0)
+            
+            if count > 0:
+                avg_delay = total_delay / count
+                vio_rate = violations / count
+            else:
+                avg_delay = 0.0
+                vio_rate = 0.0
+            
+            total_tasks += count
+            total_violations += violations
+            
+            type_name = task_type_names.get(task_type, f"Type-{task_type}")
+            report_lines.append(
+                f"{type_name:<10} {count:<10} {avg_delay:<15.4f} {max_delay:<15.4f} {violations:<12} "
+                f"{vio_rate:<10.1%} {deadline:<.2f}"
+            )
+        
+        report_lines.append("-"*80)
+        overall_vio_rate = total_violations / total_tasks if total_tasks > 0 else 0.0
+        report_lines.append(f"总计: {total_tasks} 个任务, {total_violations} 个超deadline ({overall_vio_rate:.1%})")
+        report_lines.append("="*80)
+        
+        return "\n".join(report_lines)
+
+    def visualize_task_type_delay_stats(self, output_dir: str = 'test_results'):
+        """
+        生成任务类别时延统计的可视化图表
+        
+        Args:
+            output_dir: 输出目录
+        """
+        try:
+            from tools.visualize_task_type_delay import visualize_task_type_delay_stats
+            visualize_task_type_delay_stats(self.stats, output_dir)
+        except ImportError as e:
+            print(f"⚠️ 无法导入可视化模块: {e}")
+            print("请确保 tools/visualize_task_type_delay.py 文件存在")
+        except Exception as e:
+            print(f"❌ 生成可视化图表时出错: {e}")

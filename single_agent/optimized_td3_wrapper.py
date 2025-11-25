@@ -79,7 +79,8 @@ class OptimizedTD3Wrapper:
         
         if use_central_resource:
             self.central_state_dim = 16
-            self.state_dim = base_state_dim
+            # 🔧 P0修复：正确计算state_dim，加上central_state_dim
+            self.state_dim = base_state_dim + self.central_state_dim
         else:
             self.central_state_dim = 0
             self.state_dim = base_state_dim
@@ -330,15 +331,38 @@ class OptimizedTD3Wrapper:
     def update_queue_metrics(self, step_stats: Dict[str, Any]) -> None:
         """从step统计中提取队列/丢包信号，驱动Queue-aware Replay。"""
         try:
-            queue_occ = float(
-                max(
-                    step_stats.get('queue_rho_max', 0.0) or 0.0,
-                    step_stats.get('queue_overload_flag', 0.0) or 0.0,
-                )
-            )
+            # 🔧 P1修复：改进队列指标提取，分节点类型提取
+            # 1. 车辆级别队列压力
+            vehicle_queue_pressure = []
+            queue_rho_by_node = step_stats.get('queue_rho_by_node', {})
+            if isinstance(queue_rho_by_node, dict):
+                for node_key, rho_value in queue_rho_by_node.items():
+                    if node_key.startswith('vehicle_'):
+                        try:
+                            vehicle_queue_pressure.append(float(rho_value))
+                        except (TypeError, ValueError):
+                            pass
+            
+            # 2. 综合队列压力指标
+            queue_rho_max = float(step_stats.get('queue_rho_max', 0.0) or 0.0)
+            queue_overload_flag = 1.0 if step_stats.get('queue_overload_flag', False) else 0.0
+            
+            # 3. 计算平均车辆队列压力
+            avg_vehicle_pressure = float(np.mean(vehicle_queue_pressure)) if vehicle_queue_pressure else 0.0
+            
+            # 4. 综合队列压力：最大值 + 车辆平均 + 过载标志
+            queue_occ = float(max(
+                queue_rho_max,
+                avg_vehicle_pressure,
+                queue_overload_flag
+            ))
+            
+            # 5. 丢包率指标
             packet_loss = float(
                 step_stats.get('data_loss_ratio_bytes', step_stats.get('packet_loss', 0.0)) or 0.0
             )
+            
+            # 6. 迁移拥塞指标
             migration_cong = float(
                 max(
                     step_stats.get('cache_eviction_rate', 0.0) or 0.0,

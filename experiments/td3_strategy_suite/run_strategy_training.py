@@ -336,6 +336,7 @@ STRATEGY_PRESETS: "OrderedDict[str, StrategyPreset]" = OrderedDict(
                 use_enhanced_cache=True,
                 disable_migration=True,
                 enforce_offload_mode=None,
+                algorithm="OPTIMIZED_TD3",  # 🎯 使用OPTIMIZED_TD3保持与CAMTD3一致
                 flags=("cache_on", "migration_off", "multi_edge"),
                 group="layered",
             ),
@@ -348,6 +349,7 @@ STRATEGY_PRESETS: "OrderedDict[str, StrategyPreset]" = OrderedDict(
                 use_enhanced_cache=True,
                 disable_migration=False,
                 enforce_offload_mode=None,
+                algorithm="OPTIMIZED_TD3",  # 🎯 修复：使用OPTIMIZED_TD3代替TD3
                 flags=("cache_on", "migration_on", "multi_edge"),
                 group="layered",
             ),
@@ -628,6 +630,8 @@ def tail_mean(values: Any) -> float:
     return float(sum(subset) / max(1, len(subset)))
 
 
+# ⚠️ 已废弃：请使用 strategy_runner.py::compute_cost 代替
+# 该函数仅做手动计算，不使用avg_reward，已统一到compute_cost（优先使用-reward）
 def compute_raw_cost(delay_mean: float, energy_mean: float, completion_rate: Optional[float] = None) -> float:
     """
     璁＄畻缁熶竴浠ｄ环鍑芥暟鐨勫師濮嬪€?    
@@ -872,12 +876,28 @@ def run_strategy(strategy: str, args: argparse.Namespace) -> None:
             joint_controller=env_options.get("joint_controller", False),
         )
 
-    # ========== 姝ラ5: 鎻愬彇鎬ц兘鎸囨爣 ==========
+    # ========== 步骤5: 提取性能指标 ==========
     episode_metrics: Dict[str, Any] = results.get("episode_metrics", {})
     delay_mean = tail_mean(episode_metrics.get("avg_delay", []))
     energy_mean = tail_mean(episode_metrics.get("total_energy", []))
     completion_mean = tail_mean(episode_metrics.get("task_completion_rate", []))
-    raw_cost = compute_raw_cost(delay_mean, energy_mean, completion_mean)
+    
+    # 🎯 修复：优先使用奖励计算成本（与strategy_runner.py一致）
+    episode_rewards = results.get("episode_rewards", [])
+    avg_reward: Optional[float] = None
+    if episode_rewards and len(episode_rewards) > 0:
+        # 使用后50%数据（收敛后）
+        if len(episode_rewards) >= 100:
+            half_point = len(episode_rewards) // 2
+            avg_reward = float(np.mean(episode_rewards[half_point:]))
+        elif len(episode_rewards) >= 50:
+            avg_reward = float(np.mean(episode_rewards[-30:]))
+        else:
+            avg_reward = float(np.mean(episode_rewards))
+    
+    # 导入统一的compute_cost函数（自动处理reward优先逻辑）
+    from experiments.td3_strategy_suite.strategy_runner import compute_cost
+    raw_cost = compute_cost(delay_mean, energy_mean, avg_reward, completion_mean)
 
     # ========== 姝ラ6: 鍑嗗杈撳嚭鐩綍 ==========
     suite_id = args.suite_id or datetime.now().strftime("%Y%m%d_%H%M%S")

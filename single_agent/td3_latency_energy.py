@@ -45,24 +45,27 @@ class LatencyEnergyRewardShaper:
     达到“时延与能耗协同最小化”的目标。
     """
 
-    delay_target: float = field(default_factory=lambda: getattr(config.rl, "latency_target", 0.20))
-    energy_target: float = field(default_factory=lambda: getattr(config.rl, "energy_target", 2200.0))
-    delay_tolerance: float = field(default_factory=lambda: getattr(config.rl, "latency_upper_tolerance", 0.30))
-    energy_tolerance: float = field(default_factory=lambda: getattr(config.rl, "energy_upper_tolerance", 3200.0))
+    # 🔧 P0修复：统一目标值，与system_config一致
+    delay_target: float = field(default_factory=lambda: getattr(config.rl, "latency_target", 0.40))  # 改为0.40s
+    energy_target: float = field(default_factory=lambda: getattr(config.rl, "energy_target", 1200.0))  # 改为1200J
+    delay_tolerance: float = field(default_factory=lambda: getattr(config.rl, "latency_upper_tolerance", 0.80))  # 改为0.80s
+    energy_tolerance: float = field(default_factory=lambda: getattr(config.rl, "energy_upper_tolerance", 1800.0))  # 改为1800J
 
-    base_delay_weight: float = 2.4
-    base_energy_weight: float = 1.6
-    adaptive_gain: float = 1.8
-    balance_gain: float = 0.8
+    # 🔧 P0修复：降低惩罚系数，避免惩罚累加
+    base_delay_weight: float = 1.5  # 降低 2.4 → 1.5
+    base_energy_weight: float = 1.0  # 降低 1.6 → 1.0
+    adaptive_gain: float = 0.8  # 降低 1.8 → 0.8，限制放大倍数
+    balance_gain: float = 0.0  # 禁用平衡惩罚，减少惩罚项
     balance_tolerance: float = 0.12
     completion_target: float = 0.95
-    completion_penalty_gain: float = 12.0
-    dropped_penalty_gain: float = 0.05
-    spike_penalty_gain: float = 6.5
+    completion_penalty_gain: float = 3.0  # 降低 12.0 → 3.0
+    dropped_penalty_gain: float = 0.02  # 降低 0.05 → 0.02
+    spike_penalty_gain: float = 0.0  # 禁用突增惩罚，减少惩罚项
     ema_alpha: float = 0.12
 
-    reward_clip_low: float = -40.0
-    reward_clip_high: float = -1e-3
+    # 🔧 P0修复：扩大奖励裁剪范围，允许更大的正负反馈
+    reward_clip_low: float = -15.0  # 扩大 -40.0 → -15.0
+    reward_clip_high: float = 5.0  # 允许较小的正奖励 -1e-3 → +5.0
 
     _delay_ema: Optional[float] = None
     _energy_ema: Optional[float] = None
@@ -97,46 +100,41 @@ class LatencyEnergyRewardShaper:
 
         base_cost = adaptive_delay_weight * delay_ratio + adaptive_energy_weight * energy_ratio
 
-        # 约束项：完成率与丢弃任务
+        # 🔧 P0修复：仅保留3个核心惩罚项，避免累加过度
+        # 约束项1：完成率惩罚（降低系数）
         completion_penalty = self.completion_penalty_gain * max(0.0, self.completion_target - completion_rate)
+        
+        # 约束项2：丢包惩罚（降低系数）
         dropped_penalty = self.dropped_penalty_gain * dropped_tasks
-
-        # 平衡惩罚：鼓励同时降低
-        balance_penalty = self.balance_gain * max(0.0, abs(delay_ratio - energy_ratio) - self.balance_tolerance)
-
-        # 突增惩罚：时延或能耗突然飙升
-        delay_spike = max(0.0, avg_delay - max(self._delay_ema or avg_delay, self.delay_target))
-        energy_spike = max(0.0, total_energy - max(self._energy_ema or total_energy, self.energy_target))
-        spike_penalty = self.spike_penalty_gain * (
-            delay_spike / max(self.delay_target, 1e-6) + 0.5 * energy_spike / max(self.energy_target, 1e-6)
-        )
-
-        # 阈值惩罚：超过容忍范围时加速惩罚
+        
+        # 约束项3：阈值惩罚（仅在严重超标时触发）
         delay_threshold_penalty = 0.0
         if avg_delay > self.delay_tolerance:
-            delay_threshold_penalty = (avg_delay - self.delay_tolerance) / max(self.delay_target, 1e-6) * adaptive_delay_weight
+            delay_threshold_penalty = (avg_delay - self.delay_tolerance) / max(self.delay_target, 1e-6) * 0.5
 
         energy_threshold_penalty = 0.0
         if total_energy > self.energy_tolerance:
-            energy_threshold_penalty = (
-                (total_energy - self.energy_tolerance) / max(self.energy_target, 1e-6) * adaptive_energy_weight
-            )
+            energy_threshold_penalty = (total_energy - self.energy_tolerance) / max(self.energy_target, 1e-6) * 0.3
+
+        # 🔧 P0修复：移除平衡惩罚和突增惩罚，减少惩罚项
+        # balance_penalty = 0.0  # 已通过 balance_gain=0.0 禁用
+        # spike_penalty = 0.0  # 已通过 spike_penalty_gain=0.0 禁用
 
         total_cost = (
             base_cost
             + completion_penalty
             + dropped_penalty
-            + balance_penalty
-            + spike_penalty
             + delay_threshold_penalty
             + energy_threshold_penalty
         )
 
+        # 🔧 P0修复：使用负成本作为奖励（性能越好成本越低奖励越高）
         reward = -float(total_cost)
         clipped_reward = float(np.clip(reward, self.reward_clip_low, self.reward_clip_high))
 
         self._last_breakdown = {
             "reward": clipped_reward,
+            "total_cost": total_cost,
             "base_cost": base_cost,
             "adaptive_delay_weight": adaptive_delay_weight,
             "adaptive_energy_weight": adaptive_energy_weight,
@@ -144,8 +142,8 @@ class LatencyEnergyRewardShaper:
             "energy_ratio": energy_ratio,
             "completion_penalty": completion_penalty,
             "dropped_penalty": dropped_penalty,
-            "balance_penalty": balance_penalty,
-            "spike_penalty": spike_penalty,
+            "balance_penalty": 0.0,  # 已禁用
+            "spike_penalty": 0.0,  # 已禁用
             "delay_threshold_penalty": delay_threshold_penalty,
             "energy_threshold_penalty": energy_threshold_penalty,
             "completion_rate": completion_rate,
@@ -168,20 +166,19 @@ class LatencyEnergyRewardShaper:
             breakdown = self.get_last_breakdown()
 
         lines = [
-            "TD3-LE 奖励分解:",
-            f"  Total Reward: {breakdown.get('reward', 0.0):.4f}",
+            "TD3-LE 奖励分解 (P0修复版):",
+            f"  Total Reward: {breakdown.get('reward', 0.0):.4f} (= -total_cost)",
+            f"  Total Cost: {breakdown.get('total_cost', 0.0):.4f}",
             f"  Base Cost: {breakdown.get('base_cost', 0.0):.4f}",
             f"  Delay Ratio: {breakdown.get('delay_ratio', 0.0):.3f}  (Weight={breakdown.get('adaptive_delay_weight', 0.0):.2f})",
             f"  Energy Ratio: {breakdown.get('energy_ratio', 0.0):.3f} (Weight={breakdown.get('adaptive_energy_weight', 0.0):.2f})",
             f"  Completion Penalty: {breakdown.get('completion_penalty', 0.0):.3f}",
             f"  Dropped Penalty: {breakdown.get('dropped_penalty', 0.0):.3f}",
-            f"  Balance Penalty: {breakdown.get('balance_penalty', 0.0):.3f}",
-            f"  Spike Penalty: {breakdown.get('spike_penalty', 0.0):.3f}",
             f"  Delay Threshold Penalty: {breakdown.get('delay_threshold_penalty', 0.0):.3f}",
             f"  Energy Threshold Penalty: {breakdown.get('energy_threshold_penalty', 0.0):.3f}",
             f"  Completion Rate: {breakdown.get('completion_rate', 0.0):.3f}",
-            f"  Avg Delay: {breakdown.get('avg_delay', 0.0):.3f}s",
-            f"  Total Energy: {breakdown.get('total_energy', 0.0):.1f}J",
+            f"  Avg Delay: {breakdown.get('avg_delay', 0.0):.3f}s (Target={0.40}s)",
+            f"  Total Energy: {breakdown.get('total_energy', 0.0):.1f}J (Target={1200.0}J)",
         ]
         return "\n".join(lines)
 

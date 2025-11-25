@@ -382,7 +382,7 @@ class SingleAgentTrainingEnvironment:
         if rl is None:
             return
 
-        def _set_if_absent(env_key: str, attr: str, value: float, use_max: bool = True) -> None:
+        def _set_if_absent(env_key: str, attr: str, value: float, use_max: bool = False) -> None:
             if os.environ.get(env_key) is not None:
                 return
             current = float(getattr(rl, attr, 0.0) or 0.0)
@@ -390,34 +390,22 @@ class SingleAgentTrainingEnvironment:
             setattr(rl, attr, val_to_set)
 
         # 可靠性权重
-        _set_if_absent("RL_WEIGHT_LOSS_RATIO", "reward_weight_loss_ratio", 1.4)
+            setattr(rl, attr, val_to_set)
+
+        # 可靠性权重
+        _set_if_absent("RL_WEIGHT_LOSS_RATIO", "reward_weight_loss_ratio", 1.2)
         _set_if_absent("RL_WEIGHT_COMPLETION_GAP", "reward_weight_completion_gap", 0.7)
-        _set_if_absent("RL_PENALTY_DROPPED", "reward_penalty_dropped", 0.18, use_max=True)
+        _set_if_absent("RL_PENALTY_DROPPED", "reward_penalty_dropped", 0.15, use_max=True)
         _set_if_absent("RL_WEIGHT_QUEUE_OVERLOAD", "reward_weight_queue_overload", 0.8, use_max=True)
         _set_if_absent("RL_WEIGHT_REMOTE_REJECT", "reward_weight_remote_reject", 0.25, use_max=True)
         _set_if_absent("RL_WEIGHT_CACHE", "reward_weight_cache", 0.2)
-        _set_if_absent("RL_WEIGHT_CACHE_BONUS", "reward_weight_cache_bonus", 0.4)
-        _set_if_absent("RL_WEIGHT_DELAY", "reward_weight_delay", 1.6)
-        _set_if_absent("RL_WEIGHT_ENERGY", "reward_weight_energy", 1.5)
+        _set_if_absent("RL_WEIGHT_CACHE_BONUS", "reward_weight_cache_bonus", 0.3)
+        _set_if_absent("RL_WEIGHT_DELAY", "reward_weight_delay", 1.8)
+        _set_if_absent("RL_WEIGHT_ENERGY", "reward_weight_energy", 1.2)
 
         # 目标值（稍紧但不极端）
-        _set_if_absent("RL_LATENCY_TARGET", "latency_target", 0.9, use_max=True)
-        _set_if_absent("RL_ENERGY_TARGET", "energy_target", 4200.0, use_max=True)
-        # 默认禁用动态目标放宽，避免目标被上调
-        os.environ.setdefault('RL_DISABLE_DYNAMIC_TARGETS', '1')
-        os.environ.setdefault('DYNAMIC_TARGET_DISABLE', '1')
-        # 同步归一化基准到目标值，避免指标/奖励脱节
-        norm = getattr(config, "normalization", None)
-        if norm is not None:
-            try:
-                norm.delay_normalizer_value = float(getattr(rl, "latency_target", 0.9))
-                norm.energy_normalizer_value = float(getattr(rl, "energy_target", 4200.0))
-                norm.delay_reference = norm.delay_normalizer_value
-                norm.energy_reference = norm.energy_normalizer_value
-                norm.delay_upper_reference = norm.delay_normalizer_value * 2.0
-                norm.energy_upper_reference = norm.energy_normalizer_value * 1.5
-            except Exception:
-                pass
+        _set_if_absent("RL_LATENCY_TARGET", "latency_target", 0.9)
+        _set_if_absent("RL_ENERGY_TARGET", "energy_target", 4200.0)
         try:
             update_reward_targets(
                 latency_target=float(getattr(rl, "latency_target", 0.9)),
@@ -1595,13 +1583,12 @@ class SingleAgentTrainingEnvironment:
         mm1_delay_error = float(np.mean(mm1_delay_errors)) if mm1_delay_errors else 0.0
 
         
-        # 计算本episode增量能耗（防止负值与异常）
+        # 🔧 P0修复：移除能耗估算魔法数字，如果为0则显示警告但不使用虚假值
         if current_total_energy <= 0.0:
-            # 仿真器能耗异常时的保底估算
-            completed_tasks = self.simulator.stats.get('completed_tasks', 0) if hasattr(self, 'simulator') else 0
-            estimated_energy = max(0.0, completed_tasks * 15.0)
-            total_energy = estimated_energy
-            print(f"⚠️ 仿真器能耗为0，使用估算能耗: {total_energy:.1f}J")
+            # 使用上一episode的能耗作为基线（更合理）
+            episode_incremental_energy = 0.0
+            total_energy = 0.0
+            print(f"⚠️ 仿真器能耗为0，请检查仿真器能耗模型！")
         else:
             episode_incremental_energy = max(0.0, current_total_energy - getattr(self, '_episode_energy_base', 0.0))
             total_energy = episode_incremental_energy
@@ -1925,6 +1912,10 @@ class SingleAgentTrainingEnvironment:
         # 重置环境
         self._episode_counters_initialized = False
         state = self.reset_environment()
+        
+        # 🔧 P1修复：强制初始化episode计数器，确保第一个episode统计正确
+        if hasattr(self, 'simulator') and hasattr(self.simulator, 'stats'):
+            self._initialize_episode_counters(self.simulator.stats)
         
         # 🔧 保存当前episode编号
         self._current_episode = episode

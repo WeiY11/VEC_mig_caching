@@ -27,7 +27,7 @@ class EnhancedTD3Config:
     graph_embed_dim: int = 128
     
     # 训练参数
-    batch_size: int = 384
+    batch_size: int = 512  # 🔧 P1修复：提高 384 → 512
     buffer_size: int = 100000
     tau: float = 0.005
     gamma: float = 0.99
@@ -39,7 +39,7 @@ class EnhancedTD3Config:
     
     # 探索参数
     exploration_noise: float = 0.25
-    noise_decay: float = 0.9993
+    noise_decay: float = 0.997  # 🔧 P1修复：加快衰减 0.9993 → 0.997
     min_noise: float = 0.05
     
     # 梯度裁剪
@@ -108,7 +108,7 @@ class EnhancedTD3Config:
     beta_increment: float = 5e-6  # beta增长率
     
     # ========== 其他 ==========
-    warmup_steps: int = 2000  # 预热步数
+    warmup_steps: int = 500  # 🔧 P1修复：缩短预热 2000 → 500
     update_freq: int = 2  # 更新频率
     device: str = 'cuda'  # 设备
     
