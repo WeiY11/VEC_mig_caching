@@ -98,10 +98,10 @@ class UnifiedRewardCalculator:
         self.weight_cache_bonus = float(getattr(config.rl, "reward_weight_cache_bonus", 0.0))
         self.weight_migration = float(getattr(config.rl, "reward_weight_migration", 0.0))
         self.weight_joint = float(getattr(config.rl, "reward_weight_joint", 0.05))
-        # 边缘计算卸载奖励：大幅提高激励远程处理
-        self.weight_offload_bonus = float(getattr(config.rl, "reward_weight_offload_bonus", 2.5))
-        # 本地处理惩罚：额外惩罚本地计算
-        self.weight_local_penalty = float(getattr(config.rl, "reward_weight_local_penalty", 0.8))
+        # 边缘计算卸载奖励：适度激励远程处理（默认0.5）
+        self.weight_offload_bonus = float(getattr(config.rl, "reward_weight_offload_bonus", 0.5))
+        # 本地处理惩罚：移除额外惩罚（默认0.0）
+        self.weight_local_penalty = float(getattr(config.rl, "reward_weight_local_penalty", 0.0))
         self.completion_target = float(getattr(config.rl, "completion_target", 0.95))
         self.weight_completion_gap = float(getattr(config.rl, "reward_weight_completion_gap", 0.0))
         self.weight_loss_ratio = float(getattr(config.rl, "reward_weight_loss_ratio", 0.0))

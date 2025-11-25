@@ -17,32 +17,40 @@ from .enhanced_td3_config import EnhancedTD3Config
 
 
 def create_optimized_config() -> EnhancedTD3Config:
-    """创建精简优化配置 - 仅启用Queue-aware + GNN"""
+    """创建精简优化配置 - ✨ 使用最新GAT优化"""
     return EnhancedTD3Config(
         # ✅ 核心优化1：队列感知回放
         use_queue_aware_replay=True,
-        queue_priority_weight=0.6,  # 提高队列权重
+        queue_priority_weight=0.5,  # 🔧 提高队列权重 0.6 → 0.5
         queue_occ_coef=0.5,
         packet_loss_coef=0.3,
         migration_cong_coef=0.2,
         queue_metrics_ema_decay=0.8,
         
-        # ✅ 核心优化2：GNN注意力
+        # ✅ 核心优化2：GNN注意力（最新优化）
         use_gat_router=True,
-        num_attention_heads=4,
-        gat_hidden_dim=128,
+        num_attention_heads=6,  # 🔧 增加注意力头数 4 → 6
+        gat_hidden_dim=192,  # 🔧 增大隐藏层 128 → 192
+        gat_dropout=0.15,  # 🔧 增加dropout 0.1 → 0.15
         
         # ❌ 禁用其他优化
         use_distributional_critic=False,
         use_entropy_reg=False,
         use_model_based_rollout=False,
         
-        # 基础参数优化
+        # 🔧 基础参数优化
         hidden_dim=512,
-        batch_size=384,
+        batch_size=640,  # 🔧 增大batch size 384 → 640
         buffer_size=100000,
-        exploration_noise=0.15,
-        noise_decay=0.9992,
+        
+        # 🔧 学习率优化
+        actor_lr=1.5e-4,  # 🔧 调低学习率 2e-4 → 1.5e-4
+        critic_lr=2.5e-4,  # 🔧 调低学习率 3e-4 → 2.5e-4
+        
+        # 🔧 探索策略优化
+        exploration_noise=0.20,  # 🔧 提高初始噪声 0.15 → 0.20
+        noise_decay=0.9985,  # 🔧 更温和的衰减 0.9992 → 0.9985
+        min_noise=0.08,  # 🔧 提高最小噪声 0.05 → 0.08
     )
 
 

@@ -253,10 +253,10 @@ class RLConfig:
         self.reward_weight_migration = 0.1
         self.reward_weight_joint = 0.05   # 联动奖励权重
         self.reward_weight_remote_reject = 0.5  # 远端拒绝惩罚
-        # 边缘计算卸载奖励：大幅提高激励RSU/UAV处理
-        self.reward_weight_offload_bonus = 1.8  # 大幅提高卸载奖励，激励边缘计算
-        # 本地处理能耗惩罚：额外惩罚本地计算的高能耗
-        self.reward_weight_local_penalty = 1.0  # 本地处理额外能耗惩罚
+        # 边缘计算卸载奖励：适度激励RSU/UAV处理（避免过度卸载导致拥塞）
+        self.reward_weight_offload_bonus = 0.5  # 温和卸载奖励，平衡本地与边缘
+        # 本地处理能耗惩罚：移除（能耗已在能耗权重中体现，避免重复惩罚）
+        self.reward_weight_local_penalty = 0.0  # 移除本地额外惩罚
 
         # 🎯 延时-能耗优化目标阈值（供算法动态调整）
         # 🏆 12车辆高负载场景目标（基于设计文档）

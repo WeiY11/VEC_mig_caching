@@ -1028,6 +1028,12 @@ class SingleAgentTrainingEnvironment:
             bucket: float(stats_dict.get(bucket, 0.0) or 0.0) for bucket in energy_buckets
         }
         self._episode_queue_overflow_base = int(stats_dict.get('queue_overflow_drops', 0) or 0)
+        
+        # Initialize task count accumulators
+        self._episode_local_tasks = 0
+        self._episode_rsu_tasks = 0
+        self._episode_uav_tasks = 0
+        
         self._episode_counters_initialized = True
 
     def _reset_reward_baseline(self, stats: Optional[Dict[str, Any]] = None) -> None:
@@ -1612,9 +1618,14 @@ class SingleAgentTrainingEnvironment:
         data_loss_ratio_bytes = normalize_ratio(data_loss_bytes, data_generated_bytes)
         
         # 🔥 新增：计算卸载比例（local/rsu/uav）
-        local_tasks_count = int(safe_get('local_tasks', 0))
-        rsu_tasks_count = int(safe_get('rsu_tasks', 0))
-        uav_tasks_count = int(safe_get('uav_tasks', 0))
+        # Accumulate task counts from per-step stats
+        self._episode_local_tasks += int(step_stats.get('local_tasks', 0))
+        self._episode_rsu_tasks += int(step_stats.get('rsu_tasks', 0))
+        self._episode_uav_tasks += int(step_stats.get('uav_tasks', 0))
+
+        local_tasks_count = self._episode_local_tasks
+        rsu_tasks_count = self._episode_rsu_tasks
+        uav_tasks_count = self._episode_uav_tasks
         total_offload_tasks = local_tasks_count + rsu_tasks_count + uav_tasks_count
         
         if total_offload_tasks > 0:
@@ -2727,7 +2738,10 @@ def train_single_algorithm(algorithm: str, num_episodes: Optional[int] = None, e
                 'task_completion_rate': system_metrics.get('task_completion_rate', 0),
                 'cache_hit_rate': system_metrics.get('cache_hit_rate', 0),
                 'data_loss_ratio_bytes': system_metrics.get('data_loss_ratio_bytes', 0),
-                'migration_success_rate': system_metrics.get('migration_success_rate', 0)
+                'migration_success_rate': system_metrics.get('migration_success_rate', 0),
+                'local_tasks_count': system_metrics.get('local_tasks_count', 0),
+                'rsu_tasks_count': system_metrics.get('rsu_tasks_count', 0),
+                'uav_tasks_count': system_metrics.get('uav_tasks_count', 0)
             }
             visualizer.update(episode, episode_result['avg_reward'], vis_metrics)
         
@@ -3415,8 +3429,9 @@ def main():
     parser.add_argument('--fixed-offload-policy', type=str, 
                         choices=['random', 'greedy', 'local_only', 'rsu_only', 'round_robin', 'weighted'],
                         help='固定卸载策略（不使用智能体学习）：random/greedy/local_only/rsu_only/round_robin/weighted')
-    # 🌐 实时可视化参数
-    parser.add_argument('--realtime-vis', action='store_true', help='启用实时可视化')
+    # 🌐 实时可视化参数 (默认开启)
+    parser.add_argument('--realtime-vis', action='store_true', default=True, help='启用实时可视化 (默认开启)')
+    parser.add_argument('--no-realtime-vis', action='store_false', dest='realtime_vis', help='禁用实时可视化')
     parser.add_argument('--vis-port', type=int, default=5000, help='实时可视化服务器端口 (默认: 5000)')
     # 🎨 高端训练可视化参数
     parser.add_argument('--advanced-vis', action='store_true', help='启用高端训练可视化 Dashboard')

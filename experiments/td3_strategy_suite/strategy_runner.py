@@ -79,24 +79,14 @@ def compute_cost(avg_delay: float, avg_energy: float, avg_reward: Optional[float
     训练时: reward = -cost (成本越低，奖励越高)
     因此:   raw_cost = -reward
     
-    【优先使用avg_reward】
-    如果提供了avg_reward，直接使用: raw_cost = -avg_reward（默认行为）
-    否则回退到手动计算（仅在没有reward数据时）
-    
     【参数】
-    avg_delay: float - 平均任务时延（秒）
-    avg_energy: float - 平均总能耗（焦耳）
-    avg_reward: float - 平均奖励（可选，优先使用）
+    avg_delay: float - 平均任务时延（秒，保留用于日志输出）
+    avg_energy: float - 平均总能耗（焦耳，保留用于日志输出）
+    avg_reward: float - 平均奖励（必须提供）
     completion_rate: float - 任务完成率（可选，用于惩罚低完成率）
     
     【返回值】
     float - 归一化的加权代价（越小越好）
-    
-    【修复说明】
-    ✅ 默认使用: raw_cost = -avg_reward（与train_single_agent.py完全一致）
-    ✅ 回退计算: raw_cost = w_T·(T/T_target) + w_E·(E/E_target)（仅在无reward时）
-    ✅ 统一对比实验和单独训练的成本计算方式
-    ✅ 完成率惩罚：低完成率会适度增加成本（防止通过丢弃任务作弊）
     
     【完成率惩罚示例】（使用平滑的对数惩罚）
     - 100%完成率: 成本×1.00（无惩罚）
@@ -106,25 +96,16 @@ def compute_cost(avg_delay: float, avg_energy: float, avg_reward: Optional[float
     - 70%完成率: 成本×1.18（高惩罚）
     - 50%完成率: 成本×1.35（严重惩罚）
     """
-    # 🎯 优先模式：基于奖励计算（默认启用，与train_single_agent.py一致）
-    if avg_reward is not None:
-        base_cost = -avg_reward
-    else:
-        # 回退：手动计算（仅在没有reward数据时使用，保持向后兼容）
-        weight_delay = float(config.rl.reward_weight_delay)
-        weight_energy = float(config.rl.reward_weight_energy)
-        
-        # ✅ 使用与训练时完全一致的归一化因子
-        calc = _get_reward_calculator()
-        delay_normalizer = calc.latency_target  # 0.4（与训练一致）
-        energy_normalizer = calc.energy_target  # 1200.0（与训练一致）
-        
-        base_cost = (
-            weight_delay * (avg_delay / max(delay_normalizer, 1e-6))
-            + weight_energy * (avg_energy / max(energy_normalizer, 1e-6))
+    # 🎯 直接从奖励计算成本（与train_single_agent.py完全一致）
+    if avg_reward is None:
+        raise ValueError(
+            "avg_reward is required for cost calculation. "
+            "Ensure training results include episode_rewards."
         )
     
-    # 🔧 修复：完成率惩罚机制（防止通过丢弃任务作弊）
+    base_cost = -avg_reward
+    
+    # 🔧 完成率惩罚机制（防止通过丢弃任务作弊）
     # 使用平滑的对数惩罚函数，避免过度惩罚
     if completion_rate is not None and completion_rate > 0:
         # 完成率惩罚因子：使用对数函数平滑惩罚

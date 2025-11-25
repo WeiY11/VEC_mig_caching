@@ -192,3 +192,37 @@ def create_dynamic_topology_config() -> EnhancedTD3Config:
         num_attention_heads=6,  # 更多注意力头
         gat_hidden_dim=256,  # 更大的表示能力
     )
+
+
+def create_optimized_gat_config() -> EnhancedTD3Config:
+    """✨ 创建优化的GAT配置（最新优化）
+    
+    优化点：
+    1. 启用Queue-aware Replay + GAT
+    2. 增加注意力头数
+    3. 优化学习率和batch size
+    4. 增强探索策略
+    """
+    return EnhancedTD3Config(
+        # 核心优化
+        use_queue_aware_replay=True,
+        use_gat_router=True,
+        
+        # GAT优化
+        num_attention_heads=6,  # 增加到6个头
+        gat_hidden_dim=192,  # 适度增大隐藏层
+        gat_dropout=0.15,  # 轻微增加dropout
+        
+        # 训练优化
+        batch_size=640,  # 增大batch size
+        actor_lr=1.5e-4,  # 调低学习率
+        critic_lr=2.5e-4,
+        
+        # 探索优化
+        exploration_noise=0.20,
+        noise_decay=0.9985,  # 更温和的衰减
+        min_noise=0.08,  # 较高的最小噪声
+        
+        # 队列感知优化
+        queue_priority_weight=0.5,  # 更高的队列权重
+    )

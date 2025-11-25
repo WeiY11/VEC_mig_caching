@@ -155,6 +155,10 @@ class GATLayer(nn.Module):
         
         # 应用邻接掩码
         if adjacency_mask is not None:
+            # Ensure boolean
+            if adjacency_mask.dtype != torch.bool:
+                adjacency_mask = adjacency_mask > 0.5
+                
             # adjacency_mask: [batch, num_source, num_target]
             adjacency_mask = adjacency_mask.unsqueeze(1).expand(-1, self.num_heads, -1, -1)
             e = e.masked_fill(~adjacency_mask, float('-inf'))
@@ -248,7 +252,19 @@ class VehicleRSUAttention(nn.Module):
         h_rsus = F.relu(self.rsu_proj(rsu_features))
         
         # GAT注意力（RSU -> Vehicles）
-        h_out = self.gat_layer(h_rsus, h_vehicles, edge_features, adjacency_mask)
+        # 注意：edge_features是[batch, V, R, dim]，GAT期望[batch, src, tgt, dim]
+        # 这里src=RSU, tgt=Vehicle，所以需要转置
+        if edge_features is not None:
+            edge_features_t = edge_features.permute(0, 2, 1, 3)
+        else:
+            edge_features_t = None
+            
+        if adjacency_mask is not None:
+            adjacency_mask_t = adjacency_mask.permute(0, 2, 1)
+        else:
+            adjacency_mask_t = None
+            
+        h_out = self.gat_layer(h_rsus, h_vehicles, edge_features_t, adjacency_mask_t)
         
         # 输出投影
         vehicle_representations = self.output_proj(h_out)

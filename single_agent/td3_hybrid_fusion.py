@@ -153,22 +153,23 @@ class CAMTD3Environment(TD3Environment):
         avg_queue = np.concatenate([vehicle_queue, rsu_queue, uav_queue]).mean()
         load_factor = np.clip(avg_queue, 0.0, 1.0)  # 系统负载因子
         
-        # 车辆得分：强化本地惩罚，鼓励卸载
-        vehicle_score = (1.0 - vehicle_queue.mean()) * 0.35 + (1.0 - vehicle_energy.mean()) * 0.65
-        local_penalty = 0.25  # 25%的基础惩罚
-        vehicle_score = vehicle_score * (1.0 - local_penalty)
+        # 车辆得分：平衡评估，无额外惩罚（避免过度卸载）
+        vehicle_score = (1.0 - vehicle_queue.mean()) * 0.4 + (1.0 - vehicle_energy.mean()) * 0.6
+        # 移除local_penalty，本地处理不应被额外惩罚
         
         # RSU得分：队列权重更高，计算权重随负载动态调整
         queue_weight = min(0.8, 0.6 + 0.2 * load_factor)
         cache_weight = 0.25
         compute_weight = max(0.05, 0.25 - 0.15 * load_factor)
         rsu_scores = (1.0 - rsu_queue) * queue_weight + rsu_cache * cache_weight + rsu_compute * compute_weight
-        rsu_bonus = 0.25  # 协同奖励
+        # 降低RSU奖励，从25%降至8%（避免过度偏好）
+        rsu_bonus = 0.08
         rsu_scores = rsu_scores * (1.0 + rsu_bonus)
         
         # UAV得分：提高队列/算力权重，降低距离影响
         uav_scores = (1.0 - uav_queue) * 0.6 + uav_compute * 0.35 + (1.0 - uav_distance) * 0.05
-        uav_bonus = 0.25  # 灵活性奖励
+        # 降低UAV奖励，从25%降至8%（与 RSU一致）
+        uav_bonus = 0.08
         uav_scores = uav_scores * (1.0 + uav_bonus)
 
         target_weights = np.array([
@@ -203,10 +204,10 @@ class CAMTD3Environment(TD3Environment):
         cache_aggressiveness = load_factor  # [0,1] 高负载→激进淘汰
         migration_threshold = 0.3 + 0.4 * load_factor  # 高负载→提高迁移门槛
         
-        # 资源分配偏好：大幅提升RSU/UAV偏好，降低本地偏好
-        rsu_preference = 0.65 + 0.2 * load_factor  # 提高RSU基础偏好到65%
-        local_preference = 0.25 - 0.15 * load_factor  # 降低本地偏好到25%
-        uav_preference = 0.55 + 0.15 * load_factor  # 新增：UAV偏好55%
+        # 资源分配偏好：平衡本地、RSU、UAV（避免过度偏好远程）
+        rsu_preference = 0.45 + 0.15 * load_factor  # RSU基础偏好45%（从65%降低）
+        local_preference = 0.35 - 0.05 * load_factor  # 本地偏好35%（从25%提高）
+        uav_preference = 0.4 + 0.1 * load_factor  # UAV偏好40%（从55%降低）
         
         # 队列管理：根据平均队列长度调整
         queue_sensitivity = 1.0 - avg_queue
