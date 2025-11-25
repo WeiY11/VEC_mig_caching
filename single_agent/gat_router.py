@@ -282,7 +282,7 @@ class RSURSUCollaborativeAttention(nn.Module):
             rsu_features: [batch_size, num_rsus, rsu_feature_dim]
             physical_adjacency: [batch_size, num_rsus, num_rsus] 物理邻接掩码
             cache_similarity: [batch_size, num_rsus, num_rsus] 缓存相似度矩阵（可选）
-            edge_features: [batch_size, num_rsus, num_rsus, edge_feature_dim]
+            edge_features: [batch_size, num_rsus, num_rsus, edge_feature_dim] 边特征
             
         Returns:
             rsu_representations: [batch_size, num_rsus, hidden_dim]
@@ -291,10 +291,11 @@ class RSURSUCollaborativeAttention(nn.Module):
         # 投影RSU特征
         h_rsus = F.relu(self.rsu_proj(rsu_features))
         
-        # 物理邻接注意力
+        # 物理邻接注意力（使用边特征）
         h_physical = self.physical_gat(h_rsus, h_rsus, edge_features, physical_adjacency)
         
-        # 缓存内容相似度注意力（全连接，使用cache_similarity作为额外掩码）
+        # 缓存内容相似度注意力（使用cache_similarity作为额外掩码）
+        # 注：不使用边特征，因为这是基于内容的注意力
         h_content = self.content_gat(h_rsus, h_rsus, None, cache_similarity)
         
         # 融合两路注意力
@@ -325,11 +326,14 @@ class GATRouterActor(nn.Module):
         hidden_dim: int = 128,
         num_heads: int = 4,
         edge_feature_dim: int = 8,
+        central_state_dim: int = 0,
     ):
         super(GATRouterActor, self).__init__()
         self.num_vehicles = num_vehicles
         self.num_rsus = num_rsus
         self.num_uavs = num_uavs
+        # 全局特征维度 = 基础全局特征 + 中央状态特征
+        self.actual_global_dim = global_feature_dim + central_state_dim
         
         # 车辆-RSU注意力
         self.vehicle_rsu_attention = VehicleRSUAttention(
@@ -348,9 +352,9 @@ class GATRouterActor(nn.Module):
             nn.Linear(hidden_dim, hidden_dim),
         )
         
-        # 全局特征编码
+        # 全局特征编码（包含中央状态）
         self.global_encoder = nn.Sequential(
-            nn.Linear(global_feature_dim, hidden_dim),
+            nn.Linear(self.actual_global_dim, hidden_dim),
             nn.ReLU(),
         )
         
@@ -396,19 +400,25 @@ class GATRouterActor(nn.Module):
         # 假设剩余为全局特征
         global_features = state[:, idx:]
         
+        # ✨ 如果没有提供邻接信息，则动态构建
+        if adjacency_info is None:
+            adjacency_info = self._build_adjacency_info(state)
+        
         # 车辆-RSU注意力
         vehicle_repr = self.vehicle_rsu_attention(
             vehicle_features,
             rsu_features,
-            edge_features=adjacency_info.get('vehicle_rsu_edge_features') if adjacency_info else None,
-            adjacency_mask=adjacency_info.get('vehicle_rsu_mask') if adjacency_info else None,
+            edge_features=adjacency_info.get('vehicle_rsu_edge_features'),
+            adjacency_mask=adjacency_info.get('vehicle_rsu_mask'),
         )
         vehicle_repr_pooled = vehicle_repr.mean(dim=1)  # [batch, hidden_dim]
         
         # RSU-RSU协同缓存注意力
         rsu_repr, collab_cache_probs = self.rsu_rsu_attention(
             rsu_features,
-            physical_adjacency=adjacency_info.get('rsu_rsu_mask') if adjacency_info else None,
+            physical_adjacency=adjacency_info.get('rsu_rsu_mask'),
+            cache_similarity=adjacency_info.get('cache_similarity'),
+            edge_features=adjacency_info.get('rsu_rsu_edge_features'),
         )
         rsu_repr_pooled = rsu_repr.mean(dim=1)  # [batch, hidden_dim]
         self.last_collab_cache_probs = collab_cache_probs  # 缓存协同缓存概率
@@ -429,3 +439,130 @@ class GATRouterActor(nn.Module):
     def get_collab_cache_probs(self) -> Optional[torch.Tensor]:
         """获取最后一次forward的协同缓存概率"""
         return self.last_collab_cache_probs
+    
+    def _build_adjacency_info(self, state: torch.Tensor) -> Dict[str, torch.Tensor]:
+        """从状态向量构建动态邻接信息
+        
+        Args:
+            state: [batch_size, state_dim] 状态向量
+            
+        Returns:
+            adjacency_info: 包含邻接掩码和边特征的字典
+        """
+        batch_size = state.size(0)
+        device = state.device
+        
+        # 解析位置和负载信息
+        idx = 0
+        vehicle_features = state[:, idx:idx + self.num_vehicles * 5].view(batch_size, self.num_vehicles, 5)
+        idx += self.num_vehicles * 5
+        
+        rsu_features = state[:, idx:idx + self.num_rsus * 5].view(batch_size, self.num_rsus, 5)
+        idx += self.num_rsus * 5
+        
+        uav_features = state[:, idx:idx + self.num_uavs * 5].view(batch_size, self.num_uavs, 5)
+        
+        # 提取位置信息 (前2维是位置)
+        vehicle_pos = vehicle_features[:, :, :2]  # [batch, num_vehicles, 2]
+        rsu_pos = rsu_features[:, :, :2]  # [batch, num_rsus, 2]
+        
+        # 计算车辆-RSU距离矩阵
+        # vehicle_pos: [batch, num_vehicles, 2] -> [batch, num_vehicles, 1, 2]
+        # rsu_pos: [batch, num_rsus, 2] -> [batch, 1, num_rsus, 2]
+        v_expanded = vehicle_pos.unsqueeze(2)  # [batch, num_vehicles, 1, 2]
+        r_expanded = rsu_pos.unsqueeze(1)  # [batch, 1, num_rsus, 2]
+        
+        # 欧氏距离
+        vehicle_rsu_dist = torch.sqrt(torch.sum((v_expanded - r_expanded) ** 2, dim=-1) + 1e-8)  # [batch, num_vehicles, num_rsus]
+        
+        # 计算RSU-RSU距离矩阵
+        r_expanded_i = rsu_pos.unsqueeze(2)  # [batch, num_rsus, 1, 2]
+        r_expanded_j = rsu_pos.unsqueeze(1)  # [batch, 1, num_rsus, 2]
+        rsu_rsu_dist = torch.sqrt(torch.sum((r_expanded_i - r_expanded_j) ** 2, dim=-1) + 1e-8)  # [batch, num_rsus, num_rsus]
+        
+        # 构建邻接掩码（基于距离阈值）
+        vehicle_rsu_coverage = 500.0  # RSU覆盖范围500m
+        rsu_rsu_collaboration_range = 1500.0  # RSU协作范围1500m
+        
+        vehicle_rsu_mask = vehicle_rsu_dist <= vehicle_rsu_coverage  # [batch, num_vehicles, num_rsus]
+        rsu_rsu_mask = rsu_rsu_dist <= rsu_rsu_collaboration_range  # [batch, num_rsus, num_rsus]
+        
+        # 构建车辆-RSU边特征 [batch, num_vehicles, num_rsus, edge_dim=8]
+        # 特征包括：距离(归一化), 信号强度, RSU负载, 缓存利用率, 队列长度等
+        vehicle_rsu_edge_features = torch.zeros(batch_size, self.num_vehicles, self.num_rsus, 8, device=device)
+        
+        # 距离归一化 (0-1)
+        vehicle_rsu_edge_features[:, :, :, 0] = torch.clamp(vehicle_rsu_dist / 1000.0, 0.0, 1.0)
+        
+        # 信号强度估计（基于距离，简化的路径损耗模型）
+        # SINR = -32.4 - 20*log10(d_km) - 20*log10(f_GHz) + tx_power + antenna_gain
+        # 简化为: signal_strength = 1 / (1 + distance/100)
+        vehicle_rsu_edge_features[:, :, :, 1] = 1.0 / (1.0 + vehicle_rsu_dist / 100.0)
+        
+        # 带宽估计（基于负载，假设均分）
+        # rsu_features[:, :, 3] 是队列长度/负载
+        rsu_load = rsu_features[:, :, 3].unsqueeze(1).expand(-1, self.num_vehicles, -1)  # [batch, num_vehicles, num_rsus]
+        vehicle_rsu_edge_features[:, :, :, 2] = torch.clamp(1.0 - rsu_load, 0.1, 1.0)  # 可用带宽
+        
+        # RSU缓存利用率 (rsu_features[:, :, 2])
+        rsu_cache = rsu_features[:, :, 2].unsqueeze(1).expand(-1, self.num_vehicles, -1)
+        vehicle_rsu_edge_features[:, :, :, 3] = rsu_cache
+        
+        # RSU能耗状态 (rsu_features[:, :, 4])
+        rsu_energy = rsu_features[:, :, 4].unsqueeze(1).expand(-1, self.num_vehicles, -1)
+        vehicle_rsu_edge_features[:, :, :, 4] = rsu_energy
+        
+        # 传输延迟估计（基于距离和带宽）
+        # delay = distance / speed_of_light + data_size / bandwidth
+        propagation_delay = vehicle_rsu_dist / 300.0  # 归一化到ms级别
+        vehicle_rsu_edge_features[:, :, :, 5] = torch.clamp(propagation_delay / 10.0, 0.0, 1.0)
+        
+        # 链路质量（综合指标）
+        link_quality = vehicle_rsu_edge_features[:, :, :, 1] * vehicle_rsu_edge_features[:, :, :, 2]  # 信号*带宽
+        vehicle_rsu_edge_features[:, :, :, 6] = link_quality
+        
+        # 是否在覆盖范围内（二值特征）
+        vehicle_rsu_edge_features[:, :, :, 7] = vehicle_rsu_mask.float()
+        
+        # 构建RSU-RSU边特征 [batch, num_rsus, num_rsus, edge_dim=8]
+        rsu_rsu_edge_features = torch.zeros(batch_size, self.num_rsus, self.num_rsus, 8, device=device)
+        
+        # 距离归一化
+        rsu_rsu_edge_features[:, :, :, 0] = torch.clamp(rsu_rsu_dist / 2000.0, 0.0, 1.0)
+        
+        # 回传带宽（假设有线回传，带宽固定）
+        rsu_rsu_edge_features[:, :, :, 1] = 0.9  # 高带宽有线回传
+        
+        # 负载相似度（用于缓存协作）
+        rsu_load_i = rsu_features[:, :, 3].unsqueeze(2)  # [batch, num_rsus, 1]
+        rsu_load_j = rsu_features[:, :, 3].unsqueeze(1)  # [batch, 1, num_rsus]
+        load_diff = torch.abs(rsu_load_i - rsu_load_j)
+        rsu_rsu_edge_features[:, :, :, 2] = 1.0 - torch.clamp(load_diff, 0.0, 1.0)  # 负载相似度
+        
+        # 缓存相似度（用于协同缓存）
+        rsu_cache_i = rsu_features[:, :, 2].unsqueeze(2)
+        rsu_cache_j = rsu_features[:, :, 2].unsqueeze(1)
+        cache_similarity = 1.0 - torch.abs(rsu_cache_i - rsu_cache_j)
+        rsu_rsu_edge_features[:, :, :, 3] = cache_similarity
+        
+        # 回传延迟（基于距离）
+        backhaul_delay = rsu_rsu_dist / 200000.0  # 光纤速度约2e5 km/s
+        rsu_rsu_edge_features[:, :, :, 4] = torch.clamp(backhaul_delay / 5.0, 0.0, 1.0)
+        
+        # 是否物理相邻
+        rsu_rsu_edge_features[:, :, :, 5] = rsu_rsu_mask.float()
+        
+        # 协作潜力（综合负载差和缓存相似度）
+        collaboration_potential = (rsu_rsu_edge_features[:, :, :, 2] + rsu_rsu_edge_features[:, :, :, 3]) / 2.0
+        rsu_rsu_edge_features[:, :, :, 6] = collaboration_potential
+        
+        # 预留字段
+        rsu_rsu_edge_features[:, :, :, 7] = 0.0
+        
+        return {
+            'vehicle_rsu_mask': vehicle_rsu_mask,
+            'vehicle_rsu_edge_features': vehicle_rsu_edge_features,
+            'rsu_rsu_mask': rsu_rsu_mask,
+            'rsu_rsu_edge_features': rsu_rsu_edge_features,
+            'cache_similarity': cache_similarity,  # 用于内容相似度注意力
+        }

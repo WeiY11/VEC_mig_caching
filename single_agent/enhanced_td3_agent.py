@@ -74,9 +74,11 @@ class EnhancedTD3Agent:
                 num_vehicles=self.num_vehicles,
                 num_rsus=self.num_rsus,
                 num_uavs=self.num_uavs,
+                global_feature_dim=self.global_dim,
                 hidden_dim=config.gat_hidden_dim,
                 num_heads=config.num_attention_heads,
                 edge_feature_dim=config.edge_feature_dim,
+                central_state_dim=self.central_state_dim,  # 添加中央状态维度
             ).to(self.device)
             actor_input_dim = config.gat_hidden_dim
         else:
