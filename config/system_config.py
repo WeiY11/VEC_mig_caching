@@ -239,24 +239,24 @@ class RLConfig:
         self.reward_penalty_dropped = 0.1  # 保持丢弃惩罚
         self.completion_target = 0.88  # 务实目标（高负载合理完成率）
         self.reward_weight_completion_gap = 1.6  # 略强化完成率缺口惩罚
-        self.reward_weight_loss_ratio = 4.0  # 加大数据丢失惩罚
+        self.reward_weight_loss_ratio = 8.0  # 加大数据丢失惩罚
         self.cache_pressure_threshold = 0.9  # 缓存利用率软阈值（允许更高占用）
         self.reward_weight_cache_pressure = 0.25  # 温和缓存压力惩罚
-        self.reward_weight_cache_bonus = 1.3  # 提高命中奖励
-        self.reward_weight_queue_overload = 0.03  # 略提高队列过载惩罚
+        self.reward_weight_cache_bonus = 2.5  # 提高命中奖励
+        self.reward_weight_queue_overload = 0.08  # 略提高队列过载惩罚
 
         # ⚠️ 已弃用参数（保留以兼容旧代码）
         self.reward_weight_loss = 0.0      # 已移除：data_loss是时延的衡生指标
         self.reward_weight_completion = 0.0  # 已集成到dropped_penalty
         # 缓存权重适度提升，激励智能缓存
-        self.reward_weight_cache = 0.2  # 降低未命中惩罚，避免因0命中导致奖励崩塔
-        self.reward_weight_migration = 0.0
-        self.reward_weight_joint = 0.02   # 联动奖励权重
+        self.reward_weight_cache = 0.4  # 
+        self.reward_weight_migration = 0.1
+        self.reward_weight_joint = 0.05   # 联动奖励权重
         self.reward_weight_remote_reject = 0.5  # 远端拒绝惩罚
         # 边缘计算卸载奖励：大幅提高激励RSU/UAV处理
-        self.reward_weight_offload_bonus = 2.5  # 大幅提高卸载奖励，激励边缘计算
+        self.reward_weight_offload_bonus = 1.8  # 大幅提高卸载奖励，激励边缘计算
         # 本地处理能耗惩罚：额外惩罚本地计算的高能耗
-        self.reward_weight_local_penalty = 0.8  # 本地处理额外能耗惩罚
+        self.reward_weight_local_penalty = 1.0  # 本地处理额外能耗惩罚
 
         # 🎯 延时-能耗优化目标阈值（供算法动态调整）
         # 🏆 12车辆高负载场景目标（基于设计文档）

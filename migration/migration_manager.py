@@ -606,17 +606,20 @@ class TaskMigrationManager:
     def _score_target_node(self, target_id: str, source_id: str, source_pos: Position,
                           node_states: Dict, node_positions: Dict[str, Position]) -> float:
         """
-        🎯 P1-1: 多维度目标节点评分
-        
-        综合评分 = 0.4×负载 + 0.3×距离 + 0.2×队列 + 0.1×带宽
+        🎯 P1-1: 多维度目标节点评分（轻量“注意力”融合）
+
+        - 基于负载/距离/队列/带宽的旧评分保留
+        - 增加“缓解收益”(source->target负载差) 与 “历史可靠性” 作为动态权重
+        - 使用 softmax 计算轻量权重，突出最具收益的特征，兼顾简单性
         """
         target_state = node_states.get(target_id)
+        source_state = node_states.get(source_id)
         if not target_state:
             return 0.0
-        
+
         # 1. 负载评分：越空闲越好
-        load_score = 1.0 - min(1.0, target_state.load_factor)
-        
+        load_score = 1.0 - min(1.0, getattr(target_state, 'load_factor', 1.0))
+
         # 2. 距离评分：越近越好
         target_pos = node_positions.get(target_id)
         if target_pos:
@@ -624,18 +627,45 @@ class TaskMigrationManager:
             distance_score = 1.0 / (1.0 + distance / 1000.0)
         else:
             distance_score = 0.5
-        
+
         # 3. 队列评分：队列越短越好
         queue_length = getattr(target_state, 'queue_length', 0)
         queue_capacity = 20.0 if target_id.startswith("rsu_") else 10.0
         queue_score = 1.0 - min(1.0, queue_length / queue_capacity)
-        
+
         # 4. 带宽评分：带宽越空闲越好
         bandwidth_util = getattr(target_state, 'bandwidth_utilization', 0.5)
         bandwidth_score = 1.0 - min(1.0, bandwidth_util)
-        
-        # 综合加权评分
-        return 0.4 * load_score + 0.3 * distance_score + 0.2 * queue_score + 0.1 * bandwidth_score
+
+        # 5. 缓解收益：源节点与目标节点的负载差（越大越好）
+        source_load = getattr(source_state, 'load_factor', 1.0) if source_state else 1.0
+        relief_score = max(0.0, source_load - getattr(target_state, 'load_factor', 0.0))
+        relief_score = min(1.0, relief_score)
+
+        # 6. 历史可靠性：近期迁移成功率，避免频繁失败的路径
+        success_rate = self.migration_stats['successful_migrations'] / max(1, self.migration_stats['total_attempts'])
+        reliability_score = float(np.clip(success_rate + 0.05, 0.0, 1.0))  # 加一个轻微的先验
+
+        # 旧版静态权重（保持兼容）
+        legacy_score = 0.4 * load_score + 0.3 * distance_score + 0.2 * queue_score + 0.1 * bandwidth_score
+
+        # 轻量注意力：让收益/可靠性自动“抬权重”
+        attn_features = np.array([
+            load_score,
+            queue_score,
+            distance_score,
+            relief_score,
+            reliability_score,
+            bandwidth_score
+        ], dtype=np.float32)
+        attn_logits = attn_features * np.array([1.0, 1.0, 0.8, 1.5, 1.2, 0.6], dtype=np.float32)  # 偏向缓解收益与可靠性
+        attn_weights = np.exp(attn_logits - np.max(attn_logits))
+        attn_weights_sum = float(attn_weights.sum()) if np.isfinite(attn_weights.sum()) and attn_weights.sum() > 0 else 1.0
+        attn_weights = attn_weights / attn_weights_sum
+        attention_score = float(np.dot(attn_weights, attn_features))
+
+        # 融合：保持旧逻辑的稳定性，同时让注意力突出高收益目标
+        return 0.55 * attention_score + 0.45 * legacy_score
     
     def _sync_cache_before_migration(self, source_node: Dict, target_node: Dict, tasks: List[Task]) -> None:
         """

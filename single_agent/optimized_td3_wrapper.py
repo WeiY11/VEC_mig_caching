@@ -9,7 +9,7 @@ Queue-aware Replay + GNN Attention
 作者：VEC_mig_caching Team
 """
 
-from typing import Optional, Dict
+from typing import Optional, Dict, Union, Any
 import numpy as np
 
 from .enhanced_td3_agent import EnhancedTD3Agent
@@ -21,10 +21,11 @@ def create_optimized_config() -> EnhancedTD3Config:
     return EnhancedTD3Config(
         # ✅ 核心优化1：队列感知回放
         use_queue_aware_replay=True,
-        queue_priority_weight=0.4,  # 提高队列权重
+        queue_priority_weight=0.6,  # 提高队列权重
         queue_occ_coef=0.5,
         packet_loss_coef=0.3,
         migration_cong_coef=0.2,
+        queue_metrics_ema_decay=0.8,
         
         # ✅ 核心优化2：GNN注意力
         use_gat_router=True,
@@ -104,11 +105,19 @@ class OptimizedTD3Wrapper:
             central_state_dim=self.central_state_dim,
         )
         
-        print(f"[OptimizedTD3] 初始化完成")
-        print(f"  拓扑: {num_vehicles}车辆, {num_rsus}RSU, {num_uavs}UAV")
-        print(f"  状态维度: {self.state_dim}")
-        print(f"  动作维度: {self.action_dim}")
-        print(f"  优化: Queue-aware Replay + GNN Attention")
+        print("[OptimizedTD3] init done")
+        print(f"  topology: vehicles={num_vehicles}, rsus={num_rsus}, uavs={num_uavs}")
+        print(f"  state_dim: {self.state_dim}")
+        print(f"  action_dim: {self.action_dim}")
+        print("  optimizations: Queue-aware Replay + GNN Attention")
+        
+        # ???????/??????????????
+        self._last_queue_metrics = {
+            'queue_occupancy': 0.0,
+            'packet_loss': 0.0,
+            'migration_congestion': 0.0,
+        }
+        self._queue_pressure_ema: Optional[float] = None
     
     def select_action(self, state: np.ndarray, training: bool = True) -> np.ndarray:
         return self.agent.select_action(state, training=training)
@@ -316,6 +325,72 @@ class OptimizedTD3Wrapper:
         actions['control_params'] = control_params
         
         return actions
+
+    # ================== 训练接口 & 队列信号 ================== #
+    def update_queue_metrics(self, step_stats: Dict[str, Any]) -> None:
+        """从step统计中提取队列/丢包信号，驱动Queue-aware Replay。"""
+        try:
+            queue_occ = float(
+                max(
+                    step_stats.get('queue_rho_max', 0.0) or 0.0,
+                    step_stats.get('queue_overload_flag', 0.0) or 0.0,
+                )
+            )
+            packet_loss = float(
+                step_stats.get('data_loss_ratio_bytes', step_stats.get('packet_loss', 0.0)) or 0.0
+            )
+            migration_cong = float(
+                max(
+                    step_stats.get('cache_eviction_rate', 0.0) or 0.0,
+                    step_stats.get('migration_queue_pressure', 0.0) or 0.0,
+                )
+            )
+        except Exception:
+            queue_occ, packet_loss, migration_cong = 0.0, 0.0, 0.0
+        
+        queue_occ = float(np.clip(queue_occ, 0.0, 1.0))
+        packet_loss = float(np.clip(packet_loss, 0.0, 1.0))
+        migration_cong = float(np.clip(migration_cong, 0.0, 1.0))
+        
+        # 平滑队列压力，避免抖动
+        if self._queue_pressure_ema is None:
+            self._queue_pressure_ema = queue_occ
+        else:
+            self._queue_pressure_ema = 0.8 * self._queue_pressure_ema + 0.2 * queue_occ
+        queue_occ = float(np.clip(self._queue_pressure_ema, 0.0, 1.0))
+        
+        self._last_queue_metrics = {
+            'queue_occupancy': queue_occ,
+            'packet_loss': packet_loss,
+            'migration_congestion': migration_cong,
+        }
+
+    def update_priority_signal(self, queue_pressure: Union[float, int]) -> None:
+        """兼容上层的队列压力接口，直接转成队列占用率信号。"""
+        try:
+            qp = float(queue_pressure)
+        except Exception:
+            qp = 0.0
+        qp = float(np.clip(qp, 0.0, 1.0))
+        self.update_queue_metrics({'queue_rho_max': qp})
+
+    def train_step(
+        self,
+        state: np.ndarray,
+        action: Union[np.ndarray, float, int],
+        reward: float,
+        next_state: np.ndarray,
+        done: bool,
+    ) -> Dict[str, Any]:
+        """单步训练：写入经验 + 更新网络"""
+        action_arr = np.asarray(action, dtype=np.float32)
+        if action_arr.ndim > 1:
+            action_arr = action_arr.flatten()
+        
+        # 使用最新的队列指标驱动优先级采样
+        self.store_experience(state, action_arr, reward, next_state, done, self._last_queue_metrics)
+        training_info = self.update()
+        return training_info
 
 
 # 别名

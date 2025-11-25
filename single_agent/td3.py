@@ -36,19 +36,31 @@ class FeatureAttention(nn.Module):
     特征注意力模块 (Feature Attention Module)
     用于动态加权状态特征的重要性 - CAMTD3核心创新
     """
-    def __init__(self, input_dim: int, reduction_ratio: int = 4):
+    def __init__(
+        self,
+        input_dim: int,
+        reduction_ratio: int = 4,
+        residual: bool = True,
+        min_gate: float = 0.6,
+        gate_scale: float = 0.5,
+    ):
         super(FeatureAttention, self).__init__()
         self.fc1 = nn.Linear(input_dim, input_dim // reduction_ratio)
         self.fc2 = nn.Linear(input_dim // reduction_ratio, input_dim)
         self.sigmoid = nn.Sigmoid()
+        self.residual = residual
+        self.min_gate = min_gate
+        self.gate_scale = gate_scale
         
     def forward(self, x):
-        # Squeeze-and-Excitation style attention
-        # x: [batch_size, input_dim]
+        # Squeeze-and-Excitation style attention with residual gate to avoid collapse
         attention = F.relu(self.fc1(x))
         attention = self.fc2(attention)
-        attention = self.sigmoid(attention)
-        return x * attention
+        gate = self.sigmoid(attention)
+        if self.residual:
+            gate = 1.0 + self.gate_scale * (gate - 0.5)
+        gate = torch.clamp(gate, min=self.min_gate)
+        return x * gate
 
 
 
@@ -60,6 +72,13 @@ class TD3Config:
     actor_lr: float = 2e-4  # 🔧 优化收敛：降低学习率减少震荡
     critic_lr: float = 3e-4  # 🔧 优化收敛：降低学习率减少震荡
     graph_embed_dim: int = 128  # 图编码器输出维度
+    # CAMTD3注意力机制参数
+    use_actor_attention: bool = True
+    use_critic_attention: bool = True
+    attention_residual: bool = True
+    attention_min_gate: float = 0.6
+    attention_scale: float = 0.5
+
     
     # 训练参数
     batch_size: int = 384  # 🔧 优化收敛：减小batch提升样本多样性
@@ -73,9 +92,9 @@ class TD3Config:
     noise_clip: float = 0.2  # 噪声裁剪范围
     
     # 探索参数（优化：平衡探索与收敛）
-    exploration_noise: float = 0.15  # 🔧 提高初始探索噪声，充分探索状态空间
-    noise_decay: float = 0.9992  # 🔧 优化：放缓噪声衰减（从0.9985提高），确保1500轮内持续探索
-    min_noise: float = 0.01  # 🔧 保持最小噪声，防止过早陷入局部最优
+    exploration_noise: float = 0.18  # 
+    noise_decay: float = 0.9996  # 
+    min_noise: float = 0.05  # 
     
     # 🔧 新增：梯度裁剪防止过拟合
     gradient_clip_norm: float = 0.5  # 🔧 收紧梯度裁剪，减少参数震荡
@@ -115,8 +134,6 @@ class TD3Config:
             
         if 'TD3_EXPLORATION_NOISE' in os.environ:
             self.exploration_noise = float(os.environ['TD3_EXPLORATION_NOISE'])
-            print(f"[TD3Config] 从环境变量读取 exploration_noise: {self.exploration_noise}")
-            
         if 'TD3_POLICY_DELAY' in os.environ:
             self.policy_delay = int(os.environ['TD3_POLICY_DELAY'])
             print(f"[TD3Config] 从环境变量读取 policy_delay: {self.policy_delay}")
@@ -127,11 +144,9 @@ class TD3Config:
 
         if 'TD3_NOISE_DECAY' in os.environ:
             self.noise_decay = float(os.environ['TD3_NOISE_DECAY'])
-            print(f"[TD3Config] 从环境变量读取 noise_decay: {self.noise_decay}")
 
         if 'TD3_MIN_NOISE' in os.environ:
             self.min_noise = float(os.environ['TD3_MIN_NOISE'])
-            print(f"[TD3Config] 从环境变量读取 min_noise: {self.min_noise}")
 
         if 'TD3_LATE_STAGE_NOISE_FLOOR' in os.environ:
             self.late_stage_noise_floor = float(os.environ['TD3_LATE_STAGE_NOISE_FLOOR'])
@@ -150,14 +165,29 @@ class TD3Config:
             print(f"[TD3Config] 从环境变量读取 uncertainty_weight: {self.uncertainty_weight}")
         if 'TD3_HEURISTIC_BLEND' in os.environ:
             self.enable_heuristic_blend = os.environ['TD3_HEURISTIC_BLEND'] != '0'
-            print(f"[TD3Config] 启用轮询先验融合: {self.enable_heuristic_blend}")
+            print(f"[TD3Config] : {self.enable_heuristic_blend}")
         if 'TD3_BLEND_RATIO' in os.environ:
             self.heuristic_blend_ratio = float(os.environ['TD3_BLEND_RATIO'])
-            print(f"[TD3Config] 轮询融合比例: {self.heuristic_blend_ratio}")
+            print(f"[TD3Config] : {self.heuristic_blend_ratio}")
         if 'TD3_BLEND_MARGIN' in os.environ:
             self.heuristic_blend_margin = float(os.environ['TD3_BLEND_MARGIN'])
-            print(f"[TD3Config] 轮询融合裕量: {self.heuristic_blend_margin}")
-    
+            print(f"[TD3Config] : {self.heuristic_blend_margin}")
+        if 'TD3_USE_ACTOR_ATTENTION' in os.environ:
+            self.use_actor_attention = os.environ['TD3_USE_ACTOR_ATTENTION'] != "0"
+            print(f"[TD3Config] use_actor_attention: {self.use_actor_attention}")
+        if 'TD3_USE_CRITIC_ATTENTION' in os.environ:
+            self.use_critic_attention = os.environ['TD3_USE_CRITIC_ATTENTION'] != "0"
+            print(f"[TD3Config] use_critic_attention: {self.use_critic_attention}")
+        if 'TD3_ATTENTION_MIN_GATE' in os.environ:
+            self.attention_min_gate = float(os.environ['TD3_ATTENTION_MIN_GATE'])
+            print(f"[TD3Config] attention_min_gate: {self.attention_min_gate}")
+        if 'TD3_ATTENTION_RESIDUAL' in os.environ:
+            self.attention_residual = os.environ['TD3_ATTENTION_RESIDUAL'] != "0"
+            print(f"[TD3Config] attention_residual: {self.attention_residual}")
+        if 'TD3_ATTENTION_SCALE' in os.environ:
+            self.attention_scale = float(os.environ['TD3_ATTENTION_SCALE'])
+            print(f"[TD3Config] attention_scale: {self.attention_scale}")
+
     # PER 参数（优化以减少低质量样本影响）
     per_alpha: float = 0.6  # 🔧 回调优先级指数，减轻早期过度关注
     per_beta_start: float = 0.4  # 🔧 回调IS起点，平衡样本权重
@@ -417,6 +447,10 @@ class TD3Actor(nn.Module):
         graph_embed_dim: int = 128,
         central_dim: int = 0,
         max_action: float = 1.0,
+        use_attention: bool = True,
+        attention_residual: bool = True,
+        attention_min_gate: float = 0.6,
+        attention_scale: float = 0.5,
     ):
         super().__init__()
         self.max_action = max_action
@@ -426,6 +460,7 @@ class TD3Actor(nn.Module):
         self.num_rsus = num_rsus
         self.num_uavs = num_uavs
         self.central_dim = max(int(central_dim), 0)
+        self.use_attention = use_attention
 
         self.encoder = GraphFeatureExtractor(
             num_vehicles=num_vehicles,
@@ -438,7 +473,14 @@ class TD3Actor(nn.Module):
         )
         
         # CAMTD3: 添加特征注意力层
-        self.attention = FeatureAttention(self.encoder.output_dim)
+        self.attention: Optional[FeatureAttention] = None
+        if self.use_attention:
+            self.attention = FeatureAttention(
+                self.encoder.output_dim,
+                residual=attention_residual,
+                min_gate=attention_min_gate,
+                gate_scale=attention_scale,
+            )
 
         fused_dim = self.encoder.output_dim
         self.shared = nn.Sequential(
@@ -491,7 +533,8 @@ class TD3Actor(nn.Module):
         fused = self.encoder(state)
         
         # CAMTD3: 应用特征注意力
-        fused = self.attention(fused)
+        if self.attention is not None:
+            fused = self.attention(fused)
         
         encoder_ctx = self.encoder.get_last_outputs()
         shared_feat = self.shared(fused)
@@ -623,11 +666,26 @@ class TD3Actor(nn.Module):
 class TD3Critic(nn.Module):
     """TD3 Twin Critic网络 - 双Q网络"""
     
-    def __init__(self, state_dim: int, action_dim: int, hidden_dim: int = 256):
+    def __init__(
+        self,
+        state_dim: int,
+        action_dim: int,
+        hidden_dim: int = 256,
+        use_attention: bool = True,
+        attention_residual: bool = True,
+        attention_min_gate: float = 0.6,
+        attention_scale: float = 0.5,
+    ):
         super(TD3Critic, self).__init__()
         
-        # CAMTD3: 特征注意力层 (仅对状态应用)
-        self.state_attention = FeatureAttention(state_dim)
+        self.state_attention: Optional[FeatureAttention] = None
+        if use_attention:
+            self.state_attention = FeatureAttention(
+                state_dim,
+                residual=attention_residual,
+                min_gate=attention_min_gate,
+                gate_scale=attention_scale,
+            )
         
         # Q1网络
         self.q1_network = nn.Sequential(
@@ -664,7 +722,10 @@ class TD3Critic(nn.Module):
     def forward(self, state: torch.Tensor, action: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         """前向传播 - 返回两个Q值"""
         # CAMTD3: 对状态应用注意力
-        state_weighted = self.state_attention(state)
+        if self.state_attention is not None:
+            state_weighted = self.state_attention(state)
+        else:
+            state_weighted = state
         sa = torch.cat([state_weighted, action], dim=1)
         
         
@@ -676,7 +737,10 @@ class TD3Critic(nn.Module):
     def q1(self, state: torch.Tensor, action: torch.Tensor) -> torch.Tensor:
         """只返回Q1值 (用于策略更新)"""
         # CAMTD3: 对状态应用注意力
-        state_weighted = self.state_attention(state)
+        if self.state_attention is not None:
+            state_weighted = self.state_attention(state)
+        else:
+            state_weighted = state
         sa = torch.cat([state_weighted, action], dim=1)
         return self.q1_network(sa)
 
@@ -840,17 +904,28 @@ class TD3Agent:
             "global_dim": global_dim,
             "graph_embed_dim": config.graph_embed_dim,
             "central_dim": max(self.central_state_dim, 0),
+            "use_attention": bool(getattr(config, "use_actor_attention", True)),
+            "attention_min_gate": float(getattr(config, "attention_min_gate", 0.6)),
+            "attention_residual": bool(getattr(config, "attention_residual", True)),
+            "attention_scale": float(getattr(config, "attention_scale", 0.5)),
         }
         if actor_kwargs:
             base_actor_kwargs.update(actor_kwargs)
 
+        critic_attn_kwargs = {
+            "use_attention": bool(getattr(config, "use_critic_attention", True)),
+            "attention_min_gate": float(getattr(config, "attention_min_gate", 0.6)),
+            "attention_residual": bool(getattr(config, "attention_residual", True)),
+            "attention_scale": float(getattr(config, "attention_scale", 0.5)),
+        }
+
         # 创建网络
         self.actor = actor_cls(**dict(base_actor_kwargs)).to(self.device)
-        self.critic = TD3Critic(state_dim, action_dim, config.hidden_dim).to(self.device)
+        self.critic = TD3Critic(state_dim, action_dim, config.hidden_dim, **critic_attn_kwargs).to(self.device)
         
         # 目标网络
         self.target_actor = actor_cls(**dict(base_actor_kwargs)).to(self.device)
-        self.target_critic = TD3Critic(state_dim, action_dim, config.hidden_dim).to(self.device)
+        self.target_critic = TD3Critic(state_dim, action_dim, config.hidden_dim, **critic_attn_kwargs).to(self.device)
         
         # 初始化目标网络
         self.hard_update(self.target_actor, self.actor)
@@ -882,12 +957,13 @@ class TD3Agent:
             boosted_noise = max(self.exploration_noise, 0.25)
             boosted_min = max(self.config.min_noise, 0.05)
             boosted_decay = max(self.config.noise_decay, 0.99998)
-            if boosted_noise != self.exploration_noise or boosted_min != self.config.min_noise or boosted_decay != self.config.noise_decay:
+            if (
+                boosted_noise != self.exploration_noise
+                or boosted_min != self.config.min_noise
+                or boosted_decay != self.config.noise_decay
+            ):
                 print(
                     f"[TD3] Large action space ({self.action_dim}D): "
-                    f"exploration_noise {self.exploration_noise:.3f}->{boosted_noise:.3f}, "
-                    f"min_noise {self.config.min_noise:.3f}->{boosted_min:.3f}, "
-                    f"noise_decay {self.config.noise_decay:.6f}->{boosted_decay:.6f}"
                 )
             self.exploration_noise = boosted_noise
             self.config.exploration_noise = boosted_noise

@@ -12,16 +12,6 @@ CAMTD3 = 基于中央资源分配的缓存感知任务迁移系统
 │   ├── 任务迁移（Migration）
 │   └── 任务调度
 
-python train_single_agent.py --algorithm OPTIMIZED_TD3 --episodes 1000 --num-vehicles 12 --seed 42
-
-Queue-aware Replay
-✅ 训练效率提升5倍
-✅ 快速学习高负载场景
-✅ 针对VEC队列管理痛点
-GNN Attention
-✅ 缓存命中率提升120倍
-✅ 智能学习节点协作关系
-✅ 适应动态拓扑变化
 【使用方法】
 # CAMTD3标准训练（默认模式）
 python train_single_agent.py --algorithm TD3 --episodes 200
@@ -121,8 +111,6 @@ from single_agent.td3_latency_energy import TD3LatencyEnergyEnvironment
 from single_agent.dqn import DQNEnvironment
 from single_agent.ppo import PPOEnvironment
 from single_agent.sac import SACEnvironment
-# 导入精简优化TD3 (仅Queue-aware + GNN)
-from single_agent.optimized_td3_wrapper import OptimizedTD3Environment
 
 # 导入HTML报告生成器
 from utils.html_report_generator import HTMLReportGenerator
@@ -200,18 +188,6 @@ def _apply_reward_overrides_from_env() -> None:
     """Allow quick reward/target retuning via environment variables for hard scenarios."""
     latency_target = os.environ.get("RL_LATENCY_TARGET")
     energy_target = os.environ.get("RL_ENERGY_TARGET")
-    disable_dynamic_targets = os.environ.get("RL_DISABLE_DYNAMIC_TARGETS", "0") != "0"
-    # 新增：支持快速提高丢包/完成率惩罚，默认更重约束高负载不可靠行为
-    default_loss_weight = 1.4
-    default_completion_gap = 0.7
-    default_drop_penalty = 0.18
-    if not getattr(config.rl, "reward_weight_loss_ratio", 0.0):
-        setattr(config.rl, "reward_weight_loss_ratio", default_loss_weight)
-    if not getattr(config.rl, "reward_weight_completion_gap", 0.0):
-        setattr(config.rl, "reward_weight_completion_gap", default_completion_gap)
-    if getattr(config.rl, "reward_penalty_dropped", 0.0) < default_drop_penalty:
-        setattr(config.rl, "reward_penalty_dropped", default_drop_penalty)
-
     weight_overrides = {
         "RL_WEIGHT_DELAY": "reward_weight_delay",
         "RL_WEIGHT_ENERGY": "reward_weight_energy",
@@ -220,9 +196,6 @@ def _apply_reward_overrides_from_env() -> None:
         "RL_WEIGHT_MIGRATION": "reward_weight_migration",
         "RL_WEIGHT_QUEUE_OVERLOAD": "reward_weight_queue_overload",
         "RL_WEIGHT_REMOTE_REJECT": "reward_weight_remote_reject",
-        "RL_WEIGHT_LOSS_RATIO": "reward_weight_loss_ratio",
-        "RL_WEIGHT_COMPLETION_GAP": "reward_weight_completion_gap",
-        "RL_PENALTY_DROPPED": "reward_penalty_dropped",
     }
 
     def _try_set(env_key: str, attr: str) -> None:
@@ -254,10 +227,6 @@ def _apply_reward_overrides_from_env() -> None:
             print(f"[RewardOverride] energy_target <- {energy_target}")
     except Exception:
         pass
-    if disable_dynamic_targets:
-        # 设置全局禁用动态放宽
-        os.environ['DYNAMIC_TARGET_DISABLE'] = '1'
-        print("[RewardOverride] 动态目标放宽已禁用 (RL_DISABLE_DYNAMIC_TARGETS=1)")
     if target_changed:
         try:
             update_reward_targets(
@@ -370,62 +339,6 @@ def get_timestamped_filename(base_name: str, extension: str = ".json") -> str:
 class SingleAgentTrainingEnvironment:
     """单智能体训练环境基类"""
     
-    def _apply_optimized_td3_defaults(self) -> None:
-        """为OPTIMIZED_TD3设置更强的可靠性/探索默认值（可被环境变量覆盖）。"""
-        if not hasattr(self, 'algorithm') and hasattr(self, 'input_algorithm'):
-            alg = str(self.input_algorithm).upper()
-        else:
-            alg = getattr(self, 'algorithm', '').upper()
-        if alg != "OPTIMIZED_TD3":
-            return
-        rl = getattr(config, "rl", None)
-        if rl is None:
-            return
-
-        def _set_if_absent(env_key: str, attr: str, value: float, use_max: bool = True) -> None:
-            if os.environ.get(env_key) is not None:
-                return
-            current = float(getattr(rl, attr, 0.0) or 0.0)
-            val_to_set = max(current, value) if use_max else (current if current else value)
-            setattr(rl, attr, val_to_set)
-
-        # 可靠性权重
-        _set_if_absent("RL_WEIGHT_LOSS_RATIO", "reward_weight_loss_ratio", 1.4)
-        _set_if_absent("RL_WEIGHT_COMPLETION_GAP", "reward_weight_completion_gap", 0.7)
-        _set_if_absent("RL_PENALTY_DROPPED", "reward_penalty_dropped", 0.18, use_max=True)
-        _set_if_absent("RL_WEIGHT_QUEUE_OVERLOAD", "reward_weight_queue_overload", 0.8, use_max=True)
-        _set_if_absent("RL_WEIGHT_REMOTE_REJECT", "reward_weight_remote_reject", 0.25, use_max=True)
-        _set_if_absent("RL_WEIGHT_CACHE", "reward_weight_cache", 0.2)
-        _set_if_absent("RL_WEIGHT_CACHE_BONUS", "reward_weight_cache_bonus", 0.4)
-        _set_if_absent("RL_WEIGHT_DELAY", "reward_weight_delay", 1.6)
-        _set_if_absent("RL_WEIGHT_ENERGY", "reward_weight_energy", 1.5)
-
-        # 目标值（稍紧但不极端）
-        _set_if_absent("RL_LATENCY_TARGET", "latency_target", 0.9, use_max=True)
-        _set_if_absent("RL_ENERGY_TARGET", "energy_target", 4200.0, use_max=True)
-        # 默认禁用动态目标放宽，避免目标被上调
-        os.environ.setdefault('RL_DISABLE_DYNAMIC_TARGETS', '1')
-        os.environ.setdefault('DYNAMIC_TARGET_DISABLE', '1')
-        # 同步归一化基准到目标值，避免指标/奖励脱节
-        norm = getattr(config, "normalization", None)
-        if norm is not None:
-            try:
-                norm.delay_normalizer_value = float(getattr(rl, "latency_target", 0.9))
-                norm.energy_normalizer_value = float(getattr(rl, "energy_target", 4200.0))
-                norm.delay_reference = norm.delay_normalizer_value
-                norm.energy_reference = norm.energy_normalizer_value
-                norm.delay_upper_reference = norm.delay_normalizer_value * 2.0
-                norm.energy_upper_reference = norm.energy_normalizer_value * 1.5
-            except Exception:
-                pass
-        try:
-            update_reward_targets(
-                latency_target=float(getattr(rl, "latency_target", 0.9)),
-                energy_target=float(getattr(rl, "energy_target", 4200.0)),
-            )
-        except Exception:
-            pass
-
     def __init__(
         self,
         algorithm: str,
@@ -450,7 +363,6 @@ class SingleAgentTrainingEnvironment:
         }
         alias_key = normalized_algorithm.replace('_', '')
         self.algorithm = alias_map.get(normalized_algorithm, alias_map.get(alias_key, normalized_algorithm))
-        self._apply_optimized_td3_defaults()
         scenario_config = _build_scenario_config()
         # 应用外部覆盖
         central_env_value = os.environ.get('CENTRAL_RESOURCE', '')
@@ -832,15 +744,6 @@ class SingleAgentTrainingEnvironment:
             self.agent_env = PPOEnvironment(num_vehicles, num_rsus, num_uavs)
         elif self.algorithm == "SAC":
             self.agent_env = SACEnvironment(num_vehicles, num_rsus, num_uavs)
-        elif self.algorithm == "OPTIMIZED_TD3":
-            # 精简优化TD3 (Queue-aware Replay + GNN Attention)
-            self.agent_env = OptimizedTD3Environment(
-                num_vehicles,
-                num_rsus,
-                num_uavs,
-                use_central_resource=self.central_resource_enabled
-            )
-            print(f"[OptimizedTD3] 使用精简优化配置 (Queue+GNN)")
         else:
             raise ValueError(f"不支持的算法: {algorithm}")
 
@@ -1164,8 +1067,6 @@ class SingleAgentTrainingEnvironment:
 
     def _maybe_update_dynamic_energy_target(self, episode: int, episode_energy: float) -> None:
         """根据实际能耗自动放宽目标，避免不可达约束导致振荡。"""
-        if os.environ.get('DYNAMIC_TARGET_DISABLE', '0') != '0':
-            return
         if episode_energy <= 0:
             return
         decay = 0.9
@@ -1187,8 +1088,6 @@ class SingleAgentTrainingEnvironment:
 
     def _maybe_update_dynamic_latency_target(self, episode: int, episode_delay: float) -> None:
         """根据实际时延自动放宽目标，避免高负载场景奖励饱和。"""
-        if os.environ.get('DYNAMIC_TARGET_DISABLE', '0') != '0':
-            return
         if episode_delay <= 0:
             return
         decay = 0.9
@@ -1265,14 +1164,7 @@ class SingleAgentTrainingEnvironment:
         if hasattr(self, '_last_total_energy'):
             delattr(self, '_last_total_energy')
 
-        # 获取初始状态向量
-        if isinstance(self.agent_env, (TD3Environment, TD3LatencyEnergyEnvironment, CAMTD3Environment)):
-            state = self.agent_env.get_state_vector(node_states, system_metrics, {'vehicles': [], 'rsus': [], 'uavs': []})  # type: ignore[call-arg]
-        else:
-            state = self.agent_env.get_state_vector(node_states, system_metrics)  # type: ignore[call-arg]
-        
-        return state
-    
+        stats_snapshot = getattr(self.simulator, 'stats', None)
     def step(self, action, state, actions_dict: Optional[Dict] = None) -> Tuple[np.ndarray, float, bool, Dict]:
         """执行一步仿真，应用智能体动作到仿真器"""
         # 🎯 使用固定卸载策略（如果设置）
@@ -1978,13 +1870,6 @@ class SingleAgentTrainingEnvironment:
             step_stats = info.get('step_stats', {})
             episode_step_stats.append(step_stats)
 
-            # 将step级别的队列指标同步给支持的智能体（Queue-aware Replay）
-            if hasattr(self.agent_env, 'update_queue_metrics'):
-                try:
-                    self.agent_env.update_queue_metrics(step_stats)  # type: ignore[attr-defined]
-                except Exception:
-                    pass
-
             # 将队列/缓存压力传递给支持的智能体用于PER优先度放大
             if hasattr(self.agent_env, 'update_priority_signal'):
                 try:
@@ -2006,7 +1891,7 @@ class SingleAgentTrainingEnvironment:
                 # DQN首选整数动作，但接受Union类型
                 safe_action = self._safe_int_conversion(action)
                 training_info = self.agent_env.train_step(state, safe_action, reward, next_state, done)
-            elif self.algorithm in ["DDPG", "TD3", "TD3_LATENCY_ENERGY", "SAC", "OPTIMIZED_TD3"]:
+            elif self.algorithm in ["DDPG", "TD3", "TD3_LATENCY_ENERGY", "SAC"]:
                 # 连续动作算法首选numpy数组，但接受Union类型
                 if isinstance(action, np.ndarray):
                     safe_action = action
@@ -3411,7 +3296,7 @@ def compare_single_algorithms(algorithms: List[str], num_episodes: Optional[int]
 def main():
     """主函数"""
     parser = argparse.ArgumentParser(description='单智能体算法训练脚本')
-    parser.add_argument('--algorithm', type=str, choices=['DDPG', 'TD3', 'TD3-LE', 'TD3_LE', 'TD3_LATENCY_ENERGY', 'DQN', 'PPO', 'SAC', 'CAM_TD3', 'OPTIMIZED_TD3'],
+    parser.add_argument('--algorithm', type=str, choices=['DDPG', 'TD3', 'TD3-LE', 'TD3_LE', 'TD3_LATENCY_ENERGY', 'DQN', 'PPO', 'SAC', 'CAM_TD3'],
                        help='选择训练算法')
     parser.add_argument('--episodes', type=int, default=None, help=f'训练轮次 (默认: {config.experiment.num_episodes})')
     parser.add_argument('--eval_interval', type=int, default=None, help=f'评估间隔 (默认: {config.experiment.eval_interval})')

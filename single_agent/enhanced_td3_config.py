@@ -38,9 +38,9 @@ class EnhancedTD3Config:
     noise_clip: float = 0.2
     
     # 探索参数
-    exploration_noise: float = 0.15
-    noise_decay: float = 0.9992
-    min_noise: float = 0.01
+    exploration_noise: float = 0.25
+    noise_decay: float = 0.9993
+    min_noise: float = 0.05
     
     # 梯度裁剪
     gradient_clip_norm: float = 0.5
@@ -116,7 +116,7 @@ class EnhancedTD3Config:
     late_stage_start_updates: int = 50000
     late_stage_tau: float = 0.002
     late_stage_policy_delay: int = 3
-    late_stage_noise_floor: float = 0.01
+    late_stage_noise_floor: float = 0.02
     
     # TD误差裁剪
     td_error_clip: float = 4.0
