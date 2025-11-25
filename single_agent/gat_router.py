@@ -26,6 +26,11 @@ class GATLayer(nn.Module):
     单层图注意力
     
     实现多头注意力机制，融合边特征
+    
+    ✨ 优化点：
+    1. 添加残差连接
+    2. 添加LayerNorm稳定训练
+    3. 改进初始化策略
     """
     
     def __init__(
@@ -36,6 +41,7 @@ class GATLayer(nn.Module):
         edge_feature_dim: int = 8,
         dropout: float = 0.1,
         concat: bool = True,
+        use_residual: bool = True,
     ):
         """
         Args:
@@ -45,6 +51,7 @@ class GATLayer(nn.Module):
             edge_feature_dim: 边特征维度
             dropout: Dropout率
             concat: 是否拼接多头输出（否则平均）
+            use_residual: 是否使用残差连接
         """
         super(GATLayer, self).__init__()
         self.in_features = in_features
@@ -52,6 +59,7 @@ class GATLayer(nn.Module):
         self.num_heads = num_heads
         self.edge_feature_dim = edge_feature_dim
         self.concat = concat
+        self.use_residual = use_residual
         
         # 每个头的变换矩阵
         self.W = nn.Parameter(torch.FloatTensor(num_heads, in_features, out_features))
@@ -65,12 +73,29 @@ class GATLayer(nn.Module):
         self.leakyrelu = nn.LeakyReLU(0.2)
         self.dropout = nn.Dropout(dropout)
         
+        # ✨ 添加LayerNorm提升稳定性
+        if concat:
+            self.layer_norm = nn.LayerNorm(out_features * num_heads)
+            # 残差投影（如果维度不匹配）
+            if use_residual and in_features != out_features * num_heads:
+                self.residual_proj = nn.Linear(in_features, out_features * num_heads)
+            else:
+                self.residual_proj = None
+        else:
+            self.layer_norm = nn.LayerNorm(out_features)
+            if use_residual and in_features != out_features:
+                self.residual_proj = nn.Linear(in_features, out_features)
+            else:
+                self.residual_proj = None
+        
         self._init_weights()
     
     def _init_weights(self):
-        """初始化参数"""
-        nn.init.xavier_uniform_(self.W)
-        nn.init.xavier_uniform_(self.a)
+        """✨ 改进的初始化策略"""
+        # Xavier初始化变换矩阵
+        nn.init.xavier_uniform_(self.W, gain=1.414)  # 使用更大的gain
+        # Xavier初始化注意力参数
+        nn.init.xavier_uniform_(self.a, gain=1.414)
     
     def forward(
         self,
@@ -151,6 +176,19 @@ class GATLayer(nn.Module):
         else:
             # 平均所有头 [batch, num_target, out]
             h_out = h_prime.mean(dim=1)
+        
+        # ✨ 添加残差连接
+        if self.use_residual:
+            if self.residual_proj is not None:
+                # 维度不匹配，需要投影
+                residual = self.residual_proj(h_target)
+            else:
+                # 维度匹配，直接相加
+                residual = h_target
+            h_out = h_out + residual
+        
+        # ✨ LayerNorm稳定训练
+        h_out = self.layer_norm(h_out)
         
         return h_out
 
@@ -481,10 +519,15 @@ class GATRouterActor(nn.Module):
         rsu_rsu_dist = torch.sqrt(torch.sum((r_expanded_i - r_expanded_j) ** 2, dim=-1) + 1e-8)  # [batch, num_rsus, num_rsus]
         
         # 构建邻接掩码（基于距离阈值）
-        vehicle_rsu_coverage = 500.0  # RSU覆盖范围500m
+        # ✨ 优化：根据信号强度动态调整覆盖范围
+        vehicle_rsu_coverage = 500.0  # RSU基础覆盖范围500m
         rsu_rsu_collaboration_range = 1500.0  # RSU协作范围1500m
         
-        vehicle_rsu_mask = vehicle_rsu_dist <= vehicle_rsu_coverage  # [batch, num_vehicles, num_rsus]
+        # ✨ 动态覆盖：基于信号质量的软掩码
+        # 计算信号强度权重
+        signal_strength = 1.0 / (1.0 + vehicle_rsu_dist / 100.0)
+        # 软掩码：信号强度 > 0.3
+        vehicle_rsu_mask = signal_strength > 0.3  # [batch, num_vehicles, num_rsus]
         rsu_rsu_mask = rsu_rsu_dist <= rsu_rsu_collaboration_range  # [batch, num_rsus, num_rsus]
         
         # 构建车辆-RSU边特征 [batch, num_vehicles, num_rsus, edge_dim=8]
