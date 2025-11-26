@@ -885,9 +885,10 @@ class SingleAgentTrainingEnvironment:
             'migration_success_rate': [],
             'queue_rho_sum': [],
             'queue_rho_max': [],
-            'queue_overload_flag': [],
-            'queue_overload_events': [],
+            'queue_overload_flag': [],  # 🔧 修复：确保记录二值过载标志
+            'queue_overload_events': [],  # 🔧 修复：记录累计过载事件数
             'episode_steps': [],  # 🔧 新增：记录每个episode的实际步数
+            'avg_step_reward': [],  # 🔧 修复：记录平均每步奖励
             'task_type_queue_share_1': [],
             'task_type_queue_share_2': [],
             'task_type_queue_share_3': [],
@@ -904,8 +905,8 @@ class SingleAgentTrainingEnvironment:
             'task_type_queue_share_ep_2': [],
             'task_type_queue_share_ep_3': [],
             'task_type_queue_share_ep_4': [],
-            'rsu_hotspot_mean': [],
-            'rsu_hotspot_peak': [],
+            'rsu_hotspot_mean': [],  # 🔧 修复：记录每个episode的RSU热点平均强度
+            'rsu_hotspot_peak': [],  # 🔧 修复：记录每个episode的RSU热点峰值强度
             'rsu_hotspot_mean_series': [],
             'rsu_hotspot_peak_series': [],
             'mm1_queue_error': [],
@@ -1225,23 +1226,29 @@ class SingleAgentTrainingEnvironment:
 
         # RSU状态（统一归一化/裁剪）
         for i, rsu in enumerate(self.simulator.rsus):
+            # 🔧 修复：添加CPU频率特征，让智能体知道RSU的计算容量优势
+            cpu_freq_norm = normalize_scalar(rsu.get('cpu_freq', 12.5e9), 'cpu_frequency_range', 20e9)  # 归一化到[0,1]
             rsu_state = np.array([
                 normalize_scalar(rsu['position'][0], 'rsu_position_range', 1000.0),
                 normalize_scalar(rsu['position'][1], 'rsu_position_range', 1000.0),
                 self._calculate_correct_cache_utilization(rsu.get('cache', {}), rsu.get('cache_capacity', 1000.0)),
                 normalize_scalar(len(rsu.get('computation_queue', [])), 'rsu_queue_capacity', 20.0),
                 normalize_scalar(rsu.get('energy_consumed', 0.0), 'rsu_energy_reference', 1000.0),
+                cpu_freq_norm,  # 🔧 新增：第6维 - CPU频率 (RSU约12.5GHz/20GHz=0.625)
             ])
             node_states[f'rsu_{i}'] = rsu_state
 
         # UAV状态（统一归一化/裁剪）
         for i, uav in enumerate(self.simulator.uavs):
+            # 🔧 修复：添加CPU频率特征，让智能体知道UAV的计算容量相对较弱
+            cpu_freq_norm = normalize_scalar(uav.get('cpu_freq', 5.0e9), 'cpu_frequency_range', 20e9)  # 归一化到[0,1]
             uav_state = np.array([
                 normalize_scalar(uav['position'][0], 'uav_position_range', 1000.0),
                 normalize_scalar(uav['position'][1], 'uav_position_range', 1000.0),
                 normalize_scalar(uav['position'][2], 'uav_altitude_range', 200.0),
                 self._calculate_correct_cache_utilization(uav.get('cache', {}), uav.get('cache_capacity', 200.0)),
                 normalize_scalar(uav.get('energy_consumed', 0.0), 'uav_energy_reference', 1000.0),
+                cpu_freq_norm,  # 🔧 新增：第6维 - CPU频率 (UAV约5.0GHz/20GHz=0.25)
             ])
             node_states[f'uav_{i}'] = uav_state
         
@@ -1323,27 +1330,33 @@ class SingleAgentTrainingEnvironment:
             ])
             node_states[f'vehicle_{i}'] = vehicle_state
 
-        # RSU状态 (5维 - 清理版，移除控制参数)
+        # RSU状态 (6维 - 添加CPU频率)
         for i, rsu in enumerate(self.simulator.rsus):
             # 标准化归一化：确保所有值在[0,1]范围
+            # 🔧 修复：添加CPU频率特征
+            cpu_freq_norm = normalize_scalar(rsu.get('cpu_freq', 12.5e9), 'cpu_frequency_range', 20e9)
             rsu_state = np.array([
                 normalize_scalar(rsu['position'][0], 'rsu_position_range', 1000.0),  # 位置x
                 normalize_scalar(rsu['position'][1], 'rsu_position_range', 1000.0),  # 位置y
                 self._calculate_correct_cache_utilization(rsu.get('cache', {}), rsu.get('cache_capacity', 1000.0)),  # 缓存利用率
                 normalize_scalar(len(rsu.get('computation_queue', [])), 'rsu_queue_capacity', 20.0),  # 队列利用率
                 normalize_scalar(rsu.get('energy_consumed', 0.0), 'rsu_energy_reference', 1000.0),  # 能耗
+                cpu_freq_norm,  # 🔧 新增：第6维 - CPU频率
             ])
             node_states[f'rsu_{i}'] = rsu_state
 
-        # UAV状态 (5维 - 清理版，移除控制参数)
+        # UAV状态 (6维 - 添加CPU频率)
         for i, uav in enumerate(self.simulator.uavs):
             # 标准化归一化：确保所有值在[0,1]范围
+            # 🔧 修复：添加CPU频率特征
+            cpu_freq_norm = normalize_scalar(uav.get('cpu_freq', 5.0e9), 'cpu_frequency_range', 20e9)
             uav_state = np.array([
                 normalize_scalar(uav['position'][0], 'uav_position_range', 1000.0),  # 位置x
                 normalize_scalar(uav['position'][1], 'uav_position_range', 1000.0),  # 位置y
                 normalize_scalar(uav['position'][2], 'uav_altitude_range', 200.0),   # 位置z（高度）
                 self._calculate_correct_cache_utilization(uav.get('cache', {}), uav.get('cache_capacity', 200.0)),  # 缓存利用率
                 normalize_scalar(uav.get('energy_consumed', 0.0), 'uav_energy_reference', 1000.0),  # 能耗
+                cpu_freq_norm,  # 🔧 新增：第6维 - CPU频率
             ])
             node_states[f'uav_{i}'] = uav_state
         
@@ -1855,10 +1868,11 @@ class SingleAgentTrainingEnvironment:
             'queue_rho_max': 'queue_rho_max',
             'queue_overload_flag': 'queue_overload_flag',
             'queue_overload_events': 'queue_overload_events',
+            'avg_step_reward': 'avg_step_reward',  # 🔧 修复：添加平均每步奖励映射
             'migration_avg_cost': 'migration_avg_cost',
             'migration_avg_delay_saved': 'migration_avg_delay_saved',
-            'rsu_hotspot_mean': 'rsu_hotspot_mean',
-            'rsu_hotspot_peak': 'rsu_hotspot_peak',
+            'rsu_hotspot_mean': 'rsu_hotspot_mean',  # 🔧 修复：确保记录episode级别热点平均
+            'rsu_hotspot_peak': 'rsu_hotspot_peak',  # 🔧 修复：确保记录episode级别热点峰值
             'normalized_delay': 'normalized_delay',
             'normalized_energy': 'normalized_energy',
             'normalized_reward': 'normalized_reward',
@@ -1913,6 +1927,14 @@ class SingleAgentTrainingEnvironment:
 
         if episode_steps is not None and 'episode_steps' in self.episode_metrics:
             self.episode_metrics['episode_steps'].append(int(episode_steps))
+        
+        # 🔧 修复：计算并记录平均每步奖励
+        if episode_steps and episode_steps > 0:
+            # 从最后一个episode_reward计算avg_step_reward
+            if hasattr(self, 'episode_rewards') and self.episode_rewards:
+                last_episode_reward = self.episode_rewards[-1]
+                avg_step_reward = last_episode_reward / episode_steps
+                system_metrics['avg_step_reward'] = avg_step_reward
     
     def run_episode(self, episode: int, max_steps: Optional[int] = None) -> Dict:
         """运行一个完整的训练轮次"""
@@ -2701,8 +2723,26 @@ def train_single_algorithm(algorithm: str, num_episodes: Optional[int] = None, e
         
         episode_steps = episode_result.get('steps', config.experiment.max_steps_per_episode)
         
-        # 更新性能追踪器
-        training_env.performance_tracker['recent_rewards'].update(episode_result['avg_reward'])
+        # 🔄 重要：对于OPTIMIZED_TD3，更新agent的episode计数（帮助避免局部最优）
+        if algorithm.upper() == 'OPTIMIZED_TD3' and hasattr(training_env.agent_env, 'agent'):
+            agent = training_env.agent_env.agent
+            if hasattr(agent, 'set_episode_count'):
+                agent.set_episode_count(episode, episode_result['avg_reward'])
+            
+            # 🔥 新增：检查是否应该提前终止训练 (600轮后)
+            if hasattr(agent, 'check_early_stopping'):
+                if agent.check_early_stopping():
+                    print(f"\n✅ 训练在Episode {episode}提前终止，已收敛")
+                    # 更新num_episodes以提前退出
+                    num_episodes = episode
+                    break
+        
+        # 🔄 针对OPTIMIZED_TD3特別处理：更新探索重启配置
+        if algorithm.upper() == 'OPTIMIZED_TD3' and hasattr(training_env.agent_env, 'agent'):
+            agent = training_env.agent_env.agent
+            if hasattr(agent, 'exploration_reset_interval'):
+                # 探索重启间隔可以根据需要调整（目前100episode）
+                pass
         per_step_reward = episode_result['avg_reward'] / max(1, episode_steps)
         training_env.performance_tracker['recent_step_rewards'].update(per_step_reward)
         

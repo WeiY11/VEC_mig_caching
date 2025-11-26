@@ -380,7 +380,7 @@ class CompleteSystemSimulator:
             base_dir = 0.0 if go_east else np.pi
             x0 = np.random.uniform(100.0, 900.0)
             y0 = self.road_y + np.random.uniform(-6.0, 6.0)  # 简单两车道路幅
-            v0 = np.random.uniform(12.0, 22.0)  # 初始速度 12-22 m/s
+            v0 = np.random.uniform(8.0, 15.0)  # 初始速度 8-15 m/s (~29-54 km/h，降低移动速度)
             vehicle = {
                 'id': f'V_{i}',
                 'position': np.array([x0, y0], dtype=float),
@@ -403,22 +403,29 @@ class CompleteSystemSimulator:
         # RSU节点初始化
         # RSU node initialization
         self.rsus = []
-        # 🔑 动态RSU部署：根据num_rsus均匀分布在道路上
+        # 🔧 修复：根据用户指定的精确坐标部署RSU（标准笛卡尔坐标系，横向X轴，纵向Y轴）
+        # RSU deployment based on user's exact coordinates (Cartesian: X horizontal, Y vertical)
+        # 道路布局：两个十字路口中心(0,0)和(0,-1030)，每个路口向四方延伸515m，道路宽30m
         if self.num_rsus <= 4:
-            # 原始固定4个RSU的部署位置
+            # 🎯 用户指定坐标（标准笛卡尔坐标系）：
+            # RSU_0: (100, 65) - 右上区域
+            # RSU_1: (-65, -150) - 左上偏下
+            # RSU_2: (100, -750) - 右侧中下
+            # RSU_3: (-65, -1150) - 左下
             rsu_positions = [
-                np.array([300.0, 500.0]),
-                np.array([500.0, 500.0]),
-                np.array([700.0, 500.0]),
-                np.array([900.0, 500.0]),
+                np.array([100.0, 65.0]),      # RSU_0: (X=100, Y=65)
+                np.array([-65.0, -150.0]),    # RSU_1: (X=-65, Y=-150)
+                np.array([100.0, -750.0]),    # RSU_2: (X=100, Y=-750)
+                np.array([-65.0, -1150.0]),   # RSU_3: (X=-65, Y=-1150)
             ]
         else:
-            # 动态生成RSU位置，均匀分布在200-900之间
+            # 动态生成RSU位置，均匀分布在道路交叉口周围
             rsu_positions = []
-            spacing = 700.0 / (self.num_rsus - 1)  # 均匀间隔
+            spacing = 1500.0 / (self.num_rsus - 1)  # 均匀间隔
             for i in range(self.num_rsus):
-                x_pos = 200.0 + i * spacing
-                rsu_positions.append(np.array([x_pos, 500.0]))
+                y_pos = 300.0 + i * spacing
+                x_pos = 350.0 if i % 2 == 0 else 650.0  # 交错左右（道路外）
+                rsu_positions.append(np.array([x_pos, y_pos]))
         
         # 创建RSU节点
         # Create RSU nodes with configuration
@@ -443,20 +450,25 @@ class CompleteSystemSimulator:
         # UAV节点初始化
         # UAV node initialization
         self.uavs = []
-        # 🔑 动态UAV部署：根据num_uavs均匀分布
+        # 🔧 修复：根据用户指定的精确坐标部署UAV（标准笛卡尔坐标系，横向X轴，纵向Y轴）
+        # UAV deployment based on user's exact coordinates (Cartesian: X horizontal, Y vertical)
+        # 两个UAV分别在十字路口中心上空，间距1030m
         if self.num_uavs <= 2:
-            # 原始2枚UAV的部署位置
+            # 🎯 用户指定坐标（标准笛卡尔坐标系）：
+            # UAV_0: (0, 0) - 上路口中心上空
+            # UAV_1: (0, -1030) - 下路口中心上空
             uav_positions = [
-                np.array([300.0, 500.0, self.uav_altitude]),  # 🔧 修复: 使用配置的高度
-                np.array([700.0, 500.0, self.uav_altitude]),
+                np.array([0.0, 0.0, self.uav_altitude]),        # UAV_0: (X=0, Y=0)
+                np.array([0.0, -1030.0, self.uav_altitude]),    # UAV_1: (X=0, Y=-1030)
             ]
         else:
-            # 动态生成UAV位置，均匀分布在道路上方
+            # 动态生成UAV位置，均匀分布在道路上方，避免与RSU重叠
             uav_positions = []
-            spacing = 600.0 / (self.num_uavs - 1)  # 均匀间隔
+            spacing = 1500.0 / (self.num_uavs - 1)  # 均匀间隔
             for i in range(self.num_uavs):
-                x_pos = 200.0 + i * spacing
-                uav_positions.append(np.array([x_pos, 500.0, self.uav_altitude]))  # 🔧 修复: 使用配置的高度
+                x_pos = 500.0  # 保持在主干道中央
+                y_pos = 300.0 + i * spacing
+                uav_positions.append(np.array([x_pos, y_pos, self.uav_altitude]))
         
         # 创建UAV节点
         # Create UAV nodes with configuration
@@ -2684,7 +2696,7 @@ class CompleteSystemSimulator:
                     accel_state = min(accel_state, -0.8)
                     break
 
-            new_speed = np.clip(base_speed + accel_state, 5.0, 32.0)
+            new_speed = np.clip(base_speed + accel_state, 5.0, 20.0)  # 降低最大速度到20m/s (~72km/h)
             vehicle['speed_accel'] = accel_state
             vehicle['velocity'] = new_speed
 
@@ -3654,7 +3666,13 @@ class CompleteSystemSimulator:
                 'queue_length': queue_len,
                 'cache_capacity': cache_capacity,
                 'cache_available': available_cache,
-                'hotspot_intensity': float(np.clip(hotspot_map.get(f'RSU_{i}', 0.0), 0.0, 1.0))
+                'hotspot_intensity': float(np.clip(hotspot_map.get(f'RSU_{i}', 0.0), 0.0, 1.0)),
+                # 🔧 修复：添加cpu_frequency字段供智能体使用
+                'cpu_frequency': rsu.get('cpu_freq', 12.5e9),  # RSU计算频率
+                'cpu_utilization': cpu_load,  # CPU利用率（与td3_optimized.py保持一致）
+                'queue_utilization': cpu_load,  # 队列利用率
+                'cache_utilization': storage_load,  # 缓存利用率
+                'energy_consumption': rsu.get('energy_consumed', 0.0),  # 能耗
             }
 
         # UAV鐘舵€佹敹闆?
@@ -3679,7 +3697,12 @@ class CompleteSystemSimulator:
                 'queue_length': queue_len,
                 'cache_capacity': cache_capacity,
                 'cache_available': available_cache,
-                'hotspot_intensity': 0.0
+                'hotspot_intensity': 0.0,
+                # 🔧 修复：添加cpu_frequency字段供智能体使用
+                'cpu_frequency': uav.get('cpu_freq', 5.0e9),  # UAV计算频率
+                'cpu_utilization': cpu_load,  # CPU利用率
+                'queue_utilization': cpu_load,  # 队列利用率
+                'energy_consumption': uav.get('energy_consumed', 0.0),  # 能耗
             }
         
         # 馃彚 RSU杩佺Щ妫€鏌?(闃堝€?璐熻浇宸Е鍙?

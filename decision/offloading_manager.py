@@ -154,7 +154,8 @@ class ProcessingModeEvaluator:
 
     def __init__(self):
         self.communication_overhead = 0.0002
-        self.cache_response_delay = 0.0001
+        # 🔧 修复: 缓存命中只需查询延迟(~1ms)，不需要上传数据
+        self.cache_response_delay = 0.001  # 1ms - 内存访问和查询延迟
         self.scheduling_preferences = {'priority_bias': 0.5, 'deadline_bias': 0.5}
         self.tradeoff_bias = 0.5
         self.virtual_cpu_load: Dict[str, float] = {}
@@ -350,8 +351,10 @@ class ProcessingModeEvaluator:
         up = self._tx_delay(task.data_size, d, reservation_key=reservation_key)
         down = self._tx_delay(task.result_size, d, reservation_key=reservation_key)
         if self._cache_hit(task, rid, caches):
-            total = self.communication_overhead + self.cache_response_delay + down
-            energy = self._tx_energy(task.result_size, down)
+            # 🔧 修复: 缓存命中不需要上传数据和计算，只需查询+下载结果
+            # Cache hit: query delay + download result (no upload, no computation)
+            total = self.cache_response_delay + down  # 移除上行传输
+            energy = self._tx_energy(task.result_size, down)  # 只有下行能耗
             out.append(ProcessingOption(
                 mode=ProcessingMode.RSU_OFFLOAD_CACHE_HIT,
                 target_node_id=rid,
@@ -360,7 +363,7 @@ class ProcessingModeEvaluator:
                 success_probability=self._slack_prob(total, task.max_delay_slots),
                 cache_hit=True,
                 latency_weight=self._alpha(task),
-                reserved_comm_time=down
+                reserved_comm_time=down  # 只保留下行
             ))
         else:
             # 🔧 修复问题4：RSU计算时延应用并行效率

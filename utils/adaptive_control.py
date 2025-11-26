@@ -214,11 +214,12 @@ class AdaptiveCacheController:
             reason += f">{medium_threshold:.2f})"
             return True, reason, eviction_candidates
 
-        # 🔧 修复：更积极的缓存策略，降低阈值
-        # 对于热度>0.05的内容，就可能被缓存
-        if adjusted_heat > 0.05:
+        # 🔥 修复：降低缓存阈值，提高缓存积极性
+        # 对于热度>0.03的内容，就可能被缓存 (降低从0.05)
+        if adjusted_heat > 0.03:
             collaboration_weight = self.agent_params['collaboration_weight']
-            cache_probability = adjusted_heat * collaboration_weight * max(0.0, 1.2 - utilization)
+            # 🔥 提高缓存概率，增大系数1.2->1.5
+            cache_probability = adjusted_heat * collaboration_weight * max(0.0, 1.5 - utilization)
             if np.random.random() < cache_probability:
                 if available_capacity > data_size:
                     return True, f"Collaborative cache (p={cache_probability:.2f})", eviction_candidates

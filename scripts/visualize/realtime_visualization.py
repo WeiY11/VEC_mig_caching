@@ -441,11 +441,18 @@ HTML_TEMPLATE = """
         };
         Plotly.newPlot('energy-chart', [energyTrace], { ...commonLayout }, {responsive: true, displayModeBar: false});
 
-        // Assignment Chart (Stacked Area)
-        const assignLocal = { x: [], y: [], stackgroup: 'one', name: 'Local', line: { color: '#94a3b8', width: 0 }, fillcolor: 'rgba(148, 163, 184, 0.5)' };
-        const assignRSU = { x: [], y: [], stackgroup: 'one', name: 'RSU', line: { color: '#38bdf8', width: 0 }, fillcolor: 'rgba(56, 189, 248, 0.6)' };
-        const assignUAV = { x: [], y: [], stackgroup: 'one', name: 'UAV', line: { color: '#4ade80', width: 0 }, fillcolor: 'rgba(74, 222, 128, 0.6)' };
-        Plotly.newPlot('assignment-chart', [assignLocal, assignRSU, assignUAV], { ...commonLayout }, {responsive: true, displayModeBar: false});
+        // Assignment Chart (Stacked Bar)
+        const assignLocal = { x: [], y: [], type: 'bar', name: 'Local', marker: { color: '#94a3b8' } };
+        const assignRSU = { x: [], y: [], type: 'bar', name: 'RSU', marker: { color: '#38bdf8' } };
+        const assignUAV = { x: [], y: [], type: 'bar', name: 'UAV', marker: { color: '#4ade80' } };
+        
+        const assignmentLayout = { 
+            ...commonLayout, 
+            barmode: 'stack',
+            xaxis: { ...commonLayout.xaxis, title: 'Episode' },
+            yaxis: { ...commonLayout.yaxis, title: 'Task Count' }
+        };
+        Plotly.newPlot('assignment-chart', [assignLocal, assignRSU, assignUAV], assignmentLayout, {responsive: true, displayModeBar: false});
 
         // Data Buffers
         let rewardHistory = [];

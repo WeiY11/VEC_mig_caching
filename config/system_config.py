@@ -359,15 +359,16 @@ class TaskConfig:
         self.compute_cycles_range = (7.5e7, 2.5e9)  # cycles (覆盖60-150 cycles/bit全范围)
         
         # 🔧 修复问题9：截止时间配置对齐时隙边界（100ms时隙）
-        self.deadline_range = (0.3, 0.9)  # seconds，对应3-9个时隙(100ms)，边界对齐
+        # ✅ 扩大范围以包含类型1任务(0.18-0.24s)、类型2(0.38-0.44s)等
+        self.deadline_range = (0.15, 0.95)  # seconds，扩大范围包含所有4种任务类型
         # 输出比例配置
         self.task_output_ratio = 0.05  # 输出大小是输入大小的5%
         
         # 🔧 收紧约束：任务类型阈值 - 充分利用100ms精细时隙
         self.delay_thresholds = {
-            'extremely_sensitive': 3,    # 0.3s
-            'sensitive': 4,              # 0.4s
-            'moderately_tolerant': 5,    # 0.5s
+            'extremely_sensitive': 2,    # <= 2 slots = 0.2s
+            'sensitive': 4,              # <= 4 slots = 0.4s
+            'moderately_tolerant': 6,    # <= 6 slots = 0.6s
         }
 
         # Latency cost weights (aligned with Table IV in the reference paper)
@@ -380,7 +381,9 @@ class TaskConfig:
 
         # Deadline 放松参数
         self.deadline_relax_default = 1.0
-        self.deadline_relax_fallback = 1.0
+        # 🔧 修复：騍松因子需要阻止任务过早报告为不需要的类型（例如：1.3⁮放斐会将因楳上升）。计算时应造阈愿。
+        # 低四亚蹡：每个类枠先恰会正。描例：简回因子=1.3是削溥计帄，将保骇时閒=0.3的任务上升。
+        self.deadline_relax_fallback = 1.0  # 騍松因子改为1.0（无騍松），确保任务类型冠正
 
         # 🎯 优化后任务类型配置：分层合理化计算密度
         # 原则：轻量级任务保持低密度，重量级任务适度提高
@@ -403,14 +406,14 @@ class TaskConfig:
 
         # 场景定义
         self.scenarios: List[TaskScenarioSpec] = [
-            TaskScenarioSpec('emergency_brake', 0.18, 0.22, 1, 1.0, 0.08),
-            TaskScenarioSpec('collision_avoid', 0.18, 0.24, 1, 1.0, 0.07),
-            TaskScenarioSpec('navigation', 0.38, 0.42, 2, 1.0, 0.25),
-            TaskScenarioSpec('traffic_signal', 0.38, 0.44, 2, 1.0, 0.15),
-            TaskScenarioSpec('video_process', 0.58, 0.64, 3, 1.0, 0.20),
-            TaskScenarioSpec('image_recognition', 0.58, 0.66, 3, 1.0, 0.15),
-            TaskScenarioSpec('data_analysis', 0.78, 0.84, 4, 1.0, 0.08),
-            TaskScenarioSpec('ml_training', 0.78, 0.86, 4, 1.0, 0.02),
+            TaskScenarioSpec('emergency_brake', 0.18, 0.22, 1, 1.0, 0.25),  # 权重25% - 大幅提高
+            TaskScenarioSpec('collision_avoid', 0.18, 0.24, 1, 1.0, 0.20),  # 权重20%
+            TaskScenarioSpec('navigation', 0.38, 0.42, 2, 1.0, 0.15),
+            TaskScenarioSpec('traffic_signal', 0.38, 0.44, 2, 1.0, 0.10),
+            TaskScenarioSpec('video_process', 0.58, 0.64, 3, 1.0, 0.15),
+            TaskScenarioSpec('image_recognition', 0.58, 0.66, 3, 1.0, 0.10),
+            TaskScenarioSpec('data_analysis', 0.78, 0.84, 4, 1.0, 0.04),
+            TaskScenarioSpec('ml_training', 0.78, 0.86, 4, 1.0, 0.01),
         ]
         self._scenario_weights = [scenario.weight for scenario in self.scenarios]
         self._scenario_lookup = {scenario.name: scenario for scenario in self.scenarios}

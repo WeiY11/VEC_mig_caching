@@ -36,6 +36,26 @@ if str(project_root) not in sys.path:
 
 from train_single_agent import train_single_algorithm
 
+import random
+import numpy as np
+try:
+    import torch
+except ImportError:
+    torch = None
+
+def set_global_seed(seed: int):
+    """设置全局随机种子"""
+    random.seed(seed)
+    np.random.seed(seed)
+    if torch is not None:
+        torch.manual_seed(seed)
+        if torch.cuda.is_available():
+            torch.cuda.manual_seed_all(seed)
+        torch.backends.cudnn.deterministic = True
+        torch.backends.cudnn.benchmark = False
+    os.environ['PYTHONHASHSEED'] = str(seed)
+    print(f"🔐 全局随机种子已设置为 {seed}")
+
 
 def parse_float_list(value: str, default: List[float]) -> List[float]:
     """解析浮点数列表"""
@@ -72,8 +92,9 @@ def run_single_experiment(
     print(f"  随机种子: {seed}")
     print(f"{'='*80}\n")
     
-    # 设置环境变量
+    # 设置环境变量和随机种子
     os.environ['RANDOM_SEED'] = str(seed)
+    set_global_seed(seed)
     
     # 训练
     try:
@@ -254,7 +275,7 @@ def main():
         '--bandwidths',
         type=str,
         default='default',
-        help='带宽档位(MHz)，逗号分隔。默认: 20.0,30.0,40.0,50.0,60.0',
+        help='带宽档位(MHz)，逗号分隔。默认: 30.0,40.0,50.0,60.0,70.0',
     )
     
     # 训练参数
@@ -305,7 +326,7 @@ def main():
         print(f"  训练轮次: {args.episodes}")
     else:
         default_rsu_levels = [30.0, 40.0, 50.0, 60.0, 70.0]
-        default_bandwidths = [20.0, 30.0, 40.0, 50.0, 60.0]
+        default_bandwidths = [30.0, 40.0, 50.0, 60.0, 70.0]
     
     # 解析参数档位
     rsu_levels = parse_float_list(args.rsu_levels, default_rsu_levels)

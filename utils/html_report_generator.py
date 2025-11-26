@@ -203,3 +203,18 @@ class HTMLReportGenerator:
         if m4: metrics_list.append(m4)
 
         return metrics_list
+
+    def save_report(self, html_content: str, output_path: str) -> bool:
+        """
+        保存HTML报告到指定路径
+        """
+        try:
+            # Ensure directory exists
+            os.makedirs(os.path.dirname(os.path.abspath(output_path)), exist_ok=True)
+            
+            with open(output_path, 'w', encoding='utf-8') as f:
+                f.write(html_content)
+            return True
+        except Exception as e:
+            print(f"Error saving report: {e}")
+            return False

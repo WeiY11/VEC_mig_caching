@@ -79,9 +79,9 @@ class OptimizedTD3Wrapper:
         config = create_optimized_config()
         
         # 计算维度
-        vehicle_state_dim = num_vehicles * 5
-        rsu_state_dim = num_rsus * 5
-        uav_state_dim = num_uavs * 5
+        vehicle_state_dim = num_vehicles * 5  # 车辆保持5维
+        rsu_state_dim = num_rsus * 6  # 🔧 RSU增加到6维（+cpu_frequency）
+        uav_state_dim = num_uavs * 6  # 🔧 UAV增加到6维（+cpu_frequency）
         global_state_dim = 8
         base_state_dim = vehicle_state_dim + rsu_state_dim + uav_state_dim + global_state_dim
         
@@ -238,7 +238,7 @@ class OptimizedTD3Wrapper:
         for i in range(self.num_vehicles):
             vehicle_key = f'vehicle_{i}'
             if vehicle_key in node_states:
-                vehicle_state = node_states[vehicle_key][:5]
+                vehicle_state = node_states[vehicle_key][:5]  # 车辆保持5维
                 valid_state = [float(v) if np.isfinite(v) else 0.5 for v in vehicle_state]
                 state_components.extend(valid_state)
             else:
@@ -247,20 +247,20 @@ class OptimizedTD3Wrapper:
         for i in range(self.num_rsus):
             rsu_key = f'rsu_{i}'
             if rsu_key in node_states:
-                rsu_state = node_states[rsu_key][:5]
+                rsu_state = node_states[rsu_key][:6]  # 🔧 RSU现在6维（包括cpu_frequency）
                 valid_state = [float(v) if np.isfinite(v) else 0.5 for v in rsu_state]
                 state_components.extend(valid_state)
             else:
-                state_components.extend([0.5, 0.5, 0.0, 0.0, 0.0])
+                state_components.extend([0.5, 0.5, 0.0, 0.0, 0.0, 0.625])  # 默认cpu_freq=12.5/20=0.625
         
         for i in range(self.num_uavs):
             uav_key = f'uav_{i}'
             if uav_key in node_states:
-                uav_state = node_states[uav_key][:5]
+                uav_state = node_states[uav_key][:6]  # 🔧 UAV现在6维（包括cpu_frequency）
                 valid_state = [float(v) if np.isfinite(v) else 0.5 for v in uav_state]
                 state_components.extend(valid_state)
             else:
-                state_components.extend([0.5, 0.5, 0.5, 0.0, 0.0])
+                state_components.extend([0.5, 0.5, 0.5, 0.0, 0.0, 0.25])  # 默认cpu_freq=5.0/20=0.25
         
         # 全局状态
         global_state = [

@@ -374,8 +374,8 @@ class GATRouterActor(nn.Module):
         num_rsus: int,
         num_uavs: int,
         vehicle_feature_dim: int = 5,
-        rsu_feature_dim: int = 5,
-        uav_feature_dim: int = 5,
+        rsu_feature_dim: int = 6,  # 🔧 修复: RSU现在6维（+cpu_frequency）
+        uav_feature_dim: int = 6,  # 🔧 修复: UAV现在6维（+cpu_frequency）
         global_feature_dim: int = 8,
         hidden_dim: int = 128,
         num_heads: int = 4,
@@ -386,6 +386,9 @@ class GATRouterActor(nn.Module):
         self.num_vehicles = num_vehicles
         self.num_rsus = num_rsus
         self.num_uavs = num_uavs
+        self.vehicle_feature_dim = vehicle_feature_dim
+        self.rsu_feature_dim = rsu_feature_dim  # 🔧 新增: 保存维度
+        self.uav_feature_dim = uav_feature_dim  # 🔧 新增: 保存维度
         # 全局特征维度 = 基础全局特征 + 中央状态特征
         self.actual_global_dim = global_feature_dim + central_state_dim
         
@@ -442,14 +445,15 @@ class GATRouterActor(nn.Module):
         
         # 解析状态向量
         idx = 0
-        vehicle_features = state[:, idx:idx + self.num_vehicles * 5].view(batch_size, self.num_vehicles, 5)
-        idx += self.num_vehicles * 5
+        vehicle_features = state[:, idx:idx + self.num_vehicles * self.vehicle_feature_dim].view(batch_size, self.num_vehicles, self.vehicle_feature_dim)
+        idx += self.num_vehicles * self.vehicle_feature_dim
         
-        rsu_features = state[:, idx:idx + self.num_rsus * 5].view(batch_size, self.num_rsus, 5)
-        idx += self.num_rsus * 5
+        # 🔧 修复: 使用实际维度（RSU=6, UAV=6）
+        rsu_features = state[:, idx:idx + self.num_rsus * self.rsu_feature_dim].view(batch_size, self.num_rsus, self.rsu_feature_dim)
+        idx += self.num_rsus * self.rsu_feature_dim
         
-        uav_features = state[:, idx:idx + self.num_uavs * 5].view(batch_size, self.num_uavs, 5)
-        idx += self.num_uavs * 5
+        uav_features = state[:, idx:idx + self.num_uavs * self.uav_feature_dim].view(batch_size, self.num_uavs, self.uav_feature_dim)
+        idx += self.num_uavs * self.uav_feature_dim
         
         # 假设剩余为全局特征
         global_features = state[:, idx:]
@@ -508,13 +512,14 @@ class GATRouterActor(nn.Module):
         
         # 解析位置和负载信息
         idx = 0
-        vehicle_features = state[:, idx:idx + self.num_vehicles * 5].view(batch_size, self.num_vehicles, 5)
-        idx += self.num_vehicles * 5
+        vehicle_features = state[:, idx:idx + self.num_vehicles * self.vehicle_feature_dim].view(batch_size, self.num_vehicles, self.vehicle_feature_dim)
+        idx += self.num_vehicles * self.vehicle_feature_dim
         
-        rsu_features = state[:, idx:idx + self.num_rsus * 5].view(batch_size, self.num_rsus, 5)
-        idx += self.num_rsus * 5
+        # 🔧 修复: 使用实际维度（RSU=6, UAV=6）
+        rsu_features = state[:, idx:idx + self.num_rsus * self.rsu_feature_dim].view(batch_size, self.num_rsus, self.rsu_feature_dim)
+        idx += self.num_rsus * self.rsu_feature_dim
         
-        uav_features = state[:, idx:idx + self.num_uavs * 5].view(batch_size, self.num_uavs, 5)
+        uav_features = state[:, idx:idx + self.num_uavs * self.uav_feature_dim].view(batch_size, self.num_uavs, self.uav_feature_dim)
         
         # 提取位置信息 (前2维是位置)
         vehicle_pos = vehicle_features[:, :, :2]  # [batch, num_vehicles, 2]

@@ -160,14 +160,28 @@ class OptimizedTD3Agent:
         self.total_it = 0
         self.update_count = 0
         self.exploration_noise = config.exploration_noise
+        self.initial_exploration_noise = config.exploration_noise  # 记录初始噪声
         
         # 损失记录
         self.actor_losses = deque(maxlen=1000)
         self.critic_losses = deque(maxlen=1000)
         
+        # 避免局部最优的参数
+        self.episode_count = 0  # 追踪episode数
+        self.recent_rewards = deque(maxlen=50)  # 追踪最近50个episode的奖励
+        self.last_improvement_episode = 0  # 上次改善的episode
+        self.exploration_reset_interval = 100  # 每100个episode重启一次探索
+        
+        # 🔥 新增：提前终止和噪声退火机制 (600轮后启用)
+        self.early_stop_episode = 600  # 在600轮后开始检测是否提前终止
+        self.noise_annealing_start = 600  # 在600轮后开始噪声退火
+        self.noise_annealing_rate = 0.995  # 噪声退火率 (每个episode乘以0.995)
+        self.reward_std_threshold = 0.5  # 奖励方差阈值，低于此值认为收敛
+        
         print(f"✓ 优化TD3智能体初始化完成")
         print(f"✓ 网络隐藏维度: {config.hidden_dim}")
         print(f"✓ 缓冲区大小: {config.buffer_size}")
+        print(f"✓ 启用避免局部最优机制 (周期重启间隔: {self.exploration_reset_interval}ep)")
     
     def select_action(self, state: np.ndarray, training: bool = True) -> np.ndarray:
         """选择动作"""
@@ -189,6 +203,66 @@ class OptimizedTD3Agent:
             )
         
         return action
+    
+    def set_episode_count(self, episode: int, recent_reward: float = None):
+        """
+        更新episode计数，实现自适应探索重启机制
+        """
+        self.episode_count = episode
+        
+        if recent_reward is not None:
+            self.recent_rewards.append(recent_reward)
+        
+        # 🔥 新增：噪声退火 (600轮后)
+        if episode >= self.noise_annealing_start:
+            # 逐渐降低噪声，但保持最小噪声
+            self.exploration_noise = max(
+                self.config.min_noise,
+                self.exploration_noise * self.noise_annealing_rate
+            )
+            if episode % 50 == 0:  # 每50轮报告一次
+                print(f"💨 Episode {episode}: 噪声退火 -> {self.exploration_noise:.4f}")
+        
+        # 周期性重启探索：每100个episode检查一次是否陷入局部最优
+        if episode % self.exploration_reset_interval == 0 and episode > 100:
+            # 计算最近50个episode的平均奖励
+            if len(self.recent_rewards) >= 30:
+                recent_avg = np.mean(list(self.recent_rewards)[-30:])
+                earlier_avg = np.mean(list(self.recent_rewards)[:30])
+                
+                # 如果没有显著改善，重启探索
+                improvement_ratio = (earlier_avg - recent_avg) / (abs(earlier_avg) + 1e-6)
+                
+                if improvement_ratio < 0.05:  # 改善少于5%
+                    # 重启噪声
+                    old_noise = self.exploration_noise
+                    self.exploration_noise = self.initial_exploration_noise * 0.5  # 重启为初始值的50%
+                    print(f"🔄 Episode {episode}: 检测到局部最优,重启探索")
+                    print(f"   (改善率: {improvement_ratio*100:.2f}% < 5%)")
+                    print(f"   探索噪声: {old_noise:.4f} → {self.exploration_noise:.4f}")
+                    print(f"   最近平均奖励: {recent_avg:.4f} (早期: {earlier_avg:.4f})")
+    
+    def check_early_stopping(self) -> bool:
+        """
+        🔥 新增：检查是否应该提前终止训练 (600轮后)
+        基于最近50个episode奖励方差判断收敛
+        """
+        if self.episode_count < self.early_stop_episode:
+            return False
+        
+        if len(self.recent_rewards) < 50:
+            return False
+        
+        # 计算最近50个episode奖励的标准差
+        reward_std = np.std(list(self.recent_rewards))
+        
+        if reward_std < self.reward_std_threshold:
+            print(f"✅ Episode {self.episode_count}: 训练收敛，提前终止")
+            print(f"   奖励标准差: {reward_std:.4f} < {self.reward_std_threshold}")
+            print(f"   最近50轮平均奖励: {np.mean(list(self.recent_rewards)):.4f}")
+            return True
+        
+        return False
     
     def store_experience(self, state: np.ndarray, action: np.ndarray, reward: float,
                         next_state: np.ndarray, done: bool):
