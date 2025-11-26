@@ -122,10 +122,10 @@ def comprehensive_metrics_hook(
     weight_delay = float(global_config.rl.reward_weight_delay)
     weight_energy = float(global_config.rl.reward_weight_energy)
     
-    # ✅ 修复：使用与训练时完全一致的归一化因子
+    # ✅ 修复：使用全局奖励计算器的实时目标值（自动适配车辆数）
     calc = _get_reward_calculator()
-    delay_norm = max(calc.latency_target, 1e-6)  # 0.4（与训练一致）
-    energy_norm = max(calc.energy_target, 1e-6)  # 1200.0（与训练一致）
+    delay_norm = max(calc.latency_target, 1e-6)  # 自动适配车辆数（6车≪1.4s, 12车≪2.3s）
+    energy_norm = max(calc.energy_target, 1e-6)  # 自动适配车辆数（6车≪4800J, 12车≪9600J）
     
     metrics["delay_cost"] = weight_delay * (metrics["avg_delay"] / delay_norm)
     metrics["energy_cost"] = weight_energy * (metrics["avg_energy"] / energy_norm)

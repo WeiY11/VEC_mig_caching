@@ -365,28 +365,57 @@ class CompleteSystemSimulator:
         """
         # 🛣️ 主干道-双路口初始化
         # Main road with two intersections initialization
-        # 坐标系统 0..1000，主干道沿 x 轴中线 y=500，从左向右；两个路口位于 x=300 和 x=700
-        self.road_y = 500.0
+        # 🔧 修复：根据用户指定的坐标系统重新调整（UAV_0为原点，向右X+，向下Y-）
+        # 用户坐标：UAV_0(0,0), UAV_1(0,-1030), 但系统内部需要正坐标
+        # 解决方案：将整体场景向Y轴正方向偏移1545m，确保所有坐标都为正值
+        # 🎯 场景范围：X: [-515, 515] → [0, 1030], Y: [-1545, 515] → [0, 2060]
+        self.offset_y = 1545.0  # Y轴偏移量，使最小坐标为0
+        self.offset_x = 515.0   # X轴偏移量，使最小坐标为0
+        
+        # 转换后的场景范围
+        self.scenario_width = 1030.0   # X轴范围: 0 ~ 1030m
+        self.scenario_height = 2060.0  # Y轴范围: 0 ~ 2060m
+        
+        # 主干道和路口位置（转换后的坐标）
+        self.road_center_x = 515.0  # 主干道X坐标（0+515）
+        self.road_width = 30.0      # 道路宽度
+        self.road_y = self.offset_y  # 为了兼容旧代码，设为上路口Y坐标
+        
+        # 两个十字路口位置（转换后）
+        intersection_0_y = 1545.0  # 上路口：原(0,0) → (515, 1545)
+        intersection_1_y = 515.0   # 下路口：原(0,-1030) → (515, 515)
+        
         self.intersections = {  # 信号灯相位 周期 T，绿灯比例 g
-            'L': {'x': 300.0, 'cycle_T': 60.0, 'green_ratio': 0.5, 'phase_offset': 0.0},
-            'R': {'x': 700.0, 'cycle_T': 60.0, 'green_ratio': 0.5, 'phase_offset': 15.0},
+            'upper': {'x': self.road_center_x, 'y': intersection_0_y, 'cycle_T': 60.0, 'green_ratio': 0.5, 'phase_offset': 0.0},
+            'lower': {'x': self.road_center_x, 'y': intersection_1_y, 'cycle_T': 60.0, 'green_ratio': 0.5, 'phase_offset': 15.0},
         }
 
         # 车辆初始化：落在道路上，方向为东(0)或西(pi)，车道内微扰
         # Vehicle initialization: positioned on road, heading east (0) or west (pi), with lane perturbation
+        # 🔧 修复：根据新场景范围调整车辆初始化区域
         self.vehicles = []
         for i in range(self.num_vehicles):
-            go_east = np.random.rand() < 0.6  # 60% 向东行驶
-            base_dir = 0.0 if go_east else np.pi
-            x0 = np.random.uniform(100.0, 900.0)
-            y0 = self.road_y + np.random.uniform(-6.0, 6.0)  # 简单两车道路幅
+            # 随机分布在主干道和两个路口的横向道路上
+            road_choice = np.random.rand()
+            if road_choice < 0.5:  # 50%在主干道（纵向）
+                go_north = np.random.rand() < 0.5
+                x0 = self.road_center_x + np.random.uniform(-self.road_width/2, self.road_width/2)
+                y0 = np.random.uniform(515.0, 1545.0)  # 在两个路口之间
+                base_dir = -np.pi/2 if go_north else np.pi/2  # 北或南
+            else:  # 50%在横向道路
+                intersection_y = intersection_0_y if np.random.rand() < 0.5 else intersection_1_y
+                go_east = np.random.rand() < 0.6
+                x0 = np.random.uniform(50.0, 980.0)  # 横向道路范围
+                y0 = intersection_y + np.random.uniform(-self.road_width/2, self.road_width/2)
+                base_dir = 0.0 if go_east else np.pi  # 东或西
+                    
             v0 = np.random.uniform(8.0, 15.0)  # 初始速度 8-15 m/s (~29-54 km/h，降低移动速度)
             vehicle = {
                 'id': f'V_{i}',
                 'position': np.array([x0, y0], dtype=float),
                 'velocity': v0,
                 'direction': base_dir,
-                'lane_bias': y0 - self.road_y,  # 车道偏差
+                'lane_bias': 0.0,  # 车道偏差
                 'tasks': [],
                 'energy_consumed': 0.0,
                 'device_cache': {},  # 车载缓存
@@ -398,25 +427,25 @@ class CompleteSystemSimulator:
                 'compute_usage': 0.0,  # 当前计算使用率
             }
             self.vehicles.append(vehicle)
-        print("车辆初始化完成：主干道双路口场景")
+        print(f"车辆初始化完成：主幹道双路口场景，场景范围X:[0,{self.scenario_width:.0f}] Y:[0,{self.scenario_height:.0f}]")
         
         # RSU节点初始化
         # RSU node initialization
         self.rsus = []
-        # 🔧 修复：根据用户指定的精确坐标部署RSU（标准笛卡尔坐标系，横向X轴，纵向Y轴）
-        # RSU deployment based on user's exact coordinates (Cartesian: X horizontal, Y vertical)
-        # 道路布局：两个十字路口中心(0,0)和(0,-1030)，每个路口向四方延伸515m，道路宽30m
+        # 🔧 修复：将用户坐标转换为系统内部正坐标
+        # 用户坐标（横向X，纵向Y） → 系统坐标（X+515, Y+1545）
+        # 道路布局：两个十字路口中心(515,1545)和(515,515)，每个路口向四方延伸515m，道路宽30m
         if self.num_rsus <= 4:
-            # 🎯 用户指定坐标（标准笛卡尔坐标系）：
-            # RSU_0: (100, 65) - 右上区域
-            # RSU_1: (-65, -150) - 左上偏下
-            # RSU_2: (100, -750) - 右侧中下
-            # RSU_3: (-65, -1150) - 左下
+            # 🎯 用户指定坐标（标准笛卡尔坐标系）→ 转换后的系统坐标：
+            # RSU_0: (100, 65) → (615, 1610)
+            # RSU_1: (-65, -150) → (450, 1395)
+            # RSU_2: (100, -750) → (615, 795)
+            # RSU_3: (-65, -1150) → (450, 395)
             rsu_positions = [
-                np.array([100.0, 65.0]),      # RSU_0: (X=100, Y=65)
-                np.array([-65.0, -150.0]),    # RSU_1: (X=-65, Y=-150)
-                np.array([100.0, -750.0]),    # RSU_2: (X=100, Y=-750)
-                np.array([-65.0, -1150.0]),   # RSU_3: (X=-65, Y=-1150)
+                np.array([100.0 + self.offset_x, 65.0 + self.offset_y]),       # RSU_0: (615, 1610)
+                np.array([-65.0 + self.offset_x, -150.0 + self.offset_y]),     # RSU_1: (450, 1395)
+                np.array([100.0 + self.offset_x, -750.0 + self.offset_y]),     # RSU_2: (615, 795)
+                np.array([-65.0 + self.offset_x, -1150.0 + self.offset_y]),    # RSU_3: (450, 395)
             ]
         else:
             # 动态生成RSU位置，均匀分布在道路交叉口周围
@@ -450,16 +479,16 @@ class CompleteSystemSimulator:
         # UAV节点初始化
         # UAV node initialization
         self.uavs = []
-        # 🔧 修复：根据用户指定的精确坐标部署UAV（标准笛卡尔坐标系，横向X轴，纵向Y轴）
-        # UAV deployment based on user's exact coordinates (Cartesian: X horizontal, Y vertical)
+        # 🔧 修复：将用户坐标转换为系统内部正坐标
+        # 用户坐标（横向X，纵向Y） → 系统坐标（X+515, Y+1545）
         # 两个UAV分别在十字路口中心上空，间距1030m
         if self.num_uavs <= 2:
-            # 🎯 用户指定坐标（标准笛卡尔坐标系）：
-            # UAV_0: (0, 0) - 上路口中心上空
-            # UAV_1: (0, -1030) - 下路口中心上空
+            # 🎯 用户指定坐标（标准笛卡尔坐标系）→ 转换后的系统坐标：
+            # UAV_0: (0, 0) → (515, 1545) - 上路口中心上空
+            # UAV_1: (0, -1030) → (515, 515) - 下路口中心上空
             uav_positions = [
-                np.array([0.0, 0.0, self.uav_altitude]),        # UAV_0: (X=0, Y=0)
-                np.array([0.0, -1030.0, self.uav_altitude]),    # UAV_1: (X=0, Y=-1030)
+                np.array([0.0 + self.offset_x, 0.0 + self.offset_y, self.uav_altitude]),        # UAV_0: (515, 1545, alt)
+                np.array([0.0 + self.offset_x, -1030.0 + self.offset_y, self.uav_altitude]),    # UAV_1: (515, 515, alt)
             ]
         else:
             # 动态生成UAV位置，均匀分布在道路上方，避免与RSU重叠

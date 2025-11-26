@@ -83,18 +83,14 @@ def compute_cost(avg_delay: float, avg_energy: float, avg_reward: Optional[float
     avg_delay: float - 平均任务时延（秒，保留用于日志输出）
     avg_energy: float - 平均总能耗（焦耳，保留用于日志输出）
     avg_reward: float - 平均奖励（必须提供）
-    completion_rate: float - 任务完成率（可选，用于惩罚低完成率）
+    completion_rate: float - 任务完成率（可选，已在训练时的奖励函数中考虑）
     
     【返回值】
     float - 归一化的加权代价（越小越好）
     
-    【完成率惩罚示例】（使用平滑的对数惩罚）
-    - 100%完成率: 成本×1.00（无惩罚）
-    - 95%完成率: 成本×1.03（轻微惩罚）
-    - 90%完成率: 成本×1.05（中等惩罚）
-    - 80%完成率: 成本×1.11（较高惩罚）
-    - 70%完成率: 成本×1.18（高惩罚）
-    - 50%完成率: 成本×1.35（严重惩罚）
+    【🔧 修复说明】
+    完成率惩罚已在训练时的UnifiedRewardCalculator中通过completion_gap_penalty计算，
+    这里不再额外添加乘法惩罚，避免双重惩罚导致对比失真。
     """
     # 🎯 直接从奖励计算成本（与train_single_agent.py完全一致）
     if avg_reward is None:
@@ -103,19 +99,8 @@ def compute_cost(avg_delay: float, avg_energy: float, avg_reward: Optional[float
             "Ensure training results include episode_rewards."
         )
     
+    # 🔧 修复：不再额外添加完成率惩罚，避免与训练时的completion_gap_penalty双重计算
     base_cost = -avg_reward
-    
-    # 🔧 完成率惩罚机制（防止通过丢弃任务作弊）
-    # 使用平滑的对数惩罚函数，避免过度惩罚
-    if completion_rate is not None and completion_rate > 0:
-        # 完成率惩罚因子：使用对数函数平滑惩罚
-        # penalty = 1 + 0.5 * log(1 / completion_rate)
-        # 例如：60%完成率 → penalty ≈ 1.26，90%完成率 → penalty ≈ 1.05
-        import math
-        completion_penalty = 1.0 + 0.5 * math.log(1.0 / max(completion_rate, 0.5))
-        adjusted_cost = base_cost * completion_penalty
-        return adjusted_cost
-    
     return base_cost
 
 

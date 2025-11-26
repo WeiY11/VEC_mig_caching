@@ -469,6 +469,30 @@ class SingleAgentTrainingEnvironment:
                 num_vehicles_override = int(override_scenario['num_vehicles'])
                 _sync_topology('num_vehicles', 'vehicle_config', 'num_vehicles', num_vehicles_override)
                 print(f"🔧 [Override] 动态设置车辆数量: {num_vehicles_override}")
+                
+                # 🔧 新增：根据车辆数动态调整目标值
+                # 估算：每车辆约 0.3s 时延, 1000J 能耗
+                if os.environ.get('RL_LATENCY_TARGET') is None:  # 仅当未手动指定时
+                    auto_latency_target = 0.5 + num_vehicles_override * 0.15  # 6车≈1.4s, 12车≈2.3s, 20车≈3.5s
+                    config.rl.latency_target = auto_latency_target
+                    config.rl.latency_upper_tolerance = auto_latency_target * 2.5
+                    print(f"  → 自动调整 latency_target: {auto_latency_target:.2f}s")
+                
+                if os.environ.get('RL_ENERGY_TARGET') is None:  # 仅当未手动指定时
+                    auto_energy_target = num_vehicles_override * 800.0  # 6车≈4800J, 12车≈9600J, 20车≨16000J
+                    config.rl.energy_target = auto_energy_target
+                    config.rl.energy_upper_tolerance = auto_energy_target * 2.0
+                    print(f"  → 自动调整 energy_target: {auto_energy_target:.0f}J")
+                
+                # 同步到全局奖励计算器
+                try:
+                    from utils.unified_reward_calculator import update_reward_targets
+                    update_reward_targets(
+                        latency_target=float(config.rl.latency_target),
+                        energy_target=float(config.rl.energy_target)
+                    )
+                except Exception as e:
+                    print(f"  ⚠️  奖励目标同步失败: {e}")
             if 'num_rsus' in override_scenario:
                 num_rsus_override = int(override_scenario['num_rsus'])
                 _sync_topology('num_rsus', 'rsu_config', 'num_rsus', num_rsus_override)
@@ -724,6 +748,32 @@ class SingleAgentTrainingEnvironment:
         self.use_enhanced_cache = use_enhanced_cache and ENHANCED_CACHE_AVAILABLE
         env_disable_migration = os.environ.get("DISABLE_MIGRATION", "").strip() == "1"
         self.disable_migration = disable_migration or env_disable_migration
+        
+        # 🔧 新增：如果未通过override设置目标值，根据当前车辆数自动调整
+        if 'num_vehicles' not in (override_scenario or {}):
+            current_num_vehicles = scenario_config.get('num_vehicles', config.num_vehicles)
+            if os.environ.get('RL_LATENCY_TARGET') is None:
+                auto_latency_target = 0.5 + current_num_vehicles * 0.15
+                config.rl.latency_target = auto_latency_target
+                config.rl.latency_upper_tolerance = auto_latency_target * 2.5
+                print(f"🎯 自动调整 latency_target: {auto_latency_target:.2f}s (基于{current_num_vehicles}辆车)")
+            
+            if os.environ.get('RL_ENERGY_TARGET') is None:
+                auto_energy_target = current_num_vehicles * 800.0
+                config.rl.energy_target = auto_energy_target
+                config.rl.energy_upper_tolerance = auto_energy_target * 2.0
+                print(f"🎯 自动调整 energy_target: {auto_energy_target:.0f}J (基于{current_num_vehicles}辆车)")
+            
+            # 同步到全局奖励计算器
+            try:
+                from utils.unified_reward_calculator import update_reward_targets
+                update_reward_targets(
+                    latency_target=float(config.rl.latency_target),
+                    energy_target=float(config.rl.energy_target)
+                )
+            except Exception:
+                pass
+        
         simulator: CompleteSystemSimulator
         if self.use_enhanced_cache:
             print("🚀 [Training] Using Enhanced Cache System (Default) with:")
@@ -1029,6 +1079,9 @@ class SingleAgentTrainingEnvironment:
             bucket: float(stats_dict.get(bucket, 0.0) or 0.0) for bucket in energy_buckets
         }
         self._episode_queue_overflow_base = int(stats_dict.get('queue_overflow_drops', 0) or 0)
+        
+        # 🔧 修复：添加延迟总量基线，用于计算episode平均延迟
+        self._episode_delay_base = float(stats_dict.get('total_delay', 0.0) or 0.0)
         
         # Initialize task count accumulators
         self._episode_local_tasks = 0
@@ -1485,13 +1538,22 @@ class SingleAgentTrainingEnvironment:
                 cache_hit_rate = float(np.clip(cm_hit_rate, 0.0, 1.0))
         local_cache_hits = int(safe_get('local_cache_hits', 0))
         
-        # 🔧 修复：安全计算平均延迟 - 使用累计统计
-        total_delay = safe_get('total_delay', 0.0)
-        processed_for_delay = max(1, total_processed)  # 使用累计完成数
-        avg_delay = total_delay / processed_for_delay
+        # 🔧 修复：正确计算平均延迟 - 使用episode级别增量，而非累积值
+        total_delay_累积 = safe_get('total_delay', 0.0)
+        # 计算本episode的延迟增量
+        delay_base_value = getattr(self, '_episode_delay_base', 0.0)
+        episode_delay = max(0.0, total_delay_累积 - delay_base_value)
+        # 使用本episode的任务数
+        processed_for_delay = max(1, episode_processed) if episode_processed > 0 else max(1, total_processed)
+        # 计算本episode的平均延迟
+        avg_delay = episode_delay / processed_for_delay if processed_for_delay > 0 else 0.0
         
-        # 限制延迟在合理范围内（关键修复）
-        avg_delay = np.clip(avg_delay, 0.01, 5.0)  # 扩大到0.01-5.0秒范围，适应跨时隙处理
+        # 🔧 修复：移除错误的clip，延迟应该根据实际情况自然展现
+        # 只在明显异常时才进行裁剪（例如超过60秒，说明计算有误）
+        if avg_delay > 60.0 or not np.isfinite(avg_delay):
+            print(f"⚠️ 异常延迟检测: {avg_delay:.2f}s，重置为0.0s")
+            avg_delay = 0.0
+        avg_delay = max(0.0, avg_delay)  # 确保非负
 
         delay_base = getattr(self, '_episode_delay_component_base', {})
         delay_processing_total = safe_get('delay_processing', 0.0)
@@ -1513,7 +1575,7 @@ class SingleAgentTrainingEnvironment:
         avg_cache_delay_component = episode_delay_cache / delay_denominator
         avg_wait_delay_component = episode_delay_wait / delay_denominator
         
-        # 🔧 修复能耗计算：使用真实累积能耗并转换为本episode增量
+        # 🔧 修复能耗计算：使用真实episode增量能耗
         current_total_energy = safe_get('total_energy', 0.0)
 
         if not getattr(self, '_episode_counters_initialized', False):
@@ -1726,12 +1788,27 @@ class SingleAgentTrainingEnvironment:
         # 🔍 调试日志：能耗与迁移敏感区间
         current_episode = getattr(self, '_current_episode', 0)
         if current_episode > 0 and (current_episode % 50 == 0 or avg_delay > 0.2 or migration_success_rate < 0.9):
+            # 🔧 修复：计算任务数量损失率，与完成率对应
+            task_drop_rate = normalize_ratio(episode_dropped, episode_total)
             print(
                 f"[调试] Episode {current_episode:04d}: 延迟 {avg_delay:.3f}s, 能耗 {total_energy:.2f}J, "
                 f"完成率 {completion_rate:.1%}, 迁移成功率 {migration_success_rate:.1%}, "
                 f"缓存命中 {cache_hit_rate:.1%}, 数据损失 {data_loss_ratio_bytes:.1%}, "
                 f"缓存淘汰率 {cache_eviction_rate:.1%}"
             )
+            # 🔥 新增：显示卸载分布统计和损失率对比
+            print(
+                f"  任务分布: 本地 {local_tasks_count}个({local_offload_ratio:.1%}), "
+                f"RSU {rsu_tasks_count}个({rsu_offload_ratio:.1%}), "
+                f"UAV {uav_tasks_count}个({uav_offload_ratio:.1%}), "
+                f"丢弃 {episode_dropped}个"
+            )
+            # 🆕 添加：任务数量vs数据量的对比说明
+            if abs(task_drop_rate - data_loss_ratio_bytes) > 0.1:  # 差异>10%时提示
+                print(
+                    f"  ⚠️ 注意: 任务数量丢失率{task_drop_rate:.1%} vs 数据量丢失率{data_loss_ratio_bytes:.1%} "
+                    f"(差异{abs(task_drop_rate - data_loss_ratio_bytes)*100:.1f}%，说明丢弃任务的数据量较大)"
+                )
 
         # 🤖 更新缓存控制器统计（如果有实际数据）
         if cache_hit_rate > 0:

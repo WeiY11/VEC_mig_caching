@@ -163,10 +163,13 @@ class UnifiedRewardCalculator:
             self.energy_bonus_scale = max(1e-6, self.energy_target)
 
         # 设置奖励裁剪范围，防止奖励值过大或过小
+        # 🔧 修复：使用更合理的裁剪范围，避免截断实际成本
         if self.algorithm == "SAC":
             self.reward_clip_range = (-15.0, 3.0)  # SAC期望较小的奖励范围
         else:
-            self.reward_clip_range = (-80.0, -0.005)  # 其他算法使用负值范围
+            # 使用宽松的裁剪范围，允许成本达到80（对应-80奖励）
+            # 这样可以避免高负载场景下成本被截断
+            self.reward_clip_range = (-80.0, 0.0)  # 允许更大的成本范围，上界改为0.0而非-0.005
 
         print(f"[OK] Unified reward calculator ({self.algorithm})")
         print(
@@ -305,30 +308,30 @@ class UnifiedRewardCalculator:
         return metrics
 
     def _compute_components(self, m: RewardMetrics) -> RewardComponents:
-        """????/????????"""
+        """计算成本组成分量（不再使用硬编码的放大系数）"""
         norm_delay = self._piecewise_ratio(m.avg_delay, self.latency_target, self.latency_tolerance)
         norm_energy = self._piecewise_ratio(m.total_energy, self.energy_target, self.energy_tolerance)
         core_cost = self.weight_delay * norm_delay + self.weight_energy * norm_energy
 
         drop_penalty = self.penalty_dropped * m.dropped_tasks
-        # 🔥 修复：大幅提高完成率缺口惩罚，强迫提高完成率
-        completion_gap_penalty = self.weight_completion_gap * max(0.0, self.completion_target - m.completion_rate) * 2.5 if self.weight_completion_gap > 0.0 else 0.0
-        # 🔥 修复：大幅提高数据丢失惩罚，强迫降低丢失率
-        data_loss_penalty = self.weight_loss_ratio * m.data_loss_ratio * 3.0 if self.weight_loss_ratio > 0.0 else 0.0
+        # 🔧 修复：移除硬编码乘数，权重已在config中调整
+        completion_gap_penalty = self.weight_completion_gap * max(0.0, self.completion_target - m.completion_rate) if self.weight_completion_gap > 0.0 else 0.0
+        # 🔧 修复：移除硬编码乘数，权重已在config中调整
+        data_loss_penalty = self.weight_loss_ratio * m.data_loss_ratio if self.weight_loss_ratio > 0.0 else 0.0
         cache_pressure_penalty = 0.0
         if self.weight_cache_pressure > 0.0 and m.cache_utilization > self.cache_pressure_threshold:
             cache_pressure_penalty = self.weight_cache_pressure * (m.cache_utilization - self.cache_pressure_threshold)
-        # 🔥 修复：提高队列过载惩罚，避免系统崩溃
-        queue_penalty = self.weight_queue_overload * m.queue_overload_events * 1.5 if self.weight_queue_overload > 0.0 else 0.0
-        remote_reject_penalty = self.weight_remote_reject * m.remote_rejection_rate * 1.2 if self.weight_remote_reject > 0.0 else 0.0
+        # 🔧 修复：移除硬编码乘数，权重已在config中调整
+        queue_penalty = self.weight_queue_overload * m.queue_overload_events if self.weight_queue_overload > 0.0 else 0.0
+        remote_reject_penalty = self.weight_remote_reject * m.remote_rejection_rate if self.weight_remote_reject > 0.0 else 0.0
 
         offload_bonus = self.weight_offload_bonus * (m.rsu_offload_ratio + m.uav_offload_ratio) if self.weight_offload_bonus > 0.0 else 0.0
-        # 🔥 修复：提高本地处理惩罚，鼓励远端卸载降低能耗
-        local_penalty = self.weight_local_penalty * m.local_offload_ratio * 1.3 if self.weight_local_penalty > 0.0 else 0.0
-        # 🔥 修复：提高缓存未命中惩罚，强迫提高命中率
-        cache_penalty = self.weight_cache * m.cache_miss_rate * 1.5 if self.weight_cache > 0.0 else 0.0
-        # 🚀 修复：大幅提高缓存命中奖励，激励缓存使用
-        cache_bonus = self.weight_cache_bonus * m.cache_hit_rate * 2.0 if self.weight_cache_bonus > 0.0 else 0.0
+        # 🔧 修复：移除硬编码乘数，权重已在config中调整
+        local_penalty = self.weight_local_penalty * m.local_offload_ratio if self.weight_local_penalty > 0.0 else 0.0
+        # 🔧 修复：移除硬编码乘数，权重已在config中调整
+        cache_penalty = self.weight_cache * m.cache_miss_rate if self.weight_cache > 0.0 else 0.0
+        # 🔧 修复：移除硬编码乘数，权重已在config中调整
+        cache_bonus = self.weight_cache_bonus * m.cache_hit_rate if self.weight_cache_bonus > 0.0 else 0.0
         # 🚀 增强：奖励迁移成功，而不是仅惩罚成本
         migration_bonus = 0.5 * m.migration_effectiveness if m.migration_effectiveness > 0.5 else 0.0
         migration_penalty = self.weight_migration * m.migration_cost if self.weight_migration > 0.0 else 0.0
@@ -388,15 +391,17 @@ class UnifiedRewardCalculator:
         )
 
     def _compose_reward(self, components: RewardComponents, completion_rate: float) -> RewardComponents:
-        """????????????????"""
+        """组装最终奖励，使用配置的裁剪范围"""
         if self.algorithm == "SAC":
             base_reward = 5.0
             completion_bonus = (completion_rate - 0.95) * 10.0 if completion_rate > 0.95 else 0.0
             reward_raw = base_reward + completion_bonus - components.total_cost
-            reward_clipped = float(np.clip(reward_raw, -15.0, 10.0))
+            # 🔧 修复：使用self.reward_clip_range而非硬编码
+            reward_clipped = float(np.clip(reward_raw, self.reward_clip_range[0], self.reward_clip_range[1]))
         else:
             reward_raw = -components.total_cost
-            reward_clipped = float(np.clip(reward_raw, -20.0, 0.0))
+            # 🔧 修复：使用self.reward_clip_range而非硬编码
+            reward_clipped = float(np.clip(reward_raw, self.reward_clip_range[0], self.reward_clip_range[1]))
         components.reward_pre_clip = reward_raw
         components.reward = reward_clipped if np.isfinite(reward_clipped) else 0.0
         return components
