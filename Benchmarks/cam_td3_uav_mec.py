@@ -19,13 +19,14 @@ import torch.nn as nn
 import torch.optim as optim
 
 
-def mlp(in_dim: int, out_dim: int, hidden: int = 256) -> nn.Sequential:
+def mlp(in_dim: int, out_dim: int, hidden: Tuple[int, int] = (400, 300)) -> nn.Sequential:
+    h1, h2 = hidden
     return nn.Sequential(
-        nn.Linear(in_dim, hidden),
+        nn.Linear(in_dim, h1),
         nn.ReLU(),
-        nn.Linear(hidden, hidden),
+        nn.Linear(h1, h2),
         nn.ReLU(),
-        nn.Linear(hidden, out_dim),
+        nn.Linear(h2, out_dim),
     )
 
 
@@ -75,18 +76,22 @@ class CAMTD3Config:
     gamma: float = 0.99
     tau: float = 0.005
     policy_delay: int = 2
-    actor_lr: float = 1e-4
-    critic_lr: float = 1e-3
+    actor_lr: float = 3e-4
+    critic_lr: float = 3e-4
     weight_decay: float = 0.0
-    batch_size: int = 128
-    buffer_size: int = 200_000
-    start_steps: int = 5_000
+    batch_size: int = 100
+    buffer_size: int = 1_000_000
+    start_steps: int = 25_000
     noise_std: float = 0.2
     noise_clip: float = 0.5
     use_ou_noise: bool = False
     train_after: int = 1_000
     train_freq: int = 1
     device: str = "cpu"
+    num_rsus: int = 4
+    num_uavs: int = 2
+    cache_ctrl_dim: int = 10  # cache/migration control tail length
+    hidden_dims: Tuple[int, int] = (400, 300)
 
 
 class CAMTD3Agent:
@@ -94,13 +99,16 @@ class CAMTD3Agent:
         self.cfg = cfg
         self.act_limit = act_limit
         self.device = torch.device(cfg.device)
+        self.num_rsus = cfg.num_rsus
+        self.num_uavs = cfg.num_uavs
+        self.cache_ctrl_dim = cfg.cache_ctrl_dim
 
-        self.actor = mlp(s_dim, a_dim).to(self.device)
-        self.actor_t = mlp(s_dim, a_dim).to(self.device)
-        self.critic1 = mlp(s_dim + a_dim, 1).to(self.device)
-        self.critic2 = mlp(s_dim + a_dim, 1).to(self.device)
-        self.critic1_t = mlp(s_dim + a_dim, 1).to(self.device)
-        self.critic2_t = mlp(s_dim + a_dim, 1).to(self.device)
+        self.actor = mlp(s_dim, a_dim, hidden=cfg.hidden_dims).to(self.device)
+        self.actor_t = mlp(s_dim, a_dim, hidden=cfg.hidden_dims).to(self.device)
+        self.critic1 = mlp(s_dim + a_dim, 1, hidden=cfg.hidden_dims).to(self.device)
+        self.critic2 = mlp(s_dim + a_dim, 1, hidden=cfg.hidden_dims).to(self.device)
+        self.critic1_t = mlp(s_dim + a_dim, 1, hidden=cfg.hidden_dims).to(self.device)
+        self.critic2_t = mlp(s_dim + a_dim, 1, hidden=cfg.hidden_dims).to(self.device)
         self.actor_t.load_state_dict(self.actor.state_dict())
         self.critic1_t.load_state_dict(self.critic1.state_dict())
         self.critic2_t.load_state_dict(self.critic2.state_dict())
@@ -114,16 +122,89 @@ class CAMTD3Agent:
         self.total_steps = 0
         self.ou_noise = OUNoise(a_dim) if cfg.use_ou_noise else None
 
+    def _structure_action_np(self, raw: np.ndarray) -> np.ndarray:
+        """
+        Map raw actor output to structured action vector:
+        [offload(3 softmax), rsu softmax, uav softmax, cache/migration tanh...]
+        """
+        raw = raw.reshape(-1)
+        a_dim = self.act_limit * np.ones_like(raw)
+        off_len = 3
+        rsu_len = min(self.num_rsus, max(0, raw.size - off_len))
+        uav_len = min(self.num_uavs, max(0, raw.size - off_len - rsu_len))
+        ctrl_len = min(self.cache_ctrl_dim, max(0, raw.size - off_len - rsu_len - uav_len))
+        out = np.zeros_like(raw)
+
+        # offload
+        off_logits = raw[:off_len]
+        off = np.exp(off_logits - off_logits.max())
+        off = off / (off.sum() + 1e-8)
+        out[:off_len] = off
+
+        # rsu
+        if rsu_len > 0:
+            rsu_logits = raw[off_len : off_len + rsu_len]
+            rsu = np.exp(rsu_logits - rsu_logits.max())
+            rsu = rsu / (rsu.sum() + 1e-8)
+            out[off_len : off_len + rsu_len] = rsu
+
+        # uav
+        if uav_len > 0:
+            uav_start = off_len + rsu_len
+            uav_logits = raw[uav_start : uav_start + uav_len]
+            uav = np.exp(uav_logits - uav_logits.max())
+            uav = uav / (uav.sum() + 1e-8)
+            out[uav_start : uav_start + uav_len] = uav
+
+        # cache/migration ctrl (bounded)
+        if ctrl_len > 0:
+            ctrl_start = off_len + rsu_len + uav_len
+            ctrl = np.tanh(raw[ctrl_start : ctrl_start + ctrl_len])
+            out[ctrl_start : ctrl_start + ctrl_len] = ctrl
+
+        return np.clip(out, -self.act_limit, self.act_limit)
+
+    def _structure_action_torch(self, raw: torch.Tensor) -> torch.Tensor:
+        raw = raw.reshape(raw.shape[0], -1)
+        batch, dim = raw.shape
+        off_len = 3
+        rsu_len = min(self.num_rsus, max(0, dim - off_len))
+        uav_len = min(self.num_uavs, max(0, dim - off_len - rsu_len))
+        ctrl_len = min(self.cache_ctrl_dim, max(0, dim - off_len - rsu_len - uav_len))
+
+        out = torch.zeros_like(raw)
+        off_logits = raw[:, :off_len]
+        off = torch.softmax(off_logits, dim=-1)
+        out[:, :off_len] = off
+
+        if rsu_len > 0:
+            rsu_logits = raw[:, off_len : off_len + rsu_len]
+            rsu = torch.softmax(rsu_logits, dim=-1)
+            out[:, off_len : off_len + rsu_len] = rsu
+
+        if uav_len > 0:
+            start = off_len + rsu_len
+            uav_logits = raw[:, start : start + uav_len]
+            uav = torch.softmax(uav_logits, dim=-1)
+            out[:, start : start + uav_len] = uav
+
+        if ctrl_len > 0:
+            start = off_len + rsu_len + uav_len
+            ctrl = torch.tanh(raw[:, start : start + ctrl_len])
+            out[:, start : start + ctrl_len] = ctrl
+
+        return torch.clamp(out, -self.act_limit, self.act_limit)
+
     def act(self, s: np.ndarray, noise: bool = True) -> np.ndarray:
         st = torch.as_tensor(s, dtype=torch.float32, device=self.device).unsqueeze(0)
         with torch.no_grad():
-            a = torch.tanh(self.actor(st)).cpu().numpy()[0]
+            raw = self.actor(st).cpu().numpy()[0]
         if noise:
             if self.ou_noise is not None:
-                a += self.ou_noise.sample()
+                raw += self.ou_noise.sample()
             else:
-                a += np.random.normal(0, self.cfg.noise_std, size=a.shape)
-        return np.clip(a, -self.act_limit, self.act_limit)
+                raw += np.random.normal(0, self.cfg.noise_std, size=raw.shape)
+        return self._structure_action_np(raw)
 
     def store(self, transition) -> None:
         self.buf.add(*transition)
@@ -144,8 +225,8 @@ class CAMTD3Agent:
                 -self.cfg.noise_clip,
                 self.cfg.noise_clip,
             )
-            a2 = torch.tanh(self.actor_t(s2))
-            a2 = torch.clamp(a2 + noise, -self.act_limit, self.act_limit)
+            a2_raw = self.actor_t(s2) + noise
+            a2 = self._structure_action_torch(a2_raw)
             q1_t = self.critic1_t(torch.cat([s2, a2], dim=-1))
             q2_t = self.critic2_t(torch.cat([s2, a2], dim=-1))
             q_t = torch.min(q1_t, q2_t)
@@ -163,7 +244,8 @@ class CAMTD3Agent:
         self.opt_c2.step()
 
         if self.total_updates % self.cfg.policy_delay == 0:
-            a_pi = torch.tanh(self.actor(s))
+            a_pi_raw = self.actor(s)
+            a_pi = self._structure_action_torch(a_pi_raw)
             act_loss = -self.critic1(torch.cat([s, a_pi], dim=-1)).mean()
             self.opt_a.zero_grad()
             act_loss.backward()

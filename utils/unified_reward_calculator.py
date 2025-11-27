@@ -163,13 +163,14 @@ class UnifiedRewardCalculator:
             self.energy_bonus_scale = max(1e-6, self.energy_target)
 
         # 设置奖励裁剪范围，防止奖励值过大或过小
-        # 🔧 修复：使用更合理的裁剪范围，避免截断实际成本
+        # 🚀 关键修复:允许正奖励,让智能体能感知到RSU卸载的好处
+        # 问题:原范围(-80,0)导致所有奖励都是负数,无法体现优化效果
+        # 解决:调整为(-20,+10),允许正奖励信号传递
         if self.algorithm == "SAC":
             self.reward_clip_range = (-15.0, 3.0)  # SAC期望较小的奖励范围
         else:
-            # 使用宽松的裁剪范围，允许成本达到80（对应-80奖励）
-            # 这样可以避免高负载场景下成本被截断
-            self.reward_clip_range = (-80.0, 0.0)  # 允许更大的成本范围，上界改为0.0而非-0.005
+            # 允许正奖励:当RSU占比高时,奖励可以为正(例如RSU 60%可获得+9奖励)
+            self.reward_clip_range = (-20.0, 10.0)  # 允许正奖励,但不过分大
 
         print(f"[OK] Unified reward calculator ({self.algorithm})")
         print(
@@ -326,6 +327,14 @@ class UnifiedRewardCalculator:
         remote_reject_penalty = self.weight_remote_reject * m.remote_rejection_rate if self.weight_remote_reject > 0.0 else 0.0
 
         offload_bonus = self.weight_offload_bonus * (m.rsu_offload_ratio + m.uav_offload_ratio) if self.weight_offload_bonus > 0.0 else 0.0
+        
+        # 🚀 关键修复:区分RSU/UAV奖励,明确引导RSU优先策略
+        # 问题:RSU和UAV共享相同的奖励,导致智能体随机选择或偏向距离更近的UAV
+        # 解决:RSU奖励x2倍(从3倍降低), UAV保持原奖励,明确RSU>本地>UAV的优先级
+        # 🔧 降低倍数避免奖励过大:原3倍导致RSU 60%时奖励+9(过大),改为2倍则+6(合理)
+        rsu_bonus = self.weight_offload_bonus * m.rsu_offload_ratio * 2.0  # RSU专属奖励x2(降低)
+        uav_bonus = self.weight_offload_bonus * m.uav_offload_ratio * 1.0  # UAV基础奖励
+        offload_bonus = rsu_bonus + uav_bonus  # 总卸载奖励
         # 🔧 修复：移除硬编码乘数，权重已在config中调整
         local_penalty = self.weight_local_penalty * m.local_offload_ratio if self.weight_local_penalty > 0.0 else 0.0
         # 🔧 修复：移除硬编码乘数，权重已在config中调整

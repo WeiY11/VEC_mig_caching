@@ -1,17 +1,21 @@
 #!/usr/bin/env python3
 """
-Minimal, self-contained DDPG implementation aligned with Lillicrap et al. (2019/2015).
+DDPG implementation aligned with Lillicrap et al. (2015/2019).
 
-Design goals:
-- No dependency on the project's existing RL stacks.
-- Runs on any OpenAI Gym–style environment (reset(), step()) with continuous actions.
-- Clear defaults; all hyperparameters exposed via DDPGConfig.
+Design choices to match the reference:
+- 2-layer MLPs (400 -> 300) with ReLU.
+- Actor output uses tanh scaled by action_limit.
+- Critic L2 regularisation (weight decay) on parameters.
+- Soft target update with tau=0.001.
+- OU noise for exploration; early steps use random actions.
+
+This is standalone and expects a Gym-style continuous-action environment.
 """
 from __future__ import annotations
 
 import random
 from dataclasses import dataclass
-from typing import Callable, Tuple, Optional
+from typing import Callable, Tuple
 
 import numpy as np
 import torch
@@ -62,8 +66,6 @@ class ReplayBuffer:
 
 
 class OUNoise:
-    """Ornstein-Uhlenbeck process (closer to Lillicrap et al.)."""
-
     def __init__(self, action_dim: int, theta: float = 0.15, sigma: float = 0.2):
         self.theta = theta
         self.sigma = sigma
@@ -79,25 +81,43 @@ class OUNoise:
         return self.state
 
 
-class MLP(nn.Module):
-    def __init__(self, input_dim: int, output_dim: int, hidden: int = 256):
+class Actor(nn.Module):
+    def __init__(self, state_dim: int, action_dim: int, hidden: Tuple[int, int] = (400, 300), act_limit: float = 1.0):
         super().__init__()
+        h1, h2 = hidden
         self.net = nn.Sequential(
-            nn.Linear(input_dim, hidden),
-            nn.LayerNorm(hidden),
+            nn.Linear(state_dim, h1),
             nn.ReLU(),
-            nn.Linear(hidden, hidden),
-            nn.LayerNorm(hidden),
+            nn.Linear(h1, h2),
             nn.ReLU(),
-            nn.Linear(hidden, output_dim),
+            nn.Linear(h2, action_dim),
         )
-        # Fannin init for stability
         for m in self.net:
             if isinstance(m, nn.Linear):
-                fanin_init(m, scale=1.0)
+                fanin_init(m)
+        self.act_limit = act_limit
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return self.net(x)
+    def forward(self, s: torch.Tensor) -> torch.Tensor:
+        return torch.tanh(self.net(s)) * self.act_limit
+
+
+class Critic(nn.Module):
+    def __init__(self, state_dim: int, action_dim: int, hidden: Tuple[int, int] = (400, 300)):
+        super().__init__()
+        h1, h2 = hidden
+        self.net = nn.Sequential(
+            nn.Linear(state_dim + action_dim, h1),
+            nn.ReLU(),
+            nn.Linear(h1, h2),
+            nn.ReLU(),
+            nn.Linear(h2, 1),
+        )
+        for m in self.net:
+            if isinstance(m, nn.Linear):
+                fanin_init(m)
+
+    def forward(self, s: torch.Tensor, a: torch.Tensor) -> torch.Tensor:
+        return self.net(torch.cat([s, a], dim=-1))
 
 
 # -----------------------------------------------------------------------------#
@@ -108,18 +128,19 @@ class MLP(nn.Module):
 @dataclass
 class DDPGConfig:
     gamma: float = 0.99
-    tau: float = 0.005
+    tau: float = 0.001  # soft update rate
     actor_lr: float = 1e-4
     critic_lr: float = 1e-3
-    weight_decay: float = 1e-2
+    critic_l2: float = 1e-2  # weight decay on critic (as in original DDPG)
     batch_size: int = 128
-    buffer_size: int = 200_000
-    start_steps: int = 5_000
-    exploration_noise: float = 0.1
+    buffer_size: int = 1_000_000
+    start_steps: int = 10_000
+    exploration_noise: float = 0.2
     use_ou_noise: bool = True
     train_after: int = 1_000
     train_freq: int = 1
     device: str = "cpu"
+    hidden_dims: Tuple[int, int] = (400, 300)
 
 
 class DDPGAgent:
@@ -128,15 +149,15 @@ class DDPGAgent:
         self.act_limit = act_limit
         self.device = torch.device(cfg.device)
 
-        self.actor = MLP(state_dim, action_dim).to(self.device)
-        self.critic = MLP(state_dim + action_dim, 1).to(self.device)
-        self.actor_target = MLP(state_dim, action_dim).to(self.device)
-        self.critic_target = MLP(state_dim + action_dim, 1).to(self.device)
-        self.actor_target.load_state_dict(self.actor.state_dict())
-        self.critic_target.load_state_dict(self.critic.state_dict())
+        self.actor = Actor(state_dim, action_dim, hidden=cfg.hidden_dims, act_limit=act_limit).to(self.device)
+        self.critic = Critic(state_dim, action_dim, hidden=cfg.hidden_dims).to(self.device)
+        self.actor_t = Actor(state_dim, action_dim, hidden=cfg.hidden_dims, act_limit=act_limit).to(self.device)
+        self.critic_t = Critic(state_dim, action_dim, hidden=cfg.hidden_dims).to(self.device)
+        self.actor_t.load_state_dict(self.actor.state_dict())
+        self.critic_t.load_state_dict(self.critic.state_dict())
 
-        self.actor_opt = optim.Adam(self.actor.parameters(), lr=cfg.actor_lr, weight_decay=cfg.weight_decay)
-        self.critic_opt = optim.Adam(self.critic.parameters(), lr=cfg.critic_lr, weight_decay=cfg.weight_decay)
+        self.actor_opt = optim.Adam(self.actor.parameters(), lr=cfg.actor_lr)
+        self.critic_opt = optim.Adam(self.critic.parameters(), lr=cfg.critic_lr, weight_decay=cfg.critic_l2)
 
         self.buffer = ReplayBuffer(cfg.buffer_size, state_dim, action_dim)
         self.total_steps = 0
@@ -145,13 +166,13 @@ class DDPGAgent:
     def select_action(self, state: np.ndarray, noise: bool = True) -> np.ndarray:
         state_t = torch.as_tensor(state, dtype=torch.float32, device=self.device).unsqueeze(0)
         with torch.no_grad():
-            action = torch.tanh(self.actor(state_t)).cpu().numpy()[0]
+            action = self.actor(state_t).cpu().numpy()[0]
         if noise:
             if self.ou_noise is not None:
                 action += self.ou_noise.sample()
             else:
                 action += self.cfg.exploration_noise * np.random.randn(*action.shape)
-        return np.clip(action * self.act_limit, -self.act_limit, self.act_limit)
+        return np.clip(action, -self.act_limit, self.act_limit)
 
     def update(self, batch_size: int) -> None:
         s, a, r, s2, d = self.buffer.sample(batch_size)
@@ -163,36 +184,30 @@ class DDPGAgent:
         d = torch.as_tensor(d, device=device)
 
         with torch.no_grad():
-            a2 = self.actor_target(s2)
-            q_target = self.critic_target(torch.cat([s2, a2], dim=-1))
+            a2 = self.actor_t(s2)
+            q_target = self.critic_t(s2, a2)
             y = r + self.cfg.gamma * (1.0 - d) * q_target
 
-        q = self.critic(torch.cat([s, a], dim=-1))
+        q = self.critic(s, a)
         critic_loss = nn.functional.mse_loss(q, y)
         self.critic_opt.zero_grad()
         critic_loss.backward()
         self.critic_opt.step()
 
-        actor_loss = -self.critic(torch.cat([s, self.actor(s)], dim=-1)).mean()
+        actor_loss = -self.critic(s, self.actor(s)).mean()
         self.actor_opt.zero_grad()
         actor_loss.backward()
         self.actor_opt.step()
 
         with torch.no_grad():
-            for target, online in [
-                (self.actor_target, self.actor),
-                (self.critic_target, self.critic),
-            ]:
-                for tp, p in zip(target.parameters(), online.parameters()):
-                    tp.data.mul_(1 - self.cfg.tau).add_(self.cfg.tau * p.data)
-
-    def store(self, transition) -> None:
-        self.buffer.add(*transition)
-        self.total_steps += 1
+            for tp, p in zip(self.actor_t.parameters(), self.actor.parameters()):
+                tp.data.mul_(1 - self.cfg.tau).add_(self.cfg.tau * p.data)
+            for tp, p in zip(self.critic_t.parameters(), self.critic.parameters()):
+                tp.data.mul_(1 - self.cfg.tau).add_(self.cfg.tau * p.data)
 
 
 # -----------------------------------------------------------------------------#
-# Training entrypoint
+# Training loop
 # -----------------------------------------------------------------------------#
 
 
@@ -220,18 +235,6 @@ def train_ddpg(
     seed: int = 42,
     progress: Callable[[int, float, float], None] | None = None,
 ) -> dict:
-    """
-    Train DDPG on a gym-style environment.
-
-    Args:
-        env: object exposing reset() -> state, step(action) -> (next_state, reward, done, info)
-        cfg: hyperparameters
-        max_steps: total environment steps
-        seed: RNG seed
-        progress: optional callback(step, avg_reward, last_reward)
-    Returns:
-        dict with episode_rewards list and config snapshot.
-    """
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
@@ -248,11 +251,12 @@ def train_ddpg(
     episode = 0
 
     for step in range(1, max_steps + 1):
-        noise_phase = agent.total_steps < cfg.start_steps
-        if noise_phase:
+        explore = agent.total_steps < cfg.start_steps
+        if explore:
             action = env.action_space.sample()
         else:
             action = agent.select_action(state, noise=True)
+
         next_state, reward, done, _ = _step_env(env, action)
         agent.store((state, action, [reward], next_state, [float(done)]))
         state = next_state

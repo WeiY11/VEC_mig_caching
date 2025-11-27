@@ -17,20 +17,21 @@ import torch.nn as nn
 import torch.optim as optim
 
 
-def mlp(in_dim: int, out_dim: int, hidden: int = 256) -> nn.Sequential:
+def mlp(in_dim: int, out_dim: int, hidden: tuple[int, int] = (256, 256)) -> nn.Sequential:
+    h1, h2 = hidden
     return nn.Sequential(
-        nn.Linear(in_dim, hidden),
+        nn.Linear(in_dim, h1),
         nn.ReLU(),
-        nn.Linear(hidden, hidden),
+        nn.Linear(h1, h2),
         nn.ReLU(),
-        nn.Linear(hidden, out_dim),
+        nn.Linear(h2, out_dim),
     )
 
 
 class TanhGaussianPolicy(nn.Module):
-    def __init__(self, s_dim: int, a_dim: int, log_std_min=-20, log_std_max=2):
+    def __init__(self, s_dim: int, a_dim: int, log_std_min=-20, log_std_max=2, hidden: tuple[int, int] = (256, 256)):
         super().__init__()
-        self.net = mlp(s_dim, 2 * a_dim)
+        self.net = mlp(s_dim, 2 * a_dim, hidden=hidden)
         self.log_std_min = log_std_min
         self.log_std_max = log_std_max
 
@@ -94,6 +95,7 @@ class RobustSACConfig:
     gamma: float = 0.99
     tau: float = 0.005
     alpha: float = 0.2
+    auto_alpha: bool = True
     actor_lr: float = 3e-4
     critic_lr: float = 3e-4
     batch_size: int = 256
@@ -105,6 +107,11 @@ class RobustSACConfig:
     act_noise: float = 0.05  # extra noise in sampled actions
     l2_reg: float = 1e-4
     device: str = "cpu"
+    adv_epsilon: float = 0.02  # FGSM-like perturbation magnitude
+    latency_target: float = 1.0
+    energy_target: float = 4000.0
+    qos_penalty_weight: float = 0.05  # penalty per unit violation
+    hidden_dims: tuple[int, int] = (256, 256)
 
 
 class RobustSACAgent:
@@ -114,8 +121,8 @@ class RobustSACAgent:
         self.device = torch.device(cfg.device)
         self.scale_tensor = torch.as_tensor(np.full((1, a_dim), act_limit, dtype=np.float32), device=self.device)
 
-        self.policy = TanhGaussianPolicy(s_dim, a_dim).to(self.device)
-        self.policy_t = TanhGaussianPolicy(s_dim, a_dim).to(self.device)
+        self.policy = TanhGaussianPolicy(s_dim, a_dim, hidden=cfg.hidden_dims).to(self.device)
+        self.policy_t = TanhGaussianPolicy(s_dim, a_dim, hidden=cfg.hidden_dims).to(self.device)
         self.q = DoubleQ(s_dim, a_dim).to(self.device)
         self.q_t = DoubleQ(s_dim, a_dim).to(self.device)
         self.policy_t.load_state_dict(self.policy.state_dict())
@@ -123,6 +130,12 @@ class RobustSACAgent:
 
         self.opt_p = optim.Adam(self.policy.parameters(), lr=cfg.actor_lr, weight_decay=cfg.l2_reg)
         self.opt_q = optim.Adam(self.q.parameters(), lr=cfg.critic_lr, weight_decay=cfg.l2_reg)
+        if cfg.auto_alpha:
+            self.log_alpha = torch.zeros(1, requires_grad=True, device=self.device)
+            self.opt_alpha = optim.Adam([self.log_alpha], lr=cfg.actor_lr)
+        else:
+            self.log_alpha = None
+            self.opt_alpha = None
 
         self.buf = ReplayBuffer(cfg.buffer_size, s_dim, a_dim)
         self.total_steps = 0
@@ -138,6 +151,11 @@ class RobustSACAgent:
             a += np.random.normal(0, self.cfg.act_noise, size=a.shape)
         return np.clip(a, -self.scale, self.scale)
 
+    def _current_alpha(self) -> float:
+        if self.cfg.auto_alpha and self.log_alpha is not None:
+            return float(self.log_alpha.exp().item())
+        return self.cfg.alpha
+
     def store(self, transition) -> None:
         self.buf.add(*transition)
         self.total_steps += 1
@@ -151,14 +169,16 @@ class RobustSACAgent:
         s2 = torch.as_tensor(s2, device=dev)
         d = torch.as_tensor(d, device=dev)
 
-        # Adversarial observation noise
+        # Adversarial observation noise (random + FGSM-like sign)
         noise = torch.randn_like(s) * self.cfg.obs_noise
-        s_noisy = s + noise
+        sign = torch.sign(noise)
+        s_noisy = s + noise + self.cfg.adv_epsilon * sign
 
         with torch.no_grad():
             a2, logp2 = self.policy_t.sample(s2, self.scale_tensor)
             q1_t, q2_t = self.q_t(s2, a2)
-            q_t = torch.min(q1_t, q2_t) - self.cfg.alpha * logp2
+            alpha = self._current_alpha()
+            q_t = torch.min(q1_t, q2_t) - alpha * logp2
             y = r + self.cfg.gamma * (1.0 - d) * q_t
 
         q1, q2 = self.q(s_noisy, a)
@@ -170,10 +190,18 @@ class RobustSACAgent:
         a_pi, logp_pi = self.policy.sample(s, self.scale_tensor)
         q1_pi, q2_pi = self.q(s, a_pi)
         q_pi = torch.min(q1_pi, q2_pi)
-        loss_pi = (self.cfg.alpha * logp_pi - q_pi).mean()
+        alpha = self._current_alpha()
+        loss_pi = (alpha * logp_pi - q_pi).mean()
         self.opt_p.zero_grad()
         loss_pi.backward()
         self.opt_p.step()
+
+        if self.cfg.auto_alpha and self.log_alpha is not None and self.opt_alpha is not None:
+            target_ent = -float(a.shape[-1])
+            alpha_loss = -(self.log_alpha * (logp_pi + target_ent).detach()).mean()
+            self.opt_alpha.zero_grad()
+            alpha_loss.backward()
+            self.opt_alpha.step()
 
         with torch.no_grad():
             for tgt, src in [(self.policy_t, self.policy), (self.q_t, self.q)]:
@@ -226,7 +254,14 @@ def train_robust_sac(
             a = env.action_space.sample()
         else:
             a = agent.act(s, noise=True)
-        s2, r, done, _ = _step_env(env, a)
+        s2, r, done, info = _step_env(env, a)
+        # QoS-style penalty to align with robust configuration emphasis
+        metrics = info.get("system_metrics", {}) if isinstance(info, dict) else {}
+        delay = float(metrics.get("avg_task_delay", 0.0))
+        energy = float(metrics.get("total_energy_consumption", 0.0))
+        penalty = cfg.qos_penalty_weight * max(0.0, delay - cfg.latency_target)
+        penalty += cfg.qos_penalty_weight * 1e-4 * max(0.0, energy - cfg.energy_target)
+        r = r - penalty
         agent.store((s, a, [r], s2, [float(done)]))
         s = s2
         ep_r += r

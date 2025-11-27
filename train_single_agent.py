@@ -2287,18 +2287,9 @@ class SingleAgentTrainingEnvironment:
             raw = vehicle_action_array[:3]
             raw = np.clip(raw, -5.0, 5.0)
             
-            # 🔧 新增：为RSU添加强偏置，引导智能体学习向RSU卸载
-            # 在softmax之前给RSU加上强劲的加权，让它初始概率就很高
-            offload_bias = np.array([-1.8, 2.2, -0.3], dtype=np.float32)  # [local, RSU, UAV]
-            # local: -1.8 (弱化，约10-15%概率)
-            # RSU: +2.2 (强引导，约52-58%概率)
-            # UAV: -0.3 (轻微弱化，约28-35%概率)
-            raw = raw + offload_bias
-            
-            # 🔧 修复：确保UAV有基础概率，避免被学习到-5导致死亡
-            # 如果UAV维度被学习到极低值（<-3），给予一个基础值
-            if raw.size > 2 and raw[2] < -4.0:
-                raw[2] = -2.0  # 给UAV一个合理的初始值
+            # ✅ 移除偏置，让智能体通过奖励信号真正学习
+            # 奖励函数已经强化：RSU=8.0, UAV=1.0, Local penalty=4.0
+            # 这会提供清晰的学习信号，引导智能体向RSU卸载
             
             exp = np.exp(raw - np.max(raw))
             probs = exp / np.sum(exp)
@@ -3591,6 +3582,9 @@ def main():
                         help='启用系统级干扰计算 Enable system-level interference calculation')
     parser.add_argument('--dynamic-bandwidth', action='store_true',
                         help='启用动态带宽分配 Enable dynamic bandwidth allocation')
+    # 🆕 正交信道分配
+    parser.add_argument('--channel-allocation', action='store_true',
+                        help='启用正交信道分配（减少同频干扰）Enable orthogonal channel allocation')
     
     args = parser.parse_args()
 
@@ -3607,7 +3601,7 @@ def main():
         print("⚠️  使用标准均匀资源分配模式（已通过 --no-central-resource 禁用中央资源）")
     
     # 🆕 通信模型优化配置
-    if args.comm_enhancements or args.fast_fading or args.system_interference or args.dynamic_bandwidth:
+    if args.comm_enhancements or args.fast_fading or args.system_interference or args.dynamic_bandwidth or args.channel_allocation:
         print("\n" + "="*70)
         print("🌐 通信模型优化配置（3GPP标准增强）")
         print("="*70)
@@ -3617,6 +3611,7 @@ def main():
             config.communication.enable_fast_fading = True
             config.communication.use_system_interference = True
             config.communication.use_bandwidth_allocator = True
+            config.communication.use_channel_allocation = True  # 🆕 包含信道分配
             config.communication.use_communication_enhancements = True
             print("✅ 启用所有通信模型优化（完整3GPP标准模式）")
         else:
@@ -3632,16 +3627,25 @@ def main():
             if args.dynamic_bandwidth:
                 config.communication.use_bandwidth_allocator = True
                 print("✅ 启用动态带宽分配调度器")
+            
+            # 🆕 正交信道分配
+            if args.channel_allocation:
+                config.communication.use_channel_allocation = True
+                print("✅ 启用正交信道分配（减少同频干扰）")
         
         # 显示配置详情
         print("\n配置详情：")
         print(f"  - 快衰落: {'启用' if config.communication.enable_fast_fading else '禁用'}")
         print(f"  - 系统级干扰: {'启用' if config.communication.use_system_interference else '禁用'}")
         print(f"  - 动态带宽分配: {'启用' if config.communication.use_bandwidth_allocator else '禁用'}")
+        print(f"  - 正交信道分配: {'启用' if config.communication.use_channel_allocation else '禁用'}")
         print(f"  - 载波频率: {config.communication.carrier_frequency/1e9:.1f} GHz")
         print(f"  - 编码效率: {config.communication.coding_efficiency}")
         if config.communication.enable_fast_fading:
             print(f"  - 快衰落参数: σ={config.communication.fast_fading_std}, K={config.communication.rician_k_factor}dB")
+        if config.communication.use_channel_allocation:
+            num_channels = int(config.communication.total_bandwidth / config.communication.channel_bandwidth)
+            print(f"  - 总信道数: {num_channels}个 ({config.communication.total_bandwidth/1e6:.0f}MHz / {config.communication.channel_bandwidth/1e6:.0f}MHz)")
         print("="*70 + "\n")
     
     # Toggle two-stage pipeline via environment for the simulator

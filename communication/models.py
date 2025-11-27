@@ -52,6 +52,159 @@ class ChannelState:
     shadowing_db: float = 0.0
     channel_gain_linear: float = 0.0
     interference_power: float = 0.0
+    channel_id: int = -1  # 分配的信道编号
+
+
+class OrthogonalChannelAllocator:
+    """
+    正交信道分配器
+    
+    【功能】
+    为不同RSU区域分配正交信道组，避免同频干扰
+    
+    【策略】
+    - 4个RSU分别使用互不重叠的信道组
+    - 每个RSU占用 total_channels / num_rsus 个信道
+    - 车辆连接RSU时自动使用该RSU的信道池
+    - UAV使用与远端RSU正交的信道
+    
+    【示例】100MHz / 5MHz = 20信道
+    - RSU_0: Ch 0-4   (5个信道)
+    - RSU_1: Ch 5-9   (5个信道)
+    - RSU_2: Ch 10-14 (5个信道)
+    - RSU_3: Ch 15-19 (5个信道)
+    """
+    
+    def __init__(self, total_bandwidth: float = 100e6, channel_bandwidth: float = 5e6, 
+                 num_rsus: int = 4, num_uavs: int = 2):
+        """
+        初始化信道分配器
+        
+        Args:
+            total_bandwidth: 总带宽 (Hz)
+            channel_bandwidth: 单信道带宽 (Hz)
+            num_rsus: RSU数量
+            num_uavs: UAV数量
+        """
+        self.total_bandwidth = total_bandwidth
+        self.channel_bandwidth = channel_bandwidth
+        self.num_channels = int(total_bandwidth / channel_bandwidth)
+        self.num_rsus = num_rsus
+        self.num_uavs = num_uavs
+        
+        # 为每个RSU分配信道组
+        self.rsu_channel_pools = self._allocate_rsu_channels()
+        # 为UAV分配信道
+        self.uav_channel_pools = self._allocate_uav_channels()
+        
+        # 记录当前分配状态 {node_id: channel_id}
+        self.current_allocations = {}
+    
+    def _allocate_rsu_channels(self) -> Dict[int, list]:
+        """
+        为RSU分配正交信道组
+        
+        Returns:
+            {rsu_idx: [ch_0, ch_1, ...]} 信道池字典
+        """
+        channels_per_rsu = max(1, self.num_channels // self.num_rsus)
+        pools = {}
+        
+        for rsu_idx in range(self.num_rsus):
+            start_ch = rsu_idx * channels_per_rsu
+            end_ch = min(start_ch + channels_per_rsu, self.num_channels)
+            pools[rsu_idx] = list(range(start_ch, end_ch))
+        
+        return pools
+    
+    def _allocate_uav_channels(self) -> Dict[int, list]:
+        """
+        为UAV分配信道（复用远端RSU的信道，避免干扰）
+        
+        Returns:
+            {uav_idx: [ch_0, ch_1, ...]} 信道池字典
+        """
+        pools = {}
+        
+        # UAV复用远端RSU的信道（假设距离足够远）
+        for uav_idx in range(self.num_uavs):
+            # UAV_0 复用 RSU_2/3 的信道，UAV_1 复用 RSU_0/1 的信道
+            target_rsu = (uav_idx * 2) % self.num_rsus
+            pools[uav_idx] = self.rsu_channel_pools.get(target_rsu, [0])
+        
+        return pools
+    
+    def allocate_channel(self, node_id: str, node_type: str, serving_node_idx: int = 0) -> int:
+        """
+        为节点分配信道
+        
+        Args:
+            node_id: 节点ID（如 'vehicle_0'）
+            node_type: 节点类型 ('vehicle', 'rsu', 'uav')
+            serving_node_idx: 服务节点索引（车辆连接的RSU/UAV编号）
+        
+        Returns:
+            分配的信道编号
+        """
+        if node_type == 'vehicle':
+            # 车辆使用其连接的RSU的信道池
+            pool = self.rsu_channel_pools.get(serving_node_idx, [0])
+        elif node_type == 'uav':
+            # UAV使用自己的信道池
+            pool = self.uav_channel_pools.get(serving_node_idx, [0])
+        else:
+            # RSU/其他节点
+            pool = self.rsu_channel_pools.get(serving_node_idx, [0])
+        
+        if not pool:
+            return 0
+        
+        # 选择信道：简单轮询策略（可扩展为基于负载的选择）
+        channel_id = pool[hash(node_id) % len(pool)]
+        self.current_allocations[node_id] = channel_id
+        
+        return channel_id
+    
+    def get_channel_frequency(self, channel_id: int) -> float:
+        """
+        获取信道的中心频率
+        
+        Args:
+            channel_id: 信道编号
+        
+        Returns:
+            中心频率 (Hz)
+        """
+        base_freq = getattr(config.communication, 'carrier_frequency', 3.5e9)
+        # 信道频率 = 基础频率 + 信道编号 × 信道带宽
+        return base_freq + channel_id * self.channel_bandwidth
+    
+    def is_same_channel(self, node_id_1: str, node_id_2: str) -> bool:
+        """
+        判断两个节点是否使用同一信道
+        
+        Returns:
+            True: 同频（会产生干扰）
+            False: 正交（无干扰）
+        """
+        ch1 = self.current_allocations.get(node_id_1, -1)
+        ch2 = self.current_allocations.get(node_id_2, -1)
+        return ch1 == ch2 and ch1 != -1
+    
+    def get_allocation_stats(self) -> Dict:
+        """
+        获取信道分配统计信息
+        """
+        channel_usage = {}
+        for node_id, ch_id in self.current_allocations.items():
+            channel_usage[ch_id] = channel_usage.get(ch_id, 0) + 1
+        
+        return {
+            'total_channels': self.num_channels,
+            'allocated_nodes': len(self.current_allocations),
+            'channel_usage': channel_usage,
+            'max_channel_load': max(channel_usage.values()) if channel_usage else 0
+        }
 
 
 class WirelessCommunicationModel:
@@ -69,7 +222,7 @@ class WirelessCommunicationModel:
     - 问题9: 阴影衰落参数调整为UMi场景
     """
     
-    def __init__(self):
+    def __init__(self, enable_channel_allocation: bool = False):
         # 🔧 修复问题2：从配置读取所有参数（保留默认值作为fallback）
         # 3GPP标准通信参数
         self.carrier_frequency = getattr(config.communication, 'carrier_frequency', 3.5e9)  # 🔧 修复问题1：3.5 GHz
@@ -97,6 +250,21 @@ class WirelessCommunicationModel:
         self.fast_fading_std = getattr(config.communication, 'fast_fading_std', 1.0)
         self.rician_k_factor = getattr(config.communication, 'rician_k_factor', 6.0)  # dB
         self.fast_fading_factor = 1.0  # 默认值，如果启用快衰落则动态计算
+        
+        # 🆕 正交信道分配器（可选）
+        self.enable_channel_allocation = enable_channel_allocation
+        self.channel_allocator = None
+        if enable_channel_allocation:
+            total_bw = getattr(config.communication, 'total_bandwidth', 100e6)
+            ch_bw = getattr(config.communication, 'channel_bandwidth', 5e6)
+            num_rsus = getattr(config.network, 'num_rsus', 4)
+            num_uavs = getattr(config.network, 'num_uavs', 2)
+            self.channel_allocator = OrthogonalChannelAllocator(
+                total_bandwidth=total_bw,
+                channel_bandwidth=ch_bw,
+                num_rsus=num_rsus,
+                num_uavs=num_uavs
+            )
     
     def calculate_channel_state(self, pos_a: Position, pos_b: Position, 
                                tx_node_type: str = 'vehicle', rx_node_type: str = 'rsu') -> ChannelState:
@@ -293,12 +461,14 @@ class WirelessCommunicationModel:
         
         【功能】
         考虑所有活跃同频发射节点的真实干扰，替代统计简化模型
+        🆕 增强：支持正交信道隔离，只计算同信道节点的干扰
         
         【算法】
         1. 筛选同频且在距离阈值内的干扰源
-        2. 按距离排序，保留最近的N个
-        3. 计算每个干扰源的信道增益和干扰功率
-        4. 累加总干扰功率
+        2. 🆕 如果启用信道分配，过滤非同信道节点
+        3. 按距离排序，保留最近的N个
+        4. 计算每个干扰源的信道增益和干扰功率
+        5. 累加总干扰功率
         
         Args:
             receiver_pos: 接收节点位置
@@ -331,6 +501,12 @@ class WirelessCommunicationModel:
             # 跳过自己
             if tx.get('node_id') == receiver_node_id:
                 continue
+            
+            # 🆕 正交信道隔离：如果启用信道分配，只考虑同信道节点
+            if self.enable_channel_allocation and self.channel_allocator is not None:
+                if not self.channel_allocator.is_same_channel(receiver_node_id, tx.get('node_id', '')):
+                    # 不同信道，正交，无干扰
+                    continue
             
             # 频率选择性：只考虑同频或邻频干扰（±1 MHz容差）
             freq_diff = abs(tx.get('frequency', receiver_frequency) - receiver_frequency)
@@ -1036,9 +1212,9 @@ class IntegratedCommunicationComputeModel:
             # 远程处理 - 通信 + 计算
             
             # 🔧 修复问题1：根据实际车辆数量动态调整默认带宽分配
-            # 默认分配策略：总带宽除以活跃车辆数（而非固定4个链路）
+            # 默认分配策略：总带宽除以活跃车辆数
             num_active_vehicles = getattr(config.network, 'num_vehicles', 12)
-            default_bandwidth = config.communication.total_bandwidth / max(num_active_vehicles, 4)
+            default_bandwidth = config.communication.total_bandwidth / max(num_active_vehicles, 1)
             allocated_uplink_bw = target_node_info.get('allocated_uplink_bandwidth', default_bandwidth)
             allocated_downlink_bw = target_node_info.get('allocated_downlink_bandwidth', default_bandwidth)
             

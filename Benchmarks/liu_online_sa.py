@@ -18,9 +18,9 @@ import numpy as np
 @dataclass
 class SAConfig:
     init_temp: float = 1.0
-    min_temp: float = 0.01
-    cooling: float = 0.95
-    max_iters: int = 500
+    min_temp: float = 0.001
+    cooling: float = 0.9
+    max_iters: int = 800
     step_scale: float = 0.1
     seed: int = 42
 

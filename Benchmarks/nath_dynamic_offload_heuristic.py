@@ -25,11 +25,16 @@ class DynamicOffloadHeuristic:
         self.num_rsus = num_rsus
         self.num_uavs = num_uavs
         self.distance_scale = distance_scale
+        # Weights approximate Nath & Wu's focus on delay/energy trade-off.
+        self.delay_weight = 0.6
+        self.energy_weight = 0.4
 
     def _score_node(self, node: NodeSnapshot, weight_channel=0.5, weight_load=0.3, weight_queue=0.2) -> float:
-        # Higher channel better, lower load/queue better
+        # Higher channel better, lower load/queue better, combines delay/energy proxy.
         ch = float(node.channel)
-        return weight_channel * ch - weight_load * node.load - weight_queue * node.queue
+        load_penalty = weight_load * node.load
+        queue_penalty = weight_queue * node.queue
+        return weight_channel * ch - (self.delay_weight * queue_penalty + self.energy_weight * load_penalty)
 
     def _parse_state(self, state: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         """Robustly split flat state: vehicles(?*5) + rsu(num_rsus*5) + uav(num_uavs*5)."""
