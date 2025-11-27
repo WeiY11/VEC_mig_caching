@@ -307,10 +307,12 @@ class QueueConfig:
         # UAV: 10 → 30 (UAV也需要充足队列空间)
         self.rsu_nominal_capacity = float(os.environ.get('QUEUE_RSU_NOMINAL_CAPACITY', '50.0'))
         self.uav_nominal_capacity = float(os.environ.get('QUEUE_UAV_NOMINAL_CAPACITY', '30.0'))
+        # 🔧 修复：扩大队列字节容量，匹配任务数据大小增加（3-4倍）
+        # 平均任务大小：1.5 MB (原 500 KB)
         # Capacity limits (bytes) used for queue admission control
-        self.vehicle_queue_capacity = float(os.environ.get('QUEUE_VEHICLE_CAPACITY', '2.5e8'))
-        self.rsu_queue_capacity = float(os.environ.get('QUEUE_RSU_CAPACITY', '1.5e9'))
-        self.uav_queue_capacity = float(os.environ.get('QUEUE_UAV_CAPACITY', '6e8'))
+        self.vehicle_queue_capacity = float(os.environ.get('QUEUE_VEHICLE_CAPACITY', '8e8'))     # 250MB → 800MB
+        self.rsu_queue_capacity = float(os.environ.get('QUEUE_RSU_CAPACITY', '5e9'))            # 1.5GB → 5GB
+        self.uav_queue_capacity = float(os.environ.get('QUEUE_UAV_CAPACITY', '2e9'))            # 600MB → 2GB
 
 class TaskConfig:
     """
@@ -325,9 +327,9 @@ class TaskConfig:
     - arrival_rate: 任务到达率（2.5 tasks/s，12车辆高负载场景）
     
     【任务参数设计】
-    - data_size_range: 数据量范围 0.5-15 Mbits = 0.0625-1.875 MB
-    - compute_cycles_range: 计算周期范围 1e8-1e10 cycles
-    - deadline_range: 截止时间范围 0.2-0.6s（对应2-6个时隙@100ms，收紧约束）
+    - data_size_range: 数据量范围 1-50 Mbits = 0.125-6.25 MB
+    - compute_cycles_range: 计算周期范围 1e8-7.5e9 cycles
+    - deadline_range: 截止时间范围 0.15-0.95s（对应2-10个时隙@100ms）
     - task_output_ratio: 输出大小为输入的5%
     
     【任务类型阈值】（基于100ms时隙 - 收紧约束以充分利用精细时隙）
@@ -354,13 +356,14 @@ class TaskConfig:
         # 🔧 修复：提升任务到达率，增加系统负载，让智能体学会资源调度 (1.8 → 2.2)
         self.arrival_rate = 2.2   # tasks/s - 适度负载（12车×2.2 = 26.4 tasks/s总负载）
         
-        # 🎯 优化后任务参数：保持挑战性但避免极端情况
-        self.data_size_range = (0.5e6/8, 15e6/8)  # 0.5-15 Mbits = 0.0625-1.875 MB (恢复合理范围)
+        # 🎯 优化后任务参数：扩大数据范围以提高卸载收益
+        # 🔧 修复：提高数据大小范围（1-50 Mbits），让计算成本更高，上传开销占比降低
+        self.data_size_range = (1e6/8, 50e6/8)  # 1-50 Mbits = 0.125-6.25 MB (扩大3-4倍)
         self.task_data_size_range = self.data_size_range  # 兼容性别名
 
         # 计算周期配置 (基于分级计算密度)
-        # 最大计算量 = 15 Mbits × 150 cycles/bit = 2.25e9 cycles (类型4任务)
-        self.compute_cycles_range = (7.5e7, 2.5e9)  # cycles (覆盖60-150 cycles/bit全范围)
+        # 最大计算量 = 50 Mbits × 150 cycles/bit = 7.5e9 cycles (类型4任务)
+        self.compute_cycles_range = (1e8, 7.5e9)  # cycles (覆盖60-150 cycles/bit全范围)
         
         # 🔧 修复问题9：截止时间配置对齐时隙边界（100ms时隙）
         # ✅ 扩大范围以包含类型1任务(0.18-0.24s)、类型2(0.38-0.44s)等
@@ -389,13 +392,13 @@ class TaskConfig:
         # 低四亚蹡：每个类枠先恰会正。描例：简回因子=1.3是削溥计帄，将保骇时閒=0.3的任务上升。
         self.deadline_relax_fallback = 1.0  # 騍松因子改为1.0（无騍松），确保任务类型冠正
 
-        # 🎯 优化后任务类型配置：分层合理化计算密度
-        # 原则：轻量级任务保持低密度，重量级任务适度提高
+        # 🎯 优化后任务类型配置：分层合理化计算密度，扩大数据范围
+        # 原则：提高数据量，让卸载收益更明显（上传开销占比降低）
         self.task_profiles: Dict[int, TaskProfileSpec] = {
-            1: TaskProfileSpec(1, (0.5e6/8, 2e6/8), 60, 3, 1.0),     # 60 cycles/bit, 0.3s - 极度敏感（轻量级：紧急制动）
-            2: TaskProfileSpec(2, (1.5e6/8, 6e6/8), 90, 4, 0.4),    # 90 cycles/bit, 0.4s - 敏感（中量级：视频流）
-            3: TaskProfileSpec(3, (3e6/8, 10e6/8), 120, 5, 0.4),    # 120 cycles/bit, 0.5s - 中度容忍（重量级：图像识别）
-            4: TaskProfileSpec(4, (5e6/8, 15e6/8), 150, 8, 0.4),    # 150 cycles/bit, 0.8s - 容忍（超重：深度学习）
+            1: TaskProfileSpec(1, (1e6/8, 4e6/8), 60, 3, 1.0),       # 60 cycles/bit, 0.3s - 极度敏感（125KB-500KB：紧急制动）
+            2: TaskProfileSpec(2, (3e6/8, 15e6/8), 90, 4, 0.4),      # 90 cycles/bit, 0.4s - 敏感（375KB-1.875MB：视频流）
+            3: TaskProfileSpec(3, (8e6/8, 30e6/8), 120, 5, 0.4),     # 120 cycles/bit, 0.5s - 中度容忍（1MB-3.75MB：图像识别）
+            4: TaskProfileSpec(4, (15e6/8, 50e6/8), 150, 8, 0.4),    # 150 cycles/bit, 0.8s - 容忍（1.875MB-6.25MB：深度学习）
         }
         # Backwards-compatible dictionary view for legacy code
         self.task_type_specs = {
@@ -1094,9 +1097,9 @@ class CacheConfig:
     【论文对应】Section 2.7 "Collaborative Caching"
     
     【缓存容量】
-    - vehicle_cache_capacity = 1 GB   # 车辆缓存
-    - rsu_cache_capacity = 10 GB      # RSU缓存
-    - uav_cache_capacity = 2 GB       # UAV缓存
+    - vehicle_cache_capacity = 3 GB   # 车辆缓存（增加3倍匹配任务大小）
+    - rsu_cache_capacity = 30 GB      # RSU缓存（增加3倍）
+    - uav_cache_capacity = 6 GB       # UAV缓存（增加3倍）
     
     【缓存策略】
     - cache_replacement_policy = 'LRU'  # 替换策略（LRU/LFU/RANDOM）
@@ -1114,10 +1117,11 @@ class CacheConfig:
     """
     
     def __init__(self):
-        # 缓存容量配置
-        self.vehicle_cache_capacity = 1e9  # 1 GB
-        self.rsu_cache_capacity = 1e9  # 1 GB - 边缘服务器缓存
-        self.uav_cache_capacity = 200e6  # 200 MB - 轻量级UAV缓存
+        # 🔧 修复：缓存容量配置，匹配任务数据大小增加（3倍）
+        # 平均任务大小：1.5 MB (原 500 KB)，单任务结果：75 KB (原 25 KB)
+        self.vehicle_cache_capacity = 3e9   # 3 GB (原 1 GB)
+        self.rsu_cache_capacity = 30e9      # 30 GB (原 10 GB) - 边缘服务器缓存
+        self.uav_cache_capacity = 6e9       # 6 GB (原 2 GB) - 轻量级UAV缓存
         
         # 🎯 P0-1优化：差异化缓存替换策略配置
         # 针对不同节点类型使用最优策略

@@ -110,17 +110,23 @@ class TaskClassifier:
     def get_candidate_nodes(self, task: Task, all_nodes: Dict[str, Position]) -> List[str]:
         t = task.task_type
         vid = task.source_vehicle_id
+        # 🔧 修复：放宽候选节点限制，允许更多RSU卸载
         if t == TaskType.EXTREMELY_DELAY_SENSITIVE:
-            return [vid]
+            # 超极敏感：允许最近1个RSU（原仅本地）
+            c = [vid]
+            c.extend(self._get_nearby_rsus(vid, all_nodes, 400.0, 1))  # 最近的RSU
+            return c
         if t == TaskType.DELAY_SENSITIVE:
             c = [vid]
-            c.extend(self._get_nearby_rsus(vid, all_nodes, 600.0, 2))
-            c.extend(self._get_capable_uavs(vid, all_nodes, 600.0))  # 🔧 UAV优化: 400m→600m,与RSU对齐
+            # 🔧 修复：扩大RSU范围和数量（600m→50m, 2→4）
+            c.extend(self._get_nearby_rsus(vid, all_nodes, 650.0, 4))  
+            c.extend(self._get_capable_uavs(vid, all_nodes, 600.0))
             return c
         if t == TaskType.MODERATELY_DELAY_TOLERANT:
             c = [vid]
-            c.extend(self._get_reachable_rsus(vid, all_nodes, 800.0))
-            c.extend(self._get_capable_uavs(vid, all_nodes, 800.0))  # 🔧 UAV优化: 600m→800m,扩大覆盖
+            # 🔧 修复：进一步扩大RSU范围（800m→1000m）
+            c.extend(self._get_reachable_rsus(vid, all_nodes, 1000.0))
+            c.extend(self._get_capable_uavs(vid, all_nodes, 800.0))
             return c
         return list(all_nodes.keys())
 
@@ -150,7 +156,8 @@ class TaskClassifier:
 
 
 class ProcessingModeEvaluator:
-    cost_weight_profile: Dict[str, float] = {'delay': 0.5, 'energy': 0.4, 'reliability': 0.1}
+    # 🔧 修复：增大延迟权重，鼓励RSU卸载
+    cost_weight_profile: Dict[str, float] = {'delay': 0.6, 'energy': 0.25, 'reliability': 0.15}
 
     def __init__(self):
         self.communication_overhead = 0.0002
@@ -209,9 +216,10 @@ class ProcessingModeEvaluator:
         priority = float(self.scheduling_preferences.get('priority_bias', 0.5))
         deadline = float(self.scheduling_preferences.get('deadline_bias', 0.5))
         tradeoff = float(self.tradeoff_bias)
-        delay_weight = 0.35 + 0.45 * priority
-        energy_weight = max(0.1, 0.4 - 0.2 * priority)
-        reliability_weight = 0.2 + 0.3 * deadline
+        # 🔧 修复：提高延迟权重，降低能耗权重
+        delay_weight = 0.45 + 0.35 * priority  # 基础权重提高
+        energy_weight = max(0.05, 0.25 - 0.1 * priority)  # 降低能耗权重
+        reliability_weight = 0.15 + 0.2 * deadline
         energy_weight *= (0.6 + 0.4 * (1.0 - tradeoff))
         weights = {
             'delay': max(1e-3, delay_weight),

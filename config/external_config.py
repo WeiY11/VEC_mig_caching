@@ -18,7 +18,7 @@ DEFAULT_CONFIG = {
     
     "task_generation": {
         "arrival_rate": 3.0,        # tasks/second - 🔧 优化: 3.0 tasks/s/vehicle (高负载但不极端)
-        "data_size_range": [0.5e6/8, 15e6/8],  # 🔧 恢复: 0.5-15 Mbits = 0.0625-1.875 MB
+        "data_size_range": [1e6/8, 50e6/8],  # 🔧 修复: 1-50 Mbits = 0.125-6.25 MB (扩大3-4倍)
         "compute_density": 100,     # cycles/bit - 🔧 优化：适度提高（视频处理级别）
         "deadline_range": [0.3, 0.9],  # seconds - 3-9 slots @100 ms
         "output_ratio": 0.05         # 输出大小比例
@@ -56,9 +56,9 @@ DEFAULT_CONFIG = {
     },
     
     "cache_settings": {
-        "vehicle_cache_capacity": 2e9,      # 2 GB - 增加缓存容量
-        "rsu_cache_capacity": 20e9,        # 20 GB
-        "uav_cache_capacity": 4e9,         # 4 GB
+        "vehicle_cache_capacity": 3e9,      # 3 GB - 增加缓存容量（匹配任务大小3倍增长）
+        "rsu_cache_capacity": 30e9,        # 30 GB
+        "uav_cache_capacity": 6e9,         # 6 GB
         "cache_hit_threshold": 0.85,       # 提高缓存命中阈值
         "prediction_window": 15            # 增加预测窗口
     },

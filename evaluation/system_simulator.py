@@ -422,9 +422,11 @@ class CompleteSystemSimulator:
                 'device_cache_capacity': 32.0,  # 车载缓存容量(MB)
                 # 🎯 Phase 2本地调度参数
                 'cpu_freq': self.vehicle_cpu_freq,  # 分配的CPU频率（Hz）
+                'cpu_frequency': self.vehicle_cpu_freq,  # 🔧 新增：与状态编码字段名一致
                 'allocated_bandwidth': 0.0,  # 分配的带宽（Hz）
                 'task_queue_by_priority': {1: [], 2: [], 3: [], 4: []},  # 按优先级分类的任务队列
                 'compute_usage': 0.0,  # 当前计算使用率
+                'queue_length': 0,  # 🔧 新增：当前队列长度（用于状态编码）
             }
             self.vehicles.append(vehicle)
         print(f"车辆初始化完成：主幹道双路口场景，场景范围X:[0,{self.scenario_width:.0f}] Y:[0,{self.scenario_height:.0f}]")
@@ -467,12 +469,16 @@ class CompleteSystemSimulator:
                 'cache_capacity': 1000.0,  # 缓存容量(MB) - 1GB边缘服务器缓存
                 'cache_capacity_bytes': (getattr(self.sys_config.cache, 'rsu_cache_capacity', 1e9) if self.sys_config is not None else 1e9),
                 'cpu_freq': self.rsu_cpu_freq,  # 🆕 CPU频率(Hz)
+                'cpu_frequency': self.rsu_cpu_freq,  # 🔧 新增：与状态编码字段名一致
                 'computation_queue': [],  # 计算任务队列
                 'energy_consumed': 0.0,  # 累计能耗(J)
                 # 🎯 Phase 2资源调度参数
                 'allocated_compute': self.rsu_cpu_freq,  # 分配的计算资源（Hz）
                 'compute_usage': 0.0,  # 当前计算使用率
                 'connected_vehicles': [],  # 接入的车辆列表
+                'recent_cache_hit_rate': 0.5,  # 🔧 新增：近期缓存命中率（用于状态编码）
+                'cache_hits_window': 0,  # 🔧 统计窗口内的缓存命中次数
+                'cache_requests_window': 0,  # 🔧 统计窗口内的缓存请求次数
             }
             self.rsus.append(rsu)
         
@@ -511,6 +517,7 @@ class CompleteSystemSimulator:
                 'cache_capacity': 200.0,  # 缓存容量(MB) - 200MB轻量级UAV缓存
                 'cache_capacity_bytes': (getattr(self.sys_config.cache, 'uav_cache_capacity', 200e6) if self.sys_config is not None else 200e6),
                 'cpu_freq': self.uav_cpu_freq,  # 🆕 CPU频率(Hz)
+                'cpu_frequency': self.uav_cpu_freq,  # 🔧 新增：与状态编码字段名一致
                 'computation_queue': [],  # 计算任务队列
                 'energy_consumed': 0.0,  # 累计能耗(J)
                 # 🎯 Phase 2资源调度参数
@@ -2330,10 +2337,31 @@ class CompleteSystemSimulator:
         # Update statistics
         if cache_hit:
             self.stats['cache_hits'] += 1
+            # 🔧 新增：更新RSU缓存命中率统计（用于状态编码）
             if node_type == 'RSU':
+                node['cache_hits_window'] = node.get('cache_hits_window', 0) + 1
+                node['cache_requests_window'] = node.get('cache_requests_window', 0) + 1
+                # 每100次请求更新一次命中率（滚动窗口）
+                if node['cache_requests_window'] >= 100:
+                    node['recent_cache_hit_rate'] = node['cache_hits_window'] / node['cache_requests_window']
+                    # 重置窗口
+                    node['cache_hits_window'] = 0
+                    node['cache_requests_window'] = 0
+                elif node['cache_requests_window'] > 0:
+                    # 实时更新（但不重置）
+                    node['recent_cache_hit_rate'] = node['cache_hits_window'] / node['cache_requests_window']
                 self._propagate_cache_after_hit(content_id, node, agents_actions)
         else:
             self.stats['cache_misses'] += 1
+            # 🔧 新增：更新RSU缓存统计（未命中）
+            if node_type == 'RSU':
+                node['cache_requests_window'] = node.get('cache_requests_window', 0) + 1
+                if node['cache_requests_window'] >= 100:
+                    node['recent_cache_hit_rate'] = node.get('cache_hits_window', 0) / node['cache_requests_window']
+                    node['cache_hits_window'] = 0
+                    node['cache_requests_window'] = 0
+                elif node['cache_requests_window'] > 0:
+                    node['recent_cache_hit_rate'] = node.get('cache_hits_window', 0) / node['cache_requests_window']
             
             # 🌟 如果有智能体控制器，执行自适应缓存策略
             # Execute adaptive caching strategy with intelligent controller
@@ -3611,6 +3639,12 @@ class CompleteSystemSimulator:
         vehicle['local_cycle_used'] = vehicle.get('local_cycle_used', 0.0) + cycles_consumed
         available_cycles = max(1e-6, cpu_freq * self.time_slot)
         vehicle['compute_usage'] = float(np.clip(vehicle['local_cycle_used'] / available_cycles, 0.0, 1.0))
+        
+        # 🔧 新增：更新车辆队列长度（用于状态编码）
+        # 统计所有优先级队列的总长度
+        queue_length = sum(len(queue) for queue in vehicle.get('task_queue_by_priority', {}).values())
+        vehicle['queue_length'] = queue_length
+        
         step_summary['local_tasks'] += 1
 
     def _record_forced_drop(self, vehicle: Dict, task: Dict, step_summary: Dict, reason: str = 'forced_drop') -> None:
@@ -4064,11 +4098,23 @@ class CompleteSystemSimulator:
         self._handle_deadlines()
         self._cleanup_active_tasks()
 
-        # 姹囨€讳俊鎭?
+        # 汇总信息
         step_summary['current_time'] = self.current_time
         step_summary['rsu_queue_lengths'] = [len(rsu.get('computation_queue', [])) for rsu in self.rsus]
         step_summary['uav_queue_lengths'] = [len(uav.get('computation_queue', [])) for uav in self.uavs]
         step_summary['active_tasks'] = len(self.active_tasks)
+        
+        # 🔧 新增：计算卸载比例指标（用于奖励函数）
+        total_tasks = step_summary['local_tasks'] + step_summary['rsu_tasks'] + step_summary['uav_tasks']
+        if total_tasks > 0:
+            step_summary['local_offload_ratio'] = step_summary['local_tasks'] / total_tasks
+            step_summary['rsu_offload_ratio'] = step_summary['rsu_tasks'] / total_tasks
+            step_summary['uav_offload_ratio'] = step_summary['uav_tasks'] / total_tasks
+        else:
+            # 默认值（没有任务时）
+            step_summary['local_offload_ratio'] = 0.33
+            step_summary['rsu_offload_ratio'] = 0.33
+            step_summary['uav_offload_ratio'] = 0.34
 
         stability_metrics = self._monitor_queue_stability()
         for key, value in stability_metrics.items():

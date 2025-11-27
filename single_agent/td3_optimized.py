@@ -27,8 +27,8 @@ class OptimizedTD3Config:
     """优化的TD3配置 - 修复版本"""
     # 网络结构
     hidden_dim: int = 256        # 适当增加网络容量以学习复杂策略
-    actor_lr: float = 1e-4       # 降低学习率，避免过快收敛（从3e-4到1e-4）
-    critic_lr: float = 1e-4      # 降低学习率，避免过快收敛
+    actor_lr: float = 3e-4       # 提高学习率，加速收敛
+    critic_lr: float = 3e-4      # 提高学习率，加速收敛
     
     # 训练参数
     batch_size: int = 256        # 适中批次大小
@@ -42,12 +42,12 @@ class OptimizedTD3Config:
     noise_clip: float = 0.5      # 标准噪声裁剪
     
     # 探索参数
-    exploration_noise: float = 0.3   # 增加初始探索（从0.2到0.3）
-    noise_decay: float = 0.9990      # 加快衰减速度（从0.9995到0.9990）
-    min_noise: float = 0.02          # 保留最小探索（从0.05降到0.02)
+    exploration_noise: float = 0.25   # 适中的初始探索
+    noise_decay: float = 0.9998       # 更缓慢的衰减速度
+    min_noise: float = 0.08           # 保留更多探索
     
     # 训练控制
-    warmup_steps: int = 20000        # 增加预热步数,约100个episode
+    warmup_steps: int = 10000        # 减少预热步数，约50个episode
     update_freq: int = 1             # 每步都更新
     
     # 正则化参数
@@ -128,73 +128,152 @@ class VECStateSpace:
             self.num_uavs = config.network.num_uavs
         
         # 状态维度计算
-        self.vehicle_state_dim = 5  # 位置x,y + 速度x,y + 队列利用率
-        self.rsu_state_dim = 5      # CPU利用率 + 队列利用率 + 缓存利用率 + 能耗 + 🔧资源容量
-        self.uav_state_dim = 5      # CPU利用率 + 队列利用率 + 电池电量 + 能耗 + 🔧资源容量
+        self.vehicle_state_dim = 7  # 位置x,y + 速度x,y + 队列利用率 + 🔧CPU容量 + 🔧当前任务负载
+        self.rsu_state_dim = 7      # CPU利用率 + 队列利用率 + 缓存利用率 + 能耗 + 🔧资源容量 + 🔧平均距离 + 🔧缓存命中率
+        self.uav_state_dim = 6      # CPU利用率 + 队列利用率 + 电池电量 + 能耗 + 🔧资源容量 + 🔧平均距离
         self.global_state_dim = 16  # 全局系统指标（基础8维 + 任务类型8维）
         
         self.total_dim = (
-            self.num_vehicles * self.vehicle_state_dim +  # 12 * 5 = 60
-            self.num_rsus * self.rsu_state_dim +          # 4 * 5 = 20
-            self.num_uavs * self.uav_state_dim +          # 2 * 5 = 10
+            self.num_vehicles * self.vehicle_state_dim +  # 12 * 7 = 84
+            self.num_rsus * self.rsu_state_dim +          # 4 * 7 = 28
+            self.num_uavs * self.uav_state_dim +          # 2 * 6 = 12
             self.global_state_dim                         # 16
-        )  # 总计：106维 (🔧修复前100维)
+        )  # 总计：140维 (🔧优化后+34维)
     
     def encode_state(self, node_states: Dict, system_metrics: Dict) -> np.ndarray:
         """构建符合论文的VEC系统状态向量"""
         state_components = []
         
-        # 1. 车辆状态 (12车辆 × 5维 = 60维)
+        # 1. 车辆状态 (12车辆 × 7维 = 84维)
         for i in range(self.num_vehicles):
             vehicle_id = f'vehicle_{i}'
             if vehicle_id in node_states:
                 vehicle = node_states[vehicle_id]
-                vehicle_state = [
-                    getattr(vehicle.position, 'x', 0.0) / 2000.0,  # 归一化位置
-                    getattr(vehicle.position, 'y', 0.0) / 2000.0,
-                    getattr(vehicle, 'velocity_x', 0.0) / 30.0,    # 归一化速度
-                    getattr(vehicle, 'velocity_y', 0.0) / 30.0,
-                    getattr(vehicle, 'queue_utilization', 0.5),    # 队列利用率
-                ]
+                # 🔧 新增：车辆CPU容量和当前任务负载，让智能体知道本地计算能力
+                # 🐞 修复：node_states是numpy数组，不是对象，直接使用索引访问
+                if isinstance(vehicle, np.ndarray):
+                    # 从 train_single_agent.py: [pos_x, pos_y, velocity, queue_len, energy]
+                    # 需要添加 cpu_capacity 和 task_load
+                    vehicle_state = [
+                        vehicle[0],  # position_x (normalized)
+                        vehicle[1],  # position_y (normalized)
+                        0.0,         # velocity_x (TODO: 从 velocity计算)
+                        0.0,         # velocity_y 
+                        vehicle[3],  # queue_utilization
+                        1.5e9 / 20e9,  # 🔧 CPU容量 (1.5GHz/20GHz = 0.075)
+                        vehicle[3],  # 🔧 任务负载（使用queue_utilization）
+                    ]
+                else:
+                    # 如果是对象类型（兼容旧版本）
+                    cpu_freq = getattr(vehicle, 'cpu_frequency', 1.5e9)
+                    queue_len = getattr(vehicle, 'queue_length', 0)
+                    vehicle_state = [
+                        getattr(vehicle.position, 'x', 0.0) / 2000.0,
+                        getattr(vehicle.position, 'y', 0.0) / 2000.0,
+                        getattr(vehicle, 'velocity_x', 0.0) / 30.0,
+                        getattr(vehicle, 'velocity_y', 0.0) / 30.0,
+                        getattr(vehicle, 'queue_utilization', 0.5),
+                        cpu_freq / 20e9,
+                        min(queue_len / 20.0, 1.0),
+                    ]
             else:
                 # 默认状态
-                vehicle_state = [0.5, 0.5, 0.0, 0.0, 0.5]
+                vehicle_state = [0.5, 0.5, 0.0, 0.0, 0.5, 0.075, 0.5]
             state_components.extend(vehicle_state)
         
-        # 2. RSU状态 (按配置数量 × 5维)
+        # 2. RSU状态 (按配置数量 × 7维)
         for i in range(self.num_rsus):
             rsu_id = f'rsu_{i}'
             if rsu_id in node_states:
                 rsu = node_states[rsu_id]
-                # 🔧 修复：添加cpu_frequency让智能体知道RSU容量优势
-                cpu_freq = getattr(rsu, 'cpu_frequency', 12.5e9)  # 默认12.5 GHz
-                rsu_state = [
-                    getattr(rsu, 'cpu_utilization', 0.5),         # CPU利用率
-                    getattr(rsu, 'queue_utilization', 0.5),       # 队列利用率
-                    getattr(rsu, 'cache_utilization', 0.5),       # 缓存利用率
-                    getattr(rsu, 'energy_consumption', 500.0) / 1000.0,  # 归一化能耗
-                    cpu_freq / 20e9,  # 🔧 新增：归一化CPU容量（20GHz最大值）
-                ]
+                # 🐞 修复：node_states是numpy数组，不是对象
+                if isinstance(rsu, np.ndarray):
+                    # 从 train_single_agent.py: [pos_x, pos_y, cache_util, queue_len, energy, cpu_freq_norm]
+                    # 需要添加 avg_distance 和 cache_hit_rate
+                    rsu_state = [
+                        rsu[3],      # queue_utilization (CPU利用率用队列代替)
+                        rsu[3],      # queue_utilization
+                        rsu[2],      # cache_utilization
+                        rsu[4],      # energy_consumption (normalized)
+                        rsu[5] if len(rsu) > 5 else 0.625,  # 🔧 CPU容量 (12.5GHz/20GHz)
+                        0.5,         # 🔧 平均距离（默认，无法计算）
+                        0.5,         # 🔧 缓存命中率（默认）
+                    ]
+                else:
+                    # 如果是对象类型（兼容旧版本）
+                    cpu_freq = getattr(rsu, 'cpu_frequency', 12.5e9)
+                    cache_hit_rate = getattr(rsu, 'recent_cache_hit_rate', 0.5)
+                    rsu_pos = getattr(rsu, 'position', None)
+                    avg_distance = 0.5
+                    if rsu_pos:
+                        distances = []
+                        for j in range(self.num_vehicles):
+                            v_id = f'vehicle_{j}'
+                            if v_id in node_states:
+                                v_pos = getattr(node_states[v_id], 'position', None)
+                                if v_pos:
+                                    dist = ((rsu_pos.x - v_pos.x)**2 + (rsu_pos.y - v_pos.y)**2)**0.5
+                                    distances.append(dist)
+                        if distances:
+                            avg_distance = min(sum(distances) / len(distances) / 1000.0, 1.0)
+                    
+                    rsu_state = [
+                        getattr(rsu, 'cpu_utilization', 0.5),
+                        getattr(rsu, 'queue_utilization', 0.5),
+                        getattr(rsu, 'cache_utilization', 0.5),
+                        getattr(rsu, 'energy_consumption', 500.0) / 1000.0,
+                        cpu_freq / 20e9,
+                        avg_distance,
+                        cache_hit_rate,
+                    ]
             else:
-                rsu_state = [0.5, 0.5, 0.5, 0.5, 0.625]  # 默认12.5/20=0.625
+                rsu_state = [0.5, 0.5, 0.5, 0.5, 0.625, 0.5, 0.5]
             state_components.extend(rsu_state)
         
-        # 3. UAV状态 (按配置数量 × 5维)
+        # 3. UAV状态 (按配置数量 × 6维)
         for i in range(self.num_uavs):
             uav_id = f'uav_{i}'
             if uav_id in node_states:
                 uav = node_states[uav_id]
-                # 🔧 修复：添加cpu_frequency让智能体知道UAV容量较弱
-                cpu_freq = getattr(uav, 'cpu_frequency', 5.0e9)  # 默认5.0 GHz
-                uav_state = [
-                    getattr(uav, 'cpu_utilization', 0.5),
-                    getattr(uav, 'queue_utilization', 0.5),
-                    getattr(uav, 'battery_level', 0.8),           # 电池电量
-                    getattr(uav, 'energy_consumption', 50.0) / 100.0,
-                    cpu_freq / 20e9,  # 🔧 新增：归一化CPU容量（20GHz最大值）
-                ]
+                # 🐞 修复：node_states是numpy数组，不是对象
+                if isinstance(uav, np.ndarray):
+                    # 从 train_single_agent.py: [pos_x, pos_y, pos_z, cache_util, energy, cpu_freq_norm]
+                    # 需要添加 avg_distance
+                    uav_state = [
+                        uav[3] if len(uav) > 3 else 0.5,  # queue_utilization (CPU利用率用缓存代替)
+                        uav[3] if len(uav) > 3 else 0.5,  # queue_utilization
+                        0.8,         # battery_level (默认)
+                        uav[4] if len(uav) > 4 else 0.5,  # energy_consumption (normalized)
+                        uav[5] if len(uav) > 5 else 0.25, # 🔧 CPU容量 (5GHz/20GHz)
+                        0.5,         # 🔧 平均距离（默认，无法计算）
+                    ]
+                else:
+                    # 如果是对象类型（兼容旧版本）
+                    cpu_freq = getattr(uav, 'cpu_frequency', 5.0e9)
+                    uav_pos = getattr(uav, 'position', None)
+                    avg_distance = 0.5
+                    if uav_pos:
+                        distances = []
+                        for j in range(self.num_vehicles):
+                            v_id = f'vehicle_{j}'
+                            if v_id in node_states:
+                                v_pos = getattr(node_states[v_id], 'position', None)
+                                if v_pos:
+                                    dist = ((uav_pos.x - v_pos.x)**2 + (uav_pos.y - v_pos.y)**2)**0.5
+                                    distances.append(dist)
+                        if distances:
+                            avg_distance = min(sum(distances) / len(distances) / 1000.0, 1.0)
+                    
+                    uav_state = [
+                        getattr(uav, 'cpu_utilization', 0.5),
+                        getattr(uav, 'queue_utilization', 0.5),
+                        getattr(uav, 'battery_level', 0.8),
+                        getattr(uav, 'energy_consumption', 50.0) / 100.0,
+                        cpu_freq / 20e9,
+                        avg_distance,
+                    ]
             else:
-                uav_state = [0.5, 0.5, 0.8, 0.5, 0.25]  # 默认5.0/20=0.25
+                uav_state = [0.5, 0.5, 0.8, 0.5, 0.25, 0.5]
             state_components.extend(uav_state)
         
         # 4. 全局系统状态 (8维)
@@ -398,7 +477,7 @@ class OptimizedTD3Environment:
         return self.decompose_action(global_action)
     
     def calculate_reward(self, system_metrics: Dict, prev_metrics: Optional[Dict] = None) -> float:
-        """计算奖励 - 修复版本(基于成本的负奖励)"""
+        """计算奖励 - 基于成本的负奖励 + 卸载激励（引导RSU/UAV卸载）"""
         try:
             # 提取原始指标
             delay = max(system_metrics.get('avg_task_delay', 2.0), 0.1)
@@ -407,47 +486,58 @@ class OptimizedTD3Environment:
             cache_hit = np.clip(system_metrics.get('cache_hit_rate', 0.85), 0.0, 1.0)
             data_loss = system_metrics.get('data_loss_rate', 0.0)
             
-            # 使用实际值范围进行归一化(基于观察到的训练数据)
-            # 延迟: 0.5-4.0s -> 归一化到[0, 1]
-            delay_norm = np.clip((delay - 0.5) / 3.5, 0.0, 1.0)
+            # 🔧 新增：提取卸载比例（引导RSU/UAV卸载）
+            rsu_ratio = system_metrics.get('rsu_offload_ratio', 0.0)
+            uav_ratio = system_metrics.get('uav_offload_ratio', 0.0)
+            local_ratio = system_metrics.get('local_offload_ratio', 1.0)
             
-            # 能耗: 500-3000J -> 归一化到[0, 1] (修正为实际范围)
-            energy_norm = np.clip((energy - 500.0) / 2500.0, 0.0, 1.0)
+            # 🔧 关键修复：归一化使用合理的基准值
+            # 延迟归一化: 以2.5s为基准（12车辆场景的合理延迟）
+            delay_norm = delay / 2.5
             
-            # 数据损失率: 0-0.6 -> 归一化到[0, 1]
-            loss_norm = np.clip(data_loss / 0.6, 0.0, 1.0)
+            # 能耗归一化: 以10000J为基准（12车*800J/车 + 余量）
+            energy_norm = energy / 10000.0
             
-            # 完成率惩罚: 低于95%时给予额外惩罚
-            completion_penalty = 0.0
-            if completion < 0.95:
-                completion_penalty = (0.95 - completion) * 5.0  # 每降低1%惩罚0.05
+            # 完成率惩罚: 低于98%时额外惩罚
+            completion_penalty = max(0, (0.98 - completion)) * 3.0
             
-            # 缓存命中率: 0.0-0.8 -> 归一化到[0, 1]
-            cache_norm = np.clip(cache_hit / 0.8, 0.0, 1.0)
-            cache_bonus = (cache_norm - 0.5) * 0.2  # 超过40%才有奖励,否则惩罚
+            # 数据丢失惩罚: 按实际比例惩罚
+            loss_penalty = data_loss * 2.0
             
-            # 计算总成本(全是惩罚项)
+            # 缓存命中率奖励: 高命中率减少成本
+            cache_bonus = (cache_hit - 0.5) * 0.15  # 超过50%开始有奖励
+            
+            # 🎉 新增：卸载奖励机制（强力引导智能体学习卸载策略）
+            # RSU卸载奖励：每1%的RSU处理比例获得0.04奖励
+            rsu_bonus = rsu_ratio * 4.0  # 强奖励（50%占比能获得2.0奖励
+            
+            # UAV卸载奖励：每1%的UAV处理比例获得0.03奖励
+            uav_bonus = uav_ratio * 3.0  # 中等奖励（50%占比能获得1.5奖励
+            
+            # 本地处理惩罚：每1%的本地处理扣除0.03
+            local_penalty = local_ratio * 3.0  # 强惩罚（50%占比扣除1.5
+            
+            # 计算总成本（归一化后的加权和）
             cost = (
-                1.5 * delay_norm +           # 延迟成本
-                1.0 * energy_norm +          # 能耗成本
-                2.0 * loss_norm +            # 数据损失成本(最重要)
-                completion_penalty           # 完成率惩罚
+                1.2 * delay_norm +           # 延迟成本
+                0.8 * energy_norm +          # 能耗成本
+                completion_penalty +         # 完成率惩罚
+                loss_penalty                 # 数据丢失惩罚
             )
             
-            # 奖励 = -成本 + 小额缓存奖励
-            reward = -cost + cache_bonus
+            # 🎯 奖励 = -成本 + 全部奖励
+            # 目标: 让成本接近1.0，同时最大化卸载比例
+            # 最优奖励应接近 -1.0(成本) + 2.0(RSU) + 1.5(UAV) + 0.15(缓存) - 1.5(本地) = +1.15
+            reward = -cost + cache_bonus + rsu_bonus + uav_bonus - local_penalty
             
-            # 裁剪到合理范围(永远是负数或接近0)
-            reward = np.clip(reward, -5.0, 0.1)
-            
-            # 除以每个episode步数,得到per-step奖励
-            reward = reward / 200.0  # max_steps_per_episode=200
+            # 裁剪到合理范围（现在可以是正值）
+            reward = np.clip(reward, -5.0, 5.0)
             
             return float(reward)
             
         except Exception as e:
             print(f"⚠️ 奖励计算错误: {e}")
-            return -0.025  # 默认惩罚值
+            return -2.5  # 默认惩罚值
     
     def train_step(self, state: np.ndarray, action: Union[np.ndarray, int], reward: float,
                    next_state: np.ndarray, done: bool) -> Dict:

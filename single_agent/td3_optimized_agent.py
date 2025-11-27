@@ -170,18 +170,19 @@ class OptimizedTD3Agent:
         self.episode_count = 0  # 追踪episode数
         self.recent_rewards = deque(maxlen=50)  # 追踪最近50个episode的奖励
         self.last_improvement_episode = 0  # 上次改善的episode
-        self.exploration_reset_interval = 100  # 每100个episode重启一次探索
+        self.exploration_reset_interval = 150  # 每150个episode重启一次探索
         
         # 🔥 新增：提前终止和噪声退火机制 (600轮后启用)
         self.early_stop_episode = 600  # 在600轮后开始检测是否提前终止
-        self.noise_annealing_start = 600  # 在600轮后开始噪声退火
-        self.noise_annealing_rate = 0.995  # 噪声退火率 (每个episode乘以0.995)
-        self.reward_std_threshold = 0.5  # 奖励方差阈值，低于此值认为收敛
+        self.noise_annealing_start = 400  # 🔧 修复：在400轮后开始噪声退火（原600）
+        self.noise_annealing_rate = 0.998  # 🔧 修复：缓慢退火率（原0.995）
+        self.reward_std_threshold = 0.3  # 🔧 修复：降低收敛阈值（原0.5）
         
         print(f"✓ 优化TD3智能体初始化完成")
         print(f"✓ 网络隐藏维度: {config.hidden_dim}")
         print(f"✓ 缓冲区大小: {config.buffer_size}")
         print(f"✓ 启用避免局部最优机制 (周期重启间隔: {self.exploration_reset_interval}ep)")
+        print(f"✓ 噪声退火起始轮: {self.noise_annealing_start}, 退火率: {self.noise_annealing_rate}")
     
     def select_action(self, state: np.ndarray, training: bool = True) -> np.ndarray:
         """选择动作"""
@@ -223,20 +224,21 @@ class OptimizedTD3Agent:
             if episode % 50 == 0:  # 每50轮报告一次
                 print(f"💨 Episode {episode}: 噪声退火 -> {self.exploration_noise:.4f}")
         
-        # 周期性重启探索：每100个episode检查一次是否陷入局部最优
+        # 周期性重启探索：每150个episode检查一次是否陷入局部最优
         if episode % self.exploration_reset_interval == 0 and episode > 100:
             # 计算最近50个episode的平均奖励
             if len(self.recent_rewards) >= 30:
                 recent_avg = np.mean(list(self.recent_rewards)[-30:])
                 earlier_avg = np.mean(list(self.recent_rewards)[:30])
                 
+                # 🔧 修复：奖励现在是正数，目标是最大化
                 # 如果没有显著改善，重启探索
-                improvement_ratio = (earlier_avg - recent_avg) / (abs(earlier_avg) + 1e-6)
+                improvement_ratio = (recent_avg - earlier_avg) / (abs(earlier_avg) + 1e-6)
                 
                 if improvement_ratio < 0.05:  # 改善少于5%
                     # 重启噪声
                     old_noise = self.exploration_noise
-                    self.exploration_noise = self.initial_exploration_noise * 0.5  # 重启为初始值的50%
+                    self.exploration_noise = self.initial_exploration_noise * 0.6  # 🔧 重启为初始值的60%
                     print(f"🔄 Episode {episode}: 检测到局部最优,重启探索")
                     print(f"   (改善率: {improvement_ratio*100:.2f}% < 5%)")
                     print(f"   探索噪声: {old_noise:.4f} → {self.exploration_noise:.4f}")
