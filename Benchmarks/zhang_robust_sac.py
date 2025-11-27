@@ -169,13 +169,19 @@ class RobustSACAgent:
         s2 = torch.as_tensor(s2, device=dev)
         d = torch.as_tensor(d, device=dev)
 
-        # Adversarial observation noise (random + FGSM-like sign)
-        noise = torch.randn_like(s) * self.cfg.obs_noise
-        sign = torch.sign(noise)
-        s_noisy = s + noise + self.cfg.adv_epsilon * sign
+        # Adversarial observation noise (FGSM-style on critic w.r.t. state)
+        s.requires_grad_(True)
+        rand_noise = torch.randn_like(s) * self.cfg.obs_noise
+        adv_q1, adv_q2 = self.q(s, a)
+        adv_obj = (adv_q1 + adv_q2).mean()
+        self.opt_q.zero_grad(set_to_none=True)
+        adv_obj.backward(retain_graph=True)
+        grad_sign = s.grad.detach().sign()
+        s_noisy = (s.detach() + rand_noise + self.cfg.adv_epsilon * grad_sign).detach()
+        s = s.detach()
 
         with torch.no_grad():
-            a2, logp2 = self.policy_t.sample(s2, self.scale_tensor)
+            a2, logp2 = self.policy.sample(s2, self.scale_tensor)
             q1_t, q2_t = self.q_t(s2, a2)
             alpha = self._current_alpha()
             q_t = torch.min(q1_t, q2_t) - alpha * logp2
@@ -183,7 +189,7 @@ class RobustSACAgent:
 
         q1, q2 = self.q(s_noisy, a)
         loss_q = nn.functional.mse_loss(q1, y) + nn.functional.mse_loss(q2, y)
-        self.opt_q.zero_grad()
+        self.opt_q.zero_grad(set_to_none=True)
         loss_q.backward()
         self.opt_q.step()
 

@@ -163,6 +163,11 @@ class DDPGAgent:
         self.total_steps = 0
         self.ou_noise = OUNoise(action_dim) if cfg.use_ou_noise else None
 
+    def store(self, transition) -> None:
+        s, a, r, s2, d = transition
+        self.buffer.add(s, a, r, s2, d)
+        self.total_steps += 1
+
     def select_action(self, state: np.ndarray, noise: bool = True) -> np.ndarray:
         state_t = torch.as_tensor(state, dtype=torch.float32, device=self.device).unsqueeze(0)
         with torch.no_grad():

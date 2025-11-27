@@ -221,9 +221,9 @@ class CAMTD3Agent:
 
         with torch.no_grad():
             noise = torch.clamp(
-                torch.randn_like(a) * self.cfg.noise_std,
-                -self.cfg.noise_clip,
-                self.cfg.noise_clip,
+                torch.randn_like(a) * self.cfg.noise_std * self.act_limit,
+                -self.cfg.noise_clip * self.act_limit,
+                self.cfg.noise_clip * self.act_limit,
             )
             a2_raw = self.actor_t(s2) + noise
             a2 = self._structure_action_torch(a2_raw)
