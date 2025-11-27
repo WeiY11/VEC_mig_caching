@@ -1,0 +1,116 @@
+{
+  "description": "Local-only benchmark suite aligned with the methods referenced by the Benchmarks papers.",
+  "scenario": {
+    "num_vehicles": 12,
+    "num_rsus": 4,
+    "num_uavs": 2,
+    "max_steps_per_episode": 200,
+    "use_enhanced_cache": true,
+    "bandwidth": 18,
+    "coverage_radius": 320,
+    "thermal_noise_density": -174.0,
+    "noise_figure": 9.0,
+    "task_arrival_rate": 2.0,
+    "computation_capacity": 900
+  },
+  "defaults": {
+    "episodes": {
+      "drl": 160,
+      "heuristic": 120,
+      "meta": 140
+    },
+    "seeds": [
+      42,
+      2025
+    ],
+    "metrics": [
+      "avg_reward",
+      "avg_delay",
+      "avg_energy",
+      "avg_completion_rate",
+      "cache_hit_rate",
+      "migration_success_rate",
+      "training_time_hours"
+    ]
+  },
+  "algorithms": [
+    {
+      "name": "CAM-TD3",
+      "label": "Wang25_CAM-TD3",
+      "category": "drl",
+      "episodes": 180
+    },
+    {
+      "name": "DDPG",
+      "label": "Lillicrap19_DDPG",
+      "category": "drl",
+      "episodes": 160
+    },
+    {
+      "name": "SAC",
+      "label": "Zhang23_RoNet_SAC",
+      "category": "drl",
+      "episodes": 160
+    },
+    {
+      "name": "SimulatedAnnealing",
+      "label": "Liu22_Online_SA",
+      "category": "meta",
+      "episodes": 140
+    },
+    {
+      "name": "RSUOnly",
+      "label": "Nath20_Offload_RSU",
+      "category": "heuristic",
+      "episodes": 120
+    }
+  ],
+  "sweeps": [
+    {
+      "name": "vehicle_scaling",
+      "label": "Vehicle Count Stress",
+      "parameter": "num_vehicles",
+      "unit": "vehicles",
+      "values": [
+        8,
+        12,
+        16,
+        20
+      ],
+      "metrics": [
+        "avg_reward",
+        "avg_delay",
+        "avg_completion_rate"
+      ],
+      "episodes": {
+        "drl": 120,
+        "heuristic": 80,
+        "meta": 100
+      }
+    },
+    {
+      "name": "bandwidth_stress",
+      "label": "Bandwidth Levels",
+      "parameter": "bandwidth",
+      "unit": "MHz",
+      "values": [
+        12,
+        18,
+        24
+      ],
+      "metrics": [
+        "avg_delay",
+        "avg_energy",
+        "avg_completion_rate"
+      ],
+      "value_overrides": {
+        "12": {
+          "thermal_noise_density": -172.0
+        },
+        "24": {
+          "thermal_noise_density": -176.0
+        }
+      }
+    }
+  ]
+}
