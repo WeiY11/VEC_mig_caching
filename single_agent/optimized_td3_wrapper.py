@@ -32,25 +32,31 @@ def create_optimized_config() -> EnhancedTD3Config:
         num_attention_heads=6,  # 🔧 增加注意力头数 4 → 6
         gat_hidden_dim=192,  # 🔧 增大隐藏层 128 → 192
         gat_dropout=0.15,  # 🔧 增加dropout 0.1 → 0.15
-        
+
         # ❌ 禁用其他优化
         use_distributional_critic=False,
         use_entropy_reg=False,
         use_model_based_rollout=False,
-        
+
         # 🔧 基础参数优化
         hidden_dim=512,
-        batch_size=640,  # 🔧 增大batch size 384 → 640
+        batch_size=512,  # 🔧 略微减小batch，提升更新频次并降低方差
         buffer_size=100000,
-        
+
         # 🔧 学习率优化
         actor_lr=1.5e-4,  # 🔧 调低学习率 2e-4 → 1.5e-4
         critic_lr=2.5e-4,  # 🔧 调低学习率 3e-4 → 2.5e-4
-        
+
         # 🔧 探索策略优化
-        exploration_noise=0.20,  # 🔧 提高初始噪声 0.15 → 0.20
-        noise_decay=0.9985,  # 🔧 更温和的衰减 0.9992 → 0.9985
-        min_noise=0.08,  # 🔧 提高最小噪声 0.05 → 0.08
+        exploration_noise=0.18,  # 🔧 初始噪声略降，降低早期抖动
+        noise_decay=0.9992,  # 🔧 更平滑的退火
+        min_noise=0.02,  # 🔧 降低探索下限，便于后期收敛
+        target_noise=0.04,  # 🔧 减小目标噪声，平滑Q目标
+        noise_clip=0.12,  # 🔧 收紧裁剪范围，避免大动作扰动
+
+        # 奖励归一化
+        reward_norm_beta=0.997,
+        reward_norm_clip=5.0,
     )
 
 

@@ -24,10 +24,11 @@ import glob
 import os
 import subprocess
 import sys
+import json
 from datetime import datetime
 
 
-def run_optimized_td3(args) -> str | None:
+def run_optimized_td3(args, override_scenario: dict | None = None) -> str | None:
     cmd = [
         sys.executable,
         "train_single_agent.py",
@@ -55,8 +56,11 @@ def run_optimized_td3(args) -> str | None:
 
     print("Running:", " ".join(cmd))
     print("Log:", log_path)
+    env = os.environ.copy()
+    if override_scenario:
+        env["TRAINING_SCENARIO_OVERRIDES"] = json.dumps(override_scenario)
     with open(log_path, "w", encoding="utf-8") as fh:
-        proc = subprocess.Popen(cmd, stdout=fh, stderr=subprocess.STDOUT, text=True)
+        proc = subprocess.Popen(cmd, stdout=fh, stderr=subprocess.STDOUT, text=True, env=env)
     proc.wait()
     if proc.returncode != 0:
         print(f"[ERROR] train_single_agent exited with {proc.returncode}")

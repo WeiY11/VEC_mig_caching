@@ -18,6 +18,7 @@ import torch.nn as nn
 import torch.optim as optim
 import numpy as np
 from typing import Dict, Tuple, Optional, Any, List
+from collections import deque
 import os
 
 # 导入基础TD3组件
@@ -216,6 +217,16 @@ class EnhancedTD3Agent:
         self.critic_losses = []
         self.entropy_values = []
         self.alpha_values = []
+
+        # ========== 奖励归一化与收敛监测 ==========
+        self.use_reward_norm = bool(getattr(config, "use_reward_normalization", False))
+        self.reward_norm_beta = float(getattr(config, "reward_norm_beta", 0.996))
+        self.reward_norm_clip = float(getattr(config, "reward_norm_clip", 6.0))
+        self.reward_mean = 0.0
+        self.reward_var = 1.0
+        self.episode_count = 0
+        self.recent_rewards: deque[float] = deque(maxlen=120)
+        self.noise_floor = float(getattr(config, "late_stage_noise_floor", 0.02))
         
         print(f"[EnhancedTD3] 初始化完成")
         print(f"  - 分布式Critic: {config.use_distributional_critic}")
@@ -268,7 +279,49 @@ class EnhancedTD3Agent:
             action = np.clip(action + noise, -1.0, 1.0)
         
         return action
-    
+
+    def _normalize_reward_value(self, reward: float) -> float:
+        """运行时奖励归一化，降低高方差对TD误差的冲击。"""
+        if not self.use_reward_norm:
+            return float(reward)
+        r = float(reward)
+        beta = self.reward_norm_beta
+        delta = r - self.reward_mean
+        self.reward_mean = beta * self.reward_mean + (1 - beta) * r
+        self.reward_var = beta * self.reward_var + (1 - beta) * (delta ** 2)
+        std = max(self.reward_var ** 0.5, 1e-3)
+        norm_r = (r - self.reward_mean) / std
+        return float(np.clip(norm_r, -self.reward_norm_clip, self.reward_norm_clip))
+
+    def set_episode_count(self, episode: int, recent_reward: float = None):
+        """让外层训练器传入episode编号，便于噪声退火/收敛检测。"""
+        self.episode_count = episode
+        if recent_reward is not None and np.isfinite(recent_reward):
+            self.recent_rewards.append(float(recent_reward))
+
+        if episode >= 200:
+            decay = 0.996 if episode < 600 else 0.993
+            floor = max(self.noise_floor, self.config.min_noise)
+            new_noise = max(floor, self.exploration_noise * decay)
+            self.exploration_noise = new_noise
+
+        # 若近期波动很小，进一步收敛探索噪声
+        if episode % 120 == 0 and len(self.recent_rewards) >= 40:
+            recent_std = float(np.std(list(self.recent_rewards)[-30:]))
+            if recent_std < 0.25:
+                self.exploration_noise = max(
+                    max(self.noise_floor, self.config.min_noise),
+                    self.exploration_noise * 0.9,
+                )
+
+    def check_early_stopping(self) -> bool:
+        """简单的收敛检测：奖励标准差足够低则允许提前停止。"""
+        if self.episode_count < 800 or len(self.recent_rewards) < 60:
+            return False
+        window = list(self.recent_rewards)[-60:]
+        reward_std = float(np.std(window))
+        return reward_std < 0.18
+
     def store_experience(
         self,
         state: np.ndarray,
@@ -279,12 +332,13 @@ class EnhancedTD3Agent:
         queue_metrics: Optional[Dict[str, float]] = None,
     ):
         """存储经验"""
+        reward_to_store = self._normalize_reward_value(reward)
         if self.config.use_queue_aware_replay:
             # 队列感知回放需要队列指标
-            self.replay_buffer.push(state, action, reward, next_state, done, queue_metrics)
+            self.replay_buffer.push(state, action, reward_to_store, next_state, done, queue_metrics)
         else:
             # 标准回放
-            self.replay_buffer.push(state, action, reward, next_state, done)
+            self.replay_buffer.push(state, action, reward_to_store, next_state, done)
     
     def update(self) -> Dict[str, float]:
         """更新网络参数"""

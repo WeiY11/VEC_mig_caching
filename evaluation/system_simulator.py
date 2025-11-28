@@ -2728,7 +2728,7 @@ class CompleteSystemSimulator:
         
         实现了逼真的车辆移动模型，包括：
         - 速度的加减速变化
-        - 路口减速行为
+        - 路口减速行为（根据车辆行驶方向智能判断）
         - 车道切换和横向漂移
         - 周期性边界条件（环形道路）
         
@@ -2745,10 +2745,20 @@ class CompleteSystemSimulator:
             accel_state = vehicle.setdefault('speed_accel', 0.0)
             accel_state = 0.7 * accel_state + np.random.uniform(-0.4, 0.4)
 
-            # 在接近路口时降低速度，避免高速冲过交叉口
-            # Slow down near intersections
+            # 🔧 修复：在接近路口时降低速度，根据车辆行驶方向智能判断距离
+            # Slow down near intersections based on vehicle heading direction
+            direction = vehicle.get('direction', 0.0)
             for intersection in self.intersections.values():
-                dist_to_signal = abs(position[0] - intersection['x'])
+                # 判断车辆主要行驶方向：东西向(0或π) vs 南北向(π/2或-π/2)
+                is_horizontal = abs(np.cos(direction)) > abs(np.sin(direction))  # 东西向
+                
+                if is_horizontal:
+                    # 横向行驶的车辆检查Y坐标距离
+                    dist_to_signal = abs(position[1] - intersection['y'])
+                else:
+                    # 纵向行驶的车辆检查X坐标距离
+                    dist_to_signal = abs(position[0] - intersection['x'])
+                
                 if dist_to_signal < 40.0:
                     accel_state = min(accel_state, -0.8)
                     break
@@ -2758,7 +2768,6 @@ class CompleteSystemSimulator:
             vehicle['velocity'] = new_speed
 
             # === 2) 方向保持，同时允许轻微扰动 ===
-            direction = vehicle.get('direction', 0.0)
             heading_jitter = vehicle.setdefault('heading_jitter', 0.0)
             heading_jitter = 0.6 * heading_jitter + np.random.uniform(-0.01, 0.01)
             direction = (direction + heading_jitter) % (2 * np.pi)
@@ -2768,8 +2777,10 @@ class CompleteSystemSimulator:
             dx = np.cos(direction) * new_speed * self.time_slot
             dy = np.sin(direction) * new_speed * self.time_slot
 
-            # === 3) 渚у悜婕傜Щ锛堟ā鎷熻交寰崲閬擄級 ===
-            lane_bias = vehicle.get('lane_bias', position[1] - self.road_y)
+            # === 3) 横向漂移（模拟轻微换道） ===
+            # 根据车辆行驶方向决定车道偏移的应用方式
+            is_horizontal = abs(np.cos(direction)) > abs(np.sin(direction))
+            lane_bias = vehicle.get('lane_bias', 0.0)
             lane_switch_timer = vehicle.setdefault('lane_switch_timer', np.random.randint(80, 160))
             lane_switch_timer -= 1
             if lane_switch_timer <= 0 and np.random.rand() < 0.1:
@@ -2783,11 +2794,23 @@ class CompleteSystemSimulator:
             lateral_state = 0.5 * lateral_state + np.random.uniform(-0.25, 0.25)
             vehicle['lateral_state'] = np.clip(lateral_state, -2.0, 2.0)
 
-            # === 4) 应用位置更新（x 环路，y 叠加 lane_bias 与漂移影响） ===
-            new_x = (position[0] + dx) % 1000.0
-            baseline_lane_y = float(self.road_y + lane_bias)
-            new_y = baseline_lane_y + vehicle['lateral_state']
-            new_y = np.clip(new_y, self.road_y - 6.5, self.road_y + 6.5)
+            # === 4) 应用位置更新 ===
+            # 🔧 修复：使用正确的场景尺寸边界 (1030 x 2060)
+            new_x = position[0] + dx
+            new_y = position[1] + dy
+            
+            # 🔧 修复：应用车道偏移（垂直于车辆前进方向）
+            # 车道偏移应该垂直于前进方向，模拟车道内的左右微调
+            if is_horizontal:
+                # 横向行驶（东西向）：车道偏移应用到Y方向（垂直于前进方向）
+                new_y += lane_bias + lateral_state
+            else:
+                # 纵向行驶（南北向）：车道偏移应用到X方向（垂直于前进方向）
+                new_x += lane_bias + lateral_state
+            
+            # 🔧 修复：周期性边界条件（匹配场景实际尺寸）
+            new_x = new_x % self.scenario_width   # 0 ~ 1030m
+            new_y = new_y % self.scenario_height  # 0 ~ 2060m
 
             vehicle['position'][0] = new_x
             vehicle['position'][1] = new_y

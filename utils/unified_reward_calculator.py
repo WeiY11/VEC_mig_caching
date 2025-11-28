@@ -169,8 +169,8 @@ class UnifiedRewardCalculator:
         if self.algorithm == "SAC":
             self.reward_clip_range = (-15.0, 3.0)  # SAC期望较小的奖励范围
         else:
-            # 允许正奖励:当RSU占比高时,奖励可以为正(例如RSU 60%可获得+9奖励)
-            self.reward_clip_range = (-20.0, 10.0)  # 允许正奖励,但不过分大
+            # 允许正奖励:当RSU占比高时,奖励可以为正；收紧范围降低方差
+            self.reward_clip_range = (-12.0, 6.0)  # 收敛友好，降低极值对训练的冲击
 
         print(f"[OK] Unified reward calculator ({self.algorithm})")
         print(

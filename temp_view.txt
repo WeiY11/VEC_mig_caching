@@ -28,10 +28,6 @@ def _build_scenario_overrides(
     task_arrival_rate: Optional[float],
     bandwidth: Optional[float],
     coverage_radius: Optional[float],
-    edge_compute_total: Optional[float] = None,
-    total_rsu_compute: Optional[float] = None,
-    total_uav_compute: Optional[float] = None,
-    task_data_size_kb: Optional[float] = None,
 ) -> Dict[str, Any]:
     overrides: Dict[str, Any] = {}
     if num_vehicles is not None:
@@ -44,23 +40,8 @@ def _build_scenario_overrides(
         overrides["task_arrival_rate"] = task_arrival_rate
     if bandwidth is not None:
         overrides["bandwidth"] = bandwidth
-        overrides["total_bandwidth"] = bandwidth
     if coverage_radius is not None:
         overrides["coverage_radius"] = coverage_radius
-    if edge_compute_total is not None:
-        # Split edge compute total across RSU/UAV using the default 5:1 ratio (50GHz:10GHz).
-        total = float(edge_compute_total)
-        overrides.setdefault("total_rsu_compute", total * (5.0 / 6.0))
-        overrides.setdefault("total_uav_compute", total * (1.0 / 6.0))
-    if total_rsu_compute is not None:
-        overrides["total_rsu_compute"] = float(total_rsu_compute)
-    if total_uav_compute is not None:
-        overrides["total_uav_compute"] = float(total_uav_compute)
-    if task_data_size_kb is not None:
-        size = float(task_data_size_kb)
-        overrides["task_data_size_kb"] = size
-        overrides.setdefault("task_data_size_min_kb", size)
-        overrides.setdefault("task_data_size_max_kb", size)
     if overrides:
         overrides["override_topology"] = True
     return overrides
@@ -84,10 +65,6 @@ class VecEnvWrapper:
         bandwidth: Optional[float] = 18.0,
         coverage_radius: Optional[float] = 320.0,
         use_enhanced_cache: bool = True,
-        edge_compute_total: Optional[float] = None,
-        total_rsu_compute: Optional[float] = None,
-        total_uav_compute: Optional[float] = None,
-        task_data_size_kb: Optional[float] = None,
     ):
         overrides = _build_scenario_overrides(
             num_vehicles=num_vehicles,
@@ -96,12 +73,7 @@ class VecEnvWrapper:
             task_arrival_rate=task_arrival_rate,
             bandwidth=bandwidth,
             coverage_radius=coverage_radius,
-            edge_compute_total=edge_compute_total,
-            total_rsu_compute=total_rsu_compute,
-            total_uav_compute=total_uav_compute,
-            task_data_size_kb=task_data_size_kb,
         )
-        prev_override_env = os.environ.get("TRAINING_SCENARIO_OVERRIDES")
         if overrides:
             os.environ["TRAINING_SCENARIO_OVERRIDES"] = json.dumps(overrides)
         self.env = SingleAgentTrainingEnvironment(
@@ -110,11 +82,6 @@ class VecEnvWrapper:
             use_enhanced_cache=use_enhanced_cache,
             disable_migration=False,
         )
-        # Prevent override leakage to subsequent runs in the same shell
-        if prev_override_env is None:
-            os.environ.pop("TRAINING_SCENARIO_OVERRIDES", None)
-        else:
-            os.environ["TRAINING_SCENARIO_OVERRIDES"] = prev_override_env
         # Build dummy spaces
         from types import SimpleNamespace
 
@@ -145,3 +112,4 @@ class VecEnvWrapper:
             bool(done),
             info,
         )
+

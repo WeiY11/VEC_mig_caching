@@ -46,6 +46,8 @@ class EnhancedTD3Config:
     gradient_clip_norm: float = 0.5
     use_gradient_clip: bool = True
     use_reward_normalization: bool = True
+    reward_norm_clip: float = 6.0
+    reward_norm_beta: float = 0.996
     
     # 保守增强
     cql_alpha: float = 0.12

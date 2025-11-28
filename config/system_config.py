@@ -1183,9 +1183,10 @@ class NormalizationConfig:
         self.distribution_smoothing = float(os.environ.get('NORM_DISTRIBUTION_SMOOTHING', '1e-5'))
 
         # 位置/速度尺度
-        self.vehicle_position_range = float(os.environ.get('NORM_VEHICLE_POSITION_RANGE', '1000.0'))
-        self.rsu_position_range = float(os.environ.get('NORM_RSU_POSITION_RANGE', '1000.0'))
-        self.uav_position_range = float(os.environ.get('NORM_UAV_POSITION_RANGE', '1000.0'))
+        # 🔧 修复：使用场景实际最大尺寸2060.0 (场景范围: X: 0~1030m, Y: 0~2060m)
+        self.vehicle_position_range = float(os.environ.get('NORM_VEHICLE_POSITION_RANGE', '2060.0'))
+        self.rsu_position_range = float(os.environ.get('NORM_RSU_POSITION_RANGE', '2060.0'))
+        self.uav_position_range = float(os.environ.get('NORM_UAV_POSITION_RANGE', '2060.0'))
         self.uav_altitude_range = float(os.environ.get('NORM_UAV_ALTITUDE_RANGE', '200.0'))
         self.vehicle_speed_range = float(os.environ.get('NORM_VEHICLE_SPEED_RANGE', '50.0'))
 
