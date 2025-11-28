@@ -309,8 +309,10 @@ class QueueConfig:
         # 🔧 修复：大幅提高队列容量，匹配高负载场景需求
         # RSU: 20 → 50 (每个RSU需处理约180任务/episode，允许缓冲)
         # UAV: 10 → 30 (UAV也需要充足队列空间)
+        # Vehicle: 20 (本地队列，实际很少使用，主要用于Phase 2调度)
         self.rsu_nominal_capacity = float(os.environ.get('QUEUE_RSU_NOMINAL_CAPACITY', '50.0'))
         self.uav_nominal_capacity = float(os.environ.get('QUEUE_UAV_NOMINAL_CAPACITY', '30.0'))
+        self.vehicle_nominal_capacity = float(os.environ.get('QUEUE_VEHICLE_NOMINAL_CAPACITY', '20.0'))
         # 🔧 修复：扩大队列字节容量，匹配任务数据大小增加（3-4倍）
         # 平均任务大小：1.5 MB (原 500 KB)
         # Capacity limits (bytes) used for queue admission control

@@ -260,6 +260,7 @@ class CompleteSystemSimulator:
         self.node_max_load_factor = float(getattr(queue_cfg, 'max_load_factor', 1.0)) if queue_cfg is not None else 1.0
         self.rsu_nominal_capacity = float(getattr(queue_cfg, 'rsu_nominal_capacity', 20.0)) if queue_cfg is not None else 20.0
         self.uav_nominal_capacity = float(getattr(queue_cfg, 'uav_nominal_capacity', 10.0)) if queue_cfg is not None else 10.0
+        self.vehicle_nominal_capacity = float(getattr(queue_cfg, 'vehicle_nominal_capacity', 20.0)) if queue_cfg is not None else 20.0
         self.queue_overflow_margin = float(getattr(queue_cfg, 'overflow_margin', 1.2)) if queue_cfg is not None else 1.2
         self.cache_config = getattr(self.sys_config, 'cache', None)
         self.communication_config = getattr(self.sys_config, 'communication', None)
@@ -804,6 +805,12 @@ class CompleteSystemSimulator:
         """
         车辆端优先级队列调度（Phase 2执行层）
         
+        🚀 融合Luo论文队列模型：
+        - 车辆侧维护L个生命周期队列（队列l表示还有l个时隙到截止时间）
+        - 队列l输入：(1)本车队列l+1未处理的 (2)新生成时延约束=l的 (3)V2V迁移来的l+1数据
+        - 队列l输出：(1)Offload→RSU队列l-1 (2)Migrate→其他车队列l-1 (3)Local处理 (4)Remain→本车队列l-1
+        - 每个时隙结束时，未处理任务生命周期-1（降级到下一队列）
+        
         【策略】
         1. 按任务优先级（类型1>2>3>4）排序
         2. 优先分配计算资源给高优先级任务
@@ -813,8 +820,13 @@ class CompleteSystemSimulator:
             vehicle: 车辆对象字典
         """
         # 获取分配的计算资源
-        allocated_cpu = vehicle['cpu_freq']
+        # 🔧 修复：统一使用allocated_compute字段
+        allocated_cpu = vehicle.get('allocated_compute', vehicle.get('cpu_freq', self.vehicle_cpu_freq))
         time_slot = self.time_slot
+        
+        # 🆕 论文模型：初始化生命周期队列结构（如果不存在）
+        if 'lifetime_queues' not in vehicle:
+            vehicle['lifetime_queues'] = self._init_lifetime_queues_vehicle()
         
         # 合并所有优先级队列到一个列表，按优先级排序
         all_tasks = []
@@ -849,6 +861,12 @@ class CompleteSystemSimulator:
         """
         RSU端动态资源分配（Phase 2执行层）
         
+        🚀 融合Luo论文队列模型：
+        - RSU侧维护L-1个生命周期队列（最短1个时隙从车传到RSU）
+        - 队列l输入：(1)自己队列l+1上时隙未处理的 (2)车辆V2I卸载来的剩余寿命l+1数据
+        - 队列l输出：(1)ECN计算处理 (2)未处理部分→队列l-1（l=1时过期删除）
+        - 每个时隙结束时，未处理任务降级到l-1队列
+        
         【策略】
         1. 为接入的车辆动态分配带宽
         2. 根据任务优先级分配计算时间片
@@ -861,6 +879,10 @@ class CompleteSystemSimulator:
         # 获取分配的计算资源
         allocated_compute = rsu['allocated_compute']
         time_slot = self.time_slot
+        
+        # 🆕 论文模型：初始化生命周期队列结构（如果不存在）
+        if 'lifetime_queues' not in rsu:
+            rsu['lifetime_queues'] = self._init_lifetime_queues_rsu()
         
         # 计算本时隙可用的总计算周期
         available_cycles = allocated_compute * time_slot
@@ -892,6 +914,10 @@ class CompleteSystemSimulator:
         """
         UAV端动态资源分配（Phase 2执行层）
         
+        🚀 融合Luo论文队列模型：
+        - UAV侧类似RSU，维护L-1个生命周期队列
+        - 队列流转逻辑同RSU（论文将UAV视为移动基站）
+        
         【策略】
         1. 考虑电量水平调整服务能力
         2. 优先服务信道质量好的车辆
@@ -907,7 +933,9 @@ class CompleteSystemSimulator:
         effective_compute = allocated_compute * battery_factor
         
         time_slot = self.time_slot
-        available_cycles = effective_compute * time_slot
+        # 🔧 修复：基于分配的计算资源计算可用周期，而非有效计算资源
+        # 这样compute_usage始终基于allocated_compute，不会超过100%
+        available_cycles = allocated_compute * time_slot
         
         # 获取所有待处理任务
         tasks = uav['computation_queue']
@@ -930,7 +958,10 @@ class CompleteSystemSimulator:
                     task['can_process'] = False
         
         # 更新计算使用率
-        uav['compute_usage'] = used_cycles / max(available_cycles, 1e-9)
+        # 🔧 修复：考虑电量因子的影响，但使用率仍基于allocated_compute
+        # 如果电量低，实际能处理的cycles会减少，但reported usage基于总分配
+        actual_processed = min(used_cycles, effective_compute * time_slot)
+        uav['compute_usage'] = actual_processed / max(available_cycles, 1e-9)
     
     def execute_phase2_scheduling(self):
         """
@@ -1311,13 +1342,53 @@ class CompleteSystemSimulator:
         
         🔧 紧急修复：大幅提高队列溢出边界，减少丢弃
         """
+        # 🔧 修复：Vehicle使用task_queue_by_priority结构
+        if node_type == 'VEHICLE':
+            queue_dict = node.get('task_queue_by_priority', {})
+            if not isinstance(queue_dict, dict):
+                return
+            
+            # 计算总队列长度
+            total_queue_length = sum(len(tasks) for tasks in queue_dict.values())
+            
+            # 🔧 优化：从配置读取Vehicle队列容量，与配置系统统一
+            vehicle_nominal_capacity = getattr(self, 'vehicle_nominal_capacity', 20.0)
+            overflow_margin = 2.0  # 允许队列达到名义容量的2倍
+            # 最大容量 = 20 × 1.5(node_max_load_factor) × 2.0(overflow_margin) = 60个任务
+            max_queue = int(max(1, round(vehicle_nominal_capacity * self.node_max_load_factor * overflow_margin)))
+            
+            overflow = total_queue_length - max_queue
+            if overflow <= 0:
+                return
+            
+            # 从低优先级开始丢弃任务
+            dropped = 0
+            for priority in [4, 3, 2, 1]:  # 从低到高
+                if overflow <= 0:
+                    break
+                queue = queue_dict.get(priority, [])
+                while overflow > 0 and queue:
+                    dropped_task = queue.pop()  # 丢弃最新的任务
+                    # 🆕 Luo论文队列模型：丢弃任务时从lifetime_queues同步移除
+                    self._remove_task_from_lifetime_queues(node, dropped_task)
+                    self._record_queue_drop(dropped_task, node_type)
+                    dropped += 1
+                    overflow -= 1
+            
+            if dropped:
+                step_summary['dropped_tasks'] = step_summary.get('dropped_tasks', 0) + dropped
+                step_summary['queue_overflow_drops'] = step_summary.get('queue_overflow_drops', 0) + dropped
+            return
+        
+        # RSU/UAV使用computation_queue结构
         queue = node.get('computation_queue', [])
         if not isinstance(queue, list):
             return
         nominal_capacity = self.rsu_nominal_capacity if node_type == 'RSU' else self.uav_nominal_capacity
-        # 🔧 紧急修复：大幅放宽溢出边界 (1.5 → 3.0)
-        # 原值过于严格，导致大量任务被丢弃
-        overflow_margin = 3.0  # 允许队列长度达到名义容量的3倍
+        # 🔧 修复：调整溢出边界到合理水平 (3.0 → 2.0)
+        # 2倍边界在保证缓冲的同时，避免队列积压过长影响实时性
+        # RSU: 50 × 2.0 = 100个任务, UAV: 30 × 2.0 = 60个任务
+        overflow_margin = 2.0  # 允许队列长度达到名义容量的2倍
         max_queue = int(max(1, round(nominal_capacity * self.node_max_load_factor * overflow_margin)))
         overflow = len(queue) - max_queue
         if overflow <= 0:
@@ -1325,6 +1396,8 @@ class CompleteSystemSimulator:
         dropped = 0
         while overflow > 0 and queue:
             dropped_task = queue.pop()  # 丢弃最新的任务，保护早到任务
+            # 🆕 Luo论文队列模型：队列溢出丢弃时从lifetime_queues同步移除
+            self._remove_task_from_lifetime_queues(node, dropped_task)
             self._record_queue_drop(dropped_task, node_type)
             dropped += 1
             overflow -= 1
@@ -1443,6 +1516,166 @@ class CompleteSystemSimulator:
                 window_val = None
             else:
                 self._scheduling_params['reorder_window'] = max(1, min(32, window_val))
+    
+    def _init_lifetime_queues_vehicle(self) -> Dict[int, List]:
+        """
+        🆕 Luo论文队列模型：初始化车辆侧生命周期队列
+        
+        车辆维护L个队列（队列l = 还有1到L个时隙到截止时间）
+        对应论文图2(a)：车辆侧多队列结构
+        
+        Returns:
+            Dict[lifetime, List[Task]]: 键为剩余生命周期，值为任务列表
+        """
+        max_lifetime = getattr(self.queue_config, 'max_lifetime', 10) if hasattr(self, 'queue_config') else 10
+        return {l: [] for l in range(1, max_lifetime + 1)}
+    
+    def _init_lifetime_queues_rsu(self) -> Dict[int, List]:
+        """
+        🆕 Luo论文队列模型：RSU侧生命周期队列
+        
+        RSU维护L-1个队列（队列l = 还有1到L-1个时隙，因为RSU不产生数据）
+        对应论文图2(b)：RSU侧多队列结构
+        
+        Returns:
+            Dict[lifetime, List[Task]]: 键为剩余生命周期，值为任务列表
+        """
+        max_lifetime = getattr(self.queue_config, 'max_lifetime', 10) if hasattr(self, 'queue_config') else 10
+        # RSU最大队列号为L-1（最短1个时隙从车传到RSU）
+        return {l: [] for l in range(1, max_lifetime)}
+    
+    def _update_lifetime_queues(self, node: Dict, node_type: str, step_summary: Dict[str, Any]) -> None:
+        """
+        🆕 Luo论文队列模型：每个时隙更新生命周期队列
+        
+        核心逻辑：
+        1. 队列l中未处理的任务 → 降级到队列l-1
+        2. l=1时未处理的任务 → 过期删除，计入惩罚
+        
+        对应论文第3.2节：“每过一个时隙，所有没被处理/转移的数据队列索引减1”
+        
+        Args:
+            node: 车辆/RSU/UAV节点对象
+            node_type: 节点类型
+            step_summary: 当前时隙的统计数据
+        """
+        if 'lifetime_queues' not in node:
+            return
+        
+        lifetime_queues = node['lifetime_queues']
+        new_queues = {}
+        dropped_count = 0
+        urgency_promoted_count = 0  # 🚀 创新：统计紧急提升的任务数
+        
+        # 🚀 创新1：自适应降级速度 - 根据节点负载调整
+        # 高负载时加速降级（腾出队列空间），低负载时正常降级
+        node_load = self._calculate_node_rho(node, node_type)
+        if node_load > 0.8:  # 高负载
+            degradation_step = 2  # 生命周期减2（加速过期）
+        elif node_load > 0.6:  # 中等负载
+            degradation_step = 1  # 正常降级
+        else:  # 低负载
+            degradation_step = 1  # 正常降级
+        
+        # 从高到低遍历每个生命周期队列
+        for lifetime in sorted(lifetime_queues.keys(), reverse=True):
+            tasks = lifetime_queues[lifetime]
+            if not tasks:
+                # 空队列，保持结构
+                new_queues[lifetime] = []
+                continue
+            
+            # 🚀 创新2：跨队列优先级提升机制
+            # 即将过期的任务（lifetime <= 2）自动提升优先级
+            for task in tasks:
+                if lifetime <= 2 and 'task_type' in task:
+                    original_priority = task.get('task_type', 4)
+                    # 紧急提升：降低task_type数值（数值越小优先级越高）
+                    if original_priority > 1 and not task.get('urgency_promoted', False):
+                        task['task_type'] = max(1, original_priority - 1)
+                        task['urgency_promoted'] = True  # 标记为紧急提升
+                        urgency_promoted_count += 1
+            
+            # 生命周期降级（自适应步长）
+            new_lifetime = max(0, lifetime - degradation_step)
+            
+            if new_lifetime > 0:
+                # 还有剩余时间，任务降级到下一队列
+                if new_lifetime not in new_queues:
+                    new_queues[new_lifetime] = []
+                # 更新任务的剩余生命周期字段
+                for task in tasks:
+                    if 'remaining_lifetime_slots' in task:
+                        task['remaining_lifetime_slots'] = new_lifetime
+                new_queues[new_lifetime].extend(tasks)
+            else:
+                # 生命周期用尽，任务过期删除
+                for task in tasks:
+                    task['is_dropped'] = True
+                    task['drop_reason'] = 'lifetime_expired'
+                    self._record_queue_drop(task, node_type)
+                    dropped_count += 1
+        
+        # 确保所有队列位置都存在
+        max_lifetime = getattr(self.queue_config, 'max_lifetime', 10) if hasattr(self, 'queue_config') else 10
+        if node_type == 'VEHICLE':
+            for l in range(1, max_lifetime + 1):
+                if l not in new_queues:
+                    new_queues[l] = []
+        else:  # RSU/UAV
+            for l in range(1, max_lifetime):
+                if l not in new_queues:
+                    new_queues[l] = []
+        
+        # 更新节点的队列
+        node['lifetime_queues'] = new_queues
+        
+        # 🚀 创新3：智能预测与主动迁移触发
+        # 检查队列2和队列1中的任务数量，如果过多则触发迁移预警
+        if node_type in ('RSU', 'UAV'):
+            critical_tasks = len(new_queues.get(1, [])) + len(new_queues.get(2, []))
+            total_tasks = sum(len(q) for q in new_queues.values())
+            if critical_tasks > 0 and total_tasks > 0:
+                urgency_ratio = critical_tasks / total_tasks
+                if urgency_ratio > 0.3:  # 超过30%的任务即将过期
+                    node['migration_urgency'] = min(1.0, urgency_ratio * 2)  # 触发迁移紧急度
+                    step_summary['migration_triggers'] = step_summary.get('migration_triggers', 0) + 1
+        
+        # 统计过期任务和优化指标
+        if dropped_count > 0:
+            step_summary['lifetime_expired_tasks'] = step_summary.get('lifetime_expired_tasks', 0) + dropped_count
+            step_summary['dropped_tasks'] = step_summary.get('dropped_tasks', 0) + dropped_count
+        
+        if urgency_promoted_count > 0:
+            step_summary['urgency_promoted_tasks'] = step_summary.get('urgency_promoted_tasks', 0) + urgency_promoted_count
+    
+    def _remove_task_from_lifetime_queues(self, node: Dict, task: Dict) -> bool:
+        """
+        🆕 Luo论文队列模型：从clifetime_queues中移除已完成/迁移的任务
+        
+        防止已完成的任务继续在lifetime_queues中降级，避免内存泄漏和数据不一致
+        
+        Args:
+            node: 节点对象
+            task: 要移除的任务
+            
+        Returns:
+            是否成功移除
+        """
+        if 'lifetime_queues' not in node:
+            return False
+        
+        lifetime_queues = node['lifetime_queues']
+        task_id = task.get('id')
+        
+        # 遍历所有生命周期队列查找并移除任务
+        for lifetime, tasks in lifetime_queues.items():
+            for i, t in enumerate(tasks):
+                if t.get('id') == task_id:
+                    tasks.pop(i)
+                    return True
+        
+        return False
 
     def _init_mm1_predictor(self):
         """Initialize M/M/1 queue performance predictor settings and buffers."""
@@ -1771,7 +2004,9 @@ class CompleteSystemSimulator:
             'compute_density': effective_density,
             'complexity_multiplier': complexity_multiplier,
             'max_delay_slots': max_delay_slots,
-            'deadline_relax_factor': relax_factor_applied
+            'deadline_relax_factor': relax_factor_applied,
+            # 🆕 Luo论文队列模型：添加剩余生命周期字段
+            'remaining_lifetime_slots': max_delay_slots,  # 初始生命周期 = 最大延迟时隙数
         }
 
         self._last_app_name = scenario_name
@@ -2081,6 +2316,9 @@ class CompleteSystemSimulator:
                 new_queue.append(task)
                 continue
 
+            # 🆕 Luo论文队列模型：任务完成时同步从clifetime_queues中移除
+            self._remove_task_from_lifetime_queues(node, task)
+            
             self.stats['completed_tasks'] += 1
             self.stats['processed_tasks'] = self.stats.get('processed_tasks', 0) + 1
 
@@ -2838,35 +3076,41 @@ class CompleteSystemSimulator:
         # 🔧 修复NaN问题：清理初始概率中的NaN值
         probs = np.nan_to_num(probs, nan=0.0, posinf=0.0, neginf=0.0)
 
-        guidance = actions.get('rl_guidance') or {}
-        if isinstance(guidance, dict):
-            guide_prior = np.array(guidance.get('offload_prior', []), dtype=float)
-            if guide_prior.size >= 3:
-                guide_prior = np.nan_to_num(guide_prior[:3], nan=1.0, posinf=1.0, neginf=1.0)
-                probs *= np.clip(guide_prior, 1e-4, None)
-                probs = np.nan_to_num(probs, nan=0.0, posinf=0.0, neginf=0.0)
-            
-            distance_focus = np.array(guidance.get('distance_focus', []), dtype=float)
-            if distance_focus.size >= 3:
-                distance_focus = np.nan_to_num(distance_focus[:3], nan=1.0, posinf=1.0, neginf=1.0)
-                probs *= np.clip(distance_focus, 0.2, None)
-                probs = np.nan_to_num(probs, nan=0.0, posinf=0.0, neginf=0.0)
-            
-            cache_focus = np.array(guidance.get('cache_focus', []), dtype=float)
-            if cache_focus.size >= 3:
-                cache_focus = np.nan_to_num(cache_focus[:3], nan=1.0, posinf=1.0, neginf=1.0)
-                probs *= np.clip(cache_focus, 0.2, None)
-                probs = np.nan_to_num(probs, nan=0.0, posinf=0.0, neginf=0.0)
-            
-            energy_pressure_vec = guidance.get('energy_pressure')
-            if isinstance(energy_pressure_vec, (list, tuple, np.ndarray)):
-                pressure_arr = np.asarray(energy_pressure_vec, dtype=float).reshape(-1)
-                pressure_arr = np.nan_to_num(pressure_arr, nan=1.0, posinf=1.0, neginf=1.0)
-                pressure = float(np.clip(pressure_arr[0], 0.35, 1.8))
-                energy_weights = np.array([1.0 / pressure, pressure, pressure], dtype=float)
-                energy_weights = np.nan_to_num(energy_weights, nan=1.0, posinf=1.0, neginf=1.0)
-                probs *= energy_weights
-                probs = np.nan_to_num(probs, nan=0.0, posinf=0.0, neginf=0.0)
+        # 🔧 禁用guidance干扰：对比实验时不应用guidance修正，保持智能体原始决策
+        # 原因：guidance的offload_prior/distance_focus/cache_focus会修改概率，干扰偏置实验
+        import os
+        apply_guidance = os.environ.get('APPLY_RL_GUIDANCE', '0') == '1'
+        
+        if apply_guidance:
+            guidance = actions.get('rl_guidance') or {}
+            if isinstance(guidance, dict):
+                guide_prior = np.array(guidance.get('offload_prior', []), dtype=float)
+                if guide_prior.size >= 3:
+                    guide_prior = np.nan_to_num(guide_prior[:3], nan=1.0, posinf=1.0, neginf=1.0)
+                    probs *= np.clip(guide_prior, 1e-4, None)
+                    probs = np.nan_to_num(probs, nan=0.0, posinf=0.0, neginf=0.0)
+                
+                distance_focus = np.array(guidance.get('distance_focus', []), dtype=float)
+                if distance_focus.size >= 3:
+                    distance_focus = np.nan_to_num(distance_focus[:3], nan=1.0, posinf=1.0, neginf=1.0)
+                    probs *= np.clip(distance_focus, 0.2, None)
+                    probs = np.nan_to_num(probs, nan=0.0, posinf=0.0, neginf=0.0)
+                
+                cache_focus = np.array(guidance.get('cache_focus', []), dtype=float)
+                if cache_focus.size >= 3:
+                    cache_focus = np.nan_to_num(cache_focus[:3], nan=1.0, posinf=1.0, neginf=1.0)
+                    probs *= np.clip(cache_focus, 0.2, None)
+                    probs = np.nan_to_num(probs, nan=0.0, posinf=0.0, neginf=0.0)
+                
+                energy_pressure_vec = guidance.get('energy_pressure')
+                if isinstance(energy_pressure_vec, (list, tuple, np.ndarray)):
+                    pressure_arr = np.asarray(energy_pressure_vec, dtype=float).reshape(-1)
+                    pressure_arr = np.nan_to_num(pressure_arr, nan=1.0, posinf=1.0, neginf=1.0)
+                    pressure = float(np.clip(pressure_arr[0], 0.35, 1.8))
+                    energy_weights = np.array([1.0 / pressure, pressure, pressure], dtype=float)
+                    energy_weights = np.nan_to_num(energy_weights, nan=1.0, posinf=1.0, neginf=1.0)
+                    probs *= energy_weights
+                    probs = np.nan_to_num(probs, nan=0.0, posinf=0.0, neginf=0.0)
 
         # 最终检查：如果概率总和仍然为0或无效，使用默认概率
         if not np.isfinite(probs).all() or probs.sum() <= 0:
@@ -3037,6 +3281,10 @@ class CompleteSystemSimulator:
                     if self.current_time > task.get('deadline', float('inf')):
                         task['dropped'] = True
                         task['drop_reason'] = 'deadline_exceeded'
+                        
+                        # 🆕 Luo论文队列模型：过期任务从clifetime_queues中移除
+                        self._remove_task_from_lifetime_queues(node, task)
+                        
                         self.stats['dropped_tasks'] += 1
                         self.stats['dropped_data_bytes'] += float(task.get('data_size_bytes', 0.0))
 
@@ -3566,11 +3814,32 @@ class CompleteSystemSimulator:
             'priority': task.get('priority', 0.5),
             'task_type': task.get('task_type'),
             'app_scenario': task.get('app_scenario'),
-            'deadline_relax_factor': task.get('deadline_relax_factor', 1.0)
+            'deadline_relax_factor': task.get('deadline_relax_factor', 1.0),
+            # 🆕 Luo论文队列模型：保留剩余生命周期字段
+            'remaining_lifetime_slots': task.get('remaining_lifetime_slots', task.get('max_delay_slots', 5)),
         }
 
+        # 原有队列系统：添加到 computation_queue
         queue = node.setdefault('computation_queue', [])
         queue.append(task_entry)
+        
+        # 🆕 Luo论文队列模型：同步添加到 lifetime_queues
+        # 根据任务的剩余生命周期，加入相应队列
+        if 'lifetime_queues' in node:
+            lifetime = task_entry.get('remaining_lifetime_slots', 5)
+            # 确保 lifetime 在合理范围内
+            max_lifetime = getattr(self.queue_config, 'max_lifetime', 10) if hasattr(self, 'queue_config') else 10
+            if node_type in ('RSU', 'UAV'):
+                # RSU/UAV 最大 L-1
+                lifetime = max(1, min(lifetime, max_lifetime - 1))
+            else:
+                # Vehicle 最大 L
+                lifetime = max(1, min(lifetime, max_lifetime))
+            
+            # 添加任务到对应的生命周期队列
+            if lifetime in node['lifetime_queues']:
+                node['lifetime_queues'][lifetime].append(task_entry)
+        
         self._enforce_queue_capacity(node, node_type, step_summary)
         self._apply_queue_scheduling(node, node_type)
         self._append_active_task(task_entry)
@@ -3951,14 +4220,20 @@ class CompleteSystemSimulator:
             origin_queue_after = current_queue_before
             if origin_node_idx is not None:
                 if task['node_type'] == 'RSU':
-                    origin_queue = self.rsus[origin_node_idx].get('computation_queue', [])
+                    origin_node = self.rsus[origin_node_idx]
+                    origin_queue = origin_node.get('computation_queue', [])
                     filtered = [t for t in origin_queue if t.get('id') != task['id']]
-                    self.rsus[origin_node_idx]['computation_queue'] = filtered
+                    origin_node['computation_queue'] = filtered
+                    # 🆕 Luo论文队列模型：迁移任务从源节点lifetime_queues移除
+                    self._remove_task_from_lifetime_queues(origin_node, task)
                     origin_queue_after = len(filtered)
                 elif task['node_type'] == 'UAV':
-                    origin_queue = self.uavs[origin_node_idx].get('computation_queue', [])
+                    origin_node = self.uavs[origin_node_idx]
+                    origin_queue = origin_node.get('computation_queue', [])
                     filtered = [t for t in origin_queue if t.get('id') != task['id']]
-                    self.uavs[origin_node_idx]['computation_queue'] = filtered
+                    origin_node['computation_queue'] = filtered
+                    # 🆕 Luo论文队列模型：迁移任务从源节点lifetime_queues移除
+                    self._remove_task_from_lifetime_queues(origin_node, task)
                     origin_queue_after = len(filtered)
 
             best_new_node.setdefault('computation_queue', [])
@@ -3978,9 +4253,23 @@ class CompleteSystemSimulator:
                 'migrated_from': f"{task['node_type']}_{task.get('node_idx')}",
                 'task_type': task.get('task_type'),
                 'app_scenario': task.get('app_scenario'),
-                'deadline_relax_factor': task.get('deadline_relax_factor', 1.0)
+                'deadline_relax_factor': task.get('deadline_relax_factor', 1.0),
+                # 🆕 Luo论文队列模型：迁移任务保留remaining_lifetime_slots
+                'remaining_lifetime_slots': task.get('remaining_lifetime_slots', task.get('max_delay_slots', 5)),
             }
             best_new_node['computation_queue'].append(migrated_task)
+            
+            # 🆕 Luo论文队列模型：迁移任务也需添加到目标节点的lifetime_queues
+            if 'lifetime_queues' in best_new_node:
+                lifetime = migrated_task.get('remaining_lifetime_slots', 5)
+                max_lifetime = getattr(self.queue_config, 'max_lifetime', 10) if hasattr(self, 'queue_config') else 10
+                if best_node_type in ('RSU', 'UAV'):
+                    lifetime = max(1, min(lifetime, max_lifetime - 1))
+                else:
+                    lifetime = max(1, min(lifetime, max_lifetime))
+                if lifetime in best_new_node['lifetime_queues']:
+                    best_new_node['lifetime_queues'][lifetime].append(migrated_task)
+            
             best_node_type = best_node_type or 'RSU'
             self._apply_queue_scheduling(best_new_node, best_node_type)
             target_queue_after = len(best_new_node['computation_queue'])
@@ -4112,6 +4401,17 @@ class CompleteSystemSimulator:
         # Execute intelligent migration strategy
         if actions:
             self.check_adaptive_migration(actions)
+
+        # 🆕 Luo论文队列模型：每个时隙开始前，更新所有节点的生命周期队列
+        # 核心机制：队列l中未处理的任务降级到队列l-1，l=1时过期任务被删除
+        for vehicle in self.vehicles:
+            self._update_lifetime_queues(vehicle, 'VEHICLE', step_summary)
+        
+        for idx, rsu in enumerate(self.rsus):
+            self._update_lifetime_queues(rsu, 'RSU', step_summary)
+        
+        for idx, uav in enumerate(self.uavs):
+            self._update_lifetime_queues(uav, 'UAV', step_summary)
 
         # 4. 处理队列中的任务
         # Process tasks in node queues

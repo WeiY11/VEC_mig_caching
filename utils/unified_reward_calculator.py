@@ -330,9 +330,11 @@ class UnifiedRewardCalculator:
         
         # 🚀 关键修复:区分RSU/UAV奖励,明确引导RSU优先策略
         # 问题:RSU和UAV共享相同的奖励,导致智能体随机选择或偏向距离更近的UAV
-        # 解决:RSU奖励x2倍(从3倍降低), UAV保持原奖励,明确RSU>本地>UAV的优先级
-        # 🔧 降低倍数避免奖励过大:原3倍导致RSU 60%时奖励+9(过大),改为2倍则+6(合理)
-        rsu_bonus = self.weight_offload_bonus * m.rsu_offload_ratio * 2.0  # RSU专属奖励x2(降低)
+        # 解决:RSU奖励支持可配置倍数(默认2倍), UAV保持原奖励,明确RSU>本地>UAV的优先级
+        # 🧪 对比实验:支持通过环境变量调整倍数(1.0/2.0/3.0)
+        import os
+        rsu_multiplier = float(os.environ.get('RSU_REWARD_MULTIPLIER', '2.0'))
+        rsu_bonus = self.weight_offload_bonus * m.rsu_offload_ratio * rsu_multiplier  # RSU专属奖励(可配置)
         uav_bonus = self.weight_offload_bonus * m.uav_offload_ratio * 1.0  # UAV基础奖励
         offload_bonus = rsu_bonus + uav_bonus  # 总卸载奖励
         # 🔧 修复：移除硬编码乘数，权重已在config中调整

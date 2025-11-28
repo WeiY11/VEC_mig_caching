@@ -134,7 +134,8 @@ class CentralRSUScheduler:
             # 计算资源
             cpu_usage=rsu_data.get('cpu_usage', 0.0),
             cpu_frequency=rsu_data.get('cpu_frequency', 0.0),
-            available_compute=max(0, rsu_data.get('cpu_frequency', 0.0) * (1 - rsu_data.get('cpu_usage', 0.0))),
+            # 🔧 修复：基于实际分配资源(allocated_compute)而非总频率(cpu_frequency)计算剩余
+            available_compute=max(0, rsu_data.get('allocated_compute', rsu_data.get('cpu_frequency', 0.0)) * (1 - rsu_data.get('cpu_usage', 0.0))),
             
             # 缓存状态
             cache_usage=rsu_data.get('cache_usage', 0.0),

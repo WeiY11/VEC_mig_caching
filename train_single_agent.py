@@ -1803,18 +1803,18 @@ class SingleAgentTrainingEnvironment:
                 f"缓存命中 {cache_hit_rate:.1%}, 数据损失 {data_loss_ratio_bytes:.1%}, "
                 f"缓存淘汰�?{cache_eviction_rate:.1%}"
             )
-            # ?? ?????????????????
+            # 🔥 新增：显示卸载分布统计和损失率对比
             print(
-                f"  ????: ?? {local_tasks_count} ({local_offload_ratio:.1%}), "
+                f"  任务分布: 本地 {local_tasks_count} ({local_offload_ratio:.1%}), "
                 f"RSU {rsu_tasks_count} ({rsu_offload_ratio:.1%}), "
                 f"UAV {uav_tasks_count} ({uav_offload_ratio:.1%}), "
-                f"?? {episode_dropped}"
+                f"丢弃 {episode_dropped}"
             )
-            # ?? ???????vs????????
-            if abs(task_drop_rate - data_loss_ratio_bytes) > 0.1:  # ??>10%???
+            # 📊 添加：任务数量vs数据量的对比说明
+            if abs(task_drop_rate - data_loss_ratio_bytes) > 0.1:  # 差异>10%时提示
                 print(
-                    f"  ?? ??: ???????{task_drop_rate:.1%} vs ??????{data_loss_ratio_bytes:.1%} "
-                    f"(??{abs(task_drop_rate - data_loss_ratio_bytes)*100:.1f}%?????????????)"
+                    f"  ⚠️ 注意: 任务数量丢失率{task_drop_rate:.1%} vs 数据量丢失率{data_loss_ratio_bytes:.1%} "
+                    f"(差异{abs(task_drop_rate - data_loss_ratio_bytes)*100:.1f}%，说明丢弃任务的数据量较大)"
                 )
 
         # 🤖 更新缓存控制器统计（如果有实际数据）
@@ -2294,12 +2294,32 @@ class SingleAgentTrainingEnvironment:
             raw = vehicle_action_array[:3]
             raw = np.clip(raw, -5.0, 5.0)
             
-            # �?移除偏置，让智能体通过奖励信号真正学习
-            # 奖励函数已经强化：RSU=8.0, UAV=1.0, Local penalty=4.0
-            # 这会提供清晰的学习信号，引导智能体向RSU卸载
+            # 🧪 卸载偏置对比实验：根据环境变量应用不同策略
+            offload_bias_mode = os.environ.get('OFFLOAD_BIAS_MODE', 'none')
             
-            exp = np.exp(raw - np.max(raw))
-            probs = exp / np.sum(exp)
+            if offload_bias_mode == 'none':
+                # 策略A：无偏置，靠奖励信号自然学习
+                # 初始概率: Local≈33%, RSU≈33%, UAV≈33%
+                exp = np.exp(raw - np.max(raw))
+                probs = exp / np.sum(exp)
+                
+            elif offload_bias_mode == 'weak':
+                # 策略B：轻度偏置，引导RSU偏好
+                # local=-0.5, rsu=+1.0, uav=+0.2
+                # 初始概率: Local≈20%, RSU≈50%, UAV≈30%
+                offload_bias = np.array([-0.5, +1.0, +0.2], dtype=np.float32)
+                raw_biased = raw + offload_bias
+                exp = np.exp(raw_biased - np.max(raw_biased))
+                probs = exp / np.sum(exp)
+                
+            else:  # 'strong'
+                # 策略C：strong强偏置，明确引导RSU优先
+                # local=-1.5, rsu=+2.0, uav=+0.5
+                # 初始概率: Local≈2%, RSU≈80%, UAV≈18%
+                offload_bias = np.array([-1.5, +2.0, +0.5], dtype=np.float32)
+                raw_biased = raw + offload_bias
+                exp = np.exp(raw_biased - np.max(raw_biased))
+                probs = exp / np.sum(exp)
             
             sim_actions = {
                 'vehicle_offload_pref': {
@@ -2310,6 +2330,13 @@ class SingleAgentTrainingEnvironment:
                 # 记录原始softmax用于诊断
                 'offload_probs_raw': probs.tolist()
             }
+            
+            # 🔍 调试：打印实际卸载概率（每50步打印一次）
+            if not hasattr(self, '_offload_debug_counter'):
+                self._offload_debug_counter = 0
+            self._offload_debug_counter += 1
+            if self._offload_debug_counter % 50 == 1:
+                print(f"\n🔍 [步骤{self._offload_debug_counter}] 卸载概率: Local={probs[0]:.1%}, RSU={probs[1]:.1%}, UAV={probs[2]:.1%} (mode={offload_bias_mode})")
             # RSU选择概率
             num_rsus = self.num_rsus
             rsu_action = actions_dict.get('rsu_agent')
@@ -3592,7 +3619,38 @@ def main():
     parser.add_argument('--channel-allocation', action='store_true',
                         help='启用正交信道分配（减少同频干扰）Enable orthogonal channel allocation')
     
+    # 🧪 卸载偏置对比实验参数
+    parser.add_argument('--rsu-reward-multiplier', type=float, default=2.0,
+                        help='RSU奖励倍数（默认2.0x，可选1.0/2.0/3.0用于对比实验）')
+    parser.add_argument('--offload-bias', type=str, default='none',
+                        choices=['none', 'weak', 'strong'],
+                        help='初始卸载偏置：none(无偏置靠奖励学习)/weak(轻度引导)/strong(强引导，默认)')
+    
     args = parser.parse_args()
+
+    # 🧪 处理卸载偏置对比实验参数
+    if args.rsu_reward_multiplier != 2.0 or args.offload_bias != 'none':
+        print("\n" + "="*70)
+        print("🧪 卸载偏置对比实验配置")
+        print("="*70)
+        print(f"  RSU奖励倍数: {args.rsu_reward_multiplier}x")
+        print(f"  初始偏置: {args.offload_bias}")
+        
+        # 设置环境变量
+        os.environ['RSU_REWARD_MULTIPLIER'] = str(args.rsu_reward_multiplier)
+        os.environ['OFFLOAD_BIAS_MODE'] = args.offload_bias
+        
+        # 显示预期效果
+        if args.offload_bias == 'none':
+            print(f"  预期初始概率: Local≈33%, RSU≈33%, UAV≈33%")
+            print(f"  学习方式: 靠{args.rsu_reward_multiplier}x奖励差异驱动探索学习")
+        elif args.offload_bias == 'weak':
+            print(f"  预期初始概率: Local≈20%, RSU≈50%, UAV≈30%")
+            print(f"  学习方式: 偏置引导 + {args.rsu_reward_multiplier}x奖励强化")
+        elif args.offload_bias == 'strong':
+            print(f"  预期初始概率: Local≈2%, RSU≈80%, UAV≈18%")
+            print(f"  学习方式: 强偏置快速收敛 + {args.rsu_reward_multiplier}x奖励强化")
+        print("="*70 + "\n")
 
     if args.seed is not None:
         os.environ['RANDOM_SEED'] = str(args.seed)
