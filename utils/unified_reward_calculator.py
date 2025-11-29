@@ -21,6 +21,43 @@ import numpy as np
 from config import config
 
 
+class RunningMeanStd:
+    """Tracks the running mean and variance of a stream of data."""
+    def __init__(self, epsilon=1e-4, shape=()):
+        self.mean = np.zeros(shape, 'float64')
+        self.var = np.ones(shape, 'float64')
+        self.count = epsilon
+
+    def update(self, x):
+        if np.isscalar(x) or (isinstance(x, np.ndarray) and x.ndim == 0):
+            batch_mean = float(x)
+            batch_var = 0.0
+            batch_count = 1
+        else:
+            batch_mean = np.mean(x, axis=0)
+            batch_var = np.var(x, axis=0)
+            batch_count = x.shape[0]
+        self.update_from_moments(batch_mean, batch_var, batch_count)
+
+    def update_from_moments(self, batch_mean, batch_var, batch_count):
+        self.mean, self.var, self.count = self.update_mean_var_count_from_moments(
+            self.mean, self.var, self.count, batch_mean, batch_var, batch_count
+        )
+
+    def update_mean_var_count_from_moments(self, mean, var, count, batch_mean, batch_var, batch_count):
+        delta = batch_mean - mean
+        tot_count = count + batch_count
+
+        new_mean = mean + delta * batch_count / tot_count
+        m_a = var * count
+        m_b = batch_var * batch_count
+        M2 = m_a + m_b + np.square(delta) * count * batch_count / tot_count
+        new_var = M2 / tot_count
+        new_count = tot_count
+
+        return new_mean, new_var, new_count
+
+
 @dataclass
 class RewardMetrics:
     """提取后的原始指标，便于后续统一计算。"""
@@ -142,10 +179,19 @@ class UnifiedRewardCalculator:
         self.delay_bonus_scale = max(1e-6, self.latency_target)
         self.energy_bonus_scale = max(1e-6, self.energy_target)
         
-        # SAC算法使用不同的归一化参数（但仍需与target对齐）
-        if self.algorithm == "SAC":
-            self.delay_normalizer = self.latency_target  # 对齐
-            self.energy_normalizer = self.energy_target  # 对齐
+        # 🆕 动态归一化配置
+        self.use_dynamic_normalization = getattr(config.rl, "use_dynamic_reward_normalization", False)
+        if self.use_dynamic_normalization:
+            self.delay_rms = RunningMeanStd(shape=())
+            self.energy_rms = RunningMeanStd(shape=())
+            # 初始化为目标值，避免初期波动过大
+            self.delay_rms.mean = self.latency_target
+            self.energy_rms.mean = self.energy_target
+            print(f"   Dynamic Normalization: ENABLED (Initial: delay={self.latency_target}, energy={self.energy_target})")
+        else:
+            print(f"   Dynamic Normalization: DISABLED")
+
+        # 已移除SAC的特殊归一化参数，所有算法现在使用统一的归一化逻辑
 
         norm_cfg = getattr(config, "normalization", None)
         if norm_cfg is not None:
@@ -163,14 +209,9 @@ class UnifiedRewardCalculator:
             self.energy_bonus_scale = max(1e-6, self.energy_target)
 
         # 设置奖励裁剪范围，防止奖励值过大或过小
-        # 🚀 关键修复:允许正奖励,让智能体能感知到RSU卸载的好处
-        # 问题:原范围(-80,0)导致所有奖励都是负数,无法体现优化效果
-        # 解决:调整为(-20,+10),允许正奖励信号传递
-        if self.algorithm == "SAC":
-            self.reward_clip_range = (-15.0, 3.0)  # SAC期望较小的奖励范围
-        else:
-            # 允许正奖励:当RSU占比高时,奖励可以为正；收紧范围降低方差
-            self.reward_clip_range = (-12.0, 6.0)  # 收敛友好，降低极值对训练的冲击
+        # 成本最小化框架：所有算法统一使用负奖励范围
+        # 奖励值越接近0表示成本越低（性能越好）
+        self.reward_clip_range = (-10.0, 0.0)
 
         print(f"[OK] Unified reward calculator ({self.algorithm})")
         print(
@@ -309,53 +350,81 @@ class UnifiedRewardCalculator:
         return metrics
 
     def _compute_components(self, m: RewardMetrics) -> RewardComponents:
-        """计算成本组成分量（不再使用硬编码的放大系数）"""
-        norm_delay = self._piecewise_ratio(m.avg_delay, self.latency_target, self.latency_tolerance)
-        norm_energy = self._piecewise_ratio(m.total_energy, self.energy_target, self.energy_tolerance)
-        core_cost = self.weight_delay * norm_delay + self.weight_energy * norm_energy
+        """
+        计算成本组成分量（稳定版）
 
-        drop_penalty = self.penalty_dropped * m.dropped_tasks
-        # 🔧 修复：移除硬编码乘数，权重已在config中调整
-        completion_gap_penalty = self.weight_completion_gap * max(0.0, self.completion_target - m.completion_rate) if self.weight_completion_gap > 0.0 else 0.0
-        # 🔧 修复：移除硬编码乘数，权重已在config中调整
-        data_loss_penalty = self.weight_loss_ratio * m.data_loss_ratio if self.weight_loss_ratio > 0.0 else 0.0
-        cache_pressure_penalty = 0.0
-        if self.weight_cache_pressure > 0.0 and m.cache_utilization > self.cache_pressure_threshold:
-            cache_pressure_penalty = self.weight_cache_pressure * (m.cache_utilization - self.cache_pressure_threshold)
-        # 🔧 修复：移除硬编码乘数，权重已在config中调整
-        queue_penalty = self.weight_queue_overload * m.queue_overload_events if self.weight_queue_overload > 0.0 else 0.0
-        remote_reject_penalty = self.weight_remote_reject * m.remote_rejection_rate if self.weight_remote_reject > 0.0 else 0.0
-
-        offload_bonus = self.weight_offload_bonus * (m.rsu_offload_ratio + m.uav_offload_ratio) if self.weight_offload_bonus > 0.0 else 0.0
-        
-        # 🚀 关键修复:区分RSU/UAV奖励,明确引导RSU优先策略
-        # 问题:RSU和UAV共享相同的奖励,导致智能体随机选择或偏向距离更近的UAV
-        # 解决:RSU奖励支持可配置倍数(默认2倍), UAV保持原奖励,明确RSU>本地>UAV的优先级
-        # 🧪 对比实验:支持通过环境变量调整倍数(1.0/2.0/3.0)
+        - 只惩罚超出目标的延迟/能耗，避免在可接受范围内反复振荡
+        - 使用tanh平滑各分量，限制梯度方差，减轻训练抖动
+        - 奖励项保持可配置，同时限制在[-1,1]范围防止主导奖励
+        """
         import os
-        rsu_multiplier = float(os.environ.get('RSU_REWARD_MULTIPLIER', '2.0'))
-        rsu_bonus = self.weight_offload_bonus * m.rsu_offload_ratio * rsu_multiplier  # RSU专属奖励(可配置)
-        uav_bonus = self.weight_offload_bonus * m.uav_offload_ratio * 1.0  # UAV基础奖励
-        offload_bonus = rsu_bonus + uav_bonus  # 总卸载奖励
-        # 🔧 修复：移除硬编码乘数，权重已在config中调整
-        local_penalty = self.weight_local_penalty * m.local_offload_ratio if self.weight_local_penalty > 0.0 else 0.0
-        # 🔧 修复：移除硬编码乘数，权重已在config中调整
-        cache_penalty = self.weight_cache * m.cache_miss_rate if self.weight_cache > 0.0 else 0.0
-        # 🔧 修复：移除硬编码乘数，权重已在config中调整
-        cache_bonus = self.weight_cache_bonus * m.cache_hit_rate if self.weight_cache_bonus > 0.0 else 0.0
-        # 🚀 增强：奖励迁移成功，而不是仅惩罚成本
-        migration_bonus = 0.5 * m.migration_effectiveness if m.migration_effectiveness > 0.5 else 0.0
-        migration_penalty = self.weight_migration * m.migration_cost if self.weight_migration > 0.0 else 0.0
 
-        joint_bonus = 0.0
-        joint_coupling_penalty = 0.0
-        if self.weight_joint > 0.0:
-            joint_bonus = self.weight_joint * (m.cache_hit_rate * m.migration_effectiveness)
-            prefetch_ratio = np.clip(m.prefetch_events / max(1.0, m.total_cache_requests), 0.0, 1.0)
-            coupling_penalty = max(0.0, 0.3 - prefetch_ratio) * 0.5
-            coupling_penalty += abs(m.prefetch_lead - 1.5) * 0.05
-            coupling_penalty += m.migration_backoff * 0.1
-            joint_coupling_penalty = self.weight_joint * coupling_penalty
+        def _excess(value: float, target: float) -> float:
+            return max(0.0, value - target)
+
+        def _smooth_excess(value: float, target: float, scale: float = 1.0) -> float:
+            """将超出target的部分归一化并tanh压缩到[0,1)。"""
+            return float(np.tanh(_excess(value, target) / max(target * scale, 1e-6)))
+
+        def _smooth_ratio(value: float, scale: float = 1.0) -> float:
+            """将任意非负值按scale归一化并tanh压缩。"""
+            return float(np.tanh(max(0.0, value) / max(scale, 1e-6)))
+
+        # --- 核心成本：只惩罚超出目标的部分 ---
+        if getattr(self, "use_dynamic_normalization", False):
+            # 更新统计值
+            self.delay_rms.update(m.avg_delay)
+            self.energy_rms.update(m.total_energy)
+            
+            # 使用动态均值作为归一化基准，但保留target作为"理想"参考
+            # 如果当前均值远大于target，说明环境很难，归一化因子增大，避免惩罚过大
+            # 如果当前均值小于target，说明环境容易，归一化因子减小（但不低于target），保持敏感度
+            dyn_delay_norm = max(self.latency_target, self.delay_rms.mean)
+            dyn_energy_norm = max(self.energy_target, self.energy_rms.mean)
+            
+            norm_delay = _excess(m.avg_delay, self.latency_target) / max(dyn_delay_norm, 1e-6)
+            norm_energy = _excess(m.total_energy, self.energy_target) / max(dyn_energy_norm, 1e-6)
+            
+            # 平滑函数也使用动态scale
+            delay_penalty = self.weight_delay * _smooth_excess(m.avg_delay, self.latency_target, scale=dyn_delay_norm/self.latency_target)
+            energy_penalty = self.weight_energy * _smooth_excess(m.total_energy, self.energy_target, scale=dyn_energy_norm/self.energy_target)
+        else:
+            norm_delay = _excess(m.avg_delay, self.latency_target) / max(self.latency_target, 1e-6)
+            norm_energy = _excess(m.total_energy, self.energy_target) / max(self.energy_target, 1e-6)
+            delay_penalty = self.weight_delay * _smooth_excess(m.avg_delay, self.latency_target, 1.0)
+            energy_penalty = self.weight_energy * _smooth_excess(m.total_energy, self.energy_target, 1.0)
+            
+        core_cost = delay_penalty + energy_penalty
+
+        # --- 稳定化惩罚项（全部平滑到[0,1]） ---
+        drop_penalty = self.penalty_dropped * _smooth_ratio(m.dropped_tasks, 3.0)
+        completion_gap = max(0.0, self.completion_target - m.completion_rate)
+        completion_gap_penalty = self.weight_completion_gap * _smooth_ratio(completion_gap, 0.2)
+        data_loss_penalty = self.weight_loss_ratio * _smooth_ratio(m.data_loss_ratio, 0.2)
+        cache_pressure_over = max(0.0, m.cache_utilization - self.cache_pressure_threshold)
+        cache_pressure_penalty = self.weight_cache_pressure * _smooth_ratio(cache_pressure_over, 0.25)
+        queue_penalty = self.weight_queue_overload * _smooth_ratio(m.queue_overload_events, 2.0)
+        remote_reject_penalty = self.weight_remote_reject * _smooth_ratio(m.remote_rejection_rate, 0.25)
+        local_penalty = self.weight_local_penalty * _smooth_ratio(m.local_offload_ratio, 0.5)
+        cache_penalty = self.weight_cache * _smooth_ratio(m.cache_miss_rate, 1.0)
+        migration_penalty = self.weight_migration * _smooth_ratio(m.migration_cost, 50.0)
+
+        # --- 奖励项：平滑且限制幅度 ---
+        # 默认更偏向RSU卸载（可用环境变量覆盖: RSU_REWARD_MULTIPLIER）
+        rsu_multiplier = float(os.environ.get('RSU_REWARD_MULTIPLIER', '1.5'))
+        offload_balance = np.clip(
+            (rsu_multiplier * m.rsu_offload_ratio + 0.8 * m.uav_offload_ratio) - m.local_offload_ratio,
+            -1.0,
+            1.0,
+        )
+        offload_bonus = self.weight_offload_bonus * offload_balance
+        cache_bonus = self.weight_cache_bonus * _smooth_ratio(max(0.0, m.cache_hit_rate - m.cache_miss_rate), 1.0)
+        migration_bonus = 0.8 * _smooth_ratio(max(0.0, m.migration_effectiveness - 0.3), 0.7)
+        joint_bonus = self.weight_joint * _smooth_ratio(m.cache_hit_rate * m.migration_effectiveness, 0.6)
+        joint_coupling_penalty = self.weight_joint * _smooth_ratio(
+            max(0.0, m.prefetch_lead - 1.5) + m.migration_backoff,
+            2.0,
+        )
 
         def _clip(x: float) -> float:
             return float(np.clip(x, -self.component_clip, self.component_clip))
@@ -371,13 +440,15 @@ class UnifiedRewardCalculator:
             + _clip(cache_penalty)
             + _clip(migration_penalty)
             + _clip(joint_coupling_penalty)
-            + _clip(local_penalty)  # 本地处理惩罚
+            + _clip(local_penalty)
             - _clip(offload_bonus)
             - _clip(cache_bonus)
-            - _clip(migration_bonus)  # 🚀 迁移成功奖励
+            - _clip(migration_bonus)
             - _clip(joint_bonus)
         )
         total_cost = float(np.clip(total_cost, -self.total_cost_clip, self.total_cost_clip))
+        # 对于成本最小化算法：不允许总成本为负，防止奖励转为正值
+        total_cost = max(0.0, total_cost)
 
         return RewardComponents(
             norm_delay=norm_delay,
@@ -390,7 +461,7 @@ class UnifiedRewardCalculator:
             queue_penalty=queue_penalty,
             remote_reject_penalty=remote_reject_penalty,
             offload_bonus=offload_bonus,
-            local_penalty=local_penalty,  # 本地处理惩罚
+            local_penalty=local_penalty,
             cache_penalty=cache_penalty,
             cache_bonus=cache_bonus,
             migration_penalty=migration_penalty,
@@ -402,17 +473,14 @@ class UnifiedRewardCalculator:
         )
 
     def _compose_reward(self, components: RewardComponents, completion_rate: float) -> RewardComponents:
-        """组装最终奖励，使用配置的裁剪范围"""
-        if self.algorithm == "SAC":
-            base_reward = 5.0
-            completion_bonus = (completion_rate - 0.95) * 10.0 if completion_rate > 0.95 else 0.0
-            reward_raw = base_reward + completion_bonus - components.total_cost
-            # 🔧 修复：使用self.reward_clip_range而非硬编码
-            reward_clipped = float(np.clip(reward_raw, self.reward_clip_range[0], self.reward_clip_range[1]))
-        else:
-            reward_raw = -components.total_cost
-            # 🔧 修复：使用self.reward_clip_range而非硬编码
-            reward_clipped = float(np.clip(reward_raw, self.reward_clip_range[0], self.reward_clip_range[1]))
+        """组装最终奖励，使用配置的裁剪范围
+        
+        所有算法统一使用成本最小化奖励：reward = -total_cost
+        奖励范围: [-10.0, 0.0]，越接近0表示性能越好
+        """
+        # 成本最小化：奖励 = -成本，所有算法统一
+        reward_raw = -abs(components.total_cost)
+        reward_clipped = float(np.clip(reward_raw, self.reward_clip_range[0], self.reward_clip_range[1]))
         components.reward_pre_clip = reward_raw
         components.reward = reward_clipped if np.isfinite(reward_clipped) else 0.0
         return components
@@ -597,4 +665,3 @@ def calculate_simple_reward(system_metrics: Dict) -> float:
         计算得到的奖励值
     """
     return calculate_unified_reward(system_metrics, algorithm="general")
-

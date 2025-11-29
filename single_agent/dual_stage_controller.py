@@ -442,8 +442,16 @@ class DualStageControllerEnv:
         return {}
 
     # ---- State and reward methods proxy to base env ----
-    def get_state_vector(self, node_states: Dict, system_metrics: Dict) -> np.ndarray:
+    def get_state_vector(self, node_states: Dict, system_metrics: Dict, resource_state: Optional[Dict] = None) -> np.ndarray:
         """获取状态向量 - 代理到基础环境"""
+        # 检查基础环境的get_state_vector方法是否支持resource_state参数
+        if hasattr(self.base, 'get_state_vector'):
+            import inspect
+            sig = inspect.signature(self.base.get_state_vector)
+            if 'resource_state' in sig.parameters:
+                return self.base.get_state_vector(node_states, system_metrics, resource_state)
+            else:
+                return self.base.get_state_vector(node_states, system_metrics)
         return self.base.get_state_vector(node_states, system_metrics)
 
     def calculate_reward(self, system_metrics: Dict, 

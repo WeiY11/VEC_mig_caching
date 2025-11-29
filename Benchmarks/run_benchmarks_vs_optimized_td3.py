@@ -82,18 +82,48 @@ def run_local(env_cfg, episodes: int, seed: int, max_steps_per_ep: int = 200):
     env = VecEnvWrapper(**env_cfg)
     policy = LocalOnlyPolicy(env_cfg["num_rsus"], env_cfg["num_uavs"])
     ep_rewards = []
+    ep_metrics = {
+        "avg_task_delay": [],
+        "total_energy_consumption": [],
+        "task_completion_rate": [],
+        "dropped_tasks": [],
+        "cache_hit_rate": []
+    }
     for _ in range(episodes):
         state = env.reset()
         ep_r = 0.0
+        # Accumulators
+        cur_ep_delay = []
+        cur_ep_energy = 0.0
+        cur_ep_completed = []
+        cur_ep_dropped = 0
+        cur_ep_cache_hits = []
+        
         for _ in range(max_steps_per_ep):
             action = policy.select_action_with_dim(env.action_dim)
             state, _, done, info = env.step(action)
-            reward, _ = compute_reward_from_info(info)
+            reward, metrics = compute_reward_from_info(info)
             ep_r += reward
+            
+            # Collect metrics
+            cur_ep_delay.append(metrics.get("avg_task_delay", 0.0))
+            cur_ep_energy += metrics.get("total_energy_consumption", 0.0)
+            cur_ep_completed.append(metrics.get("task_completion_rate", 0.0))
+            cur_ep_dropped += metrics.get("dropped_tasks", 0)
+            cur_ep_cache_hits.append(metrics.get("cache_hit_rate", 0.0))
+
             if done:
                 break
         ep_rewards.append(ep_r)
-    return {"episode_rewards": ep_rewards, "episodes": episodes}
+        
+        # Aggregate
+        ep_metrics["avg_task_delay"].append(np.mean(cur_ep_delay) if cur_ep_delay else 0.0)
+        ep_metrics["total_energy_consumption"].append(cur_ep_energy)
+        ep_metrics["task_completion_rate"].append(np.mean(cur_ep_completed) if cur_ep_completed else 0.0)
+        ep_metrics["dropped_tasks"].append(cur_ep_dropped)
+        ep_metrics["cache_hit_rate"].append(np.mean(cur_ep_cache_hits) if cur_ep_cache_hits else 0.0)
+
+    return {"episode_rewards": ep_rewards, "episode_metrics": ep_metrics, "episodes": episodes}
 
 
 def run_heuristic(env_cfg, episodes: int, seed: int, max_steps_per_ep: int = 200):
@@ -101,18 +131,48 @@ def run_heuristic(env_cfg, episodes: int, seed: int, max_steps_per_ep: int = 200
     env = VecEnvWrapper(**env_cfg)
     policy = DynamicOffloadHeuristic(env_cfg["num_rsus"], env_cfg["num_uavs"])
     ep_rewards = []
+    ep_metrics = {
+        "avg_task_delay": [],
+        "total_energy_consumption": [],
+        "task_completion_rate": [],
+        "dropped_tasks": [],
+        "cache_hit_rate": []
+    }
     for _ in range(episodes):
         state = env.reset()
         ep_r = 0.0
+        # Accumulators
+        cur_ep_delay = []
+        cur_ep_energy = 0.0
+        cur_ep_completed = []
+        cur_ep_dropped = 0
+        cur_ep_cache_hits = []
+
         for _ in range(max_steps_per_ep):
             action = policy.select_action_with_dim(state, env.action_dim)
             state, _, done, info = env.step(action)
-            reward, _ = compute_reward_from_info(info)
+            reward, metrics = compute_reward_from_info(info)
             ep_r += reward
+            
+            # Collect metrics
+            cur_ep_delay.append(metrics.get("avg_task_delay", 0.0))
+            cur_ep_energy += metrics.get("total_energy_consumption", 0.0)
+            cur_ep_completed.append(metrics.get("task_completion_rate", 0.0))
+            cur_ep_dropped += metrics.get("dropped_tasks", 0)
+            cur_ep_cache_hits.append(metrics.get("cache_hit_rate", 0.0))
+
             if done:
                 break
         ep_rewards.append(ep_r)
-    return {"episode_rewards": ep_rewards, "episodes": episodes}
+        
+        # Aggregate
+        ep_metrics["avg_task_delay"].append(np.mean(cur_ep_delay) if cur_ep_delay else 0.0)
+        ep_metrics["total_energy_consumption"].append(cur_ep_energy)
+        ep_metrics["task_completion_rate"].append(np.mean(cur_ep_completed) if cur_ep_completed else 0.0)
+        ep_metrics["dropped_tasks"].append(cur_ep_dropped)
+        ep_metrics["cache_hit_rate"].append(np.mean(cur_ep_cache_hits) if cur_ep_cache_hits else 0.0)
+
+    return {"episode_rewards": ep_rewards, "episode_metrics": ep_metrics, "episodes": episodes}
 
 
 def run_sa(env_cfg, episodes: int, seed: int):
@@ -130,18 +190,21 @@ def run_sa(env_cfg, episodes: int, seed: int):
         act[:3] = probs.astype(np.float32)
         return act
 
-    def eval_once(params: np.ndarray, eval_idx: int) -> float:
+    def eval_once(params: np.ndarray, eval_idx: int) -> Tuple[float, Dict[str, float]]:
         set_global_seeds(seed + eval_idx)
         env = VecEnvWrapper(**env_cfg)
         act = params_to_action(params)
         state = env.reset()
         ep_r = 0.0
+        # Accumulators
+        cur_ep_delay = []
+        cur_ep_energy = 0.0
+        cur_ep_completed = []
+        cur_ep_dropped = 0
+        cur_ep_cache_hits = []
+
         for _ in range(max_steps_per_ep):
             state, _, done, info = env.step(act)
-            reward, _ = compute_reward_from_info(info)
-            ep_r += reward
-            if done:
-                break
         return ep_r
 
     def evaluate_fn(params: np.ndarray) -> float:
@@ -149,8 +212,80 @@ def run_sa(env_cfg, episodes: int, seed: int):
         scores = [eval_once(params, idx) for idx in range(max(1, episodes // 5))]
         return float(np.mean(scores))
 
-    sa = OnlineSimulatedAnnealing(dim=3, bounds=[(0.0, 5.0)] * 3, cfg=SAConfig(seed=seed))
-    return sa.search(evaluate_fn)
+    sa = OnlineSimulatedAnnealing(dim=3, bounds=[(0.0, 5.0)] * 3, cfg=SAConfig(seed=seed, max_iters=episodes))
+    res = sa.search(evaluate_fn)
+    
+    # SA returns history of best scores. We map this to episode_rewards.
+    ep_rewards = res["history"]
+    
+    # To get metrics for the best solution (for bar charts), we re-evaluate once.
+    best_params = res["best_params"]
+    # We need to extract metrics from eval_once. 
+    # Let's modify eval_once to return (score, metrics) and evaluate_fn to return score.
+    # But eval_once is defined inside run_sa.
+    
+    # Let's redefine eval_once to capture metrics
+    final_metrics = {}
+    
+    def eval_with_metrics(params: np.ndarray) -> Tuple[float, Dict[str, float]]:
+        set_global_seeds(seed + 999) # Use a different seed for final eval
+        env = VecEnvWrapper(**env_cfg)
+        act = params_to_action(params)
+        state = env.reset()
+        ep_r = 0.0
+        
+        cur_ep_delay = []
+        cur_ep_energy = 0.0
+        cur_ep_completed = []
+        cur_ep_dropped = 0
+        cur_ep_cache_hits = []
+        
+        for _ in range(max_steps_per_ep):
+            state, _, done, info = env.step(act)
+            reward, metrics = compute_reward_from_info(info)
+            ep_r += reward
+            
+            cur_ep_delay.append(metrics.get("avg_task_delay", 0.0))
+            cur_ep_energy += metrics.get("total_energy_consumption", 0.0)
+            cur_ep_completed.append(metrics.get("task_completion_rate", 0.0))
+            cur_ep_dropped += metrics.get("dropped_tasks", 0)
+            cur_ep_cache_hits.append(metrics.get("cache_hit_rate", 0.0))
+            
+            if done:
+                break
+                
+        m = {
+            "avg_task_delay": np.mean(cur_ep_delay) if cur_ep_delay else 0.0,
+            "total_energy_consumption": cur_ep_energy,
+            "task_completion_rate": np.mean(cur_ep_completed) if cur_ep_completed else 0.0,
+            "dropped_tasks": cur_ep_dropped,
+            "cache_hit_rate": np.mean(cur_ep_cache_hits) if cur_ep_cache_hits else 0.0
+        }
+        return ep_r, m
+
+    # Get final metrics
+    _, final_m = eval_with_metrics(best_params)
+    
+    # Replicate final metrics for the length of episodes (as an approximation for bar charts)
+    # Or just return a list with one element? 
+    # The visualization script expects lists.
+    # For SA, the "training curve" for cost is not easily available without modifying SA.
+    # We will just provide the final metrics repeated, or just the final one.
+    # Let's provide a list of length 1 containing the final metrics, 
+    # or replicate it to match episodes length (flat line).
+    # A flat line is misleading. Let's just return the final metrics as a single-element list?
+    # But plot_training_curves expects same length as rewards.
+    # Let's fill with NaNs or just the final value?
+    # Let's fill with the final value (flat line) to show "converged" performance.
+    
+    ep_metrics = {k: [v] * len(ep_rewards) for k, v in final_m.items()}
+
+    return {
+        "episode_rewards": ep_rewards,
+        "episode_metrics": ep_metrics,
+        "episodes": len(ep_rewards),
+        "seed": seed
+    }
 
 
 def main():

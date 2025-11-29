@@ -12,7 +12,11 @@ from flask import Flask, render_template_string, jsonify
 from flask_socketio import SocketIO, emit
 import numpy as np
 
-app = Flask(__name__)
+# 获取当前脚本的目录，用于配置static文件夹
+current_dir = os.path.dirname(os.path.abspath(__file__))
+static_folder = os.path.join(current_dir, 'static')
+
+app = Flask(__name__, static_folder=static_folder, static_url_path='/static')
 app.config['SECRET_KEY'] = 'vec-training-monitor'
 socketio = SocketIO(app, cors_allowed_origins="*", async_mode='threading')
 
@@ -93,8 +97,8 @@ HTML_TEMPLATE = """
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>VEC AI Training Monitor - {{ algorithm }}</title>
-    <script src="https://cdn.socket.io/4.5.4/socket.io.min.js"></script>
-    <script src="https://cdn.plot.ly/plotly-2.26.0.min.js"></script>
+    <script src="/static/js/socket.io.min.js"></script>
+    <script src="/static/js/plotly.min.js"></script>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;700&display=swap" rel="stylesheet">
     <style>
         :root {
@@ -354,35 +358,35 @@ HTML_TEMPLATE = """
             <!-- Reward Chart (Large) -->
             <div class="chart-card full-width">
                 <div class="chart-title">Reward Evolution</div>
-                <div id="reward-chart" style="width: 100%; height: 340px;"></div>
+                <div id="reward-chart" style="width: 100%; height: 340px; display: flex; align-items: center; justify-content: center; color: var(--text-secondary);">Loading Chart...</div>
             </div>
 
             <!-- Task Assignment -->
             <div class="chart-card">
                 <div class="chart-title">Task Assignment Distribution</div>
-                <div id="assignment-chart" style="width: 100%; height: 340px;"></div>
+                <div id="assignment-chart" style="width: 100%; height: 340px; display: flex; align-items: center; justify-content: center; color: var(--text-secondary);">Loading Chart...</div>
             </div>
 
             <!-- Delay -->
             <div class="chart-card">
                 <div class="chart-title">Average Latency</div>
-                <div id="delay-chart" style="width: 100%; height: 340px;"></div>
+                <div id="delay-chart" style="width: 100%; height: 340px; display: flex; align-items: center; justify-content: center; color: var(--text-secondary);">Loading Chart...</div>
             </div>
 
             <!-- Cache & Completion -->
             <div class="chart-card">
                 <div class="chart-title">Cache Hit Rate</div>
-                <div id="cache-chart" style="width: 100%; height: 340px;"></div>
+                <div id="cache-chart" style="width: 100%; height: 340px; display: flex; align-items: center; justify-content: center; color: var(--text-secondary);">Loading Chart...</div>
             </div>
 
             <div class="chart-card">
                 <div class="chart-title">Completion Rate</div>
-                <div id="completion-chart" style="width: 100%; height: 340px;"></div>
+                <div id="completion-chart" style="width: 100%; height: 340px; display: flex; align-items: center; justify-content: center; color: var(--text-secondary);">Loading Chart...</div>
             </div>
             
             <div class="chart-card full-width">
                  <div class="chart-title">System Energy Consumption</div>
-                 <div id="energy-chart" style="width: 100%; height: 340px;"></div>
+                 <div id="energy-chart" style="width: 100%; height: 340px; display: flex; align-items: center; justify-content: center; color: var(--text-secondary);">Loading Chart...</div>
             </div>
         </div>
     </div>

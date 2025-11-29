@@ -4,14 +4,13 @@
 【系统架构】
 CAMTD3 = 基于中央资源分配的缓存感知任务迁移系统
 ├── Phase 1: 中央智能体资源分配决策（核心创新）
-│  ├── 状态空间: 80维（车辆+RSU+UAV全局状态）
-│  ├── 动作空间: 30维（带宽+计算资源分配向量）
-│  └── 算法: TD3/SAC/DDPG/PPO
+│   ├── 状态空间: 80维（车辆+RSU+UAV全局状态）
+│   ├── 动作空间: 30维（带宽+计算资源分配向量）
+│   └── 算法: TD3/SAC/DDPG/PPO
 ├── Phase 2: 本地任务执行
-│  ├── 缓存决策（Cache-Aware）
-│  ├── 任务迁移（Migration）
-│  └── 任务调度
-
+│   ├── 缓存决策（Cache-Aware）
+│   ├── 任务迁移（Migration）
+│   └── 任务调度
 python train_single_agent.py --algorithm OPTIMIZED_TD3 --episodes 1000 --num-vehicles 12 --seed 42
 
 Queue-aware Replay
@@ -22,19 +21,28 @@ GNN Attention
 •缓存命中率提升20%
 •智能学习节点协作关系
 •适应动态拓扑变化
+
 【使用方法】
 # CAMTD3标准训练（默认模式）
 python train_single_agent.py --algorithm TD3 --episodes 200
 python train_single_agent.py --algorithm SAC --episodes 200
 
-• 只启用动态带宽分配
+✅ 方式1：启用所有通信增强（推荐）
+python train_single_agent.py --algorithm TD3 --episodes 200 --comm-enhancements
+✅ 方式2：单独启用某个功能
+# 只启用快衰落
+python train_single_agent.py --algorithm TD3 --episodes 200 --fast-fading
+# 只启用系统级干扰
+python train_single_agent.py --algorithm TD3 --episodes 200 --system-interference
+# 只启用动态带宽分配
 python train_single_agent.py --algorithm TD3 --episodes 200 --dynamic-bandwidth
-
+# 组合启用
+python train_single_agent.py --algorithm TD3 --episodes 200 --fast-fading --system-interference --dynamic-bandwidth
 
 # 如需禁用中央资源分配（不推荐，仅用于消融实验）
 python train_single_agent.py --algorithm TD3 --episodes 200 --no-central-resource
 
-🐍🖥️
+🐍🖥️📚
 
 单智能体算法训练脚本
 支持DDPG、TD3、TD3-LE、DQN、PPO、SAC等算法的训练和比较
@@ -50,7 +58,7 @@ python train_single_agent.py --algorithm TD3-LE --episodes 1600 --num-vehicles 1
 python train_single_agent.py --algorithm SAC --episodes 800
 python train_single_agent.py --algorithm PPO --episodes 800
 
-🌐 实时可视化
+🌐 实时可视化:
 python train_single_agent.py --algorithm DDPG --episodes 100 --realtime-vis --vis-port 8080
 
 🐍 生成学术图表:
@@ -59,7 +67,7 @@ python generate_academic_charts.py results/single_agent/td3/training_results_202
 到达率对比：python experiments/arrival_rate_analysis/run_td3_arrival_rate_sweep_silent.py --rates 1.0 1.5 2.0 2.5 3.0 3.5 --episodes 800
 
 
-"""
+""" 
 import os
 import sys
 import random
@@ -68,7 +76,7 @@ import random
 if sys.platform == 'win32':
     try:
         if hasattr(sys.stdout, 'reconfigure'):
-            sys.stdout.reconfigure(encoding='utf-8', errors='replace')  # type: ignore[attr-defined]
+            sys.stdout.reconfigure(encoding='utf-8', errors='replace')
         elif hasattr(sys.stdout, 'buffer'):
             import io
             sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace', line_buffering=True)
@@ -76,7 +84,7 @@ if sys.platform == 'win32':
         pass
     try:
         if hasattr(sys.stderr, 'reconfigure'):
-            sys.stderr.reconfigure(encoding='utf-8', errors='replace')  # type: ignore[attr-defined]
+            sys.stderr.reconfigure(encoding='utf-8', errors='replace')
         elif hasattr(sys.stderr, 'buffer'):
             import io
             sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', errors='replace', line_buffering=True)
@@ -121,40 +129,32 @@ from single_agent.td3_latency_energy import TD3LatencyEnergyEnvironment
 from single_agent.dqn import DQNEnvironment
 from single_agent.ppo import PPOEnvironment
 from single_agent.sac import SACEnvironment
-# 导入精简优化TD3 (仅Queue-aware + GNN)
 from single_agent.optimized_td3_wrapper import OptimizedTD3Environment
 
 # 导入HTML报告生成器
 from utils.html_report_generator import HTMLReportGenerator
 
-# 导入训练结果保存和绘图工具
-from utils.training_results import save_single_training_results, plot_single_training_curves
-
 # 🌐 导入实时可视化模块
 try:
-    from scripts.visualize.realtime_visualization import create_visualizer
+    from scripts.visualize.realtime_visualization_simple import create_visualizer
     REALTIME_AVAILABLE = True
 except ImportError:
-    REALTIME_AVAILABLE = False
+    try:
+        from scripts.visualize.realtime_visualization import create_visualizer
+        REALTIME_AVAILABLE = True
+    except ImportError:
+        REALTIME_AVAILABLE = False
     print("⚠️  实时可视化功能不可用，请运行: pip install flask flask-socketio")
-
-# 🎨 导入高端训练可视化器
-try:
-    from utils.advanced_training_visualizer import create_visualizer as create_advanced_visualizer
-    ADVANCED_VIS_AVAILABLE = True
-except ImportError:
-    ADVANCED_VIS_AVAILABLE = False
-    print("⚠️  高端可视化功能不可用")
 
 # 尝试导入PyTorch以设置随机种子；如果不可用则跳过
 try:
     import torch
-except ImportError:  # pragma: no cover -容错处理
+except ImportError:  # pragma: no cover - 容错处理
     torch = None
 
 
 def _apply_global_seed_from_env():
-    """根据环境变量RANDOM_SEED设置随机种子，确保可重复性""" 
+    """根据环境变量RANDOM_SEED设置随机种子，确保可重复性"""
     seed_env = os.environ.get('RANDOM_SEED')
     if not seed_env:
         return
@@ -168,7 +168,7 @@ def _apply_global_seed_from_env():
     np.random.seed(seed)
     if torch is not None:
         torch.manual_seed(seed)
-        if torch.cuda.is_available():  # pragma: no cover - GPU可用
+        if torch.cuda.is_available():  # pragma: no cover - GPU可选
             torch.cuda.manual_seed_all(seed)
         torch.backends.cudnn.deterministic = True  # type: ignore[attr-defined]
         torch.backends.cudnn.benchmark = False  # type: ignore[attr-defined]
@@ -177,7 +177,7 @@ def _apply_global_seed_from_env():
     print(f"🔐 全局随机种子已设置为 {seed}")
 
 
-def _maybe_apply_reward_smoothing_from_env() -> None:
+def _maybe_apply_reward_smoothing_from_env():
     """Optionally enable reward smoothing via environment variables.
 
     RL_SMOOTH_DELAY, RL_SMOOTH_ENERGY, RL_SMOOTH_ALPHA can be provided.
@@ -195,91 +195,16 @@ def _maybe_apply_reward_smoothing_from_env() -> None:
     except Exception:
         pass
 
-
-def _apply_reward_overrides_from_env() -> None:
-    """Allow quick reward/target retuning via environment variables for hard scenarios."""
-    latency_target = os.environ.get("RL_LATENCY_TARGET")
-    energy_target = os.environ.get("RL_ENERGY_TARGET")
-    disable_dynamic_targets = os.environ.get("RL_DISABLE_DYNAMIC_TARGETS", "0") != "0"
-    # 新增：支持快速提高丢�?完成率惩罚，默认更重约束高负载不可靠行为
-    default_loss_weight = 1.4
-    default_completion_gap = 0.7
-    default_drop_penalty = 0.18
-    if not getattr(config.rl, "reward_weight_loss_ratio", 0.0):
-        setattr(config.rl, "reward_weight_loss_ratio", default_loss_weight)
-    if not getattr(config.rl, "reward_weight_completion_gap", 0.0):
-        setattr(config.rl, "reward_weight_completion_gap", default_completion_gap)
-    if getattr(config.rl, "reward_penalty_dropped", 0.0) < default_drop_penalty:
-        setattr(config.rl, "reward_penalty_dropped", default_drop_penalty)
-
-    weight_overrides = {
-        "RL_WEIGHT_DELAY": "reward_weight_delay",
-        "RL_WEIGHT_ENERGY": "reward_weight_energy",
-        "RL_WEIGHT_CACHE": "reward_weight_cache",
-        "RL_WEIGHT_CACHE_PRESSURE": "reward_weight_cache_pressure",
-        "RL_WEIGHT_MIGRATION": "reward_weight_migration",
-        "RL_WEIGHT_QUEUE_OVERLOAD": "reward_weight_queue_overload",
-        "RL_WEIGHT_REMOTE_REJECT": "reward_weight_remote_reject",
-        "RL_WEIGHT_LOSS_RATIO": "reward_weight_loss_ratio",
-        "RL_WEIGHT_COMPLETION_GAP": "reward_weight_completion_gap",
-        "RL_PENALTY_DROPPED": "reward_penalty_dropped",
-    }
-
-    def _try_set(env_key: str, attr: str) -> None:
-        val = os.environ.get(env_key)
-        if not val:
-            return
-        try:
-            setattr(config.rl, attr, float(val))
-            print(f"[RewardOverride] {attr} <- {val}")
-        except Exception:
-            pass
-
-    for env_key, attr in weight_overrides.items():
-        _try_set(env_key, attr)
-
-    # Targets need to sync with the reward calculator singletons
-    target_changed = False
-    try:
-        if latency_target is not None:
-            config.rl.latency_target = float(latency_target)
-            target_changed = True
-            print(f"[RewardOverride] latency_target <- {latency_target}")
-    except Exception:
-        pass
-    try:
-        if energy_target is not None:
-            config.rl.energy_target = float(energy_target)
-            target_changed = True
-            print(f"[RewardOverride] energy_target <- {energy_target}")
-    except Exception:
-        pass
-    if disable_dynamic_targets:
-        # 设置全局禁用动态放�?
-        os.environ['DYNAMIC_TARGET_DISABLE'] = '1'
-        print("[RewardOverride] 动态目标放宽已禁用 (RL_DISABLE_DYNAMIC_TARGETS=1)")
-    if target_changed:
-        try:
-            update_reward_targets(
-                latency_target=config.rl.latency_target,
-                energy_target=config.rl.energy_target,
-            )
-        except Exception:
-            # keep training even if sync fails
-            pass
-
 def _build_scenario_config() -> Dict[str, Any]:
-    """构建模拟环境配置，允许通过环境变量覆盖默认参数。"""
+    """构建模拟环境配置，允许通过环境变量覆盖默认值"""
     # 🔧 支持从环境变量覆盖任务到达率（用于参数敏感性分析）
     task_arrival_rate = getattr(getattr(config, "task", None), "arrival_rate", 1.8)
     if os.environ.get('TASK_ARRIVAL_RATE'):
         try:
-            arrival_rate_str = os.environ.get('TASK_ARRIVAL_RATE')
-            if arrival_rate_str is not None:
-                task_arrival_rate = float(arrival_rate_str)
-                print(f"🔧 从环境变量覆盖任务到达率: {task_arrival_rate} tasks/s")
+            task_arrival_rate = float(os.environ.get('TASK_ARRIVAL_RATE'))
+            print(f"🔧 从环境变量覆盖任务到达率: {task_arrival_rate} tasks/s")
         except ValueError:
-            print("⚠️  环境变量TASK_ARRIVAL_RATE无效，使用默认值")
+            print(f"⚠️  环境变量TASK_ARRIVAL_RATE无效，使用默认值")
 
     def _get_or_default(obj: Optional[Any], attr: str, default: Any) -> Any:
         return getattr(obj, attr, default) if obj is not None else default
@@ -297,7 +222,7 @@ def _build_scenario_config() -> Dict[str, Any]:
         if value is None:
             return fallback
         bw = float(value)
-        if bw < 1e3:  # assume MHz or Hz
+        if bw < 1e3:  # assume MHz → Hz
             bw *= 1e6
         return bw
 
@@ -335,7 +260,7 @@ def _build_scenario_config() -> Dict[str, Any]:
             if isinstance(overrides, dict):
                 scenario.update(overrides)
             else:
-                print("⚠️  TRAINING_SCENARIO_OVERRIDES 需为JSON对象，已忽略")
+                print("⚠️  TRAINING_SCENARIO_OVERRIDES 需为JSON对象，已忽略。")
         except json.JSONDecodeError as exc:
             print(f"⚠️  TRAINING_SCENARIO_OVERRIDES 解析失败: {exc}")
 
@@ -347,7 +272,7 @@ _maybe_apply_reward_smoothing_from_env()
 
 
 def generate_timestamp() -> str:
-    """生成时间戳""" 
+    """生成时间戳"""
     if config.experiment.use_timestamp:
         return datetime.now().strftime(config.experiment.timestamp_format)
     else:
@@ -371,7 +296,10 @@ class SingleAgentTrainingEnvironment:
     """单智能体训练环境基类"""
     
     def _apply_optimized_td3_defaults(self) -> None:
-        """为OPTIMIZED_TD3设置更强的可靠性探索默认值（可被环境变量覆盖）""" 
+        """
+        【功能】若当前算法为OPTIMIZED_TD3，则放宽奖励权重与目标，降低训练振荡。
+        【说明】仅在未通过环境变量覆盖时生效，确保兼容论文统一奖励。
+        """
         if not hasattr(self, 'algorithm') and hasattr(self, 'input_algorithm'):
             alg = str(self.input_algorithm).upper()
         else:
@@ -386,33 +314,43 @@ class SingleAgentTrainingEnvironment:
             if os.environ.get(env_key) is not None:
                 return
             current = float(getattr(rl, attr, 0.0) or 0.0)
-            val_to_set = max(current, value) if use_max else (current if current else value)
-            setattr(rl, attr, val_to_set)
+            if use_max:
+                setattr(rl, attr, max(current, value))
+            elif current == 0.0:
+                setattr(rl, attr, value)
 
         def _force_override(env_key: str, attr: str, value: float) -> None:
-            """对OPTIMIZED_TD3使用更温和的权重/目标，降低奖励方差""" 
             if os.environ.get(env_key) is not None:
                 return
             setattr(rl, attr, float(value))
 
-        # 可靠性权重（收敛友好版本）        _set_if_absent("RL_WEIGHT_LOSS_RATIO", "reward_weight_loss_ratio", 1.2)
+        # 适度放宽奖惩权重，突出可靠性/队列信号
         _set_if_absent("RL_WEIGHT_COMPLETION_GAP", "reward_weight_completion_gap", 0.7)
         _set_if_absent("RL_PENALTY_DROPPED", "reward_penalty_dropped", 0.15, use_max=True)
         _set_if_absent("RL_WEIGHT_QUEUE_OVERLOAD", "reward_weight_queue_overload", 0.8, use_max=True)
         _set_if_absent("RL_WEIGHT_REMOTE_REJECT", "reward_weight_remote_reject", 0.25, use_max=True)
 
-        # 核心权重：直接覆盖全局较激进的默认值        _force_override("RL_WEIGHT_CACHE", "reward_weight_cache", 0.2)
-        _force_override("RL_WEIGHT_CACHE_BONUS", "reward_weight_cache_bonus", 0.3)
-        _force_override("RL_WEIGHT_DELAY", "reward_weight_delay", 1.8)
-        _force_override("RL_WEIGHT_ENERGY", "reward_weight_energy", 1.2)
-        _force_override("RL_WEIGHT_OFFLOAD_BONUS", "reward_weight_offload_bonus", 3.0)
-        _force_override("RL_WEIGHT_LOCAL_PENALTY", "reward_weight_local_penalty", 1.0)
+        # 覆盖目标值与核心权重，减轻奖励方差（默认全局生效，可通过环境变量覆盖）
+        # 🔧 2025-11-29: 禁用硬编码覆盖，使用unified_reward_calculator的新默认值（动态归一化 + 低人工偏置）
+        # _force_override("RL_WEIGHT_DELAY", "reward_weight_delay", 1.4)
+        # _force_override("RL_WEIGHT_ENERGY", "reward_weight_energy", 1.0)
+        # _force_override("RL_WEIGHT_CACHE", "reward_weight_cache", 0.2)
+        # _force_override("RL_WEIGHT_CACHE_BONUS", "reward_weight_cache_bonus", 0.3)
+        # _force_override("RL_WEIGHT_OFFLOAD_BONUS", "reward_weight_offload_bonus", 2.0)
+        # _force_override("RL_WEIGHT_LOCAL_PENALTY", "reward_weight_local_penalty", 1.2)
 
-        # 目标值（放宽，匹配图表使用的2.3s/9600J基准，减少归一化抖动）
-        _force_override("RL_LATENCY_TARGET", "latency_target", 2.3)
-        _force_override("RL_LATENCY_UPPER_TOL", "latency_upper_tolerance", 3.5)
-        _force_override("RL_ENERGY_TARGET", "energy_target", 9600.0)
-        _force_override("RL_ENERGY_UPPER_TOL", "energy_upper_tolerance", 14000.0)
+        # ⚖️ OPTIMIZED_TD3: 目标放宽以提升收敛稳定性（奖励只对超标部分惩罚）
+        # 🔧 2025-11-29: 启用动态归一化后，不再需要极度放宽的静态目标
+        # _force_override("RL_LATENCY_LATENCY_TARGET", "latency_target", 1.5)
+        # _force_override("RL_LATENCY_UPPER_TOL", "latency_upper_tolerance", 2.8)
+        # _force_override("RL_ENERGY_TARGET", "energy_target", 9000.0)
+        # _force_override("RL_ENERGY_UPPER_TOL", "energy_upper_tolerance", 13000.0)
+
+        # 奖励平滑，降低方差（非强制，可被环境变量覆盖）
+        _force_override("RL_SMOOTH_DELAY", "reward_smooth_delay_weight", 0.6)
+        _force_override("RL_SMOOTH_ENERGY", "reward_smooth_energy_weight", 0.6)
+        _force_override("RL_SMOOTH_ALPHA", "reward_smooth_alpha", 0.25)
+
         try:
             update_reward_targets(
                 latency_target=float(getattr(rl, "latency_target", 2.3)),
@@ -442,6 +380,8 @@ class SingleAgentTrainingEnvironment:
             "CAMTD3": "CAM_TD3",
             "CAM_TD3": "CAM_TD3",
             "HYBRID_EDGE-TD3": "CAM_TD3",
+            "OPTIMIZEDTD3": "OPTIMIZED_TD3",
+            "OPTIMIZED-TD3": "OPTIMIZED_TD3",
         }
         alias_key = normalized_algorithm.replace('_', '')
         self.algorithm = alias_map.get(normalized_algorithm, alias_map.get(alias_key, normalized_algorithm))
@@ -475,31 +415,7 @@ class SingleAgentTrainingEnvironment:
             if 'num_vehicles' in override_scenario:
                 num_vehicles_override = int(override_scenario['num_vehicles'])
                 _sync_topology('num_vehicles', 'vehicle_config', 'num_vehicles', num_vehicles_override)
-                print(f"🔧 [Override] 动态设置车辆数�? {num_vehicles_override}")
-                
-                # 🔧 新增：根据车辆数动态调整目标�?
-                # 估算：每车辆�?0.3s 时延, 1000J 能�?
-                if os.environ.get('RL_LATENCY_TARGET') is None:  # 仅当未手动指定时
-                    auto_latency_target = 0.5 + num_vehicles_override * 0.15  # 6车≈1.4s, 12车≈2.3s, 20车≈3.5s
-                    config.rl.latency_target = auto_latency_target
-                    config.rl.latency_upper_tolerance = auto_latency_target * 2.5
-                    print(f"  �?自动调整 latency_target: {auto_latency_target:.2f}s")
-                
-                if os.environ.get('RL_ENERGY_TARGET') is None:  # 仅当未手动指定时
-                    auto_energy_target = num_vehicles_override * 800.0  # 6车≈4800J, 12车≈9600J, 20车≨16000J
-                    config.rl.energy_target = auto_energy_target
-                    config.rl.energy_upper_tolerance = auto_energy_target * 2.0
-                    print(f"  �?自动调整 energy_target: {auto_energy_target:.0f}J")
-                
-                # 同步到全局奖励计算�?
-                try:
-                    from utils.unified_reward_calculator import update_reward_targets
-                    update_reward_targets(
-                        latency_target=float(config.rl.latency_target),
-                        energy_target=float(config.rl.energy_target)
-                    )
-                except Exception as e:
-                    print(f"  ⚠️  奖励目标同步失败: {e}")
+                print(f"🔧 [Override] 动态设置车辆数量: {num_vehicles_override}")
             if 'num_rsus' in override_scenario:
                 num_rsus_override = int(override_scenario['num_rsus'])
                 _sync_topology('num_rsus', 'rsu_config', 'num_rsus', num_rsus_override)
@@ -517,144 +433,119 @@ class SingleAgentTrainingEnvironment:
                     network_comm_cfg = getattr(network_cfg, "communication_config", None)
                     if isinstance(network_comm_cfg, dict):
                         network_comm_cfg['bandwidth'] = float(bw_value)
-                    # 🔧 关键修复：同步到scenario_config，确保仿真器使用正确的带�?
-                    scenario_config['total_bandwidth'] = float(bw_value)
-                    scenario_config['bandwidth'] = float(bw_value)  # 兼容两种命名
-                    print(f"🔧 [Override] 动态设置带�? {float(bw_value)/1e6:.1f} MHz")
+                    print(f"🔧 [Override] 动态设置带宽: {float(bw_value)/1e6:.1f} MHz")
             
             # 🎯 总资源池参数（优先级高于单节点频率）
-        if override_scenario is not None and 'total_vehicle_compute' in override_scenario:
-            total_compute = float(override_scenario['total_vehicle_compute'])
-            config.compute.total_vehicle_compute = total_compute
-            # 自动计算每车平均频率
-            avg_freq = total_compute / config.num_vehicles
-            config.compute.vehicle_initial_freq = avg_freq
-            config.compute.vehicle_default_freq = avg_freq
-            config.compute.vehicle_cpu_freq = avg_freq
-            config.compute.vehicle_cpu_freq_range = (avg_freq, avg_freq)
-            # 同步 scenario_config，仿真器 override_topology=True 时直接读取这些�?
-            scenario_config['total_vehicle_compute'] = total_compute
-            scenario_config['vehicle_cpu_freq'] = avg_freq
-            scenario_config['vehicle_default_freq'] = avg_freq
-            scenario_config['vehicle_initial_freq'] = avg_freq
-            print(f"🔧 [Override] 动态设置总本地计�? {total_compute/1e9:.1f} GHz (每车{avg_freq/1e9:.3f} GHz)")
-
-        if override_scenario is not None and 'total_rsu_compute' in override_scenario:
-            total_compute = float(override_scenario['total_rsu_compute'])
-            config.compute.total_rsu_compute = total_compute
-            avg_freq = total_compute / config.num_rsus
-            config.compute.rsu_initial_freq = avg_freq
-            config.compute.rsu_default_freq = avg_freq
-            config.compute.rsu_cpu_freq = avg_freq
-            config.compute.rsu_cpu_freq_range = (avg_freq, avg_freq)
-            scenario_config['total_rsu_compute'] = total_compute
-            scenario_config['rsu_cpu_freq'] = avg_freq
-            scenario_config['rsu_default_freq'] = avg_freq
-            scenario_config['rsu_initial_freq'] = avg_freq
-            print(f"🔧 [Override] 动态设置总RSU计算: {total_compute/1e9:.1f} GHz (每RSU{avg_freq/1e9:.1f} GHz)")
-
-        if override_scenario is not None and 'total_uav_compute' in override_scenario:
-            total_compute = float(override_scenario['total_uav_compute'])
-            config.compute.total_uav_compute = total_compute
-            avg_freq = total_compute / config.num_uavs
-            config.compute.uav_initial_freq = avg_freq
-            config.compute.uav_default_freq = avg_freq
-            config.compute.uav_cpu_freq = avg_freq
-            config.compute.uav_cpu_freq_range = (avg_freq, avg_freq)
-            scenario_config['total_uav_compute'] = total_compute
-            scenario_config['uav_cpu_freq'] = avg_freq
-            scenario_config['uav_default_freq'] = avg_freq
-            scenario_config['uav_initial_freq'] = avg_freq
-            print(f"🔧 [Override] 动态设置总UAV计算: {total_compute/1e9:.1f} GHz (每UAV{avg_freq/1e9:.1f} GHz)")
-
-        # CPU频率参数（单节点频率，兼容旧代码�?
-        if override_scenario is not None and 'vehicle_cpu_freq' in override_scenario and 'total_vehicle_compute' not in override_scenario:
-            freq_value = override_scenario['vehicle_cpu_freq']
-            # 更新范围和默认�?
-            config.compute.vehicle_cpu_freq_range = (freq_value, freq_value)
-            config.compute.vehicle_cpu_freq = freq_value
-            scenario_config['vehicle_cpu_freq'] = freq_value
-            scenario_config.setdefault('vehicle_default_freq', freq_value)
-            scenario_config.setdefault('vehicle_initial_freq', freq_value)
-            print(f"🔧 [Override] 动态设置车辆CPU频率: {float(freq_value)/1e9:.2f} GHz")
-
-        if override_scenario is not None and 'rsu_cpu_freq' in override_scenario and 'total_rsu_compute' not in override_scenario:
-            freq_value = override_scenario['rsu_cpu_freq']
-            config.compute.rsu_cpu_freq_range = (freq_value, freq_value)
-            config.compute.rsu_cpu_freq = freq_value
-            scenario_config['rsu_cpu_freq'] = freq_value
-            scenario_config.setdefault('rsu_default_freq', freq_value)
-            scenario_config.setdefault('rsu_initial_freq', freq_value)
-            print(f"🔧 [Override] 动态设置RSU CPU频率: {float(freq_value)/1e9:.2f} GHz")
-
-        if override_scenario is not None and 'uav_cpu_freq' in override_scenario and 'total_uav_compute' not in override_scenario:
-            freq_value = override_scenario['uav_cpu_freq']
-            config.compute.uav_cpu_freq_range = (freq_value, freq_value)
-            config.compute.uav_cpu_freq = freq_value
-            scenario_config['uav_cpu_freq'] = freq_value
-            scenario_config.setdefault('uav_default_freq', freq_value)
-            scenario_config.setdefault('uav_initial_freq', freq_value)
-            print(f"🔧 [Override] 动态设置UAV CPU频率: {float(freq_value)/1e9:.2f} GHz")
+            if 'total_vehicle_compute' in override_scenario:
+                total_compute = float(override_scenario['total_vehicle_compute'])
+                config.compute.total_vehicle_compute = total_compute
+                # 自动计算每车平均频率
+                avg_freq = total_compute / config.num_vehicles
+                config.compute.vehicle_initial_freq = avg_freq
+                config.compute.vehicle_default_freq = avg_freq
+                config.compute.vehicle_cpu_freq = avg_freq
+                config.compute.vehicle_cpu_freq_range = (avg_freq, avg_freq)
+                print(f"🔧 [Override] 动态设置总本地计算: {total_compute/1e9:.1f} GHz (每车{avg_freq/1e9:.3f} GHz)")
+            
+            if 'total_rsu_compute' in override_scenario:
+                total_compute = float(override_scenario['total_rsu_compute'])
+                config.compute.total_rsu_compute = total_compute
+                avg_freq = total_compute / config.num_rsus
+                config.compute.rsu_initial_freq = avg_freq
+                config.compute.rsu_default_freq = avg_freq
+                config.compute.rsu_cpu_freq = avg_freq
+                config.compute.rsu_cpu_freq_range = (avg_freq, avg_freq)
+                print(f"🔧 [Override] 动态设置总RSU计算: {total_compute/1e9:.1f} GHz (每RSU{avg_freq/1e9:.1f} GHz)")
+            
+            if 'total_uav_compute' in override_scenario:
+                total_compute = float(override_scenario['total_uav_compute'])
+                config.compute.total_uav_compute = total_compute
+                avg_freq = total_compute / config.num_uavs
+                config.compute.uav_initial_freq = avg_freq
+                config.compute.uav_default_freq = avg_freq
+                config.compute.uav_cpu_freq = avg_freq
+                config.compute.uav_cpu_freq_range = (avg_freq, avg_freq)
+                print(f"🔧 [Override] 动态设置总UAV计算: {total_compute/1e9:.1f} GHz (每UAV{avg_freq/1e9:.1f} GHz)")
+            
+            # CPU频率参数（单节点频率，兼容旧代码）
+            if 'vehicle_cpu_freq' in override_scenario and 'total_vehicle_compute' not in override_scenario:
+                freq_value = override_scenario['vehicle_cpu_freq']
+                # 更新范围和默认值
+                config.compute.vehicle_cpu_freq_range = (freq_value, freq_value)
+                config.compute.vehicle_cpu_freq = freq_value
+                print(f"🔧 [Override] 动态设置车辆CPU频率: {float(freq_value)/1e9:.2f} GHz")
+            
+            if 'rsu_cpu_freq' in override_scenario and 'total_rsu_compute' not in override_scenario:
+                freq_value = override_scenario['rsu_cpu_freq']
+                config.compute.rsu_cpu_freq_range = (freq_value, freq_value)
+                config.compute.rsu_cpu_freq = freq_value
+                print(f"🔧 [Override] 动态设置RSU CPU频率: {float(freq_value)/1e9:.2f} GHz")
+            
+            if 'uav_cpu_freq' in override_scenario and 'total_uav_compute' not in override_scenario:
+                freq_value = override_scenario['uav_cpu_freq']
+                config.compute.uav_cpu_freq_range = (freq_value, freq_value)
+                config.compute.uav_cpu_freq = freq_value
+                print(f"🔧 [Override] 动态设置UAV CPU频率: {float(freq_value)/1e9:.2f} GHz")
             
             # 任务数据大小参数
-            if override_scenario is not None and ('task_data_size_min_kb' in override_scenario or 'task_data_size_max_kb' in override_scenario):
+            if 'task_data_size_min_kb' in override_scenario or 'task_data_size_max_kb' in override_scenario:
                 min_kb = override_scenario.get('task_data_size_min_kb')
                 max_kb = override_scenario.get('task_data_size_max_kb')
                 if min_kb is not None and max_kb is not None:
-                    # 转换为字�?
+                    # 转换为字节
                     min_bytes = float(min_kb) * 1024
                     max_bytes = float(max_kb) * 1024
                     config.task.data_size_range = (min_bytes, max_bytes)
                     config.task.task_data_size_range = (min_bytes, max_bytes)
-                    print(f"🔧 [Override] 动态设置任务数据大�? {min_kb}-{max_kb} KB")
+                    print(f"🔧 [Override] 动态设置任务数据大小: {min_kb}-{max_kb} KB")
             
-            # 任务复杂度参�?
-            if override_scenario is not None and 'task_complexity_multiplier' in override_scenario:
+            # 任务复杂度参数
+            if 'task_complexity_multiplier' in override_scenario:
                 multiplier = override_scenario['task_complexity_multiplier']
                 # 通过环境变量传递给TaskConfig
                 os.environ['TASK_COMPLEXITY_MULTIPLIER'] = str(multiplier)
                 print(f"🔧 [Override] 动态设置任务复杂度倍数: {multiplier}x")
             
-            if override_scenario is not None and 'task_compute_density' in override_scenario:
+            if 'task_compute_density' in override_scenario:
                 density = override_scenario['task_compute_density']
-                config.task.task_compute_density = int(float(density))  # type: ignore
-                print(f"🔧 [Override] 动态设置任务计算密�? {density} cycles/bit")
+                config.task.task_compute_density = float(density)
+                print(f"🔧 [Override] 动态设置任务计算密度: {density} cycles/bit")
             
             # 缓存容量参数
-            if override_scenario is not None and 'cache_capacity' in override_scenario:
+            if 'cache_capacity' in override_scenario:
                 capacity_mb = override_scenario['cache_capacity']
                 # 通过环境变量传递（影响所有节点）
                 os.environ['CACHE_CAPACITY_MB'] = str(capacity_mb)
-                print(f"🔧 [Override] 动态设置缓存容�? {capacity_mb} MB")
+                print(f"🔧 [Override] 动态设置缓存容量: {capacity_mb} MB")
 
             # 服务能力参数
-            if override_scenario is not None and 'rsu_base_service' in override_scenario:
+            if 'rsu_base_service' in override_scenario:
                 value = int(override_scenario['rsu_base_service'])
                 config.service.rsu_base_service = value
                 print(f"🔧 [Override] 动态设置RSU基础服务能力: {value}")
-            if override_scenario is not None and 'rsu_max_service' in override_scenario:
+            if 'rsu_max_service' in override_scenario:
                 value = int(override_scenario['rsu_max_service'])
                 config.service.rsu_max_service = value
-                print(f"🔧 [Override] 动态设置RSU最大服务能�? {value}")
-            if override_scenario is not None and 'rsu_work_capacity' in override_scenario:
+                print(f"🔧 [Override] 动态设置RSU最大服务能力: {value}")
+            if 'rsu_work_capacity' in override_scenario:
                 value = float(override_scenario['rsu_work_capacity'])
                 config.service.rsu_work_capacity = value
                 print(f"🔧 [Override] 动态设置RSU工作容量: {value}")
-            if override_scenario is not None and 'uav_base_service' in override_scenario:
+            if 'uav_base_service' in override_scenario:
                 value = int(override_scenario['uav_base_service'])
                 config.service.uav_base_service = value
                 print(f"🔧 [Override] 动态设置UAV基础服务能力: {value}")
-            if override_scenario is not None and 'uav_max_service' in override_scenario:
+            if 'uav_max_service' in override_scenario:
                 value = int(override_scenario['uav_max_service'])
                 config.service.uav_max_service = value
-                print(f"🔧 [Override] 动态设置UAV最大服务能�? {value}")
-            if override_scenario is not None and 'uav_work_capacity' in override_scenario:
+                print(f"🔧 [Override] 动态设置UAV最大服务能力: {value}")
+            if 'uav_work_capacity' in override_scenario:
                 value = float(override_scenario['uav_work_capacity'])
                 config.service.uav_work_capacity = value
                 print(f"🔧 [Override] 动态设置UAV工作容量: {value}")
             
-            # 任务到达率参�?
-            if override_scenario is not None and 'task_arrival_rate' in override_scenario:
+            # 任务到达率参数
+            if 'task_arrival_rate' in override_scenario:
                 arrival_rate = override_scenario['task_arrival_rate']
                 config.task.arrival_rate = float(arrival_rate)
                 # 同时设置环境变量以兼容旧代码
@@ -662,29 +553,29 @@ class SingleAgentTrainingEnvironment:
                 print(f"🔧 [Override] 动态设置任务到达率: {arrival_rate} tasks/s")
             
             # 单一任务数据大小参数（用于混合负载实验）
-            if override_scenario is not None and 'task_data_size_kb' in override_scenario:
+            if 'task_data_size_kb' in override_scenario:
                 size_kb = override_scenario['task_data_size_kb']
                 size_bytes = float(size_kb) * 1024
                 config.task.data_size_range = (size_bytes, size_bytes)
                 config.task.task_data_size_range = (size_bytes, size_bytes)
-                print(f"🔧 [Override] 动态设置任务数据大�? {size_kb} KB")
+                print(f"🔧 [Override] 动态设置任务数据大小: {size_kb} KB")
             
             # 通信参数（噪声功率、路径损耗）
-            if override_scenario is not None and 'noise_power_dbm' in override_scenario:
+            if 'noise_power_dbm' in override_scenario:
                 noise_power = override_scenario['noise_power_dbm']
-                setattr(config.communication, 'noise_power_dbm', float(noise_power))  # type: ignore
-                print(f"🔧 [Override] 动态设置噪声功�? {noise_power} dBm")
+                config.communication.noise_power_dbm = float(noise_power)
+                print(f"🔧 [Override] 动态设置噪声功率: {noise_power} dBm")
             
-            if override_scenario is not None and 'path_loss_exponent' in override_scenario:
+            if 'path_loss_exponent' in override_scenario:
                 exponent = override_scenario['path_loss_exponent']
-                setattr(config.communication, 'path_loss_exponent', float(exponent))  # type: ignore
-                print(f"🔧 [Override] 动态设置路径损耗指�? {exponent}")
+                config.communication.path_loss_exponent = float(exponent)
+                print(f"🔧 [Override] 动态设置路径损耗指数: {exponent}")
             
-            # 资源异构性参�?
-            if override_scenario is not None and 'heterogeneity_level' in override_scenario:
+            # 资源异构性参数
+            if 'heterogeneity_level' in override_scenario:
                 hetero_level = override_scenario['heterogeneity_level']
                 os.environ['HETEROGENEITY_LEVEL'] = str(hetero_level)
-                print(f"🔧 [Override] 动态设置资源异构性级�? {hetero_level}")
+                print(f"🔧 [Override] 动态设置资源异构性级别: {hetero_level}")
         
         mode_aliases = {
             'local': 'local_only',
@@ -700,7 +591,7 @@ class SingleAgentTrainingEnvironment:
         )
         requested_mode = mode_aliases.get(str(forced_mode_input).strip().lower(), '')
         if requested_mode not in {'', 'local_only', 'remote_only'}:
-            print(f"⚠️ 未识别的强制卸载模式: {forced_mode_input}, 将忽略")
+            print(f"⚠️ 未识别的强制卸载模式: {forced_mode_input}, 将忽略。")
             requested_mode = ''
         self.enforce_offload_mode = requested_mode
         if self.enforce_offload_mode:
@@ -715,7 +606,7 @@ class SingleAgentTrainingEnvironment:
         elif self.enforce_offload_mode == 'remote_only':
             print("🧷 强制卸载模式: 全部远端执行（Remote-Only）")
         
-        # 🎯 固定卸载策略初始�?
+        # 🎯 固定卸载策略初始化
         self.fixed_offload_policy = None
         self.fixed_policy_name = None
         if fixed_offload_policy:
@@ -724,7 +615,7 @@ class SingleAgentTrainingEnvironment:
                 import importlib.util
                 from pathlib import Path
                 
-                # 动态添�?experiments 目录�?Python 路径
+                # 动态添加 experiments 目录到 Python 路径
                 exp_path = Path(__file__).parent / 'experiments'
                 if str(exp_path) not in sys.path:
                     sys.path.insert(0, str(exp_path))
@@ -745,52 +636,24 @@ class SingleAgentTrainingEnvironment:
                 self.fixed_offload_policy = create_baseline_algorithm(fixed_offload_policy)
                 self.fixed_policy_name = fixed_offload_policy
                 print(f"🎲 固定卸载策略: {fixed_offload_policy} (卸载决策不由智能体学习)")
-                print("   其他决策（缓存、迁移、资源分配）仍由智能体学习")
+                print(f"   其他决策（缓存、迁移、资源分配）仍由智能体学习")
             except Exception as e:
                 print(f"⚠️  无法创建固定策略 '{fixed_offload_policy}': {e}")
                 print(f"   将使用智能体学习卸载决策")
                 self.fixed_offload_policy = None
         
-        # 选择仿真器类�?
+        # 选择仿真器类型
         self.use_enhanced_cache = use_enhanced_cache and ENHANCED_CACHE_AVAILABLE
         env_disable_migration = os.environ.get("DISABLE_MIGRATION", "").strip() == "1"
         self.disable_migration = disable_migration or env_disable_migration
-        
-        # 🔧 新增：如果未通过override设置目标值，根据当前车辆数自动调�?
-        if 'num_vehicles' not in (override_scenario or {}):
-            current_num_vehicles = scenario_config.get('num_vehicles', config.num_vehicles)
-            if os.environ.get('RL_LATENCY_TARGET') is None:
-                auto_latency_target = 0.5 + current_num_vehicles * 0.15
-                config.rl.latency_target = auto_latency_target
-                config.rl.latency_upper_tolerance = auto_latency_target * 2.5
-                print(f"🎯 自动调整 latency_target: {auto_latency_target:.2f}s (基于{current_num_vehicles}辆车)")
-            
-            if os.environ.get('RL_ENERGY_TARGET') is None:
-                auto_energy_target = current_num_vehicles * 800.0
-                config.rl.energy_target = auto_energy_target
-                config.rl.energy_upper_tolerance = auto_energy_target * 2.0
-                print(f"🎯 自动调整 energy_target: {auto_energy_target:.0f}J (基于{current_num_vehicles}辆车)")
-            
-            # 同步到全局奖励计算�?
-            try:
-                from utils.unified_reward_calculator import update_reward_targets
-                update_reward_targets(
-                    latency_target=float(config.rl.latency_target),
-                    energy_target=float(config.rl.energy_target)
-                )
-            except Exception:
-                pass
-        
-        simulator: CompleteSystemSimulator
         if self.use_enhanced_cache:
             print("🚀 [Training] Using Enhanced Cache System (Default) with:")
             print("   - Hierarchical L1/L2 caching (3GB + 7GB)")
             print("   - Adaptive HeatBasedCacheStrategy")
             print("   - Inter-RSU collaboration")
-            simulator = EnhancedSystemSimulator(scenario_config)  # type: ignore[assignment]
+            self.simulator = EnhancedSystemSimulator(scenario_config)
         else:
-            simulator = CompleteSystemSimulator(scenario_config)
-        self.simulator: CompleteSystemSimulator = simulator
+            self.simulator = CompleteSystemSimulator(scenario_config)
         
         # 🤖 初始化自适应控制组件
         self.adaptive_cache_controller = AdaptiveCacheController()
@@ -798,7 +661,7 @@ class SingleAgentTrainingEnvironment:
         if self.disable_migration:
             print("🤖 自适应缓存已启用；迁移控制已禁用（DISABLE_MIGRATION 模式）")
         else:
-            print("🤖 已启用自适应缓存和迁移控制功能")
+            print(f"🤖 已启用自适应缓存和迁移控制功能")
 
         self.strategy_coordinator = StrategyCoordinator(
             self.adaptive_cache_controller,
@@ -815,10 +678,10 @@ class SingleAgentTrainingEnvironment:
         self.num_rsus = num_rsus
         self.num_uavs = num_uavs
         
-        # 🎯 更新固定策略的环境信�?
+        # 🎯 更新固定策略的环境信息
         if self.fixed_offload_policy is not None:
             try:
-                # 创建一个简化的环境对象供固定策略使�?
+                # 创建一个简化的环境对象供固定策略使用
                 class SimpleEnv:
                     def __init__(self, simulator):
                         self.simulator = simulator
@@ -828,11 +691,11 @@ class SingleAgentTrainingEnvironment:
                 
                 simple_env = SimpleEnv(self.simulator)
                 self.fixed_offload_policy.update_environment(simple_env)
-                print(f"   固定策略已更新环境信�? {num_vehicles}车辆, {num_rsus}RSU, {num_uavs}UAV")
+                print(f"   固定策略已更新环境信息: {num_vehicles}车辆, {num_rsus}RSU, {num_uavs}UAV")
             except Exception as e:
                 print(f"⚠️  固定策略更新环境失败: {e}")
         
-        # 应用固定拓扑的参数优化（保持4 RSU + 2 UAV�?
+        # 应用固定拓扑的参数优化（保持4 RSU + 2 UAV）
         if self.algorithm in {"TD3", "TD3_LATENCY_ENERGY"}:
             topology_optimizer = FixedTopologyOptimizer()
             opt_params = topology_optimizer.get_optimized_params(num_vehicles)
@@ -843,17 +706,13 @@ class SingleAgentTrainingEnvironment:
             os.environ['TD3_CRITIC_LR'] = str(opt_params.get('critic_lr', 8e-5))
             os.environ['TD3_BATCH_SIZE'] = str(opt_params.get('batch_size', 256))
             
-            print(f"[FIXED-TOPOLOGY] 车辆�?{num_vehicles} �?Hidden:{opt_params['hidden_dim']}, LR:{opt_params['actor_lr']:.1e}, Batch:{opt_params['batch_size']}")
+            print(f"[FIXED-TOPOLOGY] 车辆数:{num_vehicles} → Hidden:{opt_params['hidden_dim']}, LR:{opt_params['actor_lr']:.1e}, Batch:{opt_params['batch_size']}")
             print(f"[FIXED-TOPOLOGY] 保持固定: RSU=4, UAV=2（验证算法策略有效性）")
         
         # 🔧 优化：所有算法统一传入拓扑参数，实现动态适配
         if self.algorithm == "DDPG":
             self.agent_env = DDPGEnvironment(num_vehicles, num_rsus, num_uavs)
         elif self.algorithm == "TD3":
-            # TD3默认启用中央资源模式（可通过环境变量CENTRAL_RESOURCE=0禁用�?
-            if not self.central_resource_enabled:
-                central_env_override = os.environ.get('CENTRAL_RESOURCE', '1')  # 默认启用
-                self.central_resource_enabled = central_env_override.strip() in {'1', 'true', 'True'}
             self.agent_env = TD3Environment(
                 num_vehicles,
                 num_rsus,
@@ -863,14 +722,7 @@ class SingleAgentTrainingEnvironment:
         elif self.algorithm == "TD3_LATENCY_ENERGY":
             self.agent_env = TD3LatencyEnergyEnvironment(num_vehicles, num_rsus, num_uavs)
         elif self.algorithm == "CAM_TD3":
-            # CAM_TD3默认启用中央资源模式（可通过环境变量CENTRAL_RESOURCE=0禁用�?
-            if not self.central_resource_enabled:
-                central_env_override = os.environ.get('CENTRAL_RESOURCE', '1')  # 默认启用
-                self.central_resource_enabled = central_env_override.strip() in {'1', 'true', 'True'}
-            self.agent_env = CAMTD3Environment(
-                num_vehicles, num_rsus, num_uavs,
-                use_central_resource=self.central_resource_enabled
-            )
+            self.agent_env = CAMTD3Environment(num_vehicles, num_rsus, num_uavs)
         elif self.algorithm == "DQN":
             self.agent_env = DQNEnvironment(num_vehicles, num_rsus, num_uavs)
         elif self.algorithm == "PPO":
@@ -878,14 +730,13 @@ class SingleAgentTrainingEnvironment:
         elif self.algorithm == "SAC":
             self.agent_env = SACEnvironment(num_vehicles, num_rsus, num_uavs)
         elif self.algorithm == "OPTIMIZED_TD3":
-            # 精简优化TD3 (Queue-aware Replay + GNN Attention)
             self.agent_env = OptimizedTD3Environment(
                 num_vehicles,
                 num_rsus,
                 num_uavs,
-                use_central_resource=self.central_resource_enabled
+                use_central_resource=self.central_resource_enabled,
             )
-            print(f"[OptimizedTD3] 使用精简优化配置 (Queue+GNN)")
+            print(f"[OptimizedTD3] 使用精简优化配置 (Queue-aware Replay + GNN Attention)")
         else:
             raise ValueError(f"不支持的算法: {algorithm}")
 
@@ -900,16 +751,16 @@ class SingleAgentTrainingEnvironment:
         self.base_action_dim = getattr(self.agent_env, 'base_action_dim', getattr(self.agent_env, 'action_dim', 0) - self.central_resource_action_dim)
         
         if self.central_resource_enabled and self.central_resource_action_dim > 0:
-            print(f"�?启用中央资源分配架构：Phase 1(决策) + Phase 2(执行)", file=sys.stderr)
+            print(f"✅ 启用中央资源分配架构：Phase 1(决策) + Phase 2(执行)", file=sys.stderr)
             print(f"   环境类型: {type(self.agent_env).__name__}", file=sys.stderr)
             print(f"   基础动作维度: {self.base_action_dim}", file=sys.stderr)
             print(f"   中央资源动作维度: {self.central_resource_action_dim}", file=sys.stderr)
             if self.central_resource_state_dim:
-                print(f"   状态扩展维�? +{self.central_resource_state_dim}", file=sys.stderr)
+                print(f"   状态扩展维度: +{self.central_resource_state_dim}", file=sys.stderr)
         else:
-            print("  使用标准模式（均匀资源分配）", file=sys.stderr)
+            print(f"  使用标准模式（均匀资源分配）", file=sys.stderr)
         
-        # 🧠 若指定了阶段一算法（通过环境变量），用DualStage封装器组合两个阶�?
+        # 🧠 若指定了阶段一算法（通过环境变量），用DualStage封装器组合两个阶段
         stage1_alg = os.environ.get('STAGE1_ALG', '').strip().lower()
         if stage1_alg:
             try:
@@ -942,10 +793,9 @@ class SingleAgentTrainingEnvironment:
             'migration_success_rate': [],
             'queue_rho_sum': [],
             'queue_rho_max': [],
-            'queue_overload_flag': [],  # 🔧 修复：确保记录二值过载标�?
-            'queue_overload_events': [],  # 🔧 修复：记录累计过载事件数
-            'episode_steps': [],  # 🔧 新增：记录每个episode的实际步�?
-            'avg_step_reward': [],  # 🔧 修复：记录平均每步奖�?
+            'queue_overload_flag': [],
+            'queue_overload_events': [],
+            'episode_steps': [],  # 🔧 新增：记录每个episode的实际步数
             'task_type_queue_share_1': [],
             'task_type_queue_share_2': [],
             'task_type_queue_share_3': [],
@@ -962,27 +812,18 @@ class SingleAgentTrainingEnvironment:
             'task_type_queue_share_ep_2': [],
             'task_type_queue_share_ep_3': [],
             'task_type_queue_share_ep_4': [],
-            'rsu_hotspot_mean': [],  # 🔧 修复：记录每个episode的RSU热点平均强度
-            'rsu_hotspot_peak': [],  # 🔧 修复：记录每个episode的RSU热点峰值强�?
+            'rsu_hotspot_mean': [],
+            'rsu_hotspot_peak': [],
             'rsu_hotspot_mean_series': [],
             'rsu_hotspot_peak_series': [],
             'mm1_queue_error': [],
             'mm1_delay_error': [],
             'normalized_delay': [],
             'normalized_energy': [],
-            'normalized_reward': [],
-            # 🎯 新增：RSU资源利用率和卸载率统计（修复bug�?
-            'rsu_utilization': [],
-            'offload_ratio': [],  # remote_execution_ratio (rsu+uav)
-            'rsu_offload_ratio': [],
-            'uav_offload_ratio': [],
-            'local_offload_ratio': [],
-            # 🚀 新增：迁移能耗指�?
-            'rsu_migration_energy': [],
-            'uav_migration_energy': [],
+            'normalized_reward': []
         }
         
-        # 性能追踪�?
+        # 性能追踪器
         self.performance_tracker = {
             'recent_rewards': MovingAverage(100),
             'recent_step_rewards': MovingAverage(100),
@@ -991,33 +832,29 @@ class SingleAgentTrainingEnvironment:
             'recent_completion': MovingAverage(100)
         }
         self._reward_baseline: Dict[str, float] = {}
-        self._energy_target_per_vehicle = float(os.environ.get('ENERGY_TARGET_PER_VEHICLE', 180.0))
-        self._dynamic_energy_target = float(getattr(config.rl, 'energy_target', 2200.0))
+        self._energy_target_per_vehicle = float(os.environ.get('ENERGY_TARGET_PER_VEHICLE', 220.0))
+        self._dynamic_energy_target = float(getattr(config.rl, 'energy_target', 1200.0))
         heuristic_energy_target = max(
             self._dynamic_energy_target,
             self.num_vehicles * self._energy_target_per_vehicle
         )
-        if heuristic_energy_target > self._dynamic_energy_target * 1.02:
+        if heuristic_energy_target > self._dynamic_energy_target * 1.05:
             self._dynamic_energy_target = heuristic_energy_target
             update_reward_targets(energy_target=heuristic_energy_target)
             print(
-                f"⚖️ 动态调整能耗目�? {heuristic_energy_target:.1f}J "
-                f"(车辆�?{self.num_vehicles}, 每车预算={self._energy_target_per_vehicle:.1f}J)"
+                f"⚖️ 动态调整能耗目标: {heuristic_energy_target:.1f}J "
+                f"(车辆数={self.num_vehicles}, 每车预算={self._energy_target_per_vehicle:.1f}J)"
             )
         self._energy_target_ema = self._dynamic_energy_target
         self._energy_target_warmup = max(40, int(config.experiment.num_episodes * 0.1))
         self._last_energy_target_update = 0
-        # 自适应延迟目标（高负载场景自动放宽，避免奖励饱和）
-        self._dynamic_latency_target = float(getattr(config.rl, 'latency_target', 0.4))
-        self._delay_target_ema = self._dynamic_latency_target
-        self._last_delay_target_update = 0
         self._reward_smoothing_alpha = float(getattr(config.rl, 'reward_smooth_alpha', 0.35))
         self._reward_ema_delay: Optional[float] = None
         self._reward_ema_energy: Optional[float] = None
         self._episode_counters_initialized = False
         
-        print(f"? {self.algorithm} ?????????")
-        print("? ????: ????")
+        print(f"✓ {self.algorithm}训练环境初始化完成")
+        print(f"✓ 算法类型: 单智能体")
     
     def _calculate_correct_cache_utilization(self, cache: Dict, cache_capacity_mb: float) -> float:
         """
@@ -1027,7 +864,7 @@ class SingleAgentTrainingEnvironment:
             cache: 缓存字典
             cache_capacity_mb: 缓存容量(MB)
         Returns:
-            缓存利用�?[0.0, 1.0]
+            缓存利用率 [0.0, 1.0]
         """
         if not cache or cache_capacity_mb <= 0:
             return 0.0
@@ -1086,71 +923,39 @@ class SingleAgentTrainingEnvironment:
             bucket: float(stats_dict.get(bucket, 0.0) or 0.0) for bucket in energy_buckets
         }
         self._episode_queue_overflow_base = int(stats_dict.get('queue_overflow_drops', 0) or 0)
-        
-        # 🔧 修复：添加延迟总量基线，用于计算episode平均延迟
-        self._episode_delay_base = float(stats_dict.get('total_delay', 0.0) or 0.0)
-        
-        # Initialize task count accumulators
-        self._episode_local_tasks = 0
-        self._episode_rsu_tasks = 0
-        self._episode_uav_tasks = 0
-        
         self._episode_counters_initialized = True
 
     def _reset_reward_baseline(self, stats: Optional[Dict[str, Any]] = None) -> None:
-        """初始化重置奖励增量基线""" 
-        def _safe_scalar(value: Any, default: float = 0.0) -> float:
-            try:
-                val = float(value)
-            except (TypeError, ValueError):
-                return default
-            return val if np.isfinite(val) else default
-
-        def _safe_int(value: Any, default: int = 0) -> int:
-            try:
-                val = float(value)
-            except (TypeError, ValueError):
-                return default
-            return int(val) if np.isfinite(val) else default
-
+        """初始化/重置奖励增量基线。"""
         base = stats or {}
         self._reward_baseline = {
-            'processed': _safe_int(base.get('processed_tasks', 0)),
-            'dropped': _safe_int(base.get('dropped_tasks', 0)),
-            'delay': _safe_scalar(base.get('total_delay', 0.0)),
-            'energy': _safe_scalar(base.get('total_energy', 0.0)),
-            'generated_bytes': _safe_scalar(base.get('generated_data_bytes', 0.0)),
-            'dropped_bytes': _safe_scalar(base.get('dropped_data_bytes', 0.0)),
+            'processed': int(base.get('processed_tasks', 0) or 0),
+            'dropped': int(base.get('dropped_tasks', 0) or 0),
+            'delay': float(base.get('total_delay', 0.0) or 0.0),
+            'energy': float(base.get('total_energy', 0.0) or 0.0),
+            'generated_bytes': float(base.get('generated_data_bytes', 0.0) or 0.0),
+            'dropped_bytes': float(base.get('dropped_data_bytes', 0.0) or 0.0),
         }
         self._reward_ema_delay = None
         self._reward_ema_energy = None
 
     def _build_reward_snapshot(self, stats: Dict[str, Any]) -> Dict[str, float]:
-        """基于累计统计计算单步奖励所需的增量指标""" 
-        safe_scalar = lambda v, d=0.0: float(v) if isinstance(v, (int, float, np.floating, np.integer)) and np.isfinite(float(v)) else d  # type: ignore[arg-type]
-        def safe_int(v: Any, default: int = 0) -> int:
-            try:
-                val = float(v)
-            except (TypeError, ValueError):
-                return default
-            return int(val) if np.isfinite(val) else default
-
-        raw_baseline = getattr(self, '_reward_baseline', None) or {}
-        baseline = {
-            'processed': safe_int(raw_baseline.get('processed', 0)),
-            'dropped': safe_int(raw_baseline.get('dropped', 0)),
-            'delay': safe_scalar(raw_baseline.get('delay', 0.0)),
-            'energy': safe_scalar(raw_baseline.get('energy', 0.0)),
-            'generated_bytes': safe_scalar(raw_baseline.get('generated_bytes', 0.0)),
-            'dropped_bytes': safe_scalar(raw_baseline.get('dropped_bytes', 0.0)),
+        """基于累计统计计算单步奖励所需的增量指标。"""
+        baseline = getattr(self, '_reward_baseline', None) or {
+            'processed': 0,
+            'dropped': 0,
+            'delay': 0.0,
+            'energy': 0.0,
+            'generated_bytes': 0.0,
+            'dropped_bytes': 0.0,
         }
 
-        total_processed = safe_int(stats.get('processed_tasks', 0))
-        total_dropped = safe_int(stats.get('dropped_tasks', 0))
-        total_delay = safe_scalar(stats.get('total_delay', 0.0))
-        total_energy = safe_scalar(stats.get('total_energy', 0.0))
-        total_generated = safe_scalar(stats.get('generated_data_bytes', 0.0))
-        total_dropped_bytes = safe_scalar(stats.get('dropped_data_bytes', 0.0))
+        total_processed = int(stats.get('processed_tasks', 0) or 0)
+        total_dropped = int(stats.get('dropped_tasks', 0) or 0)
+        total_delay = float(stats.get('total_delay', 0.0) or 0.0)
+        total_energy = float(stats.get('total_energy', 0.0) or 0.0)
+        total_generated = float(stats.get('generated_data_bytes', 0.0) or 0.0)
+        total_dropped_bytes = float(stats.get('dropped_data_bytes', 0.0) or 0.0)
 
         delta_processed = max(0, total_processed - baseline['processed'])
         delta_dropped = max(0, total_dropped - baseline['dropped'])
@@ -1166,10 +971,8 @@ class SingleAgentTrainingEnvironment:
         completion_rate = normalize_ratio(delta_processed, completion_total, default=1.0)
         loss_ratio = normalize_ratio(delta_loss_bytes, delta_generated)
 
-        avg_delay_increment = safe_scalar(avg_delay_increment)
-        avg_delay_for_reward = avg_delay_increment if avg_delay_increment > 0 else safe_scalar(stats.get('avg_task_delay', 0.0))
+        avg_delay_for_reward = avg_delay_increment if avg_delay_increment > 0 else float(stats.get('avg_task_delay', 0.0) or 0.0)
         energy_per_task = delta_energy / max(1, delta_processed) if delta_processed > 0 else 0.0
-        energy_per_task = safe_scalar(energy_per_task)
         smoothed_delay, smoothed_energy_per_task = self._apply_reward_smoothing(
             avg_delay_for_reward,
             energy_per_task
@@ -1178,7 +981,7 @@ class SingleAgentTrainingEnvironment:
 
         reward_snapshot = {
             'avg_task_delay': smoothed_delay,
-            'total_energy_consumption': smoothed_energy_total if smoothed_energy_total > 0 else safe_scalar(stats.get('total_energy_consumption', 0.0)),
+            'total_energy_consumption': smoothed_energy_total if smoothed_energy_total > 0 else float(stats.get('total_energy_consumption', 0.0) or 0.0),
             'dropped_tasks': delta_dropped,
             'task_completion_rate': completion_rate,
             'data_loss_bytes': delta_loss_bytes,
@@ -1197,30 +1000,22 @@ class SingleAgentTrainingEnvironment:
         return reward_snapshot
 
     def _apply_reward_smoothing(self, delay_value: float, energy_per_task: float) -> Tuple[float, float]:
-        """对奖励关键指标进行指数平滑，减小TD3训练噪声""" 
-        delay_value = float(delay_value) if np.isfinite(delay_value) else 0.0
-        energy_per_task = float(energy_per_task) if np.isfinite(energy_per_task) else 0.0
+        """对奖励关键指标进行指数平滑，减小TD3训练噪声。"""
         if self._reward_smoothing_alpha <= 0.0:
             return delay_value, energy_per_task
         alpha = self._reward_smoothing_alpha
-        if self._reward_ema_delay is None or not np.isfinite(self._reward_ema_delay):
+        if self._reward_ema_delay is None:
             self._reward_ema_delay = delay_value
         else:
             self._reward_ema_delay = (1.0 - alpha) * self._reward_ema_delay + alpha * delay_value
-            if not np.isfinite(self._reward_ema_delay):
-                self._reward_ema_delay = delay_value
-        if self._reward_ema_energy is None or not np.isfinite(self._reward_ema_energy):
+        if self._reward_ema_energy is None:
             self._reward_ema_energy = energy_per_task
         else:
             self._reward_ema_energy = (1.0 - alpha) * self._reward_ema_energy + alpha * energy_per_task
-            if not np.isfinite(self._reward_ema_energy):
-                self._reward_ema_energy = energy_per_task
         return self._reward_ema_delay, self._reward_ema_energy
 
     def _maybe_update_dynamic_energy_target(self, episode: int, episode_energy: float) -> None:
-        """根据实际能耗自动放宽目标，避免不可达约束导致振荡""" 
-        if os.environ.get('DYNAMIC_TARGET_DISABLE', '0') != '0':
-            return
+        """根据实际能耗自动放宽目标，避免不可达约束导致振荡。"""
         if episode_energy <= 0:
             return
         decay = 0.9
@@ -1232,83 +1027,54 @@ class SingleAgentTrainingEnvironment:
         target = self._dynamic_energy_target
         ema = self._energy_target_ema
         if ema > target * 1.2:
-            new_target = min(ema * 0.95, target * 3.0)
+            new_target = min(ema * 0.95, target * 1.8)
             self._dynamic_energy_target = new_target
             self._last_energy_target_update = episode
             update_reward_targets(energy_target=new_target)
             print(
-                f"[DynamicTarget] Energy EMA {ema:.1f}J > target {target:.1f}J -> {new_target:.1f}J (Episode {episode})"
-            )
-
-    def _maybe_update_dynamic_latency_target(self, episode: int, episode_delay: float) -> None:
-        """根据实际时延自动放宽目标，避免高负载场景奖励饱和""" 
-        if os.environ.get('DYNAMIC_TARGET_DISABLE', '0') != '0':
-            return
-        if episode_delay <= 0:
-            return
-        decay = 0.9
-        self._delay_target_ema = decay * self._delay_target_ema + (1.0 - decay) * episode_delay
-        warmup = max(20, int(config.experiment.num_episodes * 0.05))
-        if episode < warmup:
-            return
-        if episode - self._last_delay_target_update < 5:
-            return
-        target = self._dynamic_latency_target
-        ema = self._delay_target_ema
-        if ema > target * 1.2:
-            new_target = min(ema * 0.95, target * 3.0)
-            self._dynamic_latency_target = new_target
-            self._last_delay_target_update = episode
-            update_reward_targets(latency_target=new_target)
-            print(
-                f"[DynamicTarget] Delay EMA {ema:.3f}s > target {target:.3f}s -> {new_target:.3f}s (Episode {episode})"
+                f"⚙️ 能耗EMA {ema:.1f}J 超过目标 {target:.1f}J，"
+                f"自动上调奖励阈值 -> {new_target:.1f}J (Episode {episode})"
             )
 
     def reset_environment(self) -> np.ndarray:
-        """重置环境并返回初始状态""" 
-        # 重置仿真器状�?
+        """重置环境并返回初始状态"""
+        # 重置仿真器状态
         self._episode_counters_initialized = False
         self.simulator._setup_scenario()
         
-        # 收集系统状�?
+        # 收集系统状态
         node_states = {}
         
         # 车辆状态（与step保持一致的归一化方式）
         for i, vehicle in enumerate(self.simulator.vehicles):
             vehicle_state = np.array([
-                normalize_scalar(vehicle['position'][0], 'vehicle_position_range', 2060.0),
-                normalize_scalar(vehicle['position'][1], 'vehicle_position_range', 2060.0),
+                normalize_scalar(vehicle['position'][0], 'vehicle_position_range', 1000.0),
+                normalize_scalar(vehicle['position'][1], 'vehicle_position_range', 1000.0),
                 normalize_scalar(vehicle.get('velocity', 0.0), 'vehicle_speed_range', 50.0),
                 normalize_scalar(len(vehicle.get('tasks', [])), 'vehicle_queue_capacity', 20.0),
                 normalize_scalar(vehicle.get('energy_consumed', 0.0), 'vehicle_energy_reference', 1000.0),
             ])
             node_states[f'vehicle_{i}'] = vehicle_state
 
-        # RSU状态（统一归一�?裁剪�?
+        # RSU状态（统一归一化/裁剪）
         for i, rsu in enumerate(self.simulator.rsus):
-            # 🔧 修复：添加CPU频率特征，让智能体知道RSU的计算容量优�?
-            cpu_freq_norm = normalize_scalar(rsu.get('cpu_freq', 12.5e9), 'cpu_frequency_range', 20e9)  # 归一化到[0,1]
             rsu_state = np.array([
-                normalize_scalar(rsu['position'][0], 'rsu_position_range', 2060.0),
-                normalize_scalar(rsu['position'][1], 'rsu_position_range', 2060.0),
+                normalize_scalar(rsu['position'][0], 'rsu_position_range', 1000.0),
+                normalize_scalar(rsu['position'][1], 'rsu_position_range', 1000.0),
                 self._calculate_correct_cache_utilization(rsu.get('cache', {}), rsu.get('cache_capacity', 1000.0)),
                 normalize_scalar(len(rsu.get('computation_queue', [])), 'rsu_queue_capacity', 20.0),
                 normalize_scalar(rsu.get('energy_consumed', 0.0), 'rsu_energy_reference', 1000.0),
-                cpu_freq_norm,  # 🔧 新增：第6�?- CPU频率 (RSU�?2.5GHz/20GHz=0.625)
             ])
             node_states[f'rsu_{i}'] = rsu_state
 
-        # UAV状态（统一归一�?裁剪�?
+        # UAV状态（统一归一化/裁剪）
         for i, uav in enumerate(self.simulator.uavs):
-            # 🔧 修复：添加CPU频率特征，让智能体知道UAV的计算容量相对较�?
-            cpu_freq_norm = normalize_scalar(uav.get('cpu_freq', 5.0e9), 'cpu_frequency_range', 20e9)  # 归一化到[0,1]
             uav_state = np.array([
-                normalize_scalar(uav['position'][0], 'uav_position_range', 2060.0),
-                normalize_scalar(uav['position'][1], 'uav_position_range', 2060.0),
+                normalize_scalar(uav['position'][0], 'uav_position_range', 1000.0),
+                normalize_scalar(uav['position'][1], 'uav_position_range', 1000.0),
                 normalize_scalar(uav['position'][2], 'uav_altitude_range', 200.0),
                 self._calculate_correct_cache_utilization(uav.get('cache', {}), uav.get('cache_capacity', 200.0)),
                 normalize_scalar(uav.get('energy_consumed', 0.0), 'uav_energy_reference', 1000.0),
-                cpu_freq_norm,  # 🔧 新增：第6�?- CPU频率 (UAV�?.0GHz/20GHz=0.25)
             ])
             node_states[f'uav_{i}'] = uav_state
         
@@ -1326,16 +1092,17 @@ class SingleAgentTrainingEnvironment:
         if hasattr(self, '_last_total_energy'):
             delattr(self, '_last_total_energy')
 
-        # 获取初始状态向�?
-        if isinstance(self.agent_env, (TD3Environment, TD3LatencyEnergyEnvironment, CAMTD3Environment)):
-            state = self.agent_env.get_state_vector(node_states, system_metrics, {'vehicles': [], 'rsus': [], 'uavs': []})  # type: ignore[call-arg]
-        else:
-            state = self.agent_env.get_state_vector(node_states, system_metrics)  # type: ignore[call-arg]
+        stats_snapshot = getattr(self.simulator, 'stats', None)
+        self._initialize_episode_counters(stats_snapshot)
+        self._reset_reward_baseline(stats_snapshot)
+        
+        resource_state = self._collect_resource_state()
+        state = self.agent_env.get_state_vector(node_states, system_metrics, resource_state)
         
         return state
-    
+
     def step(self, action, state, actions_dict: Optional[Dict] = None) -> Tuple[np.ndarray, float, bool, Dict]:
-        """执行一步仿真，应用智能体动作到仿真器""" 
+        """执行一步仿真，应用智能体动作到仿真器"""
         # 🎯 使用固定卸载策略（如果设置）
         if self.fixed_offload_policy is not None and actions_dict is not None:
             try:
@@ -1358,7 +1125,7 @@ class SingleAgentTrainingEnvironment:
                     else:
                         local_pref, rsu_pref, uav_pref = 0.33, 0.33, 0.34
                     
-                    # 覆盖智能体的卸载决策，保留其他决策（缓存、迁移等�?
+                    # 覆盖智能体的卸载决策，保留其他决策（缓存、迁移等）
                     if 'offload_preference' in actions_dict:
                         actions_dict['offload_preference'] = {
                             'local': local_pref,
@@ -1369,67 +1136,58 @@ class SingleAgentTrainingEnvironment:
                 # 如果固定策略失败，回退到智能体决策
                 pass
         
-        # 构造传递给仿真器的动作（将连续动作映射为本�?RSU/UAV偏好�?
+        # 构造传递给仿真器的动作（将连续动作映射为本地/RSU/UAV偏好）
         sim_actions = self._build_simulator_actions(actions_dict)
         
         # 执行仿真步骤（传入动作）
         step_stats = self.simulator.run_simulation_step(0, sim_actions)
         resource_state = self._collect_resource_state()
         
-        # 收集下一步状�?
+        # 收集下一步状态
         node_states = {}
         
-        # 车辆状�?(5�?- 统一归一�?
+        # 车辆状态 (5维 - 统一归一化)
         for i, vehicle in enumerate(self.simulator.vehicles):
             vehicle_state = np.array([
-                normalize_scalar(vehicle['position'][0], 'vehicle_position_range', 2060.0),  # 位置x
-                normalize_scalar(vehicle['position'][1], 'vehicle_position_range', 2060.0),  # 位置y
+                normalize_scalar(vehicle['position'][0], 'vehicle_position_range', 1000.0),  # 位置x
+                normalize_scalar(vehicle['position'][1], 'vehicle_position_range', 1000.0),  # 位置y
                 normalize_scalar(vehicle.get('velocity', 0.0), 'vehicle_speed_range', 50.0),  # 速度
                 normalize_scalar(len(vehicle.get('tasks', [])), 'vehicle_queue_capacity', 20.0),  # 队列
-                normalize_scalar(vehicle.get('energy_consumed', 0.0), 'vehicle_energy_reference', 1000.0),  # 能�?
+                normalize_scalar(vehicle.get('energy_consumed', 0.0), 'vehicle_energy_reference', 1000.0),  # 能耗
             ])
             node_states[f'vehicle_{i}'] = vehicle_state
 
-        # RSU状�?(6�?- 添加CPU频率)
+        # RSU状态 (5维 - 清理版，移除控制参数)
         for i, rsu in enumerate(self.simulator.rsus):
             # 标准化归一化：确保所有值在[0,1]范围
-            # 🔧 修复：添加CPU频率特征
-            cpu_freq_norm = normalize_scalar(rsu.get('cpu_freq', 12.5e9), 'cpu_frequency_range', 20e9)
             rsu_state = np.array([
-                normalize_scalar(rsu['position'][0], 'rsu_position_range', 2060.0),  # 位置x
-                normalize_scalar(rsu['position'][1], 'rsu_position_range', 2060.0),  # 位置y
-                self._calculate_correct_cache_utilization(rsu.get('cache', {}), rsu.get('cache_capacity', 1000.0)),  # 缓存利用�?
-                normalize_scalar(len(rsu.get('computation_queue', [])), 'rsu_queue_capacity', 20.0),  # 队列利用�?
-                normalize_scalar(rsu.get('energy_consumed', 0.0), 'rsu_energy_reference', 1000.0),  # 能�?
-                cpu_freq_norm,  # 🔧 新增：第6�?- CPU频率
+                normalize_scalar(rsu['position'][0], 'rsu_position_range', 1000.0),  # 位置x
+                normalize_scalar(rsu['position'][1], 'rsu_position_range', 1000.0),  # 位置y
+                self._calculate_correct_cache_utilization(rsu.get('cache', {}), rsu.get('cache_capacity', 1000.0)),  # 缓存利用率
+                normalize_scalar(len(rsu.get('computation_queue', [])), 'rsu_queue_capacity', 20.0),  # 队列利用率
+                normalize_scalar(rsu.get('energy_consumed', 0.0), 'rsu_energy_reference', 1000.0),  # 能耗
             ])
             node_states[f'rsu_{i}'] = rsu_state
 
-        # UAV状�?(6�?- 添加CPU频率)
+        # UAV状态 (5维 - 清理版，移除控制参数)
         for i, uav in enumerate(self.simulator.uavs):
             # 标准化归一化：确保所有值在[0,1]范围
-            # 🔧 修复：添加CPU频率特征
-            cpu_freq_norm = normalize_scalar(uav.get('cpu_freq', 5.0e9), 'cpu_frequency_range', 20e9)
             uav_state = np.array([
-                normalize_scalar(uav['position'][0], 'uav_position_range', 2060.0),  # 位置x
-                normalize_scalar(uav['position'][1], 'uav_position_range', 2060.0),  # 位置y
+                normalize_scalar(uav['position'][0], 'uav_position_range', 1000.0),  # 位置x
+                normalize_scalar(uav['position'][1], 'uav_position_range', 1000.0),  # 位置y
                 normalize_scalar(uav['position'][2], 'uav_altitude_range', 200.0),   # 位置z（高度）
-                self._calculate_correct_cache_utilization(uav.get('cache', {}), uav.get('cache_capacity', 200.0)),  # 缓存利用�?
-                normalize_scalar(uav.get('energy_consumed', 0.0), 'uav_energy_reference', 1000.0),  # 能�?
-                cpu_freq_norm,  # 🔧 新增：第6�?- CPU频率
+                self._calculate_correct_cache_utilization(uav.get('cache', {}), uav.get('cache_capacity', 200.0)),  # 缓存利用率
+                normalize_scalar(uav.get('energy_consumed', 0.0), 'uav_energy_reference', 1000.0),  # 能耗
             ])
             node_states[f'uav_{i}'] = uav_state
         
         # 计算系统指标
         system_metrics = self._calculate_system_metrics(step_stats)
         
-        # 获取下一状�?
-        if isinstance(self.agent_env, (TD3Environment, TD3LatencyEnergyEnvironment, CAMTD3Environment)):
-            next_state = self.agent_env.get_state_vector(node_states, system_metrics, resource_state)  # type: ignore[call-arg]
-        else:
-            next_state = self.agent_env.get_state_vector(node_states, system_metrics)  # type: ignore[call-arg]
+        # 获取下一状态
+        next_state = self.agent_env.get_state_vector(node_states, system_metrics, resource_state)
         
-        # 🔧 增强：计算包含子系统指标的奖�?
+        # 🔧 增强：计算包含子系统指标的奖励
         cache_metrics = self.adaptive_cache_controller.get_cache_metrics()
         migration_metrics = self.adaptive_migration_controller.get_migration_metrics()
         if hasattr(self, 'strategy_coordinator') and self.strategy_coordinator is not None:
@@ -1441,9 +1199,9 @@ class SingleAgentTrainingEnvironment:
                     step_stats,
                 )
             except Exception as exc:
-                print(f"⚠️ 联合策略协调器观测异�? {exc}")
+                print(f"⚠️ 联合策略协调器观测异常: {exc}")
 
-        # 反馈关键系统指标给TD3策略指导模块，驱动能�?延迟温度自适应
+        # 反馈关键系统指标给TD3策略指导模块，驱动能耗/延迟温度自适应
         agent_core = getattr(self.agent_env, 'agent', None)
         if agent_core is not None and hasattr(agent_core, 'update_guidance_feedback'):
             try:
@@ -1454,8 +1212,6 @@ class SingleAgentTrainingEnvironment:
 
         reward_source = system_metrics.get('reward_snapshot', system_metrics)
         reward = self.agent_env.calculate_reward(reward_source, cache_metrics, migration_metrics)
-        if not np.isfinite(reward):
-            reward = 0.0
         try:
             system_metrics['normalized_reward'] = self._normalize_reward_value(reward)
         except Exception:
@@ -1479,10 +1235,6 @@ class SingleAgentTrainingEnvironment:
         self.episode_metrics['mm1_queue_error'].append(float(system_metrics.get('mm1_queue_error', 0.0)))
         self.episode_metrics['mm1_delay_error'].append(float(system_metrics.get('mm1_delay_error', 0.0)))
         
-        # 🚀 新增：记录迁移能�?
-        self.episode_metrics['rsu_migration_energy'].append(float(system_metrics.get('rsu_migration_energy', 0.0)))
-        self.episode_metrics['uav_migration_energy'].append(float(system_metrics.get('uav_migration_energy', 0.0)))
-        
         # 判断是否结束
         done = False  # 单智能体环境通常不会提前结束
         
@@ -1498,15 +1250,15 @@ class SingleAgentTrainingEnvironment:
         """计算系统性能指标 - 最终修复版，确保数值在合理范围"""
         import numpy as np
         
-        # 安全获取数�?
+        # 安全获取数值
         def safe_get(key: str, default: float = 0.0) -> float:
             value = step_stats.get(key, default)
             if np.isnan(value) or np.isinf(value):
                 return default
             return max(0.0, value)  # 确保非负
         
-        # 🔧 修复：使用episode级别统计而非累积统计，避免奖励累积恶�?
-        # 计算本episode的增量统�?
+        # 🔧 修复：使用episode级别统计而非累积统计，避免奖励累积恶化
+        # 计算本episode的增量统计
         total_processed = int(safe_get('processed_tasks', 0))  # 累计完成
         total_dropped = int(safe_get('dropped_tasks', 0))  # 累计丢弃（数量）
         
@@ -1531,36 +1283,19 @@ class SingleAgentTrainingEnvironment:
         reported_hit_rate = step_stats.get('cache_hit_rate')
         if reported_requests > 0:
             cache_requests_total = reported_requests
-        cache_hit_rate = normalize_ratio(cache_hits, cache_requests_total)
         if isinstance(reported_hit_rate, (int, float)):
             cache_hit_rate = float(np.clip(reported_hit_rate, 0.0, 1.0))
-        # 🔧 回退到缓存控制器的统计，避免日志缺失导致0命中
-        cache_metrics = getattr(self, "adaptive_cache_controller", None)
-        if cache_metrics is not None:
-            cache_metrics = cache_metrics.get_cache_metrics()
-            cm_requests = int(cache_metrics.get('total_requests', 0) or 0)
-            cm_hit_rate = float(cache_metrics.get('hit_rate', 0.0) or 0.0)
-            if cm_requests > 0 and cache_hit_rate <= 0.0:
-                cache_requests_total = cm_requests
-                cache_hit_rate = float(np.clip(cm_hit_rate, 0.0, 1.0))
+        else:
+            cache_hit_rate = normalize_ratio(cache_hits, cache_requests_total)
         local_cache_hits = int(safe_get('local_cache_hits', 0))
         
-        # 🔧 修复：正确计算平均延�?- 使用episode级别增量，而非累积�?
-        total_delay_累积 = safe_get('total_delay', 0.0)
-        # 计算本episode的延迟增�?
-        delay_base_value = getattr(self, '_episode_delay_base', 0.0)
-        episode_delay = max(0.0, total_delay_累积 - delay_base_value)
-        # 使用本episode的任务数
-        processed_for_delay = max(1, episode_processed) if episode_processed > 0 else max(1, total_processed)
-        # 计算本episode的平均延�?
-        avg_delay = episode_delay / processed_for_delay if processed_for_delay > 0 else 0.0
+        # 🔧 修复：安全计算平均延迟 - 使用累计统计
+        total_delay = safe_get('total_delay', 0.0)
+        processed_for_delay = max(1, total_processed)  # 使用累计完成数
+        avg_delay = total_delay / processed_for_delay
         
-        # 🔧 修复：移除错误的clip，延迟应该根据实际情况自然展�?
-        # 只在明显异常时才进行裁剪（例如超�?0秒，说明计算有误�?
-        if avg_delay > 60.0 or not np.isfinite(avg_delay):
-            print(f"⚠️ 异常延迟检�? {avg_delay:.2f}s，重置为0.0s")
-            avg_delay = 0.0
-        avg_delay = max(0.0, avg_delay)  # 确保非负
+        # 限制延迟在合理范围内（关键修复）
+        avg_delay = np.clip(avg_delay, 0.01, 5.0)  # 扩大到0.01-5.0秒范围，适应跨时隙处理
 
         delay_base = getattr(self, '_episode_delay_component_base', {})
         delay_processing_total = safe_get('delay_processing', 0.0)
@@ -1582,7 +1317,7 @@ class SingleAgentTrainingEnvironment:
         avg_cache_delay_component = episode_delay_cache / delay_denominator
         avg_wait_delay_component = episode_delay_wait / delay_denominator
         
-        # 🔧 修复能耗计算：使用真实episode增量能�?
+        # 🔧 修复能耗计算：使用真实累积能耗并转换为本episode增量
         current_total_energy = safe_get('total_energy', 0.0)
 
         if not getattr(self, '_episode_counters_initialized', False):
@@ -1651,15 +1386,15 @@ class SingleAgentTrainingEnvironment:
                 else:
                     theo_delay_val = None
 
-                mm1_predictions[node_key] = {  # type: ignore[assignment]
-                    'arrival_rate': float(arrival_rate),
-                    'service_rate': float(service_rate),
-                    'rho': float(rho_storable) if rho_storable is not None else 0.0,
+                mm1_predictions[node_key] = {
+                    'arrival_rate': arrival_rate,
+                    'service_rate': service_rate,
+                    'rho': rho_storable,
                     'stable': bool(stable),
-                    'theoretical_queue': float(theo_queue_val) if theo_queue_val is not None else 0.0,
-                    'actual_queue': float(actual_queue),
-                    'theoretical_delay': float(theo_delay_val) if theo_delay_val is not None else 0.0,
-                    'actual_delay': float(actual_delay_obs),
+                    'theoretical_queue': theo_queue_val,
+                    'actual_queue': actual_queue,
+                    'theoretical_delay': theo_delay_val,
+                    'actual_delay': actual_delay_obs,
                 }
 
                 if theo_queue_val is not None:
@@ -1671,12 +1406,13 @@ class SingleAgentTrainingEnvironment:
         mm1_delay_error = float(np.mean(mm1_delay_errors)) if mm1_delay_errors else 0.0
 
         
-        # 🔧 P0修复：移除能耗估算魔法数字，如果�?则显示警告但不使用虚假�?
+        # 计算本episode增量能耗（防止负值与异常）
         if current_total_energy <= 0.0:
-            # 使用上一episode的能耗作为基线（更合理）
-            episode_incremental_energy = 0.0
-            total_energy = 0.0
-            print(f"⚠️ 仿真器能耗为0，请检查仿真器能耗模型！")
+            # 仿真器能耗异常时的保底估算
+            completed_tasks = self.simulator.stats.get('completed_tasks', 0) if hasattr(self, 'simulator') else 0
+            estimated_energy = max(0.0, completed_tasks * 15.0)
+            total_energy = estimated_energy
+            print(f"⚠️ 仿真器能耗为0，使用估算能耗: {total_energy:.1f}J")
         else:
             episode_incremental_energy = max(0.0, current_total_energy - getattr(self, '_episode_energy_base', 0.0))
             total_energy = episode_incremental_energy
@@ -1699,42 +1435,6 @@ class SingleAgentTrainingEnvironment:
         data_generated_bytes = max(0.0, episode_generated_bytes)
         data_loss_ratio_bytes = normalize_ratio(data_loss_bytes, data_generated_bytes)
         
-        # 🔥 新增：计算卸载比例（local/rsu/uav�?
-        # Accumulate task counts from per-step stats
-        self._episode_local_tasks += int(step_stats.get('local_tasks', 0))
-        self._episode_rsu_tasks += int(step_stats.get('rsu_tasks', 0))
-        self._episode_uav_tasks += int(step_stats.get('uav_tasks', 0))
-
-        local_tasks_count = self._episode_local_tasks
-        rsu_tasks_count = self._episode_rsu_tasks
-        uav_tasks_count = self._episode_uav_tasks
-        total_offload_tasks = local_tasks_count + rsu_tasks_count + uav_tasks_count
-        
-        if total_offload_tasks > 0:
-            local_offload_ratio = float(local_tasks_count) / float(total_offload_tasks)
-            rsu_offload_ratio = float(rsu_tasks_count) / float(total_offload_tasks)
-            uav_offload_ratio = float(uav_tasks_count) / float(total_offload_tasks)
-            # 🎯 修复：计算总远程卸载比例（RSU+UAV�?
-            remote_execution_ratio = rsu_offload_ratio + uav_offload_ratio
-        else:
-            # 默认值：全部本地处理
-            local_offload_ratio = 1.0
-            rsu_offload_ratio = 0.0
-            uav_offload_ratio = 0.0
-            remote_execution_ratio = 0.0
-        
-        # 🎯 修复：计算RSU资源利用率（计算队列占用率）
-        rsu_total_utilization = 0.0
-        rsu_count = len(self.simulator.rsus) if hasattr(self.simulator, 'rsus') else 0
-        if rsu_count > 0:
-            for rsu in self.simulator.rsus:
-                queue_len = len(rsu.get('computation_queue', []))
-                queue_capacity = rsu.get('queue_capacity', 20)  # 默认容量20
-                rsu_total_utilization += float(queue_len) / max(1.0, float(queue_capacity))
-            rsu_utilization = rsu_total_utilization / float(rsu_count)
-        else:
-            rsu_utilization = 0.0
-        
         # 迁移成功率（来自仿真器统计）
         migrations_executed = int(safe_get('migrations_executed', 0))
         migrations_successful = int(safe_get('migrations_successful', 0))
@@ -1742,7 +1442,7 @@ class SingleAgentTrainingEnvironment:
         
         # 🔧 调试迁移统计
         if migrations_executed > 0:
-            print(f"🔍 迁移统计: 执行{migrations_executed}�? 成功{migrations_successful}�? 成功率{migration_success_rate:.1%}")
+            print(f"🔍 迁移统计: 执行{migrations_executed}次, 成功{migrations_successful}次, 成功率{migration_success_rate:.1%}")
 
         episode_cache_requests = max(
             0,
@@ -1761,10 +1461,10 @@ class SingleAgentTrainingEnvironment:
         def _normalize_vector(key: str, length: int = 4, clip: bool = True) -> List[float]:
             raw = step_stats.get(key)
             if isinstance(raw, (np.ndarray, list, tuple)):
-                values = [float(v) for v in raw]  # 明确转换为float列表
+                values = raw
             else:
                 values = []
-            return normalize_feature_vector(values, length, clip=clip)  # type: ignore[arg-type]
+            return normalize_feature_vector(values, length, clip=clip)
 
         queue_distribution = _normalize_vector('task_type_queue_distribution')
         active_distribution = _normalize_vector('task_type_active_distribution')
@@ -1795,31 +1495,16 @@ class SingleAgentTrainingEnvironment:
         # 🔍 调试日志：能耗与迁移敏感区间
         current_episode = getattr(self, '_current_episode', 0)
         if current_episode > 0 and (current_episode % 50 == 0 or avg_delay > 0.2 or migration_success_rate < 0.9):
-            # 🔧 修复：计算任务数量损失率，与完成率对�?
-            task_drop_rate = normalize_ratio(episode_dropped, episode_total)
             print(
-                f"[调试] Episode {current_episode:04d}: 延迟 {avg_delay:.3f}s, 能�?{total_energy:.2f}J, "
-                f"完成�?{completion_rate:.1%}, 迁移成功�?{migration_success_rate:.1%}, "
+                f"[调试] Episode {current_episode:04d}: 延迟 {avg_delay:.3f}s, 能耗 {total_energy:.2f}J, "
+                f"完成率 {completion_rate:.1%}, 迁移成功率 {migration_success_rate:.1%}, "
                 f"缓存命中 {cache_hit_rate:.1%}, 数据损失 {data_loss_ratio_bytes:.1%}, "
-                f"缓存淘汰�?{cache_eviction_rate:.1%}"
+                f"缓存淘汰率 {cache_eviction_rate:.1%}"
             )
-            # 🔥 新增：显示卸载分布统计和损失率对比
-            print(
-                f"  任务分布: 本地 {local_tasks_count} ({local_offload_ratio:.1%}), "
-                f"RSU {rsu_tasks_count} ({rsu_offload_ratio:.1%}), "
-                f"UAV {uav_tasks_count} ({uav_offload_ratio:.1%}), "
-                f"丢弃 {episode_dropped}"
-            )
-            # 📊 添加：任务数量vs数据量的对比说明
-            if abs(task_drop_rate - data_loss_ratio_bytes) > 0.1:  # 差异>10%时提示
-                print(
-                    f"  ⚠️ 注意: 任务数量丢失率{task_drop_rate:.1%} vs 数据量丢失率{data_loss_ratio_bytes:.1%} "
-                    f"(差异{abs(task_drop_rate - data_loss_ratio_bytes)*100:.1f}%，说明丢弃任务的数据量较大)"
-                )
 
         # 🤖 更新缓存控制器统计（如果有实际数据）
         if cache_hit_rate > 0:
-            # 🔧 修复：正确计算缓存统�?
+            # 🔧 修复：正确计算缓存统计
             total_utilization = 0.0
             for rsu in self.simulator.rsus:
                 utilization = self._calculate_correct_cache_utilization(
@@ -1898,24 +1583,10 @@ class SingleAgentTrainingEnvironment:
             'normalized_delay': avg_delay / latency_target,
             'normalized_energy': total_energy / energy_target,
             'reward_snapshot': reward_snapshot,
-            # 🔥 新增：卸载比例统�?
-            'local_offload_ratio': local_offload_ratio,
-            'rsu_offload_ratio': rsu_offload_ratio,
-            'uav_offload_ratio': uav_offload_ratio,
-            'local_tasks_count': local_tasks_count,
-            'rsu_tasks_count': rsu_tasks_count,
-            'uav_tasks_count': uav_tasks_count,
-            # 🎯 修夏bug：添加关键指�?
-            'rsu_utilization': rsu_utilization,  # RSU资源利用�?
-            'offload_ratio': remote_execution_ratio,  # 总远程卸载比例（RSU+UAV�?
-            'remote_execution_ratio': remote_execution_ratio,  # 别名，兼容旧代码
-            # 🚀 新增：迁移能耗指�?
-            'rsu_migration_energy': _episode_energy('rsu_migration_energy'),
-            'uav_migration_energy': _episode_energy('uav_migration_energy'),
         }
 
     def _normalize_reward_value(self, reward: float) -> float:
-        """将奖励值转换为无量纲比例，便于与其他指标对比""" 
+        """将奖励值转换为无量纲比例，便于与其他指标对比。"""
         import numpy as np
         rl_config = getattr(config, 'rl', None)
         reward_scale = float(
@@ -1931,7 +1602,7 @@ class SingleAgentTrainingEnvironment:
         return float(np.clip(normalized, -5.0, 5.0))
     
     def _record_episode_metrics(self, system_metrics: Dict, episode_steps: Optional[int] = None) -> None:
-        """将系统指标写入episode_metrics，方便后续报告可视化使用""" 
+        """将系统指标写入episode_metrics，方便后续报告/可视化使用。"""
         import numpy as np
 
         metric_mapping = {
@@ -1952,11 +1623,10 @@ class SingleAgentTrainingEnvironment:
             'queue_rho_max': 'queue_rho_max',
             'queue_overload_flag': 'queue_overload_flag',
             'queue_overload_events': 'queue_overload_events',
-            'avg_step_reward': 'avg_step_reward',  # 🔧 修复：添加平均每步奖励映�?
             'migration_avg_cost': 'migration_avg_cost',
             'migration_avg_delay_saved': 'migration_avg_delay_saved',
-            'rsu_hotspot_mean': 'rsu_hotspot_mean',  # 🔧 修复：确保记录episode级别热点平均
-            'rsu_hotspot_peak': 'rsu_hotspot_peak',  # 🔧 修复：确保记录episode级别热点峰�?
+            'rsu_hotspot_mean': 'rsu_hotspot_mean',
+            'rsu_hotspot_peak': 'rsu_hotspot_peak',
             'normalized_delay': 'normalized_delay',
             'normalized_energy': 'normalized_energy',
             'normalized_reward': 'normalized_reward',
@@ -1974,12 +1644,6 @@ class SingleAgentTrainingEnvironment:
             'avg_energy_downlink': 'avg_energy_downlink',
             'avg_energy_cache': 'avg_energy_cache',
             'queue_overflow_drops': 'queue_overflow_drops',
-            # 🎯 修夏bug：添加关键指标映�?
-            'rsu_utilization': 'rsu_utilization',
-            'offload_ratio': 'offload_ratio',
-            'rsu_offload_ratio': 'rsu_offload_ratio',
-            'uav_offload_ratio': 'uav_offload_ratio',
-            'local_offload_ratio': 'local_offload_ratio',
         }
 
         def _coerce_scalar(value: Any) -> Optional[float]:
@@ -2011,18 +1675,10 @@ class SingleAgentTrainingEnvironment:
 
         if episode_steps is not None and 'episode_steps' in self.episode_metrics:
             self.episode_metrics['episode_steps'].append(int(episode_steps))
-        
-        # 🔧 修复：计算并记录平均每步奖励
-        if episode_steps and episode_steps > 0:
-            # 从最后一个episode_reward计算avg_step_reward
-            if hasattr(self, 'episode_rewards') and self.episode_rewards:
-                last_episode_reward = self.episode_rewards[-1]
-                avg_step_reward = last_episode_reward / episode_steps
-                system_metrics['avg_step_reward'] = avg_step_reward
     
     def run_episode(self, episode: int, max_steps: Optional[int] = None) -> Dict:
         """运行一个完整的训练轮次"""
-        # 使用配置中的最大步�?
+        # 使用配置中的最大步数
         if max_steps is None:
             max_steps = config.experiment.max_steps_per_episode
         
@@ -2030,25 +1686,18 @@ class SingleAgentTrainingEnvironment:
         self._episode_counters_initialized = False
         state = self.reset_environment()
         
-        # 🔧 P1修复：强制初始化episode计数器，确保第一个episode统计正确
-        if hasattr(self, 'simulator') and hasattr(self.simulator, 'stats'):
-            self._initialize_episode_counters(self.simulator.stats)
-        
         # 🔧 保存当前episode编号
         self._current_episode = episode
         
-        # 🔧 重置episode步数跟踪，修复能耗计�?
+        # 🔧 重置episode步数跟踪，修复能耗计算
         self._current_episode_step = 0
-        
-        # 🎯 初始化本episode的step统计列表
-        episode_step_stats = []
         
         episode_reward = 0.0
         episode_info = {}
         step = 0
         info = {}  # 初始化info变量
         
-        # PPO需要特殊处�?
+        # PPO需要特殊处理
         if self.algorithm == "PPO":
             return self._run_ppo_episode(episode, max_steps)
         
@@ -2060,7 +1709,7 @@ class SingleAgentTrainingEnvironment:
                 if isinstance(actions_result, dict):
                     actions_dict = actions_result
                 else:
-                    # 处理可能的元组返�?
+                    # 处理可能的元组返回
                     actions_dict = actions_result[0] if isinstance(actions_result, tuple) else actions_result
                         
                 # 需要将动作映射回全局动作索引
@@ -2072,43 +1721,20 @@ class SingleAgentTrainingEnvironment:
                 if isinstance(actions_result, dict):
                     actions_dict = actions_result
                 else:
-                    # 处理可能的元组返�?
+                    # 处理可能的元组返回
                     actions_dict = actions_result[0] if isinstance(actions_result, tuple) else actions_result
                 action = self._encode_continuous_action(actions_dict)
             
-            # 🔧 更新episode步数计数�?
+            # 🔧 更新episode步数计数器
             self._current_episode_step += 1
             
-            # 执行动作（将动作字典传入以影响仿真器卸载偏好�?
+            # 执行动作（将动作字典传入以影响仿真器卸载偏好）
             next_state, reward, done, info = self.step(action, state, actions_dict)
-            
-            # 🎯 保存本步的step_stats供任务分布统计使�?
-            step_stats = info.get('step_stats', {})
-            episode_step_stats.append(step_stats)
-
-            # 将step级别的队列指标同步给支持的智能体（Queue-aware Replay�?
-            if hasattr(self.agent_env, 'update_queue_metrics'):
-                try:
-                    self.agent_env.update_queue_metrics(step_stats)  # type: ignore[attr-defined]
-                except Exception:
-                    pass
-
-            # 将队�?缓存压力传递给支持的智能体用于PER优先度放�?
-            if hasattr(self.agent_env, 'update_priority_signal'):
-                try:
-                    queue_pressure = float(max(
-                        step_stats.get('queue_overload_flag', 0.0),
-                        step_stats.get('queue_rho_max', 0.0),
-                        step_stats.get('cache_eviction_rate', 0.0),
-                    ))
-                    self.agent_env.update_priority_signal(queue_pressure)  # type: ignore[attr-defined]
-                except Exception:
-                    pass
             
             # 初始化training_info
             training_info = {}
             
-            # 训练智能�?- 所有算法现在都支持Union类型统一接口
+            # 训练智能体 - 所有算法现在都支持Union类型统一接口
             # 确保action类型安全转换
             if self.algorithm == "DQN":
                 # DQN首选整数动作，但接受Union类型
@@ -2116,35 +1742,26 @@ class SingleAgentTrainingEnvironment:
                 training_info = self.agent_env.train_step(state, safe_action, reward, next_state, done)
             elif self.algorithm in ["DDPG", "TD3", "TD3_LATENCY_ENERGY", "SAC", "OPTIMIZED_TD3"]:
                 # 连续动作算法首选numpy数组，但接受Union类型
-                if isinstance(action, np.ndarray):
-                    safe_action = action
-                elif isinstance(action, (int, float)):
-                    safe_action = np.array([float(action)], dtype=np.float32)
-                else:
-                    safe_action = np.array(action, dtype=np.float32)
-                training_info = self.agent_env.train_step(state, safe_action, reward, next_state, done)  # type: ignore[arg-type]
+                safe_action = action if isinstance(action, np.ndarray) else np.array([action], dtype=np.float32)
+                training_info = self.agent_env.train_step(state, safe_action, reward, next_state, done)
             elif self.algorithm == "PPO":
                 # PPO使用特殊的episode级别训练，train_step为占位符
                 # 保持原action类型即可，因为PPO的train_step不做实际处理
-                training_info = self.agent_env.train_step(state, action, reward, next_state, done)  # type: ignore[arg-type]
+                training_info = self.agent_env.train_step(state, action, reward, next_state, done)
             else:
-                # 其他算法的默认处�?
+                # 其他算法的默认处理
                 training_info = {'message': f'Unknown algorithm: {self.algorithm}'}
             
             episode_info = training_info
             
-            # 更新状�?
+            # 更新状态
             state = next_state
             episode_reward += reward
             
-            # 检查是否结�?
+            # 检查是否结束
             if done:
                 break
         
-        episode_reward = float(episode_reward)
-        if not np.isfinite(episode_reward):
-            episode_reward = 0.0
-
         # 记录轮次统计
         system_metrics = info.get('system_metrics', {})
         self._record_episode_metrics(system_metrics, episode_steps=step + 1)
@@ -2152,22 +1769,13 @@ class SingleAgentTrainingEnvironment:
             episode,
             float(system_metrics.get('total_energy_consumption', 0.0) or 0.0)
         )
-        self._maybe_update_dynamic_latency_target(
-            episode,
-            float(system_metrics.get('avg_task_delay', 0.0) or 0.0)
-        )
-        
-        # 调用CAM-TD3 episode结束回调，更新融合策�?
-        if isinstance(self.agent_env, CAMTD3Environment) and hasattr(self.agent_env, 'on_episode_end'):
-            self.agent_env.on_episode_end(episode_reward)
         
         return {
             'episode_reward': episode_reward,
             'avg_reward': episode_reward,
             'episode_info': episode_info,
             'system_metrics': system_metrics,
-            'steps': step + 1,
-            'step_stats_list': episode_step_stats  # 🎯 返回每个step的统计数�?
+            'steps': step + 1
         }
     
     def _run_ppo_episode(self, episode: int, max_steps: int = 100) -> Dict:
@@ -2175,19 +1783,19 @@ class SingleAgentTrainingEnvironment:
         state = self.reset_environment()
         episode_reward = 0.0
         
-        # 初始化变�?
+        # 初始化变量
         done = False
         step = 0
         info = {}
         
         for step in range(max_steps):
-            # 获取动作、对数概率和价�?
+            # 获取动作、对数概率和价值
             if hasattr(self.agent_env, 'get_actions'):
                 actions_result = self.agent_env.get_actions(state, training=True)
                 if isinstance(actions_result, tuple) and len(actions_result) == 3:
                     actions_dict, log_prob, value = actions_result
                 else:
-                    # 如果不是元组，就使用默认�?
+                    # 如果不是元组，就使用默认值
                     actions_dict = actions_result if isinstance(actions_result, dict) else {}
                     log_prob = 0.0
                     value = 0.0
@@ -2232,29 +1840,22 @@ class SingleAgentTrainingEnvironment:
                 else:
                     last_value = 0.0
         
-        # 确保 last_value �?float 类型
+        # 确保 last_value 为 float 类型
         last_value_float = float(last_value) if not isinstance(last_value, float) else last_value
         
         # 检查是否应该更新（每N个episode或buffer快满时）
         ppo_config = self.agent_env.config
-        update_freq = getattr(ppo_config, 'update_frequency', 1)
-        buffer_size = getattr(ppo_config, 'buffer_size', 1000)
-        agent_obj = getattr(self.agent_env, 'agent', None)
-        if agent_obj is not None:
-            agent_buffer = getattr(agent_obj, 'buffer', None)  # type: ignore[union-attr]
-            buffer_current_size = agent_buffer.size if agent_buffer is not None else 0
-        else:
-            buffer_current_size = 0
         should_update = (
-            episode % max(1, update_freq) == 0 or  # 每N个episode
-            buffer_current_size >= buffer_size * 0.9  # buffer接近�?
+            episode % ppo_config.update_frequency == 0 or  # 每N个episode
+            self.agent_env.agent.buffer.size >= ppo_config.buffer_size * 0.9  # buffer接近满
         )
         
         # 进行更新
-        # PPOEnvironment.update只接受last_value参数
-        training_info: Dict = {}
-        if agent_obj is not None:
-            training_info = agent_obj.update(last_value_float)  # type: ignore[call-arg]
+        # PPOEnvironment.update只接受last_value参数，force_update在agent内部处理
+        if should_update:
+            training_info = self.agent_env.agent.update(last_value_float, force_update=True)
+        else:
+            training_info = self.agent_env.agent.update(last_value_float, force_update=False)
         
         system_metrics = info.get('system_metrics', {})
         
@@ -2267,11 +1868,11 @@ class SingleAgentTrainingEnvironment:
         }
 
     def _build_simulator_actions(self, actions_dict: Optional[Dict]) -> Optional[Dict]:
-        """将算法动作字典转换为仿真器可消费的简单控制信号�?
-        🤖 扩展支持联合动作空间�?
-        - vehicle_agent �?�?�?原有任务分配偏好
-        - 中间 num_rsus/num_uavs �?�?节点选择权重
-        - 末尾10�?�?缓存、迁移及联动控制参数
+        """将算法动作字典转换为仿真器可消费的简单控制信号。
+        🤖 扩展支持联合动作空间：
+        - vehicle_agent 前3维 → 原有任务分配偏好
+        - 中间 num_rsus/num_uavs 维 → 节点选择权重
+        - 末尾10维 → 缓存、迁移及联动控制参数
         """
         if not isinstance(actions_dict, dict):
             return None
@@ -2292,51 +1893,19 @@ class SingleAgentTrainingEnvironment:
             
             # =============== 原有任务分配逻辑 (保持兼容) ===============
             raw = vehicle_action_array[:3]
-            raw = np.clip(raw, -5.0, 5.0)
-            
-            # 🧪 卸载偏置对比实验：根据环境变量应用不同策略
-            offload_bias_mode = os.environ.get('OFFLOAD_BIAS_MODE', 'none')
-            
-            if offload_bias_mode == 'none':
-                # 策略A：无偏置，靠奖励信号自然学习
-                # 初始概率: Local≈33%, RSU≈33%, UAV≈33%
-                exp = np.exp(raw - np.max(raw))
-                probs = exp / np.sum(exp)
-                
-            elif offload_bias_mode == 'weak':
-                # 策略B：轻度偏置，引导RSU偏好
-                # local=-0.5, rsu=+1.0, uav=+0.2
-                # 初始概率: Local≈20%, RSU≈50%, UAV≈30%
-                offload_bias = np.array([-0.5, +1.0, +0.2], dtype=np.float32)
-                raw_biased = raw + offload_bias
-                exp = np.exp(raw_biased - np.max(raw_biased))
-                probs = exp / np.sum(exp)
-                
-            else:  # 'strong'
-                # 策略C：strong强偏置，明确引导RSU优先
-                # local=-1.5, rsu=+2.0, uav=+0.5
-                # 初始概率: Local≈2%, RSU≈80%, UAV≈18%
-                offload_bias = np.array([-1.5, +2.0, +0.5], dtype=np.float32)
-                raw_biased = raw + offload_bias
-                exp = np.exp(raw_biased - np.max(raw_biased))
-                probs = exp / np.sum(exp)
-            
+            # 🔧 修复：将[-1,1]范围的动作值放大到[-5,5]，使softmax更敏感
+            # Actor输出是[-1,1]，需要放大才能产生明显的偏好差异
+            raw = np.clip(raw, -1.0, 1.0) * 5.0  # 放大5倍：[-1,1] -> [-5,5]
+            raw = np.clip(raw, -5.0, 5.0)  # 确保在[-5,5]范围内
+            exp = np.exp(raw - np.max(raw))
+            probs = exp / np.sum(exp)
             sim_actions = {
                 'vehicle_offload_pref': {
                     'local': float(probs[0]),
                     'rsu': float(probs[1] if probs.size > 1 else 0.33),
                     'uav': float(probs[2] if probs.size > 2 else 0.34)
-                },
-                # 记录原始softmax用于诊断
-                'offload_probs_raw': probs.tolist()
+                }
             }
-            
-            # 🔍 调试：打印实际卸载概率（每50步打印一次）
-            if not hasattr(self, '_offload_debug_counter'):
-                self._offload_debug_counter = 0
-            self._offload_debug_counter += 1
-            if self._offload_debug_counter % 50 == 1:
-                print(f"\n🔍 [步骤{self._offload_debug_counter}] 卸载概率: Local={probs[0]:.1%}, RSU={probs[1]:.1%}, UAV={probs[2]:.1%} (mode={offload_bias_mode})")
             # RSU选择概率
             num_rsus = self.num_rsus
             rsu_action = actions_dict.get('rsu_agent')
@@ -2345,10 +1914,12 @@ class SingleAgentTrainingEnvironment:
             else:
                 rsu_raw = vehicle_action_array[3:3 + num_rsus]
             if num_rsus > 0:
+                # 🔧 修复：同样放大RSU选择权重
+                rsu_raw = np.clip(rsu_raw, -1.0, 1.0) * 5.0  # 放大5倍
                 rsu_raw = np.clip(rsu_raw, -5.0, 5.0)
                 rsu_exp = np.exp(rsu_raw - np.max(rsu_raw))
                 rsu_probs = rsu_exp / np.sum(rsu_exp)
-                sim_actions['rsu_selection_probs'] = rsu_probs.tolist()  # type: ignore[assignment]
+                sim_actions['rsu_selection_probs'] = [float(x) for x in rsu_probs]
             
             # UAV选择概率
             num_uavs = self.num_uavs
@@ -2358,10 +1929,12 @@ class SingleAgentTrainingEnvironment:
             else:
                 uav_raw = vehicle_action_array[3 + num_rsus:3 + num_rsus + num_uavs]
             if num_uavs > 0:
+                # 🔧 修复：同样放大UAV选择权重
+                uav_raw = np.clip(uav_raw, -1.0, 1.0) * 5.0  # 放大5倍
                 uav_raw = np.clip(uav_raw, -5.0, 5.0)
                 uav_exp = np.exp(uav_raw - np.max(uav_raw))
                 uav_probs = uav_exp / np.sum(uav_exp)
-                sim_actions['uav_selection_probs'] = uav_probs.tolist()  # type: ignore[assignment]
+                sim_actions['uav_selection_probs'] = [float(x) for x in uav_probs]
             
             # 🤖 =============== 新增联合缓存-迁移控制参数 ===============
             control_start = 3 + num_rsus + num_uavs
@@ -2393,7 +1966,7 @@ class SingleAgentTrainingEnvironment:
                 })
             sim_actions.update(payload)
 
-            # 🔁 让系统模拟器接收Actor导出的指导信号（统一键名为rl_guidance�?
+            # 🔁 让系统模拟器接收Actor导出的指导信号（统一键名为rl_guidance）
             guidance_payload = actions_dict.get('guidance') if isinstance(actions_dict, dict) else None
             if isinstance(guidance_payload, dict) and guidance_payload:
                 sim_actions['rl_guidance'] = guidance_payload
@@ -2407,7 +1980,7 @@ class SingleAgentTrainingEnvironment:
                 if allocations:
                     try:
                         self.simulator.apply_resource_allocation(allocations)
-                        sim_actions['central_resource_allocation'] = allocations  # type: ignore[assignment]
+                        sim_actions['central_resource_allocation'] = allocations
                     except Exception as exc:
                         print(f"⚠️ 中央资源分配应用失败: {exc}")
             
@@ -2439,7 +2012,7 @@ class SingleAgentTrainingEnvironment:
                             gate = getattr(enc, 'last_gate', None)
                 if gate is not None:
                     try:
-                        sim_actions['dc_tradeoff_gate'] = float(_np.clip(gate, 0.0, 1.0))  # type: ignore[assignment]
+                        sim_actions['dc_tradeoff_gate'] = float(_np.clip(gate, 0.0, 1.0))
                     except Exception:
                         pass
             except Exception:
@@ -2447,7 +2020,7 @@ class SingleAgentTrainingEnvironment:
 
             return sim_actions
         except Exception as e:
-            print(f"⚠️ 动作构造异�? {e}")
+            print(f"⚠️ 动作构造异常: {e}")
             return None
     
     def _collect_resource_state(self) -> Optional[Dict[str, Any]]:
@@ -2519,13 +2092,13 @@ class SingleAgentTrainingEnvironment:
         """
         🤖 将动作字典编码为连续动作向量 - 动态适配动作维度
         """
-        # 处理可能的不同输入类�?
+        # 处理可能的不同输入类型
         action_dim = getattr(self.agent_env, 'action_dim', 18)
         if not isinstance(actions_dict, dict):
-            # 如果不是字典，返回默认动作维�?
+            # 如果不是字典，返回默认动作维度
             return np.zeros(action_dim, dtype=np.float32)
 
-        # 🤖 只使用vehicle_agent的完整动作向�?
+        # 🤖 只使用vehicle_agent的完整动作向量
         vehicle_action = actions_dict.get('vehicle_agent')
         if isinstance(vehicle_action, (list, tuple, np.ndarray)):
             vehicle_action = np.array(vehicle_action, dtype=np.float32)
@@ -2567,16 +2140,16 @@ class SingleAgentTrainingEnvironment:
 
     def _encode_discrete_action(self, actions_dict) -> int:
         """将动作字典编码为离散动作索引"""
-        # 处理可能的不同输入类�?
+        # 处理可能的不同输入类型
         if not isinstance(actions_dict, dict):
             return 0  # 默认动作索引
         
-        # 简化实现：将每个智能体的动作组合成一个索�?
+        # 简化实现：将每个智能体的动作组合成一个索引
         vehicle_action = actions_dict.get('vehicle_agent', 0)
         rsu_action = actions_dict.get('rsu_agent', 0)
         uav_action = actions_dict.get('uav_agent', 0)
         
-        # 安全地将动作转换为整�?
+        # 安全地将动作转换为整数
         def safe_int_conversion(value):
             if isinstance(value, (int, np.integer)):
                 return int(value)
@@ -2584,7 +2157,7 @@ class SingleAgentTrainingEnvironment:
                 if value.size == 1:
                     return int(value.item())
                 else:
-                    return int(value[0])  # 取第一个元�?
+                    return int(value[0])  # 取第一个元素
             elif isinstance(value, (float, np.floating)):
                 return int(value)
             else:
@@ -2594,22 +2167,22 @@ class SingleAgentTrainingEnvironment:
         rsu_action = safe_int_conversion(rsu_action)
         uav_action = safe_int_conversion(uav_action)
         
-        # 5^3 = 125 种组�?
+        # 5^3 = 125 种组合
         return vehicle_action * 25 + rsu_action * 5 + uav_action
     
     def _safe_int_conversion(self, value) -> int:
-        """安全地将不同类型转换为整数""" 
+        """安全地将不同类型转换为整数"""
         if isinstance(value, (int, np.integer)):
             return int(value)
         elif isinstance(value, np.ndarray):
             if value.size == 1:
                 return int(value.item())
             else:
-                return int(value[0])  # 取第一个元�?
+                return int(value[0])  # 取第一个元素
         elif isinstance(value, (float, np.floating)):
             return int(round(value))
         else:
-            return 0  # 安全回退�?
+            return 0  # 安全回退值
 
 
 def train_single_algorithm(algorithm: str, num_episodes: Optional[int] = None, eval_interval: Optional[int] = None,
@@ -2618,7 +2191,7 @@ def train_single_algorithm(algorithm: str, num_episodes: Optional[int] = None, e
                           use_enhanced_cache: bool = False, disable_migration: bool = False,
                           enforce_offload_mode: Optional[str] = None, fixed_offload_policy: Optional[str] = None,
                           resume_from: Optional[str] = None, resume_lr_scale: Optional[float] = None,
-                          joint_controller: bool = False, enable_advanced_vis: bool = False) -> Dict:
+                          joint_controller: bool = False) -> Dict:
     """训练单个算法
     
     Args:
@@ -2626,26 +2199,19 @@ def train_single_algorithm(algorithm: str, num_episodes: Optional[int] = None, e
         num_episodes: 训练轮次
         eval_interval: 评估间隔
         save_interval: 保存间隔
-        enable_realtime_vis: 是否启用实时可视�?
+        enable_realtime_vis: 是否启用实时可视化
         vis_port: 可视化服务器端口
-        silent_mode: 静默模式，跳过用户交互（用于批量实验�?
+        silent_mode: 静默模式，跳过用户交互（用于批量实验）
         resume_from: 已训练模型路径（.pth 或目录前缀），用于warm-start继续训练
-        resume_lr_scale: Warm-start后对学习率的缩放系数（默�?.5，None表示保持原值）
-        enable_advanced_vis: 是否启用高端训练可视�?
+        resume_lr_scale: Warm-start后对学习率的缩放系数（默认0.5，None表示保持原值）
     """
-    # 导入任务分布统计模块
-    from utils.training_analytics_integration import TaskAnalyticsTracker
-    
-    # 使用配置中的默认�?
+    # 使用配置中的默认值
     if num_episodes is None:
         num_episodes = config.experiment.num_episodes
-
-    # 允许用环境变量快速重设奖励权�?目标，便于高负载场景收敛
-    _apply_reward_overrides_from_env()
     
-    # 🔧 自动调整评估间隔和保存间�?
+    # 🔧 自动调整评估间隔和保存间隔
     def auto_adjust_intervals(total_episodes: int):
-        """根据总轮数自动调整间隔""" 
+        """根据总轮数自动调整间隔"""
         # 评估间隔：总轮数的5-8%，范围[10, 100]
         auto_eval = max(10, min(100, int(total_episodes * 0.06)))
         
@@ -2662,7 +2228,7 @@ def train_single_algorithm(algorithm: str, num_episodes: Optional[int] = None, e
         if save_interval is None:
             save_interval = auto_save
     
-    # 最终回退到配置默认�?
+    # 最终回退到配置默认值
     if eval_interval is None:
         eval_interval = config.experiment.eval_interval
     if save_interval is None:
@@ -2683,7 +2249,7 @@ def train_single_algorithm(algorithm: str, num_episodes: Optional[int] = None, e
     )
     canonical_algorithm = training_env.algorithm
     if canonical_algorithm != algorithm:
-        print(f"⚙️  规范化算法标�? {canonical_algorithm}")
+        print(f"⚙️  规范化算法标识: {canonical_algorithm}")
     algorithm = canonical_algorithm
 
     resume_loaded = False
@@ -2694,7 +2260,7 @@ def train_single_algorithm(algorithm: str, num_episodes: Optional[int] = None, e
             try:
                 resume_target_path = loader(resume_from) or resume_from
                 resume_loaded = True
-                print(f"♻️  从已有模型加载成�? {resume_target_path}")
+                print(f"♻️  从已有模型加载成功: {resume_target_path}")
             except Exception as exc:  # pragma: no cover - 容错路径
                 print(f"⚠️  加载已有模型失败 ({resume_from}): {exc}")
         else:
@@ -2703,8 +2269,6 @@ def train_single_algorithm(algorithm: str, num_episodes: Optional[int] = None, e
         if resume_loaded:
             agent_obj = getattr(training_env.agent_env, 'agent', None)
             warmup_adjusted = False
-            original_warmup = 0
-            new_warmup = 0
             if agent_obj and hasattr(agent_obj, 'config') and hasattr(agent_obj.config, 'warmup_steps'):
                 original_warmup = int(getattr(agent_obj.config, 'warmup_steps', 0) or 0)
                 new_warmup = max(500, original_warmup // 4) if original_warmup else 500
@@ -2712,7 +2276,7 @@ def train_single_algorithm(algorithm: str, num_episodes: Optional[int] = None, e
                     agent_obj.config.warmup_steps = new_warmup
                     warmup_adjusted = True
             if warmup_adjusted:
-                print(f"   ? Warm-up ??? {original_warmup} ??? {new_warmup}???????????")
+                print(f"   • Warm-up 步数由 {original_warmup} 缩减至 {new_warmup}，加速经验缓冲重新填充")
 
             lr_scale_value = resume_lr_scale if resume_lr_scale is not None else 0.5
             lr_info = None
@@ -2727,10 +2291,10 @@ def train_single_algorithm(algorithm: str, num_episodes: Optional[int] = None, e
                     lr_info = agent_obj.apply_lr_schedule(factor=lr_scale_value, min_lr=5e-5)
                 except Exception:
                     lr_info = None
-            if lr_info and isinstance(lr_info, dict):
-                print(f"   �?学习率缩�? actor_lr={lr_info.get('actor_lr', 0):.2e}, critic_lr={lr_info.get('critic_lr', 0):.2e}")
+            if lr_info:
+                print(f"   • 学习率缩放: actor_lr={lr_info.get('actor_lr', 0):.2e}, critic_lr={lr_info.get('critic_lr', 0):.2e}")
             elif resume_lr_scale:
-                print("   ?? ???????????????????? apply_lr_schedule?")
+                print("   • 学习率缩放请求未执行（当前算法环境未实现 apply_lr_schedule）")
 
     lr_decay_episode: Optional[int] = None
     late_stage_lr_factor = 0.5
@@ -2740,45 +2304,30 @@ def train_single_algorithm(algorithm: str, num_episodes: Optional[int] = None, e
 
     # 🌐 创建实时可视化器（如果启用）
     visualizer = None
-    advanced_visualizer = None
-    
-    # 🎨 优先使用高端可视化（更好的显示效果）
-    if enable_advanced_vis and ADVANCED_VIS_AVAILABLE:
-        print("🎨 启动高端训练可视化 Dashboard")
-        advanced_visualizer = create_advanced_visualizer(max_history=min(500, num_episodes))  # type: ignore[name-defined]
-        print("✅ 高端可视化已启用")
-        print("   - 按 'p' 暂停/继续")
-        print("   - 按 's' 保存截图")
-        print("   - 按 'q' 退出")
-    elif enable_advanced_vis and not ADVANCED_VIS_AVAILABLE:
-        print("⚠️  高端可视化未启用（缺少依赖包）")
-    
-    # 🌐 Fallback到Web可视�?
-    if enable_realtime_vis and REALTIME_AVAILABLE and not advanced_visualizer:
+    if enable_realtime_vis and REALTIME_AVAILABLE:
         print(f"🌐 启动实时可视化服务器 (端口: {vis_port})")
-        # 允许通过环境变量覆盖可视化展示名（用于两阶段标签�?
+        # 允许通过环境变量覆盖可视化展示名（用于两阶段标签）
         display_name = os.environ.get('ALGO_DISPLAY_NAME', algorithm)
-        visualizer = create_visualizer(  # type: ignore[name-defined]
+        visualizer = create_visualizer(
             algorithm=display_name,
             total_episodes=num_episodes,
             port=vis_port,
             auto_open=True
         )
-        print(f"?? ??????????? http://localhost:{vis_port}")
+        print(f"✅ 实时可视化已启用，访问 http://localhost:{vis_port}")
     elif enable_realtime_vis and not REALTIME_AVAILABLE:
-        print("??  ???????????????")
+        print("⚠️  实时可视化未启用（缺少依赖包）")
     
     print(f"训练配置:")
     print(f"  算法: {algorithm}")
-    print(f"  ???: {num_episodes}")
+    print(f"  总轮次: {num_episodes}")
     print(f"  评估间隔: {eval_interval} (自动调整)" if eval_interval != config.experiment.eval_interval else f"  评估间隔: {eval_interval}")
     print(f"  保存间隔: {save_interval} (自动调整)" if save_interval != config.experiment.save_interval else f"  保存间隔: {save_interval}")
-    print(f"  ?????: {'??' if advanced_visualizer else '??'}")
-    print(f"  ?????: {'??' if visualizer else '??'}")
+    print(f"  实时可视化: {'启用 ✓' if visualizer else '禁用'}")
     if hasattr(config, 'rl'):
         print(
             f"  奖励权重: 延迟={getattr(config.rl, 'reward_weight_delay', 0.0):.2f}, "
-            f"能�?{getattr(config.rl, 'reward_weight_energy', 0.0):.2f}, "
+            f"能耗={getattr(config.rl, 'reward_weight_energy', 0.0):.2f}, "
             f"丢弃={getattr(config.rl, 'reward_penalty_dropped', 0.0):.2f}"
         )
         print(
@@ -2791,67 +2340,32 @@ def train_single_algorithm(algorithm: str, num_episodes: Optional[int] = None, e
     os.makedirs(f"results/single_agent/{algorithm.lower()}", exist_ok=True)
     os.makedirs(f"results/models/single_agent/{algorithm.lower()}", exist_ok=True)
     
-    # 🎯 初始化任务处理方式分布统计跟踪器
-    # 根据episode数自动调整日志输出间�?
-    log_interval = max(1, num_episodes // 20) if num_episodes > 0 else 10
-    analytics_tracker = TaskAnalyticsTracker(
-        enable_logging=True,
-        log_interval=log_interval
-    )
-    print(f"\n📊 已启用任务处理方式分布统计（每{log_interval}个episode输出一次）")
-    
     # 训练循环
-    # 🔧 修复：per-step奖励范围约为-2.0�?0.5，初始值应相应调整
+    # 🔧 修复：per-step奖励范围约为-2.0到-0.5，初始值应相应调整
     best_avg_reward = -10.0  # per-step奖励初始阈值（负值越大越好）
     training_start_time = time.time()
     
     for episode in range(1, num_episodes + 1):
         episode_start_time = time.time()
         
-        # 🎯 开始记录该episode的任务分布统�?
-        analytics_tracker.start_episode(episode)
-        
         # 运行训练轮次
         episode_result = training_env.run_episode(episode)
-        avg_reward_safe = float(episode_result.get('avg_reward', 0.0) or 0.0)
-        if not np.isfinite(avg_reward_safe):
-            avg_reward_safe = 0.0
-        episode_result['avg_reward'] = avg_reward_safe
-        episode_result['episode_reward'] = float(episode_result.get('episode_reward', avg_reward_safe) or avg_reward_safe)
-        
-        # 🎯 记录本episode内所有的step统计
-        step_stats_list = episode_result.get('step_stats_list', [])
-        for step_idx, step_stats in enumerate(step_stats_list):
-            analytics_tracker.record_step(step_idx, step_stats)
-        
-        # 🎯 结束该episode的任务分布统�?
-        episode_stats = analytics_tracker.end_episode()
         
         # 记录训练数据
         training_env.episode_rewards.append(episode_result['avg_reward'])
         
         episode_steps = episode_result.get('steps', config.experiment.max_steps_per_episode)
-        
-        # 🔄 重要：对于OPTIMIZED_TD3，更新agent的episode计数（帮助避免局部最优）
+
         if algorithm.upper() == 'OPTIMIZED_TD3' and hasattr(training_env.agent_env, 'agent'):
-            agent = training_env.agent_env.agent
-            if hasattr(agent, 'set_episode_count'):
-                agent.set_episode_count(episode, episode_result['avg_reward'])
-            
-            # 🔥 新增：检查是否应该提前终止训�?(600轮后)
-            if hasattr(agent, 'check_early_stopping'):
-                if agent.check_early_stopping():
-                    print(f"\n�?训练在Episode {episode}提前终止，已收敛")
-                    # 更新num_episodes以提前退�?
-                    num_episodes = episode
-                    break
+            agent_ref = training_env.agent_env.agent
+            if hasattr(agent_ref, 'set_episode_count'):
+                try:
+                    agent_ref.set_episode_count(episode, episode_result['avg_reward'])
+                except Exception:
+                    pass
         
-        # 🔄 针对OPTIMIZED_TD3特別处理：更新探索重启配�?
-        if algorithm.upper() == 'OPTIMIZED_TD3' and hasattr(training_env.agent_env, 'agent'):
-            agent = training_env.agent_env.agent
-            if hasattr(agent, 'exploration_reset_interval'):
-                # 探索重启间隔可以根据需要调整（目前100episode�?
-                pass
+        # 更新性能追踪器
+        training_env.performance_tracker['recent_rewards'].update(episode_result['avg_reward'])
         per_step_reward = episode_result['avg_reward'] / max(1, episode_steps)
         training_env.performance_tracker['recent_step_rewards'].update(per_step_reward)
         
@@ -2859,40 +2373,17 @@ def train_single_algorithm(algorithm: str, num_episodes: Optional[int] = None, e
         training_env.performance_tracker['recent_delays'].update(system_metrics.get('avg_task_delay', 0))
         training_env.performance_tracker['recent_energy'].update(system_metrics.get('total_energy_consumption', 0))
         training_env.performance_tracker['recent_completion'].update(system_metrics.get('task_completion_rate', 0))
-        
-        # 🎨 更新高端可视�?
-        if advanced_visualizer:
-            # 收集详细指标
-            vis_metrics = {
-                'reward': episode_result['avg_reward'],
-                'loss': episode_result.get('loss', 0),  # 如果有损失�?
-                'hit_rate': system_metrics.get('cache_hit_rate', 0),
-                'delay': system_metrics.get('avg_task_delay', 0) * 1000,  # 转换为ms
-                'energy': system_metrics.get('total_energy_consumption', 0),
-                'success_rate': system_metrics.get('task_completion_rate', 0),
-                'action': episode_result.get('last_action'),  # 最后一个动�?
-                'gradient_norm': episode_result.get('gradient_norm')  # 如果有梯度范�?
-            }
-            advanced_visualizer.update(episode, vis_metrics)
-            
-            # 定期保存可视化截�?
-            if episode % save_interval == 0:
-                advanced_visualizer.save(f"results/single_agent/{algorithm.lower()}/viz_checkpoint_{episode}.png")
-        
-        # 🌐 更新实时可视�?
+        # 🌐 更新实时可视化
         if visualizer:
             vis_metrics = {
-                'avg_delay': system_metrics.get('avg_task_delay', 0),
-                'total_energy': system_metrics.get('total_energy_consumption', 0),
-                'task_completion_rate': system_metrics.get('task_completion_rate', 0),
-                'cache_hit_rate': system_metrics.get('cache_hit_rate', 0),
-                'data_loss_ratio_bytes': system_metrics.get('data_loss_ratio_bytes', 0),
-                'migration_success_rate': system_metrics.get('migration_success_rate', 0),
-                'local_tasks_count': system_metrics.get('local_tasks_count', 0),
-                'rsu_tasks_count': system_metrics.get('rsu_tasks_count', 0),
-                'uav_tasks_count': system_metrics.get('uav_tasks_count', 0)
+                'avg_delay': float(system_metrics.get('avg_task_delay', 0)),
+                'total_energy': float(system_metrics.get('total_energy_consumption', 0)),
+                'task_completion_rate': float(system_metrics.get('task_completion_rate', 0)),
+                'cache_hit_rate': float(system_metrics.get('cache_hit_rate', 0)),
+                'data_loss_ratio_bytes': float(system_metrics.get('data_loss_ratio_bytes', 0)),
+                'migration_success_rate': float(system_metrics.get('migration_success_rate', 0))
             }
-            visualizer.update(episode, episode_result['avg_reward'], vis_metrics)
+            visualizer.update(episode, float(episode_result['avg_reward']), vis_metrics)
         
         episode_time = time.time() - episode_start_time
         
@@ -2905,7 +2396,7 @@ def train_single_algorithm(algorithm: str, num_episodes: Optional[int] = None, e
             print(f"轮次 {episode:4d}/{num_episodes}:")
             print(f"  平均每步奖励: {avg_reward_step:8.3f}")
             print(f"  平均时延: {avg_delay:8.3f}s")
-            print(f"  完成�?   {avg_completion:8.1%}")
+            print(f"  完成率:   {avg_completion:8.1%}")
             print(f"  轮次用时: {episode_time:6.3f}s")
         
         # 评估模型
@@ -2914,15 +2405,15 @@ def train_single_algorithm(algorithm: str, num_episodes: Optional[int] = None, e
             print(f"\n📊 轮次 {episode} 评估结果:")
             print(f"  Per-Step奖励: {eval_result['avg_reward']:.3f}")
             print(f"  评估时延: {eval_result['avg_delay']:.3f}s")
-            print(f"  评估完成�? {eval_result['completion_rate']:.1%}")
+            print(f"  评估完成率: {eval_result['completion_rate']:.1%}")
             
-            # 保存最佳模�?
+            # 保存最佳模型
             if eval_result['avg_reward'] > best_avg_reward:
                 best_avg_reward = eval_result['avg_reward']
                 best_model_base = f"results/models/single_agent/{algorithm.lower()}/best_model"
                 saved_target = training_env.agent_env.save_models(best_model_base)
                 saved_display = saved_target or best_model_base
-                print(f"  💾 保存最佳模�?-> {saved_display} (Per-Step奖励: {best_avg_reward:.3f})")
+                print(f"  💾 保存最佳模型 -> {saved_display} (Per-Step奖励: {best_avg_reward:.3f})")
         
         # 达到后期阶段时缩放TD3学习率（一次性）
         if (lr_decay_episode is not None and not lr_decay_applied and episode >= lr_decay_episode):
@@ -2936,10 +2427,10 @@ def train_single_algorithm(algorithm: str, num_episodes: Optional[int] = None, e
                 if hasattr(agent_obj, 'apply_lr_schedule'):
                     lr_info = agent_obj.apply_lr_schedule(factor=late_stage_lr_factor, min_lr=5e-5)
                     lr_decay_applied = True
-            if lr_info and isinstance(lr_info, dict):
+            if lr_info:
                 print(
-                    f"🔧 第{episode}轮触发TD3学习率缩�?-> "
-                    f"actor_lr={lr_info.get('actor_lr', 0):.2e}, critic_lr={lr_info.get('critic_lr', 0):.2e}"
+                    f"🔧 第{episode}轮触发TD3学习率缩放 -> "
+                    f"actor_lr={lr_info['actor_lr']:.2e}, critic_lr={lr_info['critic_lr']:.2e}"
                 )
 
         # 定期保存模型
@@ -2952,50 +2443,20 @@ def train_single_algorithm(algorithm: str, num_episodes: Optional[int] = None, e
     # 训练完成
     total_training_time = time.time() - training_start_time
     
-    # 🎨 保存高端可视化最终结�?
-    if advanced_visualizer:
-        final_viz_path = f"results/single_agent/{algorithm.lower()}/final_training_viz.png"
-        advanced_visualizer.save(final_viz_path)
-        print(f"💾 高端可视化已保存: {final_viz_path}")
-    
-    # 🌐 标记实时可视化完�?
+    # 🌐 标记实时可视化完成
     if visualizer:
         visualizer.complete()
-        print(f"�?实时可视化已标记完成")
+        print(f"✅ 实时可视化已标记完成")
     
     print("\n" + "=" * 60)
     print(f"🎉 {algorithm}训练完成!")
-    print(f"⏱️  总训练时�? {total_training_time/3600:.2f} 小时")
+    print(f"⏱️  总训练时间: {total_training_time/3600:.2f} 小时")
     print(f"🏆 最佳Per-Step奖励: {best_avg_reward:.3f}")
-    
-    # 📊 输出任务处理方式分布统计
-    print("\n" + "=" * 60)
-    print("📊 任务处理方式分布统计")
-    print("=" * 60)
-    
-    # 打印训练汇总统�?
-    analytics_tracker.print_training_summary()
-    
-    # 打印最近N个episode的详细统�?
-    analytics_tracker.print_summary(top_n=min(20, num_episodes))
-    
-    # 导出CSV数据用于后续分析
-    csv_export_path = f"results/single_agent/{algorithm.lower()}/task_distribution_analysis.csv"
-    analytics_tracker.export_csv(csv_export_path)
-    
-    # 获取演化趋势
-    evolution_trends = analytics_tracker.get_evolution_trend()
-    if evolution_trends and evolution_trends.get('episodes'):
-        print(f"\n📈 任务处理方式演化趋势分析:")
-        print(f"   - 本地处理占比: {evolution_trends['local_ratio'][-1]:.1%} (初始: {evolution_trends['local_ratio'][0]:.1%})")
-        print(f"   - RSU处理占比: {evolution_trends['rsu_ratio'][-1]:.1%} (初始: {evolution_trends['rsu_ratio'][0]:.1%})")
-        print(f"   - UAV处理占比: {evolution_trends['uav_ratio'][-1]:.1%} (初始: {evolution_trends['uav_ratio'][0]:.1%})")
-        print(f"   - 任务成功�? {evolution_trends['success_ratio'][-1]:.1%} (初始: {evolution_trends['success_ratio'][0]:.1%})")
     
     # 收集系统统计信息用于报告
     simulator_stats = {}
     
-    # 🏢 显示中央RSU调度器报�?
+    # 🏢 显示中央RSU调度器报告
     try:
         central_report = training_env.simulator.get_central_scheduling_report()
         if central_report.get('status') != 'not_available' and central_report.get('status') != 'error':
@@ -3006,9 +2467,9 @@ def train_single_algorithm(algorithm: str, num_episodes: Optional[int] = None, e
             if 'global_metrics' in scheduler_status:
                 metrics = scheduler_status['global_metrics']
                 print(f"   ⚖️ 负载均衡指数: {metrics.get('load_balance_index', 0.0):.3f}")
-                print(f"   💚 系统健康状�? {scheduler_status.get('system_health', 'N/A')}")
+                print(f"   💚 系统健康状态: {scheduler_status.get('system_health', 'N/A')}")
                 
-                # 收集调度器统计信�?
+                # 收集调度器统计信息
                 simulator_stats['scheduling_calls'] = central_report.get('scheduling_calls', 0)
                 simulator_stats['load_balance_index'] = metrics.get('load_balance_index', 0.0)
                 simulator_stats['system_health'] = scheduler_status.get('system_health', 'N/A')
@@ -3016,11 +2477,11 @@ def train_single_algorithm(algorithm: str, num_episodes: Optional[int] = None, e
             # 显示各RSU负载分布
             rsu_details = central_report.get('rsu_details', {})
             if rsu_details:
-                print(f"   📡 各RSU负载状�?")
+                print(f"   📡 各RSU负载状态:")
                 for rsu_id, details in rsu_details.items():
                     print(f"      {rsu_id}: CPU负载={details['cpu_usage']:.1%}, 任务队列={details['queue_length']}")
         else:
-            print(f"?? ???????: {central_report.get('message', '???')}")
+            print(f"📋 中央调度器状态: {central_report.get('message', '未启用')}")
         
         # 🔌 显示有线回传网络统计
         rsu_migration_delay = training_env.simulator.stats.get('rsu_migration_delay', 0.0)
@@ -3044,18 +2505,18 @@ def train_single_algorithm(algorithm: str, num_episodes: Optional[int] = None, e
         simulator_stats['uav_migration_count'] = uav_migration_count
         
         if rsu_migration_data > 0 or backhaul_total_energy > 0 or handover_migrations > 0 or uav_migration_count > 0:
-            print(f"\n🔌 有线回传网络与迁移统�?")
+            print(f"\n🔌 有线回传网络与迁移统计:")
             print(f"   📡 RSU迁移数据: {rsu_migration_data:.1f}MB")
             print(f"   ⏱️ RSU迁移延迟: {rsu_migration_delay*1000:.1f}ms")
-            print(f"   ? RSU????: {rsu_migration_energy:.2f}J")
+            print(f"   ⚡ RSU迁移能耗: {rsu_migration_energy:.2f}J")
             print(f"   📊 信息收集延迟: {backhaul_collection_delay*1000:.1f}ms")
             print(f"   📤 指令分发延迟: {backhaul_command_delay*1000:.1f}ms")
-            print(f"   ?? ???????: {backhaul_total_energy:.2f}J")
+            print(f"   🔋 回传网络总能耗: {backhaul_total_energy:.2f}J")
             if handover_migrations > 0:
-                print(f"   ?? ??????: {handover_migrations} ?")
+                print(f"   🚗 车辆跟随迁移: {handover_migrations} 次")
             if uav_migration_count > 0:
                 avg_distance = uav_migration_distance / uav_migration_count if uav_migration_count > 0 else 0
-                print(f"   ?? UAV??: {uav_migration_count} ? ????{avg_distance:.1f}m")
+                print(f"   🚁 UAV迁移: {uav_migration_count} 次, 平均距离{avg_distance:.1f}m")
     except Exception as e:
         print(f"⚠️ 中央调度报告获取失败: {e}")
     
@@ -3079,53 +2540,53 @@ def train_single_algorithm(algorithm: str, num_episodes: Optional[int] = None, e
             simulator_stats=simulator_stats
         )
         
-        # 生成报告文件�?
+        # 生成报告文件名
         timestamp = generate_timestamp()
         report_filename = f"training_report_{timestamp}.html" if timestamp else "training_report.html"
         report_path = f"results/single_agent/{algorithm.lower()}/{report_filename}"
         
-        print("Training report generated.")
-        print("Report includes:")
-        print("   - Summary and key metrics")
-        print("   - Training configuration details")
-        print("   - Performance charts")
-        print("   - Detailed system statistics")
-        print("   - Adaptive controller breakdown")
-        print("   - Optimization tips and conclusions")
+        print(f"✅ 训练报告已生成")
+        print(f"📄 报告包含:")
+        print(f"   - 执行摘要与关键指标")
+        print(f"   - 训练配置详情")
+        print(f"   - 性能指标可视化图表")
+        print(f"   - 详细的系统统计信息")
+        print(f"   - 自适应控制器分析")
+        print(f"   - 优化建议与结论")
         
-        # 询问用户是否保存报告（静默模式下自动保存�?
+        # 询问用户是否保存报告（静默模式下自动保存）
         if silent_mode:
-            # 静默模式：自动保存，不打开浏览�?
+            # 静默模式：自动保存，不打开浏览器
             if report_generator.save_report(html_content, report_path):
-                print(f"�?报告已自动保存到: {report_path}")
+                print(f"✅ 报告已自动保存到: {report_path}")
             else:
-                print("?? ??????")
+                print("❌ 报告保存失败")
         else:
-            # 交互模式：询问用�?
+            # 交互模式：询问用户
             print("\n" + "-" * 60)
-            save_choice = input("?? ????HTML????? (y/n, ??y): ").strip().lower()
+            save_choice = input("💾 是否保存HTML训练报告? (y/n, 默认y): ").strip().lower()
             
-            if save_choice in ('', 'y', 'yes'):
+            if save_choice in ['', 'y', 'yes', '是']:
                 if report_generator.save_report(html_content, report_path):
-                    print(f"? ??????: {report_path}")
-                    print("?? ??: ??????????????????")
+                    print(f"✅ 报告已保存到: {report_path}")
+                    print(f"💡 提示: 使用浏览器打开该文件即可查看完整报告")
                     
                     # 尝试自动打开报告（可选）
                     auto_open = input("🌐 是否在浏览器中打开报告? (y/n, 默认n): ").strip().lower()
-                    if auto_open in ('y', 'yes'):
+                    if auto_open in ['y', 'yes', '是']:
                         import webbrowser
                         abs_path = os.path.abspath(report_path)
                         webbrowser.open(f'file://{abs_path}')
-                        print("?? ??????????")
+                        print("✅ 报告已在浏览器中打开")
                 else:
-                    print("?? ??????")
+                    print("❌ 报告保存失败")
             else:
-                print("?? ?????")
-                print("?? ????????????????")
+                print("ℹ️ 报告未保存")
+                print(f"💡 如需查看，请手动运行报告生成功能")
     
     except Exception as e:
-        print(f"⚠️ 生成训练报告时出�? {e}")
-        print("???????????????????")
+        print(f"⚠️ 生成训练报告时出错: {e}")
+        print("训练数据已正常保存，可稍后手动生成报告")
     
     return results
 
@@ -3173,10 +2634,10 @@ def evaluate_single_model(algorithm: str, training_env: SingleAgentTrainingEnvir
                     actions_dict = {}
                 action = training_env._encode_continuous_action(actions_dict)
             
-            # 评估时也传入动作字典，确保偏好生�?
+            # 评估时也传入动作字典，确保偏好生效
             next_state, reward, done, info = training_env.step(action, state, actions_dict)
             
-            # 安全处理奖励和指�?
+            # 安全处理奖励和指标
             safe_reward = safe_value(reward, -10.0, 120.0)
             episode_reward += safe_reward
             
@@ -3193,13 +2654,13 @@ def evaluate_single_model(algorithm: str, training_env: SingleAgentTrainingEnvir
             if done:
                 break
         
-        # 安全计算平均�?
+        # 安全计算平均值
         steps = max(1, steps)  # 防止除零
         eval_rewards.append(safe_value(episode_reward / steps, -20.0, 80.0))
         eval_delays.append(safe_value(episode_delay / steps, 0.0, 10.0))
         eval_completions.append(safe_value(episode_completion / steps, 0.0, 1.0))
     
-    # 安全计算最终结�?
+    # 安全计算最终结果
     if len(eval_rewards) == 0:
         return {'avg_reward': -1.0, 'avg_delay': 1.0, 'completion_rate': 0.0}
     
@@ -3213,143 +2674,86 @@ def evaluate_single_model(algorithm: str, training_env: SingleAgentTrainingEnvir
         'completion_rate': avg_completion
     }
 
- 
-def _finite_mean(values: List[float], default: float = 0.0) -> float:
-    """计算有限值的均值，过滤掉NaN/Inf""" 
-    finite_values: List[float] = []
-    for v in values:
-        try:
-            val = float(v)
-        except (TypeError, ValueError):
-            continue
-        if np.isfinite(val):
-            finite_values.append(val)
-    return float(np.mean(finite_values)) if finite_values else default
-
 
 def _calculate_stable_delay_average(training_env: SingleAgentTrainingEnvironment) -> float:
     """
-    计算稳定的时延平均值，避免MovingAverage(100)的训练波动影�?
+    计算稳定的时延平均值，避免MovingAverage(100)的训练波动影响
     
-    策略�?
+    策略：
     1. 优先使用episode_metrics中的完整数据（如果可用）
-    2. 使用�?0%的数据（排除前期学习阶段�?
+    2. 使用后50%的数据（排除前期学习阶段）
     3. 如果数据不足，回退到MovingAverage(100)
     
     Returns:
-        float: 稳定的平均时�?
+        float: 稳定的平均时延
     """
     # 尝试从episode_metrics获取完整时延数据
     if hasattr(training_env, 'episode_metrics') and 'avg_delay' in training_env.episode_metrics:
         delay_history = training_env.episode_metrics['avg_delay']
         
         if len(delay_history) >= 100:
-            # 使用�?0%的数据（更成熟的策略�?
+            # 使用后50%的数据（更成熟的策略）
             half_point = len(delay_history) // 2
             converged_delays = delay_history[half_point:]
-            return _finite_mean(converged_delays, training_env.performance_tracker['recent_delays'].get_average())
+            return float(np.mean(converged_delays))
         elif len(delay_history) >= 50:
-            # 如果不足100轮，使用�?0�?
-            return _finite_mean(delay_history[-30:], training_env.performance_tracker['recent_delays'].get_average())
+            # 如果不足100轮，使用后30轮
+            return float(np.mean(delay_history[-30:]))
         elif len(delay_history) > 0:
-            # 数据很少，使用全�?
-            return _finite_mean(delay_history, training_env.performance_tracker['recent_delays'].get_average())
+            # 数据很少，使用全部
+            return float(np.mean(delay_history))
     
     # 回退：使用MovingAverage
-    recent_delay = training_env.performance_tracker['recent_delays'].get_average()
-    return _finite_mean([recent_delay], 0.0)
+    return training_env.performance_tracker['recent_delays'].get_average()
 
 
 def _calculate_stable_completion_average(training_env: SingleAgentTrainingEnvironment) -> float:
     """
-    计算稳定的完成率平均�?
+    计算稳定的完成率平均值
     
     Returns:
         float: 稳定的平均完成率
     """
-    # 尝试从episode_metrics获取完整完成率数�?
+    # 尝试从episode_metrics获取完整完成率数据
     if hasattr(training_env, 'episode_metrics') and 'task_completion_rate' in training_env.episode_metrics:
         completion_history = training_env.episode_metrics['task_completion_rate']
         
         if len(completion_history) >= 100:
-            # 使用�?0%的数�?
+            # 使用后50%的数据
             half_point = len(completion_history) // 2
             converged_completions = completion_history[half_point:]
-            return _finite_mean(converged_completions, training_env.performance_tracker['recent_completion'].get_average())
+            return float(np.mean(converged_completions))
         elif len(completion_history) >= 50:
-            # 如果不足100轮，使用�?0�?
-            return _finite_mean(completion_history[-30:], training_env.performance_tracker['recent_completion'].get_average())
+            # 如果不足100轮，使用后30轮
+            return float(np.mean(completion_history[-30:]))
         elif len(completion_history) > 0:
-            # 数据很少，使用全�?
-            return _finite_mean(completion_history, training_env.performance_tracker['recent_completion'].get_average())
+            # 数据很少，使用全部
+            return float(np.mean(completion_history))
     
     # 回退：使用MovingAverage
-    recent_completion = training_env.performance_tracker['recent_completion'].get_average()
-    return _finite_mean([recent_completion], 0.0)
-
-
-def _calculate_raw_cost_for_training(training_env: SingleAgentTrainingEnvironment) -> float:
-    """
-    从训练奖励计算raw_cost（奖励本身就是负成本�?
-    
-    训练时：reward = -cost（成本越低，奖励越高�?
-    因此：raw_cost = -reward
-    
-    Returns:
-        float: raw_cost（正值，越小越好�?
-    """
-    # 获取收敛后的平均奖励
-    if hasattr(training_env, 'episode_rewards') and len(training_env.episode_rewards) > 0:
-        rewards = []
-        for r in training_env.episode_rewards:
-            try:
-                val = float(r)
-            except (TypeError, ValueError):
-                continue
-            if np.isfinite(val):
-                rewards.append(val)
-        if not rewards:
-            rewards = [training_env.performance_tracker['recent_rewards'].get_average()]
-        if len(rewards) >= 100:
-            # 使用�?0%数据（收敛后�?
-            half_point = len(rewards) // 2
-            converged_rewards = rewards[half_point:]
-            avg_reward = _finite_mean(converged_rewards, 0.0)
-        elif len(rewards) >= 50:
-            avg_reward = _finite_mean(rewards[-30:], 0.0)
-        else:
-            avg_reward = _finite_mean(rewards, 0.0)
-    else:
-        recent_avg = training_env.performance_tracker['recent_rewards'].get_average()
-        avg_reward = _finite_mean([recent_avg], 0.0)
-    
-    # reward是负成本，所以raw_cost = -reward
-    raw_cost = -avg_reward
-    return float(raw_cost)
+    return training_env.performance_tracker['recent_completion'].get_average()
 
 
 def save_single_training_results(algorithm: str, training_env: SingleAgentTrainingEnvironment, 
                                 training_time: float,
                                 override_scenario: Optional[Dict[str, Any]] = None) -> Dict:
     """保存训练结果"""
-    # 生成时间�?
+    # 生成时间戳
     timestamp = generate_timestamp()
     
     # 🔧 同时提供Episode总奖励和Per-Step平均奖励
-    reward_samples = list(training_env.episode_rewards[-100:]) if hasattr(training_env, 'episode_rewards') else []
-    reward_samples.append(training_env.performance_tracker['recent_rewards'].get_average())
-    recent_episode_reward = _finite_mean(reward_samples, 0.0)
+    recent_episode_reward = training_env.performance_tracker['recent_rewards'].get_average()
     
-    # 🔧 优化：使用实际平均步数计�?avg_step_reward
+    # 🔧 优化：使用实际平均步数计算 avg_step_reward
     if 'episode_steps' in training_env.episode_metrics and training_env.episode_metrics['episode_steps']:
-        # 使用最�?00个episode的平均步�?
+        # 使用最近100个episode的平均步数
         recent_steps = training_env.episode_metrics['episode_steps'][-100:]
         avg_steps_per_episode = sum(recent_steps) / len(recent_steps)
     else:
-        # 回退到配置的默认�?
+        # 回退到配置的默认值
         avg_steps_per_episode = config.experiment.max_steps_per_episode
     
-    avg_step_reward = recent_episode_reward / avg_steps_per_episode if avg_steps_per_episode else 0.0
+    avg_step_reward = recent_episode_reward / avg_steps_per_episode
     
     # 获取网络拓扑信息
     num_vehicles = len(training_env.simulator.vehicles)
@@ -3357,7 +2761,7 @@ def save_single_training_results(algorithm: str, training_env: SingleAgentTraini
     num_uavs = len(training_env.simulator.uavs)
     state_dim = getattr(training_env.agent_env, 'state_dim', 'N/A')
     
-    # 🆕 修复：收集完整的系统配置参数（用于HTML报告显示�?
+    # 🆕 修复：收集完整的系统配置参数（用于HTML报告显示）
     # 直接使用已导入的config对象
     
     results = {
@@ -3414,7 +2818,7 @@ def save_single_training_results(algorithm: str, training_env: SingleAgentTraini
             'rsu_static_power': config.compute.rsu_static_power,
             'uav_static_power': getattr(config.compute, 'uav_static_power', 20.0),
         },
-        # 🆕 添加任务和迁移参�?
+        # 🆕 添加任务和迁移参数
         'task_migration_config': {
             'task_arrival_rate': config.task.arrival_rate,
             'task_size_mean': sum(config.task.data_size_range) / 2,
@@ -3429,38 +2833,21 @@ def save_single_training_results(algorithm: str, training_env: SingleAgentTraini
         'episode_rewards': training_env.episode_rewards,
         'episode_metrics': training_env.episode_metrics,
         'final_performance': {
-            # 提供两种奖励指标，用途不�?
-            'avg_episode_reward': recent_episode_reward,  # Episode总奖励（训练目标�?
+            # 提供两种奖励指标，用途不同
+            'avg_episode_reward': recent_episode_reward,  # Episode总奖励（训练目标）
             'avg_step_reward': avg_step_reward,           # 每步平均奖励（对比评估）
             'avg_reward': avg_step_reward,  # 向后兼容：默认使用per-step（与可视化一致）
             
-            # 🔧 修复：使用更稳定的平均方法，避免MovingAverage(100)的波动影�?
+            # 🔧 修复：使用更稳定的平均方法，避免MovingAverage(100)的波动影响
             'avg_delay': _calculate_stable_delay_average(training_env),
-            'avg_completion': _calculate_stable_completion_average(training_env),
-            
-            # 🎯 新增：添加avg_energy和raw_cost，用于与对比实验一�?
-            'avg_energy': _finite_mean(
-                training_env.episode_metrics['total_energy'][len(training_env.episode_metrics['total_energy'])//2:]
-                if training_env.episode_metrics.get('total_energy') else [],
-                0.0
-            ),
-            'raw_cost': _calculate_raw_cost_for_training(training_env),
+            'avg_completion': _calculate_stable_completion_average(training_env)
         }
     }
     
-    print(f"📊 收集的配置参�?")
+    print(f"📊 收集的配置参数:")
     print(f"   系统拓扑: {num_vehicles}车辆, {num_rsus}RSU, {num_uavs}UAV")
     print(f"   网络配置: 带宽{config.network.bandwidth/1e6:.0f}MHz, 频率{config.communication.carrier_frequency/1e9:.1f}GHz")
     print(f"   任务参数: 到达率{config.task.arrival_rate:.1f}, 数据量{sum(config.task.data_size_range)/2/1e6:.1f}MB")
-    
-    # 🎯 打印关键性能指标
-    final_perf = results['final_performance']
-    print(f"\n🎯 最终性能指标:")
-    print(f"   Raw Cost: {final_perf.get('raw_cost', 'N/A'):.4f} (= -avg_reward，与对比实验一�?")
-    print(f"   Avg Reward: {final_perf.get('avg_reward', 0):.4f} (= -raw_cost，训练优化目�?")
-    print(f"   Avg Delay: {final_perf.get('avg_delay', 0):.4f}s")
-    print(f"   Avg Energy: {final_perf.get('avg_energy', 0):.2f}J")
-    print(f"   Completion Rate: {final_perf.get('avg_completion', 0):.1%}")
     
     # 使用时间戳文件名
     filename = get_timestamped_filename("training_results")
@@ -3490,7 +2877,7 @@ def plot_single_training_curves(algorithm: str, training_env: SingleAgentTrainin
     chart_path = f"{algorithm_dir}/training_overview.png"
     create_training_chart(training_env, algorithm, chart_path)
     
-    # 🎯 生成目标函数分解图（显示时延、能耗两项核心目标的权重贡献�?
+    # 🎯 生成目标函数分解图（显示时延、能耗两项核心目标的权重贡献）
     objective_path = f"{algorithm_dir}/objective_analysis.png"
     plot_objective_function_breakdown(training_env, algorithm, objective_path)
     
@@ -3506,7 +2893,7 @@ def plot_single_training_curves(algorithm: str, training_env: SingleAgentTrainin
 
 def compare_single_algorithms(algorithms: List[str], num_episodes: Optional[int] = None) -> Dict:
     """比较多个单智能体算法的性能"""
-    # 使用配置中的默认�?
+    # 使用配置中的默认值
     if num_episodes is None:
         num_episodes = config.experiment.num_episodes
     
@@ -3515,9 +2902,9 @@ def compare_single_algorithms(algorithms: List[str], num_episodes: Optional[int]
     
     results = {}
     
-    # 训练所有算�?
+    # 训练所有算法
     for algorithm in algorithms:
-        print(f"\n开始训�?{algorithm}...")
+        print(f"\n开始训练 {algorithm}...")
         results[algorithm] = train_single_algorithm(algorithm, num_episodes)
     
     # 🎨 生成简洁的对比图表
@@ -3538,7 +2925,7 @@ def compare_single_algorithms(algorithms: List[str], num_episodes: Optional[int]
         'summary': {}
     }
     
-    # 计算汇总统�?
+    # 计算汇总统计
     for algorithm, result in results.items():
         final_perf = result['final_performance']
         comparison_results['summary'][algorithm] = {
@@ -3553,7 +2940,7 @@ def compare_single_algorithms(algorithms: List[str], num_episodes: Optional[int]
     with open(f"results/{comparison_filename}", "w", encoding="utf-8") as f:
         json.dump(comparison_results, f, indent=2, ensure_ascii=False)
     
-    print("\n?? ??????????")
+    print("\n🎯 单智能体算法比较完成！")
     print(f"📄 比较结果已保存到 results/{comparison_filename}")
     print(f"📊 对比图表已保存到 {comparison_chart_path}")
     
@@ -3563,7 +2950,7 @@ def compare_single_algorithms(algorithms: List[str], num_episodes: Optional[int]
 
 
 def main():
-    """主函数""" 
+    """主函数"""
     parser = argparse.ArgumentParser(description='单智能体算法训练脚本')
     parser.add_argument('--algorithm', type=str, choices=['DDPG', 'TD3', 'TD3-LE', 'TD3_LE', 'TD3_LATENCY_ENERGY', 'DQN', 'PPO', 'SAC', 'CAM_TD3', 'OPTIMIZED_TD3'],
                        help='选择训练算法')
@@ -3575,82 +2962,57 @@ def main():
     parser.add_argument('--num-vehicles', type=int, default=None, help='覆盖车辆数量用于实验')
     parser.add_argument('--force-offload', type=str, choices=['local', 'remote', 'local_only', 'remote_only'],
                         help='强制卸载模式：local/local_only 或 remote/remote_only')
-    parser.add_argument('--fixed-offload-policy', type=str,
+    parser.add_argument('--fixed-offload-policy', type=str, 
                         choices=['random', 'greedy', 'local_only', 'rsu_only', 'round_robin', 'weighted'],
                         help='固定卸载策略（不使用智能体学习）：random/greedy/local_only/rsu_only/round_robin/weighted')
-    # 🌐 实时可视化参数(默认开启)
-    parser.add_argument('--realtime-vis', action='store_true', default=True, help='启用实时可视化(默认开启)')
-    parser.add_argument('--no-realtime-vis', action='store_false', dest='realtime_vis', help='禁用实时可视化')
+    # 🌐 实时可视化参数（默认开启，可通过 --no-realtime-vis 关闭）
+    parser.add_argument(
+        '--realtime-vis',
+        action='store_true',
+        dest='realtime_vis',
+        default=True,
+        help='启用实时可视化（默认已开启）'
+    )
+    parser.add_argument(
+        '--no-realtime-vis',
+        action='store_false',
+        dest='realtime_vis',
+        help='禁用实时可视化（覆盖默认开启行为）'
+    )
     parser.add_argument('--vis-port', type=int, default=5000, help='实时可视化服务器端口 (默认: 5000)')
-    # 🎨 高端训练可视化参�?
-    parser.add_argument('--advanced-vis', action='store_true', help='启用高端训练可视�?Dashboard')
     # 🚀 增强缓存参数（默认启用）
-    parser.add_argument('--no-enhanced-cache', action='store_true',
-                        help='禁用增强缓存系统（默认启用分层L1/L2 + 热度策略 + RSU协作）')
+    parser.add_argument('--no-enhanced-cache', action='store_true', 
+                       help='禁用增强缓存系统（默认启用分层L1/L2 + 热度策略 + RSU协作）')
     # 🧭 两阶段管线开关（Stage-1 预分配 + Stage-2 精细调度）
     parser.add_argument('--two-stage', action='store_true', help='启用两阶段求解（预分配+精细调度）')
-    # 🧠 指定两个阶段的算�?
+    # 🧠 指定两个阶段的算法
     parser.add_argument('--stage1-alg', type=str, default=None,
                         help='阶段一算法（offloading 头）：heuristic|greedy|cache_first|distance_first')
     parser.add_argument('--stage2-alg', type=str, default=None,
-                        help='阶段二算法（缓存/迁移控制的RL）：TD3|SAC|DDPG|PPO|DQN|TD3-LE')
-    # 🎯 中央资源分配架构（Phase 1 + Phase 2�? 默认启用
+                        help='阶段二算法（缓存/迁移控制的RL）：TD3|SAC|DDPG|PPO|DQN|TD3-LE|OPTIMIZED_TD3')
+    # 🎯 中央资源分配架构（Phase 1 + Phase 2）- 默认启用
     parser.add_argument('--central-resource', action='store_true', default=True,
-                        help='启用中央资源分配架构（Phase 1决策 + Phase 2执行），扩展状�?动作空间 [默认启用]')
+                        help='启用中央资源分配架构（Phase 1决策 + Phase 2执行），扩展状态/动作空间 [默认启用]')
     parser.add_argument('--no-central-resource', action='store_false', dest='central_resource',
                         help='禁用中央资源分配架构，使用标准均匀资源分配')
     parser.add_argument('--silent-mode', action='store_true',
                         help='启用静默模式，跳过训练结束后的交互提示')
     parser.add_argument('--resume-from', type=str,
-                        help='从已有模型(.pth 或目录前缀) 继续训练，复用已学策略')
+                        help='从已有模型 (.pth 或目录前缀) 继续训练，复用已学策略')
     parser.add_argument('--resume-lr-scale', type=float, default=None,
-                        help='Warm-start 后的学习率缩放系数(默认0.5，None保留原值)')
+                        help='Warm-start 后的学习率缩放系数 (默认0.5，设为1可保留原值)')
     
-    # 🆕 通信模型优化参数�?GPP标准增强�?
+    # 🆕 通信模型优化参数（3GPP标准增强）
     parser.add_argument('--comm-enhancements', action='store_true',
-                        help='启用所有通信模型优化（快衰落+系统级干�?动态带宽）Enable all communication model enhancements')
+                        help='启用所有通信模型优化（快衰落+系统级干扰+动态带宽）Enable all communication model enhancements')
     parser.add_argument('--fast-fading', action='store_true',
                         help='启用随机快衰落（Rayleigh/Rician）Enable fast fading')
     parser.add_argument('--system-interference', action='store_true',
-                        help='启用系统级干扰计�?Enable system-level interference calculation')
+                        help='启用系统级干扰计算 Enable system-level interference calculation')
     parser.add_argument('--dynamic-bandwidth', action='store_true',
-                        help='启用动态带宽分�?Enable dynamic bandwidth allocation')
-    # 🆕 正交信道分配
-    parser.add_argument('--channel-allocation', action='store_true',
-                        help='启用正交信道分配（减少同频干扰）Enable orthogonal channel allocation')
-    
-    # 🧪 卸载偏置对比实验参数
-    parser.add_argument('--rsu-reward-multiplier', type=float, default=2.0,
-                        help='RSU奖励倍数（默认2.0x，可选1.0/2.0/3.0用于对比实验）')
-    parser.add_argument('--offload-bias', type=str, default='none',
-                        choices=['none', 'weak', 'strong'],
-                        help='初始卸载偏置：none(无偏置靠奖励学习)/weak(轻度引导)/strong(强引导，默认)')
+                        help='启用动态带宽分配 Enable dynamic bandwidth allocation')
     
     args = parser.parse_args()
-
-    # 🧪 处理卸载偏置对比实验参数
-    if args.rsu_reward_multiplier != 2.0 or args.offload_bias != 'none':
-        print("\n" + "="*70)
-        print("🧪 卸载偏置对比实验配置")
-        print("="*70)
-        print(f"  RSU奖励倍数: {args.rsu_reward_multiplier}x")
-        print(f"  初始偏置: {args.offload_bias}")
-        
-        # 设置环境变量
-        os.environ['RSU_REWARD_MULTIPLIER'] = str(args.rsu_reward_multiplier)
-        os.environ['OFFLOAD_BIAS_MODE'] = args.offload_bias
-        
-        # 显示预期效果
-        if args.offload_bias == 'none':
-            print(f"  预期初始概率: Local≈33%, RSU≈33%, UAV≈33%")
-            print(f"  学习方式: 靠{args.rsu_reward_multiplier}x奖励差异驱动探索学习")
-        elif args.offload_bias == 'weak':
-            print(f"  预期初始概率: Local≈20%, RSU≈50%, UAV≈30%")
-            print(f"  学习方式: 偏置引导 + {args.rsu_reward_multiplier}x奖励强化")
-        elif args.offload_bias == 'strong':
-            print(f"  预期初始概率: Local≈2%, RSU≈80%, UAV≈18%")
-            print(f"  学习方式: 强偏置快速收敛 + {args.rsu_reward_multiplier}x奖励强化")
-        print("="*70 + "\n")
 
     if args.seed is not None:
         os.environ['RANDOM_SEED'] = str(args.seed)
@@ -3662,53 +3024,44 @@ def main():
         print("🎯 启用中央资源分配架构（Phase 1 + Phase 2）[默认模式]")
     else:
         os.environ.pop('CENTRAL_RESOURCE', None)
-        print("??  ???????????????? --no-central-resource ???????")
+        print("⚠️  使用标准均匀资源分配模式（已通过 --no-central-resource 禁用中央资源）")
     
     # 🆕 通信模型优化配置
-    if args.comm_enhancements or args.fast_fading or args.system_interference or args.dynamic_bandwidth or args.channel_allocation:
+    if args.comm_enhancements or args.fast_fading or args.system_interference or args.dynamic_bandwidth:
         print("\n" + "="*70)
-        print("?? ???????? / 3GPP ????")
+        print("🌐 通信模型优化配置（3GPP标准增强）")
         print("="*70)
-
+        
+        # 如果启用了--comm-enhancements，则启用所有优化
         if args.comm_enhancements:
             config.communication.enable_fast_fading = True
             config.communication.use_system_interference = True
             config.communication.use_bandwidth_allocator = True
-            config.communication.use_channel_allocation = True  # ?? ??????
             config.communication.use_communication_enhancements = True
-            print("? ?????????????3GPP?????")
+            print("✅ 启用所有通信模型优化（完整3GPP标准模式）")
         else:
-            # ????????
+            # 单独配置各项优化
             if args.fast_fading:
                 config.communication.enable_fast_fading = True
-                print("? ????????Rayleigh/Rician???")
-
+                print("✅ 启用随机快衰落（Rayleigh/Rician分布）")
+            
             if args.system_interference:
                 config.communication.use_system_interference = True
-                print("? ?????????")
-
+                print("✅ 启用系统级干扰计算")
+            
             if args.dynamic_bandwidth:
                 config.communication.use_bandwidth_allocator = True
-                print("? ???????????")
-
-            # ?? ??????
-            if args.channel_allocation:
-                config.communication.use_channel_allocation = True
-                print("? ????????????????")
-
-        # ??????
-        print("\n????:")
-        print(f"  - ???: {'??' if config.communication.enable_fast_fading else '??'}")
-        print(f"  - ?????: {'??' if config.communication.use_system_interference else '??'}")
-        print(f"  - ??????: {'??' if config.communication.use_bandwidth_allocator else '??'}")
-        print(f"  - ??????: {'??' if config.communication.use_channel_allocation else '??'}")
-        print(f"  - ????: {config.communication.carrier_frequency/1e9:.1f} GHz")
-        print(f"  - ????: {config.communication.coding_efficiency}")
+                print("✅ 启用动态带宽分配调度器")
+        
+        # 显示配置详情
+        print("\n配置详情：")
+        print(f"  - 快衰落: {'启用' if config.communication.enable_fast_fading else '禁用'}")
+        print(f"  - 系统级干扰: {'启用' if config.communication.use_system_interference else '禁用'}")
+        print(f"  - 动态带宽分配: {'启用' if config.communication.use_bandwidth_allocator else '禁用'}")
+        print(f"  - 载波频率: {config.communication.carrier_frequency/1e9:.1f} GHz")
+        print(f"  - 编码效率: {config.communication.coding_efficiency}")
         if config.communication.enable_fast_fading:
-            print(f"  - ????? ?={config.communication.fast_fading_std}, K={config.communication.rician_k_factor}dB")
-        if config.communication.use_channel_allocation:
-            num_channels = int(config.communication.total_bandwidth / config.communication.channel_bandwidth)
-            print(f"  - ????: {num_channels} ({config.communication.total_bandwidth/1e6:.0f}MHz / {config.communication.channel_bandwidth/1e6:.0f}MHz)")
+            print(f"  - 快衰落参数: σ={config.communication.fast_fading_std}, K={config.communication.rician_k_factor}dB")
         print("="*70 + "\n")
     
     # Toggle two-stage pipeline via environment for the simulator
@@ -3733,8 +3086,8 @@ def main():
         }
         # 同时设置环境变量（向后兼容）
         os.environ['TRAINING_SCENARIO_OVERRIDES'] = json.dumps(override_scenario)
-        print(f"📋 覆盖参数: 车辆�?= {args.num_vehicles}")
-    
+        print(f"📋 覆盖参数: 车辆数 = {args.num_vehicles}")
+   
     enforce_mode = None
     if getattr(args, 'force_offload', None):
         if args.force_offload in ('local', 'local_only'):
@@ -3760,7 +3113,7 @@ def main():
         print("="*80 + "\n")
     
     if args.compare:
-        # 比较所有算�?
+        # 比较所有算法
         algorithms = ['DDPG', 'TD3', 'TD3-LE', 'DQN', 'PPO', 'SAC']
         compare_single_algorithms(algorithms, args.episodes)
     elif args.algorithm:
@@ -3772,17 +3125,16 @@ def main():
             args.save_interval,
             enable_realtime_vis=args.realtime_vis,
             vis_port=args.vis_port,
-            override_scenario=override_scenario,  # 🔧 新增：传递覆盖参�?
+            override_scenario=override_scenario,  # 🔧 新增：传递覆盖参数
             use_enhanced_cache=not args.no_enhanced_cache,  # 🚀 默认启用增强缓存
             enforce_offload_mode=enforce_mode,
             fixed_offload_policy=getattr(args, 'fixed_offload_policy', None),  # 🎯 固定卸载策略
             silent_mode=args.silent_mode,
             resume_from=args.resume_from,
-            resume_lr_scale=args.resume_lr_scale,
-            enable_advanced_vis=args.advanced_vis  # 🎨 高端可视�?
+            resume_lr_scale=args.resume_lr_scale
         )
     else:
-        print("请指�?--algorithm 或使�?--compare 标志")
+        print("请指定 --algorithm 或使用 --compare 标志")
         print("使用 python train_single_agent.py --help 查看帮助")
 
 
@@ -3792,88 +3144,88 @@ if __name__ == "__main__":
 """
 
 🔄 完整执行流程（分5个阶段）
-📌 阶段1: 系统初始�?(train_single_agent.py: main函数)
-1.1 参数解析与配�?
-├─ 解析命令行参�?
-�? ├─ algorithm = "TD3"
-�? ├─ episodes = 800  
-�? ├─ num_vehicles = 12
-�? └─ enhanced_cache = True (默认)
-�?
+📌 阶段1: 系统初始化 (train_single_agent.py: main函数)
+1.1 参数解析与配置
+├─ 解析命令行参数
+│  ├─ algorithm = "TD3"
+│  ├─ episodes = 800  
+│  ├─ num_vehicles = 12
+│  └─ enhanced_cache = True (默认)
+│
 ├─ 设置随机种子
-�? └─ 从config或环境变量读取种�?
-�?
+│  └─ 从config或环境变量读取种子
+│
 └─ 构建场景配置 override_scenario
    └─ {'num_vehicles': 12, 'override_topology': True}
    
 1.2 创建训练环境 (SingleAgentTrainingEnvironment)
-环境初始化流�?
-├─ 1) 选择仿真器类�?
-�? ├─ use_enhanced_cache=True
-�? └─ simulator = EnhancedSystemSimulator(scenario_config)
-�?
+环境初始化流程:
+├─ 1) 选择仿真器类型
+│  ├─ use_enhanced_cache=True
+│  └─ simulator = EnhancedSystemSimulator(scenario_config)
+│
 ├─ 2) 初始化仿真器组件 (system_simulator.py)
-�? ├─ 车辆初始�? 12辆车
-�? �? ├─ 位置: 随机分布在道路上
-�? �? ├─ 速度: 30-50 km/h
-�? �? └─ 缓存: L1(200MB) + L2(300MB)
-�? �?
-�? ├─ RSU部署: 4个路侧单�?(固定拓扑)
-�? �? ├─ 位置: 等间距分�?
-�? �? ├─ 覆盖半径: 150m
-�? �? ├─ 缓存容量: 1000MB
-�? �? └─ 计算能力: 50 GHz
-�? �?
-�? └─ UAV部署: 2个无人机
-�?    ├─ 位置: 动态巡�?
-�?    ├─ 高度: 100m
-�?    ├─ 缓存容量: 200MB
-�?    └─ 计算能力: 20 GHz
-�?
-├─ 3) 初始化自适应控制�?
-�? ├─ AdaptiveCacheController (智能缓存控制)
-�? �? ├─ 分层L1/L2缓存策略
-�? �? ├─ 热度追踪 (HeatBasedStrategy)
-�? �? └─ RSU协作缓存
-�? �?
-�? └─ AdaptiveMigrationController (迁移决策控制)
-�?    ├─ 负载历史追踪
-�?    ├─ 多维触发条件
-�?    └─ 成本效益分析
-�?
+│  ├─ 车辆初始化: 12辆车
+│  │  ├─ 位置: 随机分布在道路上
+│  │  ├─ 速度: 30-50 km/h
+│  │  └─ 缓存: L1(200MB) + L2(300MB)
+│  │
+│  ├─ RSU部署: 4个路侧单元 (固定拓扑)
+│  │  ├─ 位置: 等间距分布
+│  │  ├─ 覆盖半径: 150m
+│  │  ├─ 缓存容量: 1000MB
+│  │  └─ 计算能力: 50 GHz
+│  │
+│  └─ UAV部署: 2个无人机
+│     ├─ 位置: 动态巡航
+│     ├─ 高度: 100m
+│     ├─ 缓存容量: 200MB
+│     └─ 计算能力: 20 GHz
+│
+├─ 3) 初始化自适应控制器
+│  ├─ AdaptiveCacheController (智能缓存控制)
+│  │  ├─ 分层L1/L2缓存策略
+│  │  ├─ 热度追踪 (HeatBasedStrategy)
+│  │  └─ RSU协作缓存
+│  │
+│  └─ AdaptiveMigrationController (迁移决策控制)
+│     ├─ 负载历史追踪
+│     ├─ 多维触发条件
+│     └─ 成本效益分析
+│
 └─ 4) 拓扑优化 (FixedTopologyOptimizer)
    ├─ 根据车辆数优化超参数
-   ├─ num_vehicles=12 �?hidden_dim=512
+   ├─ num_vehicles=12 → hidden_dim=512
    ├─ actor_lr=1e-4, critic_lr=8e-5
    └─ batch_size=256
    
-1.3 创建TD3智能�?(TD3Environment)
-TD3算法初始�?
+1.3 创建TD3智能体 (TD3Environment)
+TD3算法初始化:
 ├─ 网络结构
-�? ├─ Actor网络 (策略网络)
-�? �? ├─ 输入: state_dim = 车辆(12×5) + RSU(4×5) + UAV(2×5) + 全局(16) = 106�?
-�? �? ├─ 隐藏�? 512 �?512 �?256
-�? �? └─ 输出: action_dim = 3(任务分配) + 4(RSU选择) + 2(UAV选择) + 8(控制参数) = 17�?
-�? �?
-�? ├─ Twin Critic网络 (价值网络�?)
-�? �? ├─ Critic1: 评估状�?动作价�?
-�? �? ├─ Critic2: 减少过估计偏�?
-�? �? └─ 输入: state(106�? + action(17�? �?输出: Q�?
-�? �?
-�? └─ Target网络 (目标网络)
-�?    ├─ Target Actor: 生成目标动作
-�?    ├─ Target Critic1 & Critic2: 计算目标Q�?
-�?    └─ 软更新参�? τ=0.005
-�?
-├─ 经验回放缓冲�?
-�? ├─ 容量: 100,000条经�?
-�? ├─ 批次大小: 256
-�? └─ 优先级经验回�?(PER)
-�?    ├─ α=0.6 (优先级指�?
-�?    └─ β=0.4�?.0 (重要性采�?
-�?
+│  ├─ Actor网络 (策略网络)
+│  │  ├─ 输入: state_dim = 车辆(12×5) + RSU(4×5) + UAV(2×5) + 全局(16) = 106维
+│  │  ├─ 隐藏层: 512 → 512 → 256
+│  │  └─ 输出: action_dim = 3(任务分配) + 4(RSU选择) + 2(UAV选择) + 8(控制参数) = 17维
+│  │
+│  ├─ Twin Critic网络 (价值网络×2)
+│  │  ├─ Critic1: 评估状态-动作价值
+│  │  ├─ Critic2: 减少过估计偏差
+│  │  └─ 输入: state(106维) + action(17维) → 输出: Q值
+│  │
+│  └─ Target网络 (目标网络)
+│     ├─ Target Actor: 生成目标动作
+│     ├─ Target Critic1 & Critic2: 计算目标Q值
+│     └─ 软更新参数: τ=0.005
+│
+├─ 经验回放缓冲区
+│  ├─ 容量: 100,000条经验
+│  ├─ 批次大小: 256
+│  └─ 优先级经验回放 (PER)
+│     ├─ α=0.6 (优先级指数)
+│     └─ β=0.4→1.0 (重要性采样)
+│
 └─ TD3特有机制
-   ├─ 策略延迟更新: policy_delay=2 (�?步更新Actor)
+   ├─ 策略延迟更新: policy_delay=2 (每2步更新Actor)
    ├─ 目标策略平滑: target_noise=0.05
    ├─ 探索噪声: exploration_noise=0.2 (指数衰减)
    └─ 梯度裁剪: gradient_clip=0.7
@@ -3881,356 +3233,356 @@ TD3算法初始�?
 📌 阶段2: Episode循环 (训练800个episode)
 2.1 Episode重置
 每个Episode开始时:
-├─ 1) 重置仿真�?(system_simulator.py: initialize_components)
-�? ├─ 清空所有队�?
-�? ├─ 重置车辆位置和速度
-�? ├─ 清空缓存内容
-�? ├─ 重置统计数据
-�? └─ 重新生成内容�?(1000个内�?
-�?
-├─ 2) 构建初始状�?
-�? ├─ 车辆状�?(12×5�?
-�? �? ├─ 位置(x,y): 归一化到[0,1]
-�? �? ├─ 速度: 归一化到[0,1]
-�? �? ├─ 任务队列长度: 归一�?
-�? �? └─ 能�? 归一�?
-�? �?
-�? ├─ RSU状�?(4×5�?
-�? �? ├─ 位置(x,y)
-�? �? ├─ 缓存利用�?
-�? �? ├─ 队列负载
-�? �? └─ 能�?
-�? �?
-�? ├─ UAV状�?(2×5�?
-�? �? ├─ 位置(x,y,z)
-�? �? ├─ 缓存利用�?
-�? �? └─ 能�?
-�? �?
-�? └─ 全局状�?(16�?
-�?    ├─ 平均队列长度
-�?    ├─ 平均缓存利用�?
-�?    ├─ 系统负载
-�?    ├─ 任务类型分布 (4�?
-�?    ├─ 任务类型队列占比 (4�?
-�?    └─ 任务类型截止�?(4�?
-�?
-└─ 3) 重置控制器状�?
-   ├─ 缓存控制�? 清空热度追踪
-   └─ 迁移控制�? 清空负载历史
+├─ 1) 重置仿真器 (system_simulator.py: initialize_components)
+│  ├─ 清空所有队列
+│  ├─ 重置车辆位置和速度
+│  ├─ 清空缓存内容
+│  ├─ 重置统计数据
+│  └─ 重新生成内容库 (1000个内容)
+│
+├─ 2) 构建初始状态
+│  ├─ 车辆状态 (12×5维)
+│  │  ├─ 位置(x,y): 归一化到[0,1]
+│  │  ├─ 速度: 归一化到[0,1]
+│  │  ├─ 任务队列长度: 归一化
+│  │  └─ 能耗: 归一化
+│  │
+│  ├─ RSU状态 (4×5维)
+│  │  ├─ 位置(x,y)
+│  │  ├─ 缓存利用率
+│  │  ├─ 队列负载
+│  │  └─ 能耗
+│  │
+│  ├─ UAV状态 (2×5维)
+│  │  ├─ 位置(x,y,z)
+│  │  ├─ 缓存利用率
+│  │  └─ 能耗
+│  │
+│  └─ 全局状态 (16维)
+│     ├─ 平均队列长度
+│     ├─ 平均缓存利用率
+│     ├─ 系统负载
+│     ├─ 任务类型分布 (4维)
+│     ├─ 任务类型队列占比 (4维)
+│     └─ 任务类型截止期 (4维)
+│
+└─ 3) 重置控制器状态
+   ├─ 缓存控制器: 清空热度追踪
+   └─ 迁移控制器: 清空负载历史
 
-2.2 时间步循�?(每个Episode�?00-300�?
+2.2 时间步循环 (每个Episode约200-300步)
 每个时间步的执行流程:
 
-┌─────────────────────────────────────────────────────�?
-�? 步骤1: TD3选择动作 (td3.py: select_action)        �?
-├─────────────────────────────────────────────────────�?
-�? 输入: state (106维向�?                            �?
-�? �?                                                  �?
-�? ├─ 前向传播通过Actor网络                          �?
-�? �? └─ 输出原始动作: action_raw (17�?             �?
-�? �?                                                  �?
-�? ├─ 添加探索噪声 (高斯噪声)                        �?
-�? �? ├─ noise = N(0, exploration_noise)              �?
-�? �? └─ action = action_raw + noise                  �?
-�? �?                                                  �?
-�? ├─ 动作裁剪到[-1, 1]                              �?
-�? �?                                                  �?
-�? └─ 动作分解 (decompose_action)                    �?
-�?    ├─ 任务分配偏好 [0:3]                          �?
-�?    �? └─ softmax([local, rsu, uav])               �?
-�?    ├─ RSU选择权重 [3:7]                           �?
-�?    �? └─ softmax(4个RSU的权�?                    �?
-�?    ├─ UAV选择权重 [7:9]                           �?
-�?    �? └─ softmax(2个UAV的权�?                    �?
-�?    └─ 控制参数 [9:17]                             �?
-�?       ├─ 缓存控制 (4�?                           �?
-�?       �? ├─ 热度阈值调�?                         �?
-�?       �? ├─ 淘汰策略权重                          �?
-�?       �? ├─ 协作强度                              �?
-�?       �? └─ L1/L2比例                             �?
-�?       └─ 迁移控制 (4�?                           �?
-�?          ├─ 负载阈�?                             �?
-�?          ├─ 成本敏感�?                           �?
-�?          ├─ 延迟权重                              �?
-�?          └─ 能耗权�?                             �?
-└─────────────────────────────────────────────────────�?
+┌─────────────────────────────────────────────────────┐
+│  步骤1: TD3选择动作 (td3.py: select_action)        │
+├─────────────────────────────────────────────────────┤
+│  输入: state (106维向量)                            │
+│  │                                                   │
+│  ├─ 前向传播通过Actor网络                          │
+│  │  └─ 输出原始动作: action_raw (17维)             │
+│  │                                                   │
+│  ├─ 添加探索噪声 (高斯噪声)                        │
+│  │  ├─ noise = N(0, exploration_noise)              │
+│  │  └─ action = action_raw + noise                  │
+│  │                                                   │
+│  ├─ 动作裁剪到[-1, 1]                              │
+│  │                                                   │
+│  └─ 动作分解 (decompose_action)                    │
+│     ├─ 任务分配偏好 [0:3]                          │
+│     │  └─ softmax([local, rsu, uav])               │
+│     ├─ RSU选择权重 [3:7]                           │
+│     │  └─ softmax(4个RSU的权重)                    │
+│     ├─ UAV选择权重 [7:9]                           │
+│     │  └─ softmax(2个UAV的权重)                    │
+│     └─ 控制参数 [9:17]                             │
+│        ├─ 缓存控制 (4维)                           │
+│        │  ├─ 热度阈值调整                          │
+│        │  ├─ 淘汰策略权重                          │
+│        │  ├─ 协作强度                              │
+│        │  └─ L1/L2比例                             │
+│        └─ 迁移控制 (4维)                           │
+│           ├─ 负载阈值                              │
+│           ├─ 成本敏感度                            │
+│           ├─ 延迟权重                              │
+│           └─ 能耗权重                              │
+└─────────────────────────────────────────────────────┘
 
-┌─────────────────────────────────────────────────────�?
-�? 步骤2: 映射动作到自适应控制�?                    �?
-├─────────────────────────────────────────────────────�?
-�? (train_single_agent.py: _build_simulator_actions)  �?
-�? �?                                                  �?
-�? ├─ 解析控制参数 (�?维动�?                       �?
-�? �?                                                  �?
-�? ├─ 调用 map_agent_actions_to_params()             �?
-�? �? ├─ 将[-1,1]范围映射到具体参数范�?            �?
-�? �? └─ 分离缓存参数和迁移参�?                    �?
-�? �?                                                  �?
-�? ├─ 更新 AdaptiveCacheController                   �?
-�? �? ├─ heat_threshold = action[0] * 50 + 50        �?
-�? �? ├─ eviction_strategy_weight = sigmoid(action[1])�?
-�? �? ├─ collaboration_strength = action[2] * 0.5 + 0.5�?
-�? �? └─ l1_l2_ratio = action[3] * 0.3 + 0.4         �?
-�? �?                                                  �?
-�? └─ 更新 AdaptiveMigrationController               �?
-�?    ├─ load_threshold = action[4] * 0.3 + 0.6      �?
-�?    ├─ cost_sensitivity = action[5] * 0.5 + 0.5    �?
-�?    ├─ delay_weight = action[6] * 0.4 + 0.4        �?
-�?    └─ energy_weight = action[7] * 0.4 + 0.4       �?
-└─────────────────────────────────────────────────────�?
+┌─────────────────────────────────────────────────────┐
+│  步骤2: 映射动作到自适应控制器                     │
+├─────────────────────────────────────────────────────┤
+│  (train_single_agent.py: _build_simulator_actions)  │
+│  │                                                   │
+│  ├─ 解析控制参数 (后8维动作)                       │
+│  │                                                   │
+│  ├─ 调用 map_agent_actions_to_params()             │
+│  │  ├─ 将[-1,1]范围映射到具体参数范围             │
+│  │  └─ 分离缓存参数和迁移参数                     │
+│  │                                                   │
+│  ├─ 更新 AdaptiveCacheController                   │
+│  │  ├─ heat_threshold = action[0] * 50 + 50        │
+│  │  ├─ eviction_strategy_weight = sigmoid(action[1])│
+│  │  ├─ collaboration_strength = action[2] * 0.5 + 0.5│
+│  │  └─ l1_l2_ratio = action[3] * 0.3 + 0.4         │
+│  │                                                   │
+│  └─ 更新 AdaptiveMigrationController               │
+│     ├─ load_threshold = action[4] * 0.3 + 0.6      │
+│     ├─ cost_sensitivity = action[5] * 0.5 + 0.5    │
+│     ├─ delay_weight = action[6] * 0.4 + 0.4        │
+│     └─ energy_weight = action[7] * 0.4 + 0.4       │
+└─────────────────────────────────────────────────────┘
 
-┌─────────────────────────────────────────────────────�?
-�? 步骤3: 仿真器执行一�?                             �?
-├─────────────────────────────────────────────────────�?
-�? (system_simulator.py: run_simulation_step)         �?
-�? �?                                                  �?
-�? ├─ 3.1 更新车辆位置                               �?
-�? �? ├─ 根据速度和方向移�?                        �?
-�? �? ├─ 处理路口转向                               �?
-�? �? └─ 添加随机扰动                               �?
-�? �?                                                  �?
-�? ├─ 3.2 生成任务                                   �?
-�? �? ├─ 泊松过程采样 (λ=车辆数×任务率)            �?
-�? �? ├─ 为每辆车生成任务                           �?
-�? �? �? ├─ 任务类型 (1-4): 根据场景分布           �?
-�? �? �? ├─ 数据大小: 0.5-2.0 MB                    �?
-�? �? �? ├─ 计算需�? 500-3000 CPU周期              �?
-�? �? �? └─ 截止�? 0.5-3.0�?                      �?
-�? �? └─ 添加到车辆任务队�?                        �?
-�? �?                                                  �?
-�? ├─ 3.3 任务分配与调�?                            �?
-�? �? ├─ 对每个任务决策卸载目�?                    �?
-�? �? �? ├─ 本地处理 (概率: local_pref)             �?
-�? �? �? ├─ RSU卸载 (概率: rsu_pref)                �?
-�? �? �? �? └─ 根据RSU选择权重选择具体RSU          �?
-�? �? �? └─ UAV卸载 (概率: uav_pref)                �?
-�? �? �?    └─ 根据UAV选择权重选择具体UAV          �?
-�? �? �?                                             �?
-�? �? ├─ 缓存命中检�?                              �?
-�? �? �? └─ check_cache_hit_adaptive()              �?
-�? �? �?    ├─ 检查内容是否在节点缓存�?           �?
-�? �? �?    ├─ 命中: 减少传输时延                  �?
-�? �? �?    └─ 未命�? 智能缓存决策                �?
-�? �? �?       ├─ 调用缓存控制�?should_cache_content�?
-�? �? �?       ├─ 基于热度决定是否缓存             �?
-�? �? �?       └─ 执行淘汰和协作缓�?              �?
-�? �? �?                                             �?
-�? �? └─ 任务传输与入�?                            �?
-�? �?    ├─ 计算上行传输时延和能�?                �?
-�? �?    ├─ 将任务加入节点计算队�?                �?
-�? �?    └─ 记录任务元数�?                        �?
-�? �?                                                  �?
-�? ├─ 3.4 处理计算队列                               �?
-�? �? └─ _process_node_queues()                      �?
-�? �?    ├─ 遍历所有RSU和UAV                        �?
-�? �?    ├─ 对每个节�?                             �?
-�? �?    �? ├─ 获取队列长度                         �?
-�? �?    �? ├─ 动态调整处理能�?                    �?
-�? �?    �? �? └─ capacity = base + boost(队列长度) �?
-�? �?    �? ├─ 处理任务工作�?                      �?
-�? �?    �? �? └─ work_remaining -= capacity        �?
-�? �?    �? ├─ 完成的任�?                          �?
-�? �?    �? �? ├─ 计算下行传输                      �?
-�? �?    �? �? ├─ 更新统计(延迟、能�?             �?
-�? �?    �? �? └─ 标记完成                          �?
-�? �?    �? └─ 处理超期任务                         �?
-�? �?    └─ 更新节点状�?                            �?
-�? �?                                                  �?
-�? ├─ 3.5 自适应迁移检�?                            �?
-�? �? └─ check_adaptive_migration()                  �?
-�? �?    ├─ 计算所有节点负载因�?                   �?
-�? �?    �? └─ load = 0.8×队列负载 + 0.2×缓存利用率│
-�? �?    ├─ 更新迁移控制器负载历�?                 �?
-�? �?    ├─ 判断是否触发迁移                        �?
-�? �?    �? ├─ 负载超阈�?                          �?
-�? �?    �? ├─ 持续时间足够                         �?
-�? �?    �? └─ 成本效益分析通过                     �?
-�? �?    └─ 执行迁移                                �?
-�? �?       ├─ RSU→RSU (有线迁移)                  �?
-�? �?       �? ├─ 选择目标RSU (负载最�?           �?
-�? �?       �? ├─ 计算迁移成本                      �?
-�? �?       �? ├─ 传输任务                          �?
-�? �?       �? └─ 更新统计                          �?
-�? �?       └─ UAV→RSU (无线迁移)                  �?
-�? �?          └─ 类似流程                          �?
-�? �?                                                  �?
-�? ├─ 3.6 更新统计指标                               �?
-�? �? ├─ 累计完成任务�?                            �?
-�? �? ├─ 累计延迟                                   �?
-�? �? ├─ 累计能�?                                  �?
-�? �? ├─ 缓存命中�?                                �?
-�? �? ├─ 迁移成功�?                                �?
-�? �? └─ 任务类型分布统计                           �?
-�? �?                                                  �?
-�? └─ 返回 step_stats (本步统计数据)                �?
-└─────────────────────────────────────────────────────�?
+┌─────────────────────────────────────────────────────┐
+│  步骤3: 仿真器执行一步                              │
+├─────────────────────────────────────────────────────┤
+│  (system_simulator.py: run_simulation_step)         │
+│  │                                                   │
+│  ├─ 3.1 更新车辆位置                               │
+│  │  ├─ 根据速度和方向移动                         │
+│  │  ├─ 处理路口转向                               │
+│  │  └─ 添加随机扰动                               │
+│  │                                                   │
+│  ├─ 3.2 生成任务                                   │
+│  │  ├─ 泊松过程采样 (λ=车辆数×任务率)            │
+│  │  ├─ 为每辆车生成任务                           │
+│  │  │  ├─ 任务类型 (1-4): 根据场景分布           │
+│  │  │  ├─ 数据大小: 0.5-2.0 MB                    │
+│  │  │  ├─ 计算需求: 500-3000 CPU周期              │
+│  │  │  └─ 截止期: 0.5-3.0秒                       │
+│  │  └─ 添加到车辆任务队列                         │
+│  │                                                   │
+│  ├─ 3.3 任务分配与调度                             │
+│  │  ├─ 对每个任务决策卸载目标                     │
+│  │  │  ├─ 本地处理 (概率: local_pref)             │
+│  │  │  ├─ RSU卸载 (概率: rsu_pref)                │
+│  │  │  │  └─ 根据RSU选择权重选择具体RSU          │
+│  │  │  └─ UAV卸载 (概率: uav_pref)                │
+│  │  │     └─ 根据UAV选择权重选择具体UAV          │
+│  │  │                                              │
+│  │  ├─ 缓存命中检查                               │
+│  │  │  └─ check_cache_hit_adaptive()              │
+│  │  │     ├─ 检查内容是否在节点缓存中            │
+│  │  │     ├─ 命中: 减少传输时延                  │
+│  │  │     └─ 未命中: 智能缓存决策                │
+│  │  │        ├─ 调用缓存控制器.should_cache_content│
+│  │  │        ├─ 基于热度决定是否缓存             │
+│  │  │        └─ 执行淘汰和协作缓存               │
+│  │  │                                              │
+│  │  └─ 任务传输与入队                             │
+│  │     ├─ 计算上行传输时延和能耗                 │
+│  │     ├─ 将任务加入节点计算队列                 │
+│  │     └─ 记录任务元数据                         │
+│  │                                                   │
+│  ├─ 3.4 处理计算队列                               │
+│  │  └─ _process_node_queues()                      │
+│  │     ├─ 遍历所有RSU和UAV                        │
+│  │     ├─ 对每个节点:                             │
+│  │     │  ├─ 获取队列长度                         │
+│  │     │  ├─ 动态调整处理能力                     │
+│  │     │  │  └─ capacity = base + boost(队列长度) │
+│  │     │  ├─ 处理任务工作量                       │
+│  │     │  │  └─ work_remaining -= capacity        │
+│  │     │  ├─ 完成的任务:                          │
+│  │     │  │  ├─ 计算下行传输                      │
+│  │     │  │  ├─ 更新统计(延迟、能耗)             │
+│  │     │  │  └─ 标记完成                          │
+│  │     │  └─ 处理超期任务                         │
+│  │     └─ 更新节点状态                             │
+│  │                                                   │
+│  ├─ 3.5 自适应迁移检查                             │
+│  │  └─ check_adaptive_migration()                  │
+│  │     ├─ 计算所有节点负载因子                    │
+│  │     │  └─ load = 0.8×队列负载 + 0.2×缓存利用率│
+│  │     ├─ 更新迁移控制器负载历史                  │
+│  │     ├─ 判断是否触发迁移                        │
+│  │     │  ├─ 负载超阈值                           │
+│  │     │  ├─ 持续时间足够                         │
+│  │     │  └─ 成本效益分析通过                     │
+│  │     └─ 执行迁移                                │
+│  │        ├─ RSU→RSU (有线迁移)                  │
+│  │        │  ├─ 选择目标RSU (负载最轻)           │
+│  │        │  ├─ 计算迁移成本                      │
+│  │        │  ├─ 传输任务                          │
+│  │        │  └─ 更新统计                          │
+│  │        └─ UAV→RSU (无线迁移)                  │
+│  │           └─ 类似流程                          │
+│  │                                                   │
+│  ├─ 3.6 更新统计指标                               │
+│  │  ├─ 累计完成任务数                             │
+│  │  ├─ 累计延迟                                   │
+│  │  ├─ 累计能耗                                   │
+│  │  ├─ 缓存命中率                                 │
+│  │  ├─ 迁移成功率                                 │
+│  │  └─ 任务类型分布统计                           │
+│  │                                                   │
+│  └─ 返回 step_stats (本步统计数据)                │
+└─────────────────────────────────────────────────────┘
 
-┌─────────────────────────────────────────────────────�?
-�? 步骤4: 计算奖励和下一状�?                        �?
-├─────────────────────────────────────────────────────�?
-�? (train_single_agent.py: step 方法)                 �?
-�? �?                                                  �?
-�? ├─ 4.1 提取系统指标                               �?
-�? �? ├─ 平均延迟: avg_delay (�?                   �?
-�? �? ├─ 总能�? total_energy (焦�?                �?
-�? �? ├─ 任务完成�? completion_rate                �?
-�? �? ├─ 缓存命中�? cache_hit_rate                 �?
-�? �? ├─ 数据丢失�? data_loss_ratio                �?
-�? �? └─ 迁移成功�? migration_success_rate         �?
-�? �?                                                  �?
-�? ├─ 4.2 调用统一奖励计算�?                        �?
-�? �? └─ unified_reward_calculator.calculate_reward()�?
-�? �?    �?                                           �?
-�? �?    ├─ 延迟惩罚: -α × log(avg_delay + ε)       �?
-�? �?    �? └─ α=15.0, 强调低延�?                 �?
-�? �?    �?                                           �?
-�? �?    ├─ 能耗惩�? -β × log(total_energy + ε)    �?
-�? �?    �? └─ β=0.01, 平衡能效                    �?
-�? �?    �?                                           �?
-�? �?    ├─ 完成率奖�? +γ × completion_rate        �?
-�? �?    �? └─ γ=200.0, 鼓励任务完成               �?
-�? �?    �?                                           �?
-�? �?    ├─ 缓存命中奖励: +δ × cache_hit_rate       �?
-�? �?    �? └─ δ=10.0, 鼓励高命中率                �?
-�? �?    �?                                           �?
-�? �?    ├─ 数据丢失惩罚: -ε × data_loss_ratio      �?
-�? �?    �? └─ ε=50.0, 避免丢包                    �?
-�? �?    �?                                           �?
-�? �?    └─ 迁移成功奖励: +ζ × migration_success    �?
-�? �?       └─ ζ=5.0, 鼓励有效迁移                 �?
-�? �?                                                  �?
-�? �?    最终奖�?= Σ(各项奖励/惩罚)                �?
-�? �?                                                  �?
-�? ├─ 4.3 构建下一状态向�?(106�?                   �?
-�? �? └─ 与初始状态相同的结构                       �?
-�? �?                                                  �?
-�? └─ 4.4 判断Episode是否结束                        �?
-�?    ├─ 达到最大步�?(200-300�?                   �?
-�?    ├─ 系统崩溃 (所有节点过�?                     �?
-�?    └─ 完成率过�?(<20%)                          �?
-└─────────────────────────────────────────────────────�?
+┌─────────────────────────────────────────────────────┐
+│  步骤4: 计算奖励和下一状态                         │
+├─────────────────────────────────────────────────────┤
+│  (train_single_agent.py: step 方法)                 │
+│  │                                                   │
+│  ├─ 4.1 提取系统指标                               │
+│  │  ├─ 平均延迟: avg_delay (秒)                   │
+│  │  ├─ 总能耗: total_energy (焦耳)                │
+│  │  ├─ 任务完成率: completion_rate                │
+│  │  ├─ 缓存命中率: cache_hit_rate                 │
+│  │  ├─ 数据丢失率: data_loss_ratio                │
+│  │  └─ 迁移成功率: migration_success_rate         │
+│  │                                                   │
+│  ├─ 4.2 调用统一奖励计算器                         │
+│  │  └─ unified_reward_calculator.calculate_reward()│
+│  │     │                                            │
+│  │     ├─ 延迟惩罚: -α × log(avg_delay + ε)       │
+│  │     │  └─ α=15.0, 强调低延迟                  │
+│  │     │                                            │
+│  │     ├─ 能耗惩罚: -β × log(total_energy + ε)    │
+│  │     │  └─ β=0.01, 平衡能效                    │
+│  │     │                                            │
+│  │     ├─ 完成率奖励: +γ × completion_rate        │
+│  │     │  └─ γ=200.0, 鼓励任务完成               │
+│  │     │                                            │
+│  │     ├─ 缓存命中奖励: +δ × cache_hit_rate       │
+│  │     │  └─ δ=10.0, 鼓励高命中率                │
+│  │     │                                            │
+│  │     ├─ 数据丢失惩罚: -ε × data_loss_ratio      │
+│  │     │  └─ ε=50.0, 避免丢包                    │
+│  │     │                                            │
+│  │     └─ 迁移成功奖励: +ζ × migration_success    │
+│  │        └─ ζ=5.0, 鼓励有效迁移                 │
+│  │                                                   │
+│  │     最终奖励 = Σ(各项奖励/惩罚)                │
+│  │                                                   │
+│  ├─ 4.3 构建下一状态向量 (106维)                   │
+│  │  └─ 与初始状态相同的结构                       │
+│  │                                                   │
+│  └─ 4.4 判断Episode是否结束                        │
+│     ├─ 达到最大步数 (200-300步)                   │
+│     ├─ 系统崩溃 (所有节点过载)                     │
+│     └─ 完成率过低 (<20%)                          │
+└─────────────────────────────────────────────────────┘
 
-┌─────────────────────────────────────────────────────�?
-�? 步骤5: TD3学习更新 (td3.py: update)               �?
-├─────────────────────────────────────────────────────�?
-�? �?                                                  �?
-�? ├─ 5.1 存储经验到回放缓冲区                       �?
-�? �? └─ buffer.add(state, action, reward, next_state, done)�?
-�? �?                                                  �?
-�? ├─ 5.2 采样批次数据 (batch_size=256)              �?
-�? �? └─ 使用PER优先级采�?                         �?
-�? �?                                                  �?
-�? ├─ 5.3 计算Critic损失                             �?
-�? �? ├─ 生成目标动作 (Target Actor)                �?
-�? �? �? └─ target_action = target_actor(next_state) �?
-�? �? �?    + clipped_noise  # 目标策略平滑        �?
-�? �? �?                                             �?
-�? �? ├─ 计算目标Q�?(Twin Target Critics)          �?
-�? �? �? ├─ q1_target = target_critic1(next_state, target_action)�?
-�? �? �? ├─ q2_target = target_critic2(next_state, target_action)�?
-�? �? �? └─ target_q = min(q1, q2)  # 减少过估�?   �?
-�? �? �?                                             �?
-�? �? ├─ 计算TD目标                                 �?
-�? �? �? └─ y = reward + γ × (1-done) × target_q   �?
-�? �? �?                                             �?
-�? �? ├─ 计算当前Q�?                               �?
-�? �? �? ├─ current_q1 = critic1(state, action)     �?
-�? �? �? └─ current_q2 = critic2(state, action)     �?
-�? �? �?                                             �?
-�? �? ├─ Critic损失                                 �?
-�? �? �? └─ loss = MSE(current_q1, y) + MSE(current_q2, y)�?
-�? �? �?                                             �?
-�? �? └─ 反向传播更新Critic                         �?
-�? �?    ├─ critic_optimizer.zero_grad()             �?
-�? �?    ├─ loss.backward()                          �?
-�? �?    ├─ 梯度裁剪 (norm=0.7)                     �?
-�? �?    └─ critic_optimizer.step()                  �?
-�? �?                                                  �?
-�? ├─ 5.4 延迟Actor更新 (每policy_delay=2�?        �?
-�? �? ├─ 计算Actor损失                              �?
-�? �? �? ├─ new_action = actor(state)                �?
-�? �? �? └─ actor_loss = -critic1(state, new_action).mean()�?
-�? �? �?                                             �?
-�? �? ├─ 反向传播更新Actor                          �?
-�? �? �? ├─ actor_optimizer.zero_grad()              �?
-�? �? �? ├─ actor_loss.backward()                    �?
-�? �? �? ├─ 梯度裁剪                                �?
-�? �? �? └─ actor_optimizer.step()                   �?
-�? �? �?                                             �?
-�? �? └─ 软更新目标网�?                            �?
-�? �?    ├─ target_actor = τ×actor + (1-τ)×target_actor�?
-�? �?    └─ target_critics = τ×critics + (1-τ)×target_critics�?
-�? �?                                                  �?
-�? └─ 5.5 更新PER优先�?                            �?
-�?    └─ 根据TD误差更新样本优先�?                  �?
-└─────────────────────────────────────────────────────�?
+┌─────────────────────────────────────────────────────┐
+│  步骤5: TD3学习更新 (td3.py: update)               │
+├─────────────────────────────────────────────────────┤
+│  │                                                   │
+│  ├─ 5.1 存储经验到回放缓冲区                       │
+│  │  └─ buffer.add(state, action, reward, next_state, done)│
+│  │                                                   │
+│  ├─ 5.2 采样批次数据 (batch_size=256)              │
+│  │  └─ 使用PER优先级采样                          │
+│  │                                                   │
+│  ├─ 5.3 计算Critic损失                             │
+│  │  ├─ 生成目标动作 (Target Actor)                │
+│  │  │  └─ target_action = target_actor(next_state) │
+│  │  │     + clipped_noise  # 目标策略平滑        │
+│  │  │                                              │
+│  │  ├─ 计算目标Q值 (Twin Target Critics)          │
+│  │  │  ├─ q1_target = target_critic1(next_state, target_action)│
+│  │  │  ├─ q2_target = target_critic2(next_state, target_action)│
+│  │  │  └─ target_q = min(q1, q2)  # 减少过估计    │
+│  │  │                                              │
+│  │  ├─ 计算TD目标                                 │
+│  │  │  └─ y = reward + γ × (1-done) × target_q   │
+│  │  │                                              │
+│  │  ├─ 计算当前Q值                                │
+│  │  │  ├─ current_q1 = critic1(state, action)     │
+│  │  │  └─ current_q2 = critic2(state, action)     │
+│  │  │                                              │
+│  │  ├─ Critic损失                                 │
+│  │  │  └─ loss = MSE(current_q1, y) + MSE(current_q2, y)│
+│  │  │                                              │
+│  │  └─ 反向传播更新Critic                         │
+│  │     ├─ critic_optimizer.zero_grad()             │
+│  │     ├─ loss.backward()                          │
+│  │     ├─ 梯度裁剪 (norm=0.7)                     │
+│  │     └─ critic_optimizer.step()                  │
+│  │                                                   │
+│  ├─ 5.4 延迟Actor更新 (每policy_delay=2步)        │
+│  │  ├─ 计算Actor损失                              │
+│  │  │  ├─ new_action = actor(state)                │
+│  │  │  └─ actor_loss = -critic1(state, new_action).mean()│
+│  │  │                                              │
+│  │  ├─ 反向传播更新Actor                          │
+│  │  │  ├─ actor_optimizer.zero_grad()              │
+│  │  │  ├─ actor_loss.backward()                    │
+│  │  │  ├─ 梯度裁剪                                │
+│  │  │  └─ actor_optimizer.step()                   │
+│  │  │                                              │
+│  │  └─ 软更新目标网络                             │
+│  │     ├─ target_actor = τ×actor + (1-τ)×target_actor│
+│  │     └─ target_critics = τ×critics + (1-τ)×target_critics│
+│  │                                                   │
+│  └─ 5.5 更新PER优先级                             │
+│     └─ 根据TD误差更新样本优先级                   │
+└─────────────────────────────────────────────────────┘
 
-📌 阶段3: Episode结束与统�?
-Episode结束�?
+📌 阶段3: Episode结束与统计
+Episode结束后:
 ├─ 记录Episode统计
-�? ├─ 总奖�?
-�? ├─ 平均延迟
-�? ├─ 总能�?
-�? ├─ 完成�?
-�? ├─ 缓存命中�?
-�? └─ 迁移统计
-�?
+│  ├─ 总奖励
+│  ├─ 平均延迟
+│  ├─ 总能耗
+│  ├─ 完成率
+│  ├─ 缓存命中率
+│  └─ 迁移统计
+│
 ├─ 衰减探索噪声
-�? └─ exploration_noise *= noise_decay (0.9997)
-�?
+│  └─ exploration_noise *= noise_decay (0.9997)
+│
 └─ 打印进度信息
-   └─ �?0个Episode打印一次详细统�?
+   └─ 每50个Episode打印一次详细统计
 
-📌 阶段4: 周期性评�?(每eval_interval=50个episode)
+📌 阶段4: 周期性评估 (每eval_interval=50个episode)
 评估流程:
 ├─ 关闭探索噪声
 ├─ 运行10个测试Episode
 ├─ 计算平均性能指标
-�? ├─ 平均奖励
-�? ├─ 平均延迟
-�? ├─ 平均能�?
-�? └─ 平均完成�?
+│  ├─ 平均奖励
+│  ├─ 平均延迟
+│  ├─ 平均能耗
+│  └─ 平均完成率
 └─ 保存性能曲线
 
-📌 阶段5: 训练结束与保�?(800个episode完成�?
+📌 阶段5: 训练结束与保存 (800个episode完成后)
 保存结果:
 ├─ 1) 模型权重
-�? └─ results/models/single_agent/td3/
-�?    ├─ actor_final.pth
-�?    ├─ critic1_final.pth
-�?    ├─ critic2_final.pth
-�?    └─ target_networks_final.pth
-�?
+│  └─ results/models/single_agent/td3/
+│     ├─ actor_final.pth
+│     ├─ critic1_final.pth
+│     ├─ critic2_final.pth
+│     └─ target_networks_final.pth
+│
 ├─ 2) 训练数据
-�? └─ results/single_agent/td3/training_results_YYYYMMDD_HHMMSS.json
-�?    ├─ rewards: [...]
-�?    ├─ delays: [...]
-�?    ├─ energies: [...]
-�?    ├─ completion_rates: [...]
-�?    └─ cache_metrics: {...}
-�?
-└─ 3) 可视化图�?
+│  └─ results/single_agent/td3/training_results_YYYYMMDD_HHMMSS.json
+│     ├─ rewards: [...]
+│     ├─ delays: [...]
+│     ├─ energies: [...]
+│     ├─ completion_rates: [...]
+│     └─ cache_metrics: {...}
+│
+└─ 3) 可视化图表
    └─ results/single_agent/td3/training_chart_YYYYMMDD_HHMMSS.png
       ├─ 奖励曲线
       ├─ 延迟曲线
-      ├─ 能耗曲�?
-      └─ 完成率曲�?
+      ├─ 能耗曲线
+      └─ 完成率曲线
       
-🔑 核心技术亮�?
+🔑 核心技术亮点
 1. Twin Delayed DDPG (TD3)
     双Critic网络减少Q值过估计
-    延迟策略更新提高稳定�?
-    目标策略平滑化减少方�?
+    延迟策略更新提高稳定性
+    目标策略平滑化减少方差
 2. 自适应控制机制
-    智能缓存控制：热度追�?+ 分层缓存
-    智能迁移控制：多维触�?+ 成本效益
+    智能缓存控制：热度追踪 + 分层缓存
+    智能迁移控制：多维触发 + 成本效益
 3. 统一奖励函数
     多目标优化：延迟、能耗、完成率
-    对数惩罚：避免极端值影�?
-    平衡权重：确保各项指标协�?
-4. 动态网络拓�?
-    车辆移动模型：真实道路场�?
-    固定RSU/UAV：验证算法有效�?
+    对数惩罚：避免极端值影响
+    平衡权重：确保各项指标协调
+4. 动态网络拓扑
+    车辆移动模型：真实道路场景
+    固定RSU/UAV：验证算法有效性
     自适应计算资源分配
 
 """

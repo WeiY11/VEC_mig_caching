@@ -255,12 +255,12 @@ class RLConfig:
         self.reward_weight_joint = 0.05   # 联动奖励权重
         self.reward_weight_remote_reject = 0.5  # 远端拒绝惩罚
         # 边缘计算卸载奖励：强化激励RSU/UAV处理，避免全本地处理
-        # 🔧 修复:极致提高RSU奖励,强制智能体学习卸载策略 (2.0→5.0)
+        # 🔧 修复:大幅降低人工引导权重，让智能体自主学习
         # 注意:这个配置在unified_reward_calculator中使用,与td3_optimized.py中的奖励不同
-        self.reward_weight_offload_bonus = 5.0  # 强卸载奖励（2.0→5.0），明确激励边缘卸载
+        self.reward_weight_offload_bonus = 0.1  # 强卸载奖励（5.0→0.1），减少人工偏置
         # 本地处理能耗惩罚：添加轻微惩罚，避免智能体过度依赖本地处理
-        # 🔧 修复:提高本地处理惩罚,推动智能体探索卸载 (0.5→1.5)
-        self.reward_weight_local_penalty = 1.5  # 本地处理惩罚（0.5→1.5），抑制过度本地化
+        # 🔧 修复:降低本地处理惩罚 (1.5→0.0)
+        self.reward_weight_local_penalty = 0.0  # 本地处理惩罚（1.5→0.0），消除本地惩罚
 
         # 🎯 延时-能耗优化目标阈值（供算法动态调整）
         # 🔧 基准目标值会在训练中根据实际系统表现自动调整（最多放宽3倍）
@@ -272,6 +272,9 @@ class RLConfig:
         self.latency_upper_tolerance = 2.0  # 容忍上限（相对宽松）
         self.energy_target = 7000.0  # 能耗目标调整至实际水平(3000→7000J)
         self.energy_upper_tolerance = 10000.0  # 容忍上限调整(6000→10000J)
+
+        # 🆕 动态归一化开关
+        self.use_dynamic_reward_normalization = True  # 是否使用动态归一化
 
 class QueueConfig:
     """

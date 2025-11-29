@@ -121,7 +121,7 @@ class VecEnvWrapper:
         self.action_dim = getattr(self.env.agent_env, "action_dim", 18)
         high = np.ones(self.action_dim, dtype=np.float32) * 5.0
         self.action_space = SimpleNamespace(high=high, low=-high, shape=(self.action_dim,))
-        self.observation_space = SimpleNamespace(shape=(self.env.state_dim,))
+        self.observation_space = SimpleNamespace(shape=(self.env.agent_env.state_dim,))
 
     def reset(self):
         state = self.env.reset_environment()

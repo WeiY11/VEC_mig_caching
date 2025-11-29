@@ -251,7 +251,21 @@ def train_ddpg(
     agent = DDPGAgent(state_dim, action_dim, act_limit, cfg)
 
     ep_rewards = []
+    ep_metrics = {
+        "avg_task_delay": [],
+        "total_energy_consumption": [],
+        "task_completion_rate": [],
+        "dropped_tasks": [],
+        "cache_hit_rate": []
+    }
     ep_reward = 0.0
+    # Accumulators
+    cur_ep_delay = []
+    cur_ep_energy = 0.0
+    cur_ep_completed = []
+    cur_ep_dropped = 0
+    cur_ep_cache_hits = []
+
     state = _reset_env(env)
     episode = 0
 
@@ -262,7 +276,17 @@ def train_ddpg(
         else:
             action = agent.select_action(state, noise=True)
 
-        next_state, reward, done, _ = _step_env(env, action)
+        next_state, reward, done, info = _step_env(env, action)
+        
+        # Collect metrics
+        if "system_metrics" in info:
+            m = info["system_metrics"]
+            cur_ep_delay.append(m.get("avg_task_delay", 0.0))
+            cur_ep_energy += m.get("total_energy_consumption", 0.0)
+            cur_ep_completed.append(m.get("task_completion_rate", 0.0))
+            cur_ep_dropped += m.get("dropped_tasks", 0)
+            cur_ep_cache_hits.append(m.get("cache_hit_rate", 0.0))
+            
         agent.store((state, action, [reward], next_state, [float(done)]))
         state = next_state
         ep_reward += reward
@@ -272,6 +296,21 @@ def train_ddpg(
 
         if done:
             ep_rewards.append(ep_reward)
+            
+            # Aggregate
+            ep_metrics["avg_task_delay"].append(np.mean(cur_ep_delay) if cur_ep_delay else 0.0)
+            ep_metrics["total_energy_consumption"].append(cur_ep_energy)
+            ep_metrics["task_completion_rate"].append(np.mean(cur_ep_completed) if cur_ep_completed else 0.0)
+            ep_metrics["dropped_tasks"].append(cur_ep_dropped)
+            ep_metrics["cache_hit_rate"].append(np.mean(cur_ep_cache_hits) if cur_ep_cache_hits else 0.0)
+            
+            # Reset
+            cur_ep_delay = []
+            cur_ep_energy = 0.0
+            cur_ep_completed = []
+            cur_ep_dropped = 0
+            cur_ep_cache_hits = []
+
             if progress:
                 progress(step, np.mean(ep_rewards[-10:]), ep_reward)
             state, ep_reward = _reset_env(env), 0.0
@@ -281,6 +320,7 @@ def train_ddpg(
 
     return {
         "episode_rewards": ep_rewards,
+        "episode_metrics": ep_metrics,
         "episodes": episode,
         "config": cfg.__dict__,
     }

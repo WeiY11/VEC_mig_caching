@@ -250,7 +250,21 @@ def train_robust_sac(
     agent = RobustSACAgent(s_dim, a_dim, a_lim, cfg)
 
     ep_rewards = []
+    ep_metrics = {
+        "avg_task_delay": [],
+        "total_energy_consumption": [],
+        "task_completion_rate": [],
+        "dropped_tasks": [],
+        "cache_hit_rate": []
+    }
     ep_r = 0.0
+    # Accumulators
+    cur_ep_delay = []
+    cur_ep_energy = 0.0
+    cur_ep_completed = []
+    cur_ep_dropped = 0
+    cur_ep_cache_hits = []
+
     s = _reset_env(env)
     episode = 0
 
@@ -263,6 +277,14 @@ def train_robust_sac(
         s2, r, done, info = _step_env(env, a)
         # QoS-style penalty to align with robust configuration emphasis
         metrics = info.get("system_metrics", {}) if isinstance(info, dict) else {}
+        
+        # Collect metrics
+        cur_ep_delay.append(metrics.get("avg_task_delay", 0.0))
+        cur_ep_energy += metrics.get("total_energy_consumption", 0.0)
+        cur_ep_completed.append(metrics.get("task_completion_rate", 0.0))
+        cur_ep_dropped += metrics.get("dropped_tasks", 0)
+        cur_ep_cache_hits.append(metrics.get("cache_hit_rate", 0.0))
+
         delay = float(metrics.get("avg_task_delay", 0.0))
         energy = float(metrics.get("total_energy_consumption", 0.0))
         penalty = cfg.qos_penalty_weight * max(0.0, delay - cfg.latency_target)
@@ -277,6 +299,21 @@ def train_robust_sac(
 
         if done:
             ep_rewards.append(ep_r)
+            
+            # Aggregate
+            ep_metrics["avg_task_delay"].append(np.mean(cur_ep_delay) if cur_ep_delay else 0.0)
+            ep_metrics["total_energy_consumption"].append(cur_ep_energy)
+            ep_metrics["task_completion_rate"].append(np.mean(cur_ep_completed) if cur_ep_completed else 0.0)
+            ep_metrics["dropped_tasks"].append(cur_ep_dropped)
+            ep_metrics["cache_hit_rate"].append(np.mean(cur_ep_cache_hits) if cur_ep_cache_hits else 0.0)
+            
+            # Reset
+            cur_ep_delay = []
+            cur_ep_energy = 0.0
+            cur_ep_completed = []
+            cur_ep_dropped = 0
+            cur_ep_cache_hits = []
+
             if progress:
                 progress(step, np.mean(ep_rewards[-10:]), ep_r)
             s, ep_r = _reset_env(env), 0.0
@@ -284,6 +321,7 @@ def train_robust_sac(
 
     return {
         "episode_rewards": ep_rewards,
+        "episode_metrics": ep_metrics,
         "episodes": episode,
         "config": cfg.__dict__,
     }

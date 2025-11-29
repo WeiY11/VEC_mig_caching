@@ -12,8 +12,10 @@ from datetime import datetime
 import warnings
 import os
 
-# 禁用matplotlib警告
-warnings.filterwarnings('ignore', category=UserWarning, module='matplotlib')
+# 禁用所有matplotlib和字体相关警告
+warnings.filterwarnings('ignore', category=UserWarning)
+warnings.filterwarnings('ignore', category=DeprecationWarning)
+warnings.filterwarnings('ignore', category=FutureWarning)
 
 # 设置全局样式 - 修复中文字体问题
 plt.style.use('default')
@@ -25,11 +27,13 @@ plt.rcParams.update({
     'axes.grid': True,
     'grid.alpha': 0.3,
     'figure.facecolor': 'white',
-    'axes.facecolor': 'white'
+    'axes.facecolor': 'white',
+    'pdf.fonttype': 42,  # 防止字体编码问题
+    'ps.fonttype': 42
 })
 
-# 禁用字体警告并使用英文标签
-warnings.filterwarnings('ignore', category=UserWarning, module='matplotlib.font_manager')
+# 禁用字体警告（所有来源）
+warnings.filterwarnings('ignore')
 
 # 定义现代化配色方案
 COLORS = {
@@ -382,11 +386,9 @@ class ModernVisualizer:
         ax2.legend(loc='upper right', frameon=False)
         self._apply_modern_style(ax2, 'RSU 热点强度（峰值 vs 均值）')
 
-        with warnings.catch_warnings():
-            warnings.filterwarnings('ignore', category=UserWarning, module='matplotlib')
-            plt.tight_layout()
-            plt.subplots_adjust(top=0.92)
-            plt.savefig(save_path, dpi=300, bbox_inches='tight', facecolor='white', edgecolor='none')
+        plt.tight_layout()
+        plt.subplots_adjust(top=0.92)
+        plt.savefig(save_path, dpi=300, bbox_inches='tight', facecolor='white', edgecolor='none')
         plt.close()
         print(f"\U0001f4ca Hotspot-Traffic Dynamics Chart Saved: {save_path}")
 
@@ -545,12 +547,10 @@ class ModernVisualizer:
             ax4.text(0.5, 0.5, 'No Energy/Loss Data', ha='center', va='center', transform=ax4.transAxes)
             self._apply_modern_style(ax4, 'Energy & Loss Rate')
         
-        with warnings.catch_warnings():
-            warnings.filterwarnings('ignore', category=UserWarning, module='matplotlib')
-            plt.tight_layout()
-            plt.subplots_adjust(top=0.92)
-            plt.savefig(save_path, dpi=300, bbox_inches='tight',
-                       facecolor='white', edgecolor='none')
+        plt.tight_layout()
+        plt.subplots_adjust(top=0.92)
+        plt.savefig(save_path, dpi=300, bbox_inches='tight',
+                   facecolor='white', edgecolor='none')
         plt.close()
         
         print(f"📊 Performance Comparison with Core Metrics Saved: {save_path}")

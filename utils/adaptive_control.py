@@ -684,38 +684,45 @@ class AdaptiveMigrationController:
 
 
 def map_agent_actions_to_params(agent_actions: np.ndarray) -> Tuple[Dict, Dict, Dict]:
-    """Map continuous actions to semantic cache/migration/joint parameters."""
+    """Map continuous actions to semantic cache/migration/joint parameters.
+    
+    🔧 修复：确保返回的值在[-1, 1]范围内，因为AdaptiveCacheController和AdaptiveMigrationController
+    的update_agent_params方法期望接收[-1, 1]范围的值，然后自己映射到参数范围。
+    """
     if len(agent_actions) < 10:
         agent_actions = np.pad(agent_actions, (0, 10 - len(agent_actions)), mode='constant', constant_values=0.0)
 
+    # 🔧 修复：确保动作值在[-1, 1]范围内，因为后续的update_agent_params会再次裁剪并映射
     clipped_actions = np.clip(agent_actions, -1.0, 1.0)
-    try:
-        action_scale = float(os.environ.get("CACHE_ACTION_SCALE", 1.0))
-    except Exception:
-        action_scale = 1.0
-    scaled_actions = clipped_actions * action_scale  # 放大可控幅度，提升缓存/迁移可调性
+    
+    # 注意：action_scale 在这里不再使用，因为update_agent_params会自己处理映射
+    # 如果将来需要放大动作的影响，应该在update_agent_params内部处理
 
     def _map_to_range(value: float, low: float, high: float) -> float:
+        """将[-1, 1]范围的值映射到[low, high]范围（用于joint_params）"""
         value = np.clip(value, -1.0, 1.0)
         return low + ((value + 1.0) * 0.5) * (high - low)
 
+    # 🔧 修复：直接返回裁剪后的动作值（在[-1, 1]范围内）
+    # update_agent_params会将这些值映射到实际的参数范围
     cache_params = {
-        'heat_threshold_high': scaled_actions[0],
-        'heat_threshold_medium': scaled_actions[1],
-        'prefetch_ratio': scaled_actions[2],
-        'collaboration_weight': scaled_actions[3],
+        'heat_threshold_high': float(clipped_actions[0]),
+        'heat_threshold_medium': float(clipped_actions[1]),
+        'prefetch_ratio': float(clipped_actions[2]),
+        'collaboration_weight': float(clipped_actions[3]),
     }
 
     migration_params = {
-        'cpu_overload_threshold': scaled_actions[4],
-        'bandwidth_overload_threshold': scaled_actions[5],
-        'uav_battery_threshold': scaled_actions[6],
-        'load_diff_threshold': scaled_actions[7],
+        'cpu_overload_threshold': float(clipped_actions[4]),
+        'bandwidth_overload_threshold': float(clipped_actions[5]),
+        'uav_battery_threshold': float(clipped_actions[6]),
+        'load_diff_threshold': float(clipped_actions[7]),
     }
 
+    # joint_params 直接映射到实际范围（不使用update_agent_params）
     joint_params = {
-        'prefetch_lead_time': _map_to_range(scaled_actions[8], 0.0, 5.0),
-        'migration_backoff': _map_to_range(scaled_actions[9], 0.0, 1.0)
+        'prefetch_lead_time': _map_to_range(clipped_actions[8], 0.0, 5.0),
+        'migration_backoff': _map_to_range(clipped_actions[9], 0.0, 1.0)
     }
 
     return cache_params, migration_params, joint_params
