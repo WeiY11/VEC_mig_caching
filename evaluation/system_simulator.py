@@ -4298,6 +4298,16 @@ class CompleteSystemSimulator:
             task['node_type'] = best_node_type
             task['node_idx'] = best_node_idx
 
+            # 🔧 修复：计算并记录迁移的数据量、延迟和能耗
+            migration_data_mb = task.get('data_size', 2.0)  # MB
+            migration_delay_s = migration_data_mb * 8.0 / 50.0  # 无线传输，50 Mbps带宽
+            migration_energy_j = 0.2 * migration_delay_s  # 传输功率0.2W
+            
+            # 累加到统计数据
+            self.stats['rsu_migration_data'] = self.stats.get('rsu_migration_data', 0.0) + migration_data_mb
+            self._accumulate_delay('rsu_migration_delay', migration_delay_s)
+            self._accumulate_energy('rsu_migration_energy', migration_energy_j)
+
             self.stats['migrations_executed'] = self.stats.get('migrations_executed', 0) + 1
             self.stats['migrations_successful'] = self.stats.get('migrations_successful', 0) + 1
             self.stats['handover_migrations'] = self.stats.get('handover_migrations', 0) + 1

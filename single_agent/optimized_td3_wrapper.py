@@ -12,6 +12,20 @@ Queue-aware Replay + GNN Attention
 from typing import Optional, Dict, Union, Any
 import numpy as np
 
+"""
+精简优化TD3 - 仅包含最有效的两个优化
+Queue-aware Replay + GNN Attention
+
+专为VEC场景优化：
+- 队列感知回放：快速学习高负载场景
+- GNN注意力：大幅提升缓存命中率（0.2%→24%）
+
+作者：VEC_mig_caching Team
+"""
+
+from typing import Optional, Dict, Union, Any
+import numpy as np
+
 from .enhanced_td3_agent import EnhancedTD3Agent
 from .enhanced_td3_config import EnhancedTD3Config
 
@@ -21,17 +35,17 @@ def create_optimized_config() -> EnhancedTD3Config:
     return EnhancedTD3Config(
         # ✅ 核心优化1：队列感知回放
         use_queue_aware_replay=True,
-        queue_priority_weight=0.5,  # 🔧 提高队列权重 0.6 → 0.5
+        queue_priority_weight=0.2,  # 保持降低的权重
         queue_occ_coef=0.5,
         packet_loss_coef=0.3,
         migration_cong_coef=0.2,
         queue_metrics_ema_decay=0.8,
         
-        # ✅ 核心优化2：GNN注意力（最新优化）
+        # ✅ 核心优化2：GNN注意力
         use_gat_router=True,
-        num_attention_heads=6,  # 🔧 增加注意力头数 4 → 6
-        gat_hidden_dim=192,  # 🔧 增大隐藏层 128 → 192
-        gat_dropout=0.15,  # 🔧 增加dropout 0.1 → 0.15
+        num_attention_heads=6,
+        gat_hidden_dim=192,
+        gat_dropout=0.15,
 
         # ❌ 禁用其他优化
         use_distributional_critic=False,
@@ -40,19 +54,20 @@ def create_optimized_config() -> EnhancedTD3Config:
 
         # 🔧 基础参数优化
         hidden_dim=512,
-        batch_size=512,  # 🔧 略微减小batch，提升更新频次并降低方差
+        batch_size=512,  # 🔧 1024 -> 512
         buffer_size=100000,
+        warmup_steps=2000,  # 🔧 显式增加预热步数 (约20 episodes)
 
-        # 🔧 学习率优化
-        actor_lr=1.5e-4,  # 🔧 调低学习率 2e-4 → 1.5e-4
-        critic_lr=2.5e-4,  # 🔧 调低学习率 3e-4 → 2.5e-4
+        # 🔧 学习率优化 (轻微回调，配合高探索)
+        actor_lr=5e-5,    # 🔧 1e-4 -> 5e-5
+        critic_lr=8e-5,   # 🔧 2e-4 -> 8e-5
 
-        # 🔧 探索策略优化
-        exploration_noise=0.18,  # 🔧 初始噪声略降，降低早期抖动
-        noise_decay=0.9992,  # 🔧 更平滑的退火
-        min_noise=0.02,  # 🔧 降低探索下限，便于后期收敛
-        target_noise=0.04,  # 🔧 减小目标噪声，平滑Q目标
-        noise_clip=0.12,  # 🔧 收紧裁剪范围，避免大动作扰动
+        # 🔧 探索策略优化 (大幅增强探索)
+        exploration_noise=0.30,  # 🔧 0.12 -> 0.30 (强制探索)
+        noise_decay=0.9998,      # 🔧 0.9995 -> 0.9998 (极慢衰减)
+        min_noise=0.05,          # 🔧 0.02 -> 0.05 (保持底噪)
+        target_noise=0.04,
+        noise_clip=0.12,
 
         # 奖励归一化
         reward_norm_beta=0.997,

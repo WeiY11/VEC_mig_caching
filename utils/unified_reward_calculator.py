@@ -146,8 +146,8 @@ class UnifiedRewardCalculator:
         self.weight_cache_pressure = float(getattr(config.rl, "reward_weight_cache_pressure", 0.0))
         self.weight_queue_overload = float(getattr(config.rl, "reward_weight_queue_overload", 0.0))
         self.weight_remote_reject = float(getattr(config.rl, "reward_weight_remote_reject", 0.0))
-        self.latency_target = float(getattr(config.rl, "latency_target", 0.4))
-        self.energy_target = float(getattr(config.rl, "energy_target", 2200.0))
+        self.latency_target = float(getattr(config.rl, "latency_target", 1.5))
+        self.energy_target = float(getattr(config.rl, "energy_target", 9000.0))
         self.latency_tolerance = float(getattr(config.rl, "latency_upper_tolerance", self.latency_target * 2.0))
         self.energy_tolerance = float(getattr(config.rl, "energy_upper_tolerance", self.energy_target * 1.5))
         # 分段容错/钳位
@@ -491,7 +491,14 @@ class UnifiedRewardCalculator:
         cache_metrics: Optional[Dict] = None,
         migration_metrics: Optional[Dict] = None,
     ) -> float:
-        """???????????????"""
+        """计算奖励并返回标量值"""
+        # Debug print for first few calls to verify input range
+        if not hasattr(self, '_debug_count'):
+            self._debug_count = 0
+        if self._debug_count < 10:
+            print(f"[RewardDebug] Metrics: delay={system_metrics.get('avg_task_delay', 0):.4f}, energy={system_metrics.get('total_energy_consumption', 0):.1f}, completion={system_metrics.get('task_completion_rate', 0):.2f}")
+            self._debug_count += 1
+
         metrics = self._extract_metrics(system_metrics, cache_metrics, migration_metrics)
         components = self._compute_components(metrics)
         components = self._compose_reward(components, metrics.completion_rate)

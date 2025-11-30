@@ -235,12 +235,12 @@ class RLConfig:
         
         # 🎯 优化后奖励权重：平衡核心成本与辅助项
         # 🔧 修复：降低辅助项权重，避免掩盖核心成本（时延+能耗）
-        self.reward_weight_delay = 3.0  # 时延权重（核心）
-        self.reward_weight_energy = 2.0  # 能耗权重（核心）
-        self.reward_penalty_dropped = 0.02  # 丢弃惩罚（轻量）
+        self.reward_weight_delay = 0.5  # 时延权重（核心）- 从3.0大幅降低
+        self.reward_weight_energy = 0.3  # 能耗权重（核心）- 从2.0大幅降低
+        self.reward_penalty_dropped = 0.01  # 丢弃惩罚（轻量）- 从0.02降低
         self.completion_target = 0.88  # 务实目标（高负载合理完成率）
-        self.reward_weight_completion_gap = 0.3  # 完成率缺口惩罚（降低）
-        self.reward_weight_loss_ratio = 0.5  # 数据丢失惩罚（大幅降低）
+        self.reward_weight_completion_gap = 0.1  # 完成率缺口惩罚（降低）- 从0.3降低
+        self.reward_weight_loss_ratio = 0.1  # 数据丢失惩罚（大幅降低）- 从0.5降低
         self.cache_pressure_threshold = 0.9  # 缓存利用率软阈值（允许更高占用）
         self.reward_weight_cache_pressure = 0.1  # 缓存压力惩罚（降低）
         self.reward_weight_cache_bonus = 0.5  # 命中奖励（降低）
@@ -268,13 +268,13 @@ class RLConfig:
         # 🚀 关键修复:能耗目标值调整至实际水平,避免奖励过低
         # 问题:原目标energy_target=3000J,但实际能耗在6000-9000J,导致norm_energy>2.0,奖励永远为负
         # 解决:调整target=7000J(实际中值),tolerance=10000J,让奖励在合理范围
-        self.latency_target = 0.8  # 初始时延目标（训练中会自动调整）
-        self.latency_upper_tolerance = 2.0  # 容忍上限（相对宽松）
-        self.energy_target = 7000.0  # 能耗目标调整至实际水平(3000→7000J)
-        self.energy_upper_tolerance = 10000.0  # 容忍上限调整(6000→10000J)
+        self.latency_target = 0.4  # 初始时延目标 - 从0.8降低以匹配实际性能
+        self.latency_upper_tolerance = 1.0  # 容忍上限 - 从2.0降低
+        self.energy_target = 3500.0  # 能耗目标 - 从7000降低以匹配实际水平
+        self.energy_upper_tolerance = 5000.0  # 容忍上限 - 从10000降低
 
         # 🆕 动态归一化开关
-        self.use_dynamic_reward_normalization = True  # 是否使用动态归一化
+        self.use_dynamic_reward_normalization = False  # 禁用以改善收敛性（原为True）
 
 class QueueConfig:
     """

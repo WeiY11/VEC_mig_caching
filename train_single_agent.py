@@ -349,7 +349,7 @@ class SingleAgentTrainingEnvironment:
         # 奖励平滑，降低方差（非强制，可被环境变量覆盖）
         _force_override("RL_SMOOTH_DELAY", "reward_smooth_delay_weight", 0.6)
         _force_override("RL_SMOOTH_ENERGY", "reward_smooth_energy_weight", 0.6)
-        _force_override("RL_SMOOTH_ALPHA", "reward_smooth_alpha", 0.25)
+        _force_override("RL_SMOOTH_ALPHA", "reward_smooth_alpha", 0.3)
 
         try:
             update_reward_targets(
@@ -2958,6 +2958,7 @@ def main():
     parser.add_argument('--eval_interval', type=int, default=None, help=f'评估间隔 (默认: {config.experiment.eval_interval})')
     parser.add_argument('--save_interval', type=int, default=None, help=f'保存间隔 (默认: {config.experiment.save_interval})')
     parser.add_argument('--compare', action='store_true', help='比较所有算法')
+    parser.add_argument('--quick-test', action='store_true', help='快速基准测试，仅运行少量 episodes')
     parser.add_argument('--seed', type=int, default=None, help='覆盖随机种子 (默认读取config或环境变量)')
     parser.add_argument('--num-vehicles', type=int, default=None, help='覆盖车辆数量用于实验')
     parser.add_argument('--force-offload', type=str, choices=['local', 'remote', 'local_only', 'remote_only'],
@@ -3018,6 +3019,45 @@ def main():
         os.environ['RANDOM_SEED'] = str(args.seed)
         _apply_global_seed_from_env()
 
+    # 设置默认超参数（可通过环境变量覆盖）
+    os.environ.setdefault('TD3_ACTOR_LR', '5e-5')
+    os.environ.setdefault('TD3_CRITIC_LR', '8e-5')
+    os.environ.setdefault('TD3_BATCH_SIZE', '512')
+    os.environ.setdefault('RL_SMOOTH_DELAY', '0.6')
+    os.environ.setdefault('RL_SMOOTH_ENERGY', '0.6')
+    os.environ.setdefault('RL_SMOOTH_ALPHA', '0.25')
+
+    # 快速基准测试模式
+    if args.quick_test:
+        print("=== QUICK TEST (Baseline Fixed Policy) ===")
+        # 创建环境并强制使用本地策略
+        env = SingleAgentTrainingEnvironment('OPTIMIZED_TD3', enforce_offload_mode='local_only')
+        for ep in range(5):
+            state = env.reset_environment()
+            total_reward = 0.0
+            for step in range(100):
+                # 获取动作（虽然被强制本地策略覆盖，但仍需传入）
+                actions_result = env.agent_env.get_actions(state, training=False)
+                if isinstance(actions_result, dict):
+                    actions_dict = actions_result
+                else:
+                    actions_dict = actions_result[0] if isinstance(actions_result, tuple) else actions_result
+                
+                # 编码动作
+                if hasattr(env, '_encode_continuous_action'):
+                    action = env._encode_continuous_action(actions_dict)
+                else:
+                    # Fallback for simple envs
+                    action = np.zeros(env.agent_env.action_dim)
+
+                next_state, reward, done, info = env.step(action, state, actions_dict)
+                total_reward += reward
+                state = next_state
+                if done:
+                    break
+            print(f"Baseline Episode {ep}: Reward = {total_reward:.4f}")
+        print("=== QUICK TEST DONE ===")
+        return
     # 🎯 中央资源分配架构（默认启用）
     if args.central_resource:
         os.environ['CENTRAL_RESOURCE'] = '1'
