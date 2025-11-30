@@ -255,7 +255,7 @@ HTML_TEMPLATE = """
         /* Charts Layout */
         .main-grid {
             display: grid;
-            grid-template-columns: 2fr 1fr;
+            grid-template-columns: 1fr 1fr;
             gap: 24px;
             margin-bottom: 24px;
         }
@@ -358,35 +358,35 @@ HTML_TEMPLATE = """
             <!-- Reward Chart (Large) -->
             <div class="chart-card full-width">
                 <div class="chart-title">Reward Evolution</div>
-                <div id="reward-chart" style="width: 100%; height: 340px; display: flex; align-items: center; justify-content: center; color: var(--text-secondary);">Loading Chart...</div>
+                <div id="reward-chart" style="width: 100%; height: 340px; color: var(--text-secondary);">Loading Chart...</div>
             </div>
 
             <!-- Task Assignment -->
             <div class="chart-card">
                 <div class="chart-title">Task Assignment Distribution</div>
-                <div id="assignment-chart" style="width: 100%; height: 340px; display: flex; align-items: center; justify-content: center; color: var(--text-secondary);">Loading Chart...</div>
+                <div id="assignment-chart" style="width: 100%; height: 340px; color: var(--text-secondary);">Loading Chart...</div>
             </div>
 
             <!-- Delay -->
             <div class="chart-card">
                 <div class="chart-title">Average Latency</div>
-                <div id="delay-chart" style="width: 100%; height: 340px; display: flex; align-items: center; justify-content: center; color: var(--text-secondary);">Loading Chart...</div>
+                <div id="delay-chart" style="width: 100%; height: 340px; color: var(--text-secondary);">Loading Chart...</div>
             </div>
 
             <!-- Cache & Completion -->
             <div class="chart-card">
                 <div class="chart-title">Cache Hit Rate</div>
-                <div id="cache-chart" style="width: 100%; height: 340px; display: flex; align-items: center; justify-content: center; color: var(--text-secondary);">Loading Chart...</div>
+                <div id="cache-chart" style="width: 100%; height: 340px; color: var(--text-secondary);">Loading Chart...</div>
             </div>
 
             <div class="chart-card">
                 <div class="chart-title">Completion Rate</div>
-                <div id="completion-chart" style="width: 100%; height: 340px; display: flex; align-items: center; justify-content: center; color: var(--text-secondary);">Loading Chart...</div>
+                <div id="completion-chart" style="width: 100%; height: 340px; color: var(--text-secondary);">Loading Chart...</div>
             </div>
             
             <div class="chart-card full-width">
                  <div class="chart-title">System Energy Consumption</div>
-                 <div id="energy-chart" style="width: 100%; height: 340px; display: flex; align-items: center; justify-content: center; color: var(--text-secondary);">Loading Chart...</div>
+                 <div id="energy-chart" style="width: 100%; height: 340px; color: var(--text-secondary);">Loading Chart...</div>
             </div>
         </div>
     </div>

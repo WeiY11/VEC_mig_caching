@@ -37,21 +37,49 @@ class DynamicOffloadHeuristic:
         return weight_channel * ch - (self.delay_weight * queue_penalty + self.energy_weight * load_penalty)
 
     def _parse_state(self, state: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-        """Robustly split flat state: vehicles(?*5) + rsu(num_rsus*5) + uav(num_uavs*5)."""
+        """Robustly split flat state: vehicles(?*5) + rsu(num_rsus*5) + uav(num_uavs*5) + global(8)."""
         flat = np.array(state, dtype=np.float32).reshape(-1)
-        tail = 5 * (self.num_rsus + self.num_uavs)
-        veh_len = max(len(flat) - tail, 0)
-        veh_count = veh_len // 5 if veh_len >= 5 else 0
+        
+        # Ignore global state (last 8 dims) and potential central state
+        # We assume the standard TD3Environment structure where nodes come first.
+        # Vehicles (N*5) + RSUs (M*5) + UAVs (K*5) + ...
+        
+        node_dim = 5
+        rsu_total = self.num_rsus * node_dim
+        uav_total = self.num_uavs * node_dim
+        
+        # We don't know N (num_vehicles) exactly from state size if there's variable global/central state,
+        # but we can assume the structure is [Vehicles, RSUs, UAVs, ...]
+        # However, without knowing where Vehicles end, we can't easily parse if we don't know N.
+        # But wait, the heuristic is initialized with num_rsus and num_uavs.
+        # It doesn't know num_vehicles.
+        # But usually num_vehicles is fixed or we can deduce it.
+        # Let's assume the heuristic is used in a context where we can deduce N.
+        # Or we can try to parse from the end, assuming we know the suffix size.
+        # TD3Environment: [Vehicles, RSUs, UAVs, Central(opt), Global(8)]
+        # If Central is 0, then suffix is 8.
+        # But if Central is present, it's variable.
+        # Benchmarks use TD3Environment with default use_central_resource=False.
+        # So suffix is 8.
+        
+        suffix_len = 8
+        useful_len = max(0, len(flat) - suffix_len)
+        
+        # The useful part is Vehicles + RSUs + UAVs
+        # We know RSUs and UAVs sizes.
+        veh_len = max(0, useful_len - rsu_total - uav_total)
+        
         offset = 0
-        veh = flat[offset : offset + veh_count * 5]
-        offset += veh_count * 5
-        rsu = flat[offset : offset + 5 * self.num_rsus]
-        offset += 5 * self.num_rsus
-        uav = flat[offset : offset + 5 * self.num_uavs]
+        veh = flat[offset : offset + veh_len]
+        offset += veh_len
+        rsu = flat[offset : offset + rsu_total]
+        offset += rsu_total
+        uav = flat[offset : offset + uav_total]
+        
         return (
-            veh.reshape(-1, 5) if veh_count else np.zeros((0, 5), dtype=np.float32),
-            rsu.reshape(-1, 5),
-            uav.reshape(-1, 5),
+            veh.reshape(-1, node_dim) if veh_len > 0 else np.zeros((0, node_dim), dtype=np.float32),
+            rsu.reshape(-1, node_dim),
+            uav.reshape(-1, node_dim),
         )
 
     def select_action(self, state: np.ndarray) -> np.ndarray:

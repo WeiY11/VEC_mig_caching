@@ -967,6 +967,12 @@ class CommunicationConfig:
         self.rsu_rx_power = 4.5      # W - RSU接收功率（从TX 40W的11.25%）
         self.uav_rx_power = 2.2      # W - UAV接收功率（从TX 1W的220%）
         
+        # 🏢 建筑物遮挡模型配置（3GPP UMi场景）
+        self.enable_blockage = True          # 启用建筑物遮挡模型
+        self.building_density = 0.3          # 建筑密度：0=郊区，0.5=城市，1.0=密集城区
+        self.avg_building_height = 15.0      # 平均建筑高度(m)，影响地面链路遮挡
+        self.blockage_attenuation = 20.0     # NLoS额外衰减(dB)，典型范围15-25dB
+        
         self.noise_figure = 9.0       # dB - 3GPP标准
         
         # 🎯 总带宽池配置（中央智能体动态分配）

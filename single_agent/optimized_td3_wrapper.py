@@ -43,7 +43,7 @@ def create_optimized_config() -> EnhancedTD3Config:
         
         # ✅ 核心优化2：GNN注意力
         use_gat_router=True,
-        num_attention_heads=6,
+        num_attention_heads=6,  # 🔧 4 -> 6 (恢复适中复杂度)
         gat_hidden_dim=192,
         gat_dropout=0.15,
 
@@ -54,17 +54,17 @@ def create_optimized_config() -> EnhancedTD3Config:
 
         # 🔧 基础参数优化
         hidden_dim=512,
-        batch_size=512,  # 🔧 1024 -> 512
+        batch_size=768,  # 🔧 1024 -> 768 (折中方案：兼顾稳定与更新频率)
         buffer_size=100000,
         warmup_steps=2000,  # 🔧 显式增加预热步数 (约20 episodes)
 
         # 🔧 学习率优化 (轻微回调，配合高探索)
-        actor_lr=5e-5,    # 🔧 1e-4 -> 5e-5
-        critic_lr=8e-5,   # 🔧 2e-4 -> 8e-5
+        actor_lr=3e-5,    # 🔧 5e-5 -> 3e-5 (更精细的更新)
+        critic_lr=8e-5,   # 保持 8e-5
 
         # 🔧 探索策略优化 (大幅增强探索)
-        exploration_noise=0.30,  # 🔧 0.12 -> 0.30 (强制探索)
-        noise_decay=0.9998,      # 🔧 0.9995 -> 0.9998 (极慢衰减)
+        exploration_noise=0.30,  # 🔧 0.25 -> 0.30 (恢复高探索)
+        noise_decay=0.9998,      # 🔧 0.9995 -> 0.9998 (恢复慢衰减)
         min_noise=0.05,          # 🔧 0.02 -> 0.05 (保持底噪)
         target_noise=0.04,
         noise_clip=0.12,

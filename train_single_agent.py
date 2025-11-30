@@ -136,11 +136,11 @@ from utils.html_report_generator import HTMLReportGenerator
 
 # 🌐 导入实时可视化模块
 try:
-    from scripts.visualize.realtime_visualization_simple import create_visualizer
+    from scripts.visualize.realtime_visualization import create_visualizer
     REALTIME_AVAILABLE = True
 except ImportError:
     try:
-        from scripts.visualize.realtime_visualization import create_visualizer
+        from scripts.visualize.realtime_visualization_simple import create_visualizer
         REALTIME_AVAILABLE = True
     except ImportError:
         REALTIME_AVAILABLE = False
@@ -331,13 +331,11 @@ class SingleAgentTrainingEnvironment:
         _set_if_absent("RL_WEIGHT_REMOTE_REJECT", "reward_weight_remote_reject", 0.25, use_max=True)
 
         # 覆盖目标值与核心权重，减轻奖励方差（默认全局生效，可通过环境变量覆盖）
-        # 🔧 2025-11-29: 禁用硬编码覆盖，使用unified_reward_calculator的新默认值（动态归一化 + 低人工偏置）
-        # _force_override("RL_WEIGHT_DELAY", "reward_weight_delay", 1.4)
-        # _force_override("RL_WEIGHT_ENERGY", "reward_weight_energy", 1.0)
-        # _force_override("RL_WEIGHT_CACHE", "reward_weight_cache", 0.2)
-        # _force_override("RL_WEIGHT_CACHE_BONUS", "reward_weight_cache_bonus", 0.3)
-        # _force_override("RL_WEIGHT_OFFLOAD_BONUS", "reward_weight_offload_bonus", 2.0)
-        # _force_override("RL_WEIGHT_LOCAL_PENALTY", "reward_weight_local_penalty", 1.2)
+        # 🔧 2025-11-30: 回退到 Phase 1 (用户反馈最佳状态)，仅微调
+        # _force_override("RL_USE_DYNAMIC_REWARD_NORMALIZATION", "use_dynamic_reward_normalization", 1.0) # 禁用动态归一化
+        # _force_override("RL_WEIGHT_CACHE", "reward_weight_cache", 0.5)
+        # _force_override("RL_WEIGHT_CACHE_BONUS", "reward_weight_cache_bonus", 0.5)
+        # _force_override("RL_WEIGHT_OFFLOAD_BONUS", "reward_weight_offload_bonus", 1.0)
 
         # ⚖️ OPTIMIZED_TD3: 目标放宽以提升收敛稳定性（奖励只对超标部分惩罚）
         # 🔧 2025-11-29: 启用动态归一化后，不再需要极度放宽的静态目标
@@ -3626,3 +3624,4 @@ Episode结束后:
     自适应计算资源分配
 
 """
+

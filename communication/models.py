@@ -231,6 +231,12 @@ class WirelessCommunicationModel:
         # 🔧 修复问题7：调整为3GPP TR 38.901标准值（UMi-Street Canyon场景）
         self.shadowing_std_los = getattr(config.communication, 'shadowing_std_los', 4.0)  # 3GPP标准：4 dB (LoS)
         self.shadowing_std_nlos = getattr(config.communication, 'shadowing_std_nlos', 7.82)  # 3GPP标准：7.82 dB (NLoS)
+        
+        # 🏢 建筑物遮挡模型参数（3GPP UMi场景）
+        self.enable_blockage = getattr(config.communication, 'enable_blockage', True)  # 默认启用遮挡模型
+        self.building_density = getattr(config.communication, 'building_density', 0.3)  # 建筑密度：0=郊区, 0.5=城市, 1.0=密集城区
+        self.avg_building_height = getattr(config.communication, 'avg_building_height', 15.0)  # 平均建筑高度(m)
+        self.blockage_attenuation = getattr(config.communication, 'blockage_attenuation', 20.0)  # NLoS额外衰减(dB)
         self.coding_efficiency = getattr(config.communication, 'coding_efficiency', 0.9)  # 🔧 修复问题5：5G NR标准
         self.processing_delay = getattr(config.communication, 'processing_delay', 0.001)  # T_proc = 1ms
         self.thermal_noise_density = getattr(config.communication, 'thermal_noise_density', -174.0)  # dBm/Hz
@@ -269,7 +275,7 @@ class WirelessCommunicationModel:
     def calculate_channel_state(self, pos_a: Position, pos_b: Position, 
                                tx_node_type: str = 'vehicle', rx_node_type: str = 'rsu') -> ChannelState:
         """
-        计算信道状态 - 3GPP标准式(11)-(16)
+        计算信道状态 - 3GPP标准式(11)-(16) + 建筑物遮挡模型
         
         Args:
             pos_a: 发送节点位置
@@ -283,17 +289,40 @@ class WirelessCommunicationModel:
         # 1. 计算距离 - 论文式(10)
         distance = pos_a.distance_to(pos_b)
         
-        # 2. 计算视距概率 - 3GPP标准式(11)
-        los_probability = self._calculate_los_probability(distance)
+        # 🏢 判断链路类型和节点高度
+        # 获取节点高度
+        tx_height = getattr(pos_a, 'z', 0.0) if hasattr(pos_a, 'z') else (
+            100.0 if tx_node_type == 'uav' else 
+            25.0 if tx_node_type == 'rsu' else 1.5
+        )
+        rx_height = getattr(pos_b, 'z', 0.0) if hasattr(pos_b, 'z') else (
+            100.0 if rx_node_type == 'uav' else 
+            25.0 if rx_node_type == 'rsu' else 1.5
+        )
         
-        # 3. 计算路径损耗 - 3GPP标准式(12)-(13)
-        path_loss_db = self._calculate_path_loss(distance, los_probability)
+        # 判断是否为空中链路（UAV参与）
+        is_air_link = (tx_node_type == 'uav' or rx_node_type == 'uav')
+        scenario = 'air' if is_air_link else 'ground'
+        
+        # 2. 计算视距概率 - 3GPP标准式(11) + 遮挡模型
+        los_probability = self._calculate_los_probability(
+            distance, tx_height=tx_height, rx_height=rx_height, scenario=scenario,
+            tx_pos=pos_a, rx_pos=pos_b
+        )
+        
+        # 3. 计算路径损耗 - 3GPP标准式(12)-(13) + 遮挡衰减
+        path_loss_db = self._calculate_path_loss(
+            distance, los_probability, tx_height=tx_height, scenario=scenario,
+            tx_pos=pos_a, rx_pos=pos_b
+        )
         
         # 4. 计算阴影衰落 - 随机变量
         shadowing_db = self._generate_shadowing(los_probability)
         
         # 5. 计算信道增益 - 3GPP标准式(14)（包含快衰落）
-        channel_gain_linear = self._calculate_channel_gain(path_loss_db, shadowing_db, tx_node_type, rx_node_type, los_probability)
+        channel_gain_linear = self._calculate_channel_gain(
+            path_loss_db, shadowing_db, tx_node_type, rx_node_type, los_probability
+        )
         
         # 6. 计算干扰功率 (简化)
         interference_power = self._calculate_interference_power(pos_b)
@@ -307,26 +336,169 @@ class WirelessCommunicationModel:
             interference_power=interference_power
         )
     
-    def _calculate_los_probability(self, distance: float) -> float:
+    def _calculate_los_probability(self, distance: float, tx_height: float = 1.5, 
+                                   rx_height: float = 25.0, scenario: str = 'ground',
+                                   tx_pos: 'Position' = None, rx_pos: 'Position' = None) -> float:
         """
-        计算视距概率 - 对应论文式(11)
-        P_LoS(d) = 1 if d ≤ d_0, exp(-(d-d_0)/α_LoS) if d > d_0
-        """
-        if distance <= self.los_threshold:
-            return 1.0
-        else:
-            return math.exp(-(distance - self.los_threshold) / self.los_decay_factor)
-    
-    def _calculate_path_loss(self, distance: float, los_probability: float) -> float:
-        """
-        计算路径损耗 - 3GPP TS 38.901标准
-        LoS: PL = 32.4 + 20*log10(fc) + 20*log10(d)
-        NLoS: PL = 32.4 + 20*log10(fc) + 30*log10(d)
-        其中 fc单位为GHz，d单位为km
+        计算视距概率 - 增强版，考虑建筑物遮挡和空间异质性
         
-        【修复记录】
-        - 问题3: 最小距离从1m修正为0.5m（3GPP UMi场景标准）
-        - 问题4: 验证频率单位转换（Hz → GHz）并添加验证日志
+        【3GPP TR 38.901 UMi场景 + 空间分布】
+        - 地面链路（RSU-Vehicle）: 受建筑物遮挡影响，遮挡程度取决于位置
+        - 空中链路（UAV-Vehicle）: 利用高度优势，LoS概率高
+        - 空间异质性: 不同区域建筑密度不同（主干道 vs 街区内部）
+        
+        Args:
+            distance: 水平距离(m)
+            tx_height: 发射节点高度(m), UAV典型100m, RSU典型25m, 车辆1.5m
+            rx_height: 接收节点高度(m)
+            scenario: 'ground'=地面链路, 'air'=空中链路
+            tx_pos: 发射节点位置（用于计算空间遮挡）
+            rx_pos: 接收节点位置（用于计算空间遮挡）
+            
+        Returns:
+            LoS概率 [0, 1]
+        """
+        if not self.enable_blockage:
+            # 禁用遮挡模型时使用原始公式
+            if distance <= self.los_threshold:
+                return 1.0
+            else:
+                return math.exp(-(distance - self.los_threshold) / self.los_decay_factor)
+        
+        # 🏢 建筑物遮挡模型（3GPP标准）
+        if scenario == 'air':  # UAV空中链路
+            # UAV利用高度优势，LoS概率显著提高
+            # 高度带来的清晰度增益
+            height_advantage = max(tx_height, rx_height) - self.avg_building_height
+            
+            if height_advantage > 50:  # UAV高度远超建筑物
+                # 超高空几乎无遮挡
+                base_prob = 0.95 if distance <= 200 else 0.90
+            elif height_advantage > 20:  # UAV适当高于建筑物
+                base_prob = 0.85 if distance <= 200 else 0.75
+            else:  # UAV接近建筑高度
+                base_prob = 0.70 if distance <= 200 else 0.60
+            
+            # 距离衰减（较慢）
+            if distance > 200:
+                decay = math.exp(-(distance - 200) / 300.0)  # 衰减因子300m（空中）
+                return base_prob * (0.7 + 0.3 * decay)
+            else:
+                return base_prob
+        
+        else:  # 地面链路（RSU-Vehicle）
+            # 受建筑物遮挡影响，且遮挡程度取决于空间位置
+            # 3GPP UMi模型 + 空间异质性
+            
+            # 近距离内基本LoS
+            if distance <= 18:  # 3GPP标准：18m内LoS概率高
+                return 1.0
+            
+            # 🌍 计算局部建筑密度（空间异质性）
+            local_density = self._get_local_building_density(tx_pos, rx_pos)
+            
+            # 建筑密度影响的有效衰减距离
+            # 密集城区：衰减快（d_clutter小），郊区：衰减慢（d_clutter大）
+            d_clutter = 50.0 * (1.0 - 0.6 * local_density)  # 范围[20m, 50m]
+            
+            # 基础LoS概率（指数衰减）
+            base_prob = math.exp(-distance / d_clutter)
+            
+            # 建筑高度修正：建筑越高，遮挡越严重
+            height_penalty = 1.0 - 0.3 * min(1.0, self.avg_building_height / 30.0)
+            
+            # 最终概率
+            los_prob = base_prob * height_penalty
+            
+            # 限制在合理范围
+            return max(0.05, min(0.95, los_prob))  # 最小5%（极端NLoS），最大95%（近距离LoS）
+    
+    def _get_local_building_density(self, tx_pos: 'Position' = None, rx_pos: 'Position' = None) -> float:
+        """
+        计算局部建筑密度 - 实现空间异质性
+        
+        【空间分布模型】
+        不同区域建筑密度不同：
+        - 主干道/空旷区域：低密度（0.1-0.2）
+        - 一般街区：中等密度（0.3-0.5）
+        - 密集建筑区：高密度（0.6-0.9）
+        
+        【实现策略】
+        使用位置哈希值模拟空间分布：
+        - 某些区域固定为低密度（模拟主干道）
+        - 某些区域固定为高密度（模拟密集建筑）
+        - 形成类似城市网格的空间分布
+        
+        Args:
+            tx_pos: 发射节点位置
+            rx_pos: 接收节点位置
+            
+        Returns:
+            局部建筑密度 [0, 1]
+        """
+        # 如果位置信息缺失，使用全局平均密度
+        if tx_pos is None or rx_pos is None:
+            return self.building_density
+        
+        # 计算链路中点位置（遮挡主要发生在中间区域）
+        mid_x = (tx_pos.x + rx_pos.x) / 2.0
+        mid_y = (tx_pos.y + rx_pos.y) / 2.0
+        
+        # 🌍 空间网格划分（模拟城市街区）
+        # 将区域划分为200m×200m的网格
+        grid_size = 200.0  # 网格大小（米）
+        grid_x = int(mid_x / grid_size)
+        grid_y = int(mid_y / grid_size)
+        
+        # 使用网格坐标计算空间哈希（确定性分布）
+        grid_hash = (grid_x * 73 + grid_y * 37) % 100  # 0-99的哈希值
+        
+        # 🛣️ 主干道识别（每隔4个网格有一条主干道）
+        is_main_road_x = (grid_x % 4 == 0)  # 垂直主干道
+        is_main_road_y = (grid_y % 4 == 0)  # 水平主干道
+        
+        if is_main_road_x or is_main_road_y:
+            # 主干道区域：低建筑密度（空旷）
+            local_density = 0.05 + 0.15 * (grid_hash / 100.0)  # 0.05-0.20
+        else:
+            # 街区内部：根据哈希值分配密度
+            if grid_hash < 30:
+                # 30%的街区：一般密度区域
+                local_density = 0.2 + 0.2 * (grid_hash / 30.0)  # 0.20-0.40
+            elif grid_hash < 70:
+                # 40%的街区：中等密度区域
+                local_density = 0.4 + 0.2 * ((grid_hash - 30) / 40.0)  # 0.40-0.60
+            else:
+                # 30%的街区：高密度区域（密集建筑）
+                local_density = 0.6 + 0.3 * ((grid_hash - 70) / 30.0)  # 0.60-0.90
+        
+        # 叠加全局建筑密度的影响（加权平均）
+        final_density = 0.7 * local_density + 0.3 * self.building_density
+        
+        return min(1.0, max(0.0, final_density))
+    
+    def _calculate_path_loss(self, distance: float, los_probability: float, 
+                            tx_height: float = 1.5, scenario: str = 'ground',
+                            tx_pos: 'Position' = None, rx_pos: 'Position' = None) -> float:
+        """
+        计算路径损耗 - 3GPP TS 38.901标准（增强版，考虑遮挡）
+        
+        【路径损耗模型】
+        - LoS: PL = 32.4 + 20*log10(fc) + 20*log10(d)
+        - NLoS: PL = 32.4 + 20*log10(fc) + 30*log10(d) + L_blockage
+        
+        【关键改进】
+        - 地面链路NLoS：增加建筑物遮挡衰减L_blockage（15-25dB）
+        - 空中链路：路径损耗较小，体现UAV优势
+        
+        Args:
+            distance: 传输距离(m)
+            los_probability: LoS概率
+            tx_height: 发射高度(m)
+            scenario: 'ground' 或 'air'
+            
+        Returns:
+            路径损耗(dB)
         """
         # 🔧 修复问题3：确保距离至少为配置的最小距离（默认0.5米），避免log10(0)
         distance_km = max(distance / 1000.0, self.min_distance / 1000.0)
@@ -341,10 +513,25 @@ class WirelessCommunicationModel:
         # LoS路径损耗 - 3GPP标准式(12)
         los_path_loss = 32.4 + 20 * math.log10(frequency_ghz) + 20 * math.log10(distance_km)
         
-        # NLoS路径损耗 - 3GPP标准式(13)
-        nlos_path_loss = 32.4 + 20 * math.log10(frequency_ghz) + 30 * math.log10(distance_km)
+        # NLoS路径损耗基础值 - 3GPP标准式(13)
+        nlos_path_loss_base = 32.4 + 20 * math.log10(frequency_ghz) + 30 * math.log10(distance_km)
         
-        # 综合路径损耗
+        # 🌍 计算局部建筑密度（用于NLoS衰减）
+        local_density = self._get_local_building_density(tx_pos, rx_pos) if (tx_pos and rx_pos) else self.building_density
+        
+        # 🏢 建筑物遮挡额外衰减（仅地面链路）
+        if self.enable_blockage and scenario == 'ground':
+            # 建筑遮挡造成的额外损耗（3GPP典型值15-25dB）
+            # 密度越高、距离越远，衰减越大
+            blockage_loss = self.blockage_attenuation * (0.5 + 0.5 * local_density)
+            # 距离修正：远距离穿透多栋建筑，损耗更大
+            distance_factor = min(2.0, 1.0 + distance / 500.0)  # 500m后趋于饱和
+            nlos_path_loss = nlos_path_loss_base + blockage_loss * distance_factor
+        else:
+            # 空中链路或禁用遮挡模型
+            nlos_path_loss = nlos_path_loss_base
+        
+        # 综合路径损耗（加权平均）
         combined_path_loss = los_probability * los_path_loss + (1 - los_probability) * nlos_path_loss
         
         return combined_path_loss
