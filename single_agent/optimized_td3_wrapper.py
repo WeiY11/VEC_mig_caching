@@ -11,20 +11,7 @@ Queue-aware Replay + GNN Attention
 
 from typing import Optional, Dict, Union, Any
 import numpy as np
-
-"""
-精简优化TD3 - 仅包含最有效的两个优化
-Queue-aware Replay + GNN Attention
-
-专为VEC场景优化：
-- 队列感知回放：快速学习高负载场景
-- GNN注意力：大幅提升缓存命中率（0.2%→24%）
-
-作者：VEC_mig_caching Team
-"""
-
-from typing import Optional, Dict, Union, Any
-import numpy as np
+from scipy.special import softmax
 
 from .enhanced_td3_agent import EnhancedTD3Agent
 from .enhanced_td3_config import EnhancedTD3Config
@@ -298,9 +285,14 @@ class OptimizedTD3Wrapper:
         # 全局状态
         # 🔧 修复：使用更合理的归一化因子（对齐目标值）
         # 延迟目标 ~0.5s，能耗目标 ~5000J
+        # P0修复：从配置读取目标值，避免硬编码不一致
+        from config import config
+        latency_target = float(getattr(config.rl, 'latency_target', 0.5))
+        energy_target = float(getattr(config.rl, 'energy_target', 5000.0))
+        
         global_state = [
-            float(system_metrics.get('avg_task_delay', 0.0) / 0.5),  # 1.0 -> 0.5
-            float(system_metrics.get('total_energy_consumption', 0.0) / 5000.0),  # 1000.0 -> 5000.0
+            float(system_metrics.get('avg_task_delay', 0.0) / max(latency_target, 1e-6)),
+            float(system_metrics.get('total_energy_consumption', 0.0) / max(energy_target, 1e-6)),
             float(system_metrics.get('task_completion_rate', 0.95)),
             float(system_metrics.get('cache_hit_rate', 0.85)),
             float(system_metrics.get('queue_overload_flag', 0.0)),
@@ -326,7 +318,7 @@ class OptimizedTD3Wrapper:
             state_vector = np.pad(state_vector, (0, padding_needed), mode='constant', constant_values=0.5)
         elif state_vector.size > self.state_dim:
             state_vector = state_vector[:self.state_dim]
-        
+            
         return state_vector
     
     def calculate_reward(
@@ -400,10 +392,10 @@ class OptimizedTD3Wrapper:
                 uav_alloc = central_segment[c_idx:c_idx + self.num_uavs]
                 
                 actions['central_resource'] = {
-                    'bandwidth_weights': bw_alloc,
-                    'compute_weights': comp_alloc,
-                    'rsu_reservation': rsu_alloc,
-                    'uav_reservation': uav_alloc
+                    'bandwidth_weights': softmax(bw_alloc),
+                    'compute_weights': softmax(comp_alloc),
+                    'rsu_reservation': softmax(rsu_alloc),
+                    'uav_reservation': softmax(uav_alloc)
                 }
             else:
                 # 维度不匹配时的回退

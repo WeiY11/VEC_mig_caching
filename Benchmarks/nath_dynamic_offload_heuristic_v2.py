@@ -80,7 +80,7 @@ class DynamicOffloadHeuristic:
             best_suffix = 8
             best_veh_len = len(flat) - 8 - rsu_total - uav_total
 
-        # print(f"DEBUG: flat.shape={flat.shape} suffix={best_suffix} veh_len={best_veh_len}")
+        print(f"DEBUG: flat.shape={flat.shape} suffix={best_suffix} veh_len={best_veh_len}")
         
         useful_len = len(flat) - best_suffix
         

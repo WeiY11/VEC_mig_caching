@@ -278,6 +278,10 @@ class EnhancedTD3Agent:
         Returns:
             action: 动作向量
         """
+        # 🧊 预热阶段：使用完全随机动作，确保早期探索充分
+        if training and self.step_count < self.config.warmup_steps:
+            return np.random.uniform(-1.0, 1.0, size=self.action_dim).astype(np.float32)
+
         # 检查是否为批量输入
         if state.ndim == 1:
             state_tensor = torch.FloatTensor(state).unsqueeze(0).to(self.device)

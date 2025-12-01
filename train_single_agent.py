@@ -295,19 +295,25 @@ class SingleAgentTrainingEnvironment:
         if rl is None:
             return
 
+        overridden_keys = []
+
         def _set_if_absent(env_key: str, attr: str, value: float, use_max: bool = False) -> None:
             if os.environ.get(env_key) is not None:
                 return
             current = float(getattr(rl, attr, 0.0) or 0.0)
             if use_max:
-                setattr(rl, attr, max(current, value))
+                if value > current:
+                    setattr(rl, attr, value)
+                    overridden_keys.append(f"{attr}={value} (max)")
             elif current == 0.0:
                 setattr(rl, attr, value)
+                overridden_keys.append(f"{attr}={value} (default)")
 
         def _force_override(env_key: str, attr: str, value: float) -> None:
             if os.environ.get(env_key) is not None:
                 return
             setattr(rl, attr, float(value))
+            overridden_keys.append(f"{attr}={value}")
 
         # Optimized defaults to strengthen dense signals and reduce reward sparsity
         _force_override("RL_USE_DYNAMIC_REWARD_NORMALIZATION", "use_dynamic_reward_normalization", 1.0)
@@ -334,24 +340,16 @@ class SingleAgentTrainingEnvironment:
         _set_if_absent("RL_WEIGHT_QUEUE_OVERLOAD", "reward_weight_queue_overload", 0.8, use_max=True)
         _set_if_absent("RL_WEIGHT_REMOTE_REJECT", "reward_weight_remote_reject", 0.25, use_max=True)
 
-        # 覆盖目标值与核心权重，减轻奖励方差（默认全局生效，可通过环境变量覆盖）
-        # 🔧 2025-11-30: 回退到 Phase 1 (用户反馈最佳状态)，仅微调
-        # _force_override("RL_USE_DYNAMIC_REWARD_NORMALIZATION", "use_dynamic_reward_normalization", 1.0) # 禁用动态归一化
-        # _force_override("RL_WEIGHT_CACHE", "reward_weight_cache", 0.5)
-        # _force_override("RL_WEIGHT_CACHE_BONUS", "reward_weight_cache_bonus", 0.5)
-        # _force_override("RL_WEIGHT_OFFLOAD_BONUS", "reward_weight_offload_bonus", 1.0)
-
-        # ⚖️ OPTIMIZED_TD3: 目标放宽以提升收敛稳定性（奖励只对超标部分惩罚）
-        # 🔧 2025-11-29: 启用动态归一化后，不再需要极度放宽的静态目标
-        # _force_override("RL_LATENCY_LATENCY_TARGET", "latency_target", 1.5)
-        # _force_override("RL_LATENCY_UPPER_TOL", "latency_upper_tolerance", 2.8)
-        # _force_override("RL_ENERGY_TARGET", "energy_target", 9000.0)
-        # _force_override("RL_ENERGY_UPPER_TOL", "energy_upper_tolerance", 13000.0)
-
         # 奖励平滑，降低方差（非强制，可被环境变量覆盖）
         _force_override("RL_SMOOTH_DELAY", "reward_smooth_delay_weight", 0.6)
         _force_override("RL_SMOOTH_ENERGY", "reward_smooth_energy_weight", 0.6)
         _force_override("RL_SMOOTH_ALPHA", "reward_smooth_alpha", 0.3)
+
+        if overridden_keys:
+            print(f"\n⚡ OPTIMIZED_TD3 Configuration Overrides:")
+            for k in overridden_keys:
+                print(f"   - {k}")
+            print("")
 
         try:
             update_reward_targets(
@@ -1791,15 +1789,26 @@ class SingleAgentTrainingEnvironment:
                 # 其他算法的默认处理
                 training_info = {'message': f'Unknown algorithm: {self.algorithm}'}
             
-        # 🔧 修复：确保system_metrics被正确提取
+            # 累积奖励并保存最新的训练信息
+            episode_reward += reward
+            episode_info = training_info
+
+            # 更新状态；如未来引入提前结束，这里兼容 done 标志
+            state = next_state
+            if done:
+                break
+            
+        # ?? ?????system_metrics?????????episode???
+        steps_taken = step + 1  # range ? 0 ??
         system_metrics = info.get('system_metrics', {})
+        self._record_episode_metrics(system_metrics, episode_steps=steps_taken)
         
         return {
             'episode_reward': episode_reward,
             'avg_reward': episode_reward,
             'episode_info': episode_info,
             'system_metrics': system_metrics,
-            'steps': step + 1
+            'steps': steps_taken
         }
     
     def _run_ppo_episode(self, episode: int, max_steps: int = 100, visualizer: Optional[Any] = None) -> Dict:
@@ -1882,14 +1891,16 @@ class SingleAgentTrainingEnvironment:
         else:
             training_info = self.agent_env.agent.update(last_value_float, force_update=False)
         
+        steps_taken = step + 1  # range ? 0 ??
         system_metrics = info.get('system_metrics', {})
+        self._record_episode_metrics(system_metrics, episode_steps=steps_taken)
         
         return {
             'episode_reward': episode_reward,
             'avg_reward': episode_reward,
             'episode_info': training_info,
             'system_metrics': system_metrics,
-            'steps': step + 1
+            'steps': steps_taken
         }
 
     def _build_simulator_actions(self, actions_dict: Optional[Dict]) -> Optional[Dict]:
@@ -2469,6 +2480,9 @@ def train_single_algorithm(algorithm: str, num_episodes: Optional[int] = None, e
                 'system_metrics': aggregated_metrics,
                 'step_stats': infos[0].get('step_stats', {}) if len(infos) > 0 else {}
             }
+
+            # 记录 episode 级指标（并行环境聚合后的均值）
+            training_env._record_episode_metrics(aggregated_metrics, episode_steps=episode_result['steps'])
             
             # 记录到主环境用于统计
             training_env.episode_rewards.append(avg_ep_reward)
@@ -2513,17 +2527,30 @@ def train_single_algorithm(algorithm: str, num_episodes: Optional[int] = None, e
         
         episode_time = time.time() - episode_start_time
         
-        # 定期输出进度
+        # 🔧 修复：每个episode都输出简化日志，显示关键指标
+        avg_reward_step = training_env.performance_tracker['recent_step_rewards'].get_average()
+        avg_delay = training_env.performance_tracker['recent_delays'].get_average()
+        avg_energy = training_env.performance_tracker['recent_energy'].get_average()
+        avg_completion = training_env.performance_tracker['recent_completion'].get_average()
+        
+        # 每个episode显示一行简化信息
+        print(f"Episode {episode:4d}/{num_episodes} | "
+              f"奖励:{avg_reward_step:7.3f} | "
+              f"延迟:{avg_delay:6.3f}s | "
+              f"能耗:{avg_energy:7.1f}J | "
+              f"完成率:{avg_completion:5.1%} | "
+              f"用时:{episode_time:5.2f}s")
+        
+        # 定期输出详细进度
         if episode % 10 == 0:
-            avg_reward_step = training_env.performance_tracker['recent_step_rewards'].get_average()
-            avg_delay = training_env.performance_tracker['recent_delays'].get_average()
-            avg_completion = training_env.performance_tracker['recent_completion'].get_average()
-            
-            print(f"轮次 {episode:4d}/{num_episodes}:")
+            print(f"\n{'='*70}")
+            print(f"轮次 {episode:4d}/{num_episodes} 详细统计:")
             print(f"  平均每步奖励: {avg_reward_step:8.3f}")
             print(f"  平均时延: {avg_delay:8.3f}s")
+            print(f"  平均能耗: {avg_energy:8.1f}J")
             print(f"  完成率:   {avg_completion:8.1%}")
             print(f"  轮次用时: {episode_time:6.3f}s")
+            print(f"{'='*70}\n")
         
         # 评估模型
         if episode % eval_interval == 0:

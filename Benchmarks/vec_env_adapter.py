@@ -120,7 +120,16 @@ class VecEnvWrapper:
 
         self.action_dim = getattr(self.env.agent_env, "action_dim", 18)
         high = np.ones(self.action_dim, dtype=np.float32) * 5.0
-        self.action_space = SimpleNamespace(high=high, low=-high, shape=(self.action_dim,))
+        class BoxSpace:
+            def __init__(self, low, high, shape):
+                self.low = low
+                self.high = high
+                self.shape = shape
+            
+            def sample(self):
+                return np.random.uniform(self.low, self.high, self.shape).astype(np.float32)
+
+        self.action_space = BoxSpace(high=high, low=-high, shape=(self.action_dim,))
         self.observation_space = SimpleNamespace(shape=(self.env.agent_env.state_dim,))
 
     def reset(self):
