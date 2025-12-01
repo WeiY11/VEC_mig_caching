@@ -169,17 +169,19 @@ class UnifiedRewardCalculator:
             # 默认所有任务类型权重相等
             self.task_priority_weights = {1: 0.25, 2: 0.25, 3: 0.25, 4: 0.25}
 
-        # 🔧 修复：归一化因子必须与优化目标值对齐
+        # 🔧 P0修复：归一化因子必须与优化目标值严格对齐
         # Normalisation factors MUST align with optimization targets (latency_target and energy_target).
-        # 根据训练结果（Episode 1000+）：延迟稳定在~0.05s，能耗稳定在~5000J
-        # 目标值设置为：latency_target=0.4s, energy_target=1200J
-        # 因此归一化基准应该直接使用这些目标值，而非硬编码的0.2s和1000J
+        # 目标值从config.rl读取：latency_target=0.4s, energy_target=3500J
+        # 归一化基准直接使用这些目标值，确保状态归一化与奖励计算一致
+        # ⚠️ 关键：OptimizedTD3Wrapper的状态归一化也使用相同的config.rl目标值
         self.delay_normalizer = self.latency_target  # 与目标值对齐
         self.energy_normalizer = self.energy_target  # 与目标值对齐
         self.delay_bonus_scale = max(1e-6, self.latency_target)
         self.energy_bonus_scale = max(1e-6, self.energy_target)
         
         # 🆕 动态归一化配置
+        # ⚠️ 当前禁用以改善收敛性（config.rl.use_dynamic_reward_normalization=False）
+        # 如果未来启用，需要充分测试动态归一化对训练稳定性的影响
         self.use_dynamic_normalization = getattr(config.rl, "use_dynamic_reward_normalization", False)
         if self.use_dynamic_normalization:
             self.delay_rms = RunningMeanStd(shape=())
@@ -187,9 +189,10 @@ class UnifiedRewardCalculator:
             # 初始化为目标值，避免初期波动过大
             self.delay_rms.mean = self.latency_target
             self.energy_rms.mean = self.energy_target
-            print(f"   Dynamic Normalization: ENABLED (Initial: delay={self.latency_target}, energy={self.energy_target})")
+            print(f"   ⚠️ Dynamic Normalization: ENABLED (Experimental)")
+            print(f"      Initial: delay={self.latency_target:.2f}s, energy={self.energy_target:.0f}J")
         else:
-            print(f"   Dynamic Normalization: DISABLED")
+            print(f"   Dynamic Normalization: DISABLED (Recommended)")
 
         # 已移除SAC的特殊归一化参数，所有算法现在使用统一的归一化逻辑
 
@@ -211,7 +214,8 @@ class UnifiedRewardCalculator:
         # 设置奖励裁剪范围，防止奖励值过大或过小
         # 成本最小化框架：所有算法统一使用负奖励范围
         # 奖励值越接近0表示成本越低（性能越好）
-        self.reward_clip_range = (-50.0, 0.0)
+        # 🔧 范围调整：基于实际训练数据，大多数奖励在[-20, 0]区间
+        self.reward_clip_range = (-50.0, 0.0)  # 保持宽松范围以应对极端情况
 
         print(f"[OK] Unified reward calculator ({self.algorithm})")
         print(
@@ -490,8 +494,14 @@ class UnifiedRewardCalculator:
         system_metrics: Dict,
         cache_metrics: Optional[Dict] = None,
         migration_metrics: Optional[Dict] = None,
-    ) -> float:
-        """计算奖励并返回标量值"""
+    ) -> tuple[float, Dict[str, float]]:
+        """计算奖励并返回标量值和组件字典
+        
+        Returns:
+            tuple: (reward, reward_components)
+                - reward: 总奖励标量值
+                - reward_components: 包含各分量的字典
+        """
         # Debug print for first few calls to verify input range
         if not hasattr(self, '_debug_count'):
             self._debug_count = 0
@@ -502,25 +512,45 @@ class UnifiedRewardCalculator:
         metrics = self._extract_metrics(system_metrics, cache_metrics, migration_metrics)
         components = self._compute_components(metrics)
         components = self._compose_reward(components, metrics.completion_rate)
-        return components.reward if np.isfinite(components.reward) else 0.0
+        
+        # 构造奖励组件字典供调试使用
+        reward_components = {
+            'delay': -components.norm_delay * self.weight_delay,
+            'energy': -components.norm_energy * self.weight_energy,
+            'cache': -components.cache_penalty + components.cache_bonus,
+            'penalty': -(components.drop_penalty + components.completion_gap_penalty + 
+                        components.queue_penalty + components.remote_reject_penalty),
+            'core_cost': -components.core_cost,
+            'total': components.reward
+        }
+        
+        final_reward = components.reward if np.isfinite(components.reward) else 0.0
+        return final_reward, reward_components
 
     def update_targets(
         self,
         latency_target: Optional[float] = None,
         energy_target: Optional[float] = None,
     ) -> None:
-        """动态更新目标值，使奖励函数可以在训练中自适应拓扑变化。"""
+        """动态更新目标值，使奖励函数可以在训练中自适应拓扑变化。
+        
+        🔧 P0修复：同步更新归一化因子，确保奖励计算与目标值一致
+        """
         if latency_target is not None:
             self.latency_target = float(latency_target)
             self.latency_tolerance = float(
                 getattr(config.rl, "latency_upper_tolerance", self.latency_target * 2.0)
             )
+            # 🔧 P0修复：同步归一化因子
+            self.delay_normalizer = self.latency_target
             self.delay_bonus_scale = max(1e-6, self.latency_target)
         if energy_target is not None:
             self.energy_target = float(energy_target)
             self.energy_tolerance = float(
                 getattr(config.rl, "energy_upper_tolerance", self.energy_target * 1.5)
             )
+            # 🔧 P0修复：同步归一化因子
+            self.energy_normalizer = self.energy_target
             self.energy_bonus_scale = max(1e-6, self.energy_target)
 
     def get_reward_breakdown(
@@ -585,7 +615,8 @@ def calculate_unified_reward(
         计算得到的奖励值
     """
     calculator = _sac_reward_calculator if algorithm.upper() == "SAC" else _general_reward_calculator
-    return calculator.calculate_reward(system_metrics, cache_metrics, migration_metrics)
+    reward, _ = calculator.calculate_reward(system_metrics, cache_metrics, migration_metrics)
+    return reward
 
 
 def get_reward_breakdown(system_metrics: Dict, algorithm: str = "general") -> str:

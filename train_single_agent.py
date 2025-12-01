@@ -316,7 +316,9 @@ class SingleAgentTrainingEnvironment:
             overridden_keys.append(f"{attr}={value}")
 
         # Optimized defaults to strengthen dense signals and reduce reward sparsity
-        _force_override("RL_USE_DYNAMIC_REWARD_NORMALIZATION", "use_dynamic_reward_normalization", 1.0)
+        # 🔧 修复：关闭动态归一化，使用固定基准以稳定训练
+        _force_override("RL_USE_DYNAMIC_REWARD_NORMALIZATION", "use_dynamic_reward_normalization", 0.0)
+        
         _force_override("RL_WEIGHT_LOSS_RATIO", "reward_weight_loss_ratio", 1.0)
         _force_override("RL_WEIGHT_CACHE", "reward_weight_cache", 0.35)
         _force_override("RL_WEIGHT_CACHE_BONUS", "reward_weight_cache_bonus", 0.8)
@@ -326,10 +328,15 @@ class SingleAgentTrainingEnvironment:
         _force_override("RL_PENALTY_DROPPED", "reward_penalty_dropped", 0.35)
         _force_override("RL_WEIGHT_QUEUE_OVERLOAD", "reward_weight_queue_overload", 1.2)
         _force_override("RL_WEIGHT_REMOTE_REJECT", "reward_weight_remote_reject", 0.45)
-        _force_override("RL_LATENCY_TARGET", "latency_target", 1.6)
-        _force_override("RL_LATENCY_UPPER_TOL", "latency_upper_tolerance", 2.8)
-        _force_override("RL_ENERGY_TARGET", "energy_target", 8200.0)
-        _force_override("RL_ENERGY_UPPER_TOL", "energy_upper_tolerance", 12500.0)
+        
+        # 🔧 修复：将目标值调整为更合理范围，基于实际系统性能
+        # 实际观察: Delay ~5s, Energy ~31000J
+        # 设定可达目标: Delay 2.5s (50%改进), Energy 20000J (35%改进)
+        _force_override("RL_LATENCY_TARGET", "latency_target", 2.5)
+        _force_override("RL_LATENCY_UPPER_TOL", "latency_upper_tolerance", 5.0)
+        _force_override("RL_ENERGY_TARGET", "energy_target", 20000.0)
+        _force_override("RL_ENERGY_UPPER_TOL", "energy_upper_tolerance", 35000.0)
+        
         _force_override("RL_SMOOTH_DELAY", "reward_smooth_delay_weight", 0.35)
         _force_override("RL_SMOOTH_ENERGY", "reward_smooth_energy_weight", 0.45)
         _force_override("RL_SMOOTH_ALPHA", "reward_smooth_alpha", 0.12)
@@ -339,11 +346,6 @@ class SingleAgentTrainingEnvironment:
         _set_if_absent("RL_PENALTY_DROPPED", "reward_penalty_dropped", 0.15, use_max=True)
         _set_if_absent("RL_WEIGHT_QUEUE_OVERLOAD", "reward_weight_queue_overload", 0.8, use_max=True)
         _set_if_absent("RL_WEIGHT_REMOTE_REJECT", "reward_weight_remote_reject", 0.25, use_max=True)
-
-        # 奖励平滑，降低方差（非强制，可被环境变量覆盖）
-        _force_override("RL_SMOOTH_DELAY", "reward_smooth_delay_weight", 0.6)
-        _force_override("RL_SMOOTH_ENERGY", "reward_smooth_energy_weight", 0.6)
-        _force_override("RL_SMOOTH_ALPHA", "reward_smooth_alpha", 0.3)
 
         if overridden_keys:
             print(f"\n⚡ OPTIMIZED_TD3 Configuration Overrides:")
@@ -1114,6 +1116,7 @@ class SingleAgentTrainingEnvironment:
             except Exception:
                 pass
 
+
         # 🎯 使用固定卸载策略（如果设置）
         if self.fixed_offload_policy is not None and actions_dict is not None:
             try:
@@ -1146,6 +1149,18 @@ class SingleAgentTrainingEnvironment:
             except Exception as e:
                 # 如果固定策略失败，回退到智能体决策
                 pass
+        
+        # 🔍 诊断日志：监控卸载决策分布
+        if actions_dict is not None and 'offload_preference' in actions_dict:
+            step_count = getattr(self, '_step_counter', 0)
+            self._step_counter = step_count + 1
+            
+            if step_count % 50 == 0:
+                offload_pref = actions_dict['offload_preference']
+                local_val = offload_pref.get('local', 0.0)
+                rsu_val = offload_pref.get('rsu', 0.0)
+                uav_val = offload_pref.get('uav', 0.0)
+                print(f"🔍 [Step {step_count}] 卸载偏好 → Local:{local_val:.3f}, RSU:{rsu_val:.3f}, UAV:{uav_val:.3f}")
         
         # 构造传递给仿真器的动作（将连续动作映射为本地/RSU/UAV偏好）
         sim_actions = self._build_simulator_actions(actions_dict)
@@ -1245,7 +1260,11 @@ class SingleAgentTrainingEnvironment:
                     print(f"⚠️ 指导反馈更新失败: {exc}")
 
         reward_source = system_metrics.get('reward_snapshot', system_metrics)
-        reward = self.agent_env.calculate_reward(reward_source, cache_metrics, migration_metrics)
+        reward, reward_components = self.agent_env.calculate_reward(reward_source, cache_metrics, migration_metrics)
+        
+        # 将奖励组件添加到step_stats供调试使用
+        step_stats['reward_components'] = reward_components
+        
         try:
             system_metrics['normalized_reward'] = self._normalize_reward_value(reward)
         except Exception:
@@ -1765,8 +1784,20 @@ class SingleAgentTrainingEnvironment:
             # 🔧 更新episode步数计数器
             self._current_episode_step += 1
             
+            # 将向量动作恢复为字典供模拟器消费（避免动作被忽略）
+            sim_actions_dict = actions_dict if isinstance(actions_dict, dict) else self._build_actions_from_vector(action)
+            
             # 执行动作（将动作字典传入以影响仿真器卸载偏好）
-            next_state, reward, done, info = self.step(action, state, actions_dict)
+            next_state, reward, done, info = self.step(action, state, sim_actions_dict)
+            
+            # 🔧 修复1：更新队列指标（驱动Queue-aware Replay）
+            if hasattr(self.agent_env, 'update_queue_metrics'):
+                step_stats = info.get('step_stats', {})
+                try:
+                    self.agent_env.update_queue_metrics(step_stats)
+                except Exception as e:
+                    if self._current_episode % 100 == 0:  # 仅每100轮报告一次
+                        print(f"⚠️ 队列指标更新失败: {e}")
             
             # 初始化training_info
             training_info = {}

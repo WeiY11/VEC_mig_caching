@@ -1,4 +1,4 @@
-﻿"""
+﻿﻿﻿"""
 馃幆 CAMTD3璁粌鑴氭湰锛圕ache-Aware Migration with Twin Delayed DDPG锛?
 
 銆愮郴缁熸灦鏋勩€?
@@ -408,18 +408,22 @@ class SingleAgentTrainingEnvironment:
         _force_override("RL_WEIGHT_OFFLOAD_BONUS", "reward_weight_offload_bonus", 3.0)
         _force_override("RL_WEIGHT_LOCAL_PENALTY", "reward_weight_local_penalty", 1.0)
 
-        # 鐩爣鍊硷紙鏀惧锛屽尮閰嶅浘琛ㄤ娇鐢ㄧ殑2.3s/9600J鍩哄噯锛屽噺灏戝綊涓€鍖栨姈鍔級
-        _force_override("RL_LATENCY_TARGET", "latency_target", 2.3)
-        _force_override("RL_LATENCY_UPPER_TOL", "latency_upper_tolerance", 3.5)
-        _force_override("RL_ENERGY_TARGET", "energy_target", 9600.0)
-        _force_override("RL_ENERGY_UPPER_TOL", "energy_upper_tolerance", 14000.0)
+        # 🔧 P0修复：移除强制覆盖目标值，尊重config.rl默认值(0.4s/3500J)
+        # 旧版本：强制覆盖为2.3s/9600J，与config.rl默认值冲突
+        # 新策略：使用config.rl默认值，如需调整应通过环境变量 RL_LATENCY_TARGET/RL_ENERGY_TARGET
+        # 或通过 override_scenario 中的 num_vehicles 触发动态调整
+        # _force_override("RL_LATENCY_TARGET", "latency_target", 2.3)  # ❌ 移除
+        # _force_override("RL_LATENCY_UPPER_TOL", "latency_upper_tolerance", 3.5)  # ❌ 移除
+        # _force_override("RL_ENERGY_TARGET", "energy_target", 9600.0)  # ❌ 移除
+        # _force_override("RL_ENERGY_UPPER_TOL", "energy_upper_tolerance", 14000.0)  # ❌ 移除
         try:
             update_reward_targets(
-                latency_target=float(getattr(rl, "latency_target", 2.3)),
-                energy_target=float(getattr(rl, "energy_target", 9600.0)),
+                latency_target=float(getattr(rl, "latency_target", 0.4)),
+                energy_target=float(getattr(rl, "energy_target", 3500.0)),
             )
-        except Exception:
-            pass
+            print(f"  ✅ 奖励计算器已同步目标值")
+        except Exception as e:
+            print(f"  ⚠️  奖励目标同步失败: {e}")
 
     def __init__(
         self,

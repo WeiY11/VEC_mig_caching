@@ -50,9 +50,14 @@ class TD3BonusEnvironment(TD3Environment):
         completion_rate = max(0.0, float(system_metrics.get('task_completion_rate', 0)))
         cache_hit_rate = max(0.0, float(system_metrics.get('cache_hit_rate', 0)))
         
-        # 归一化
-        norm_delay = avg_delay / 0.2
-        norm_energy = total_energy / 1000.0
+        # 🔧 P0修复：归一化因子必须与统一奖励计算器对齐
+        # 从配置读取目标值，确保与其他算法一致
+        from config import config
+        latency_target = float(getattr(config.rl, 'latency_target', 0.4))
+        energy_target = float(getattr(config.rl, 'energy_target', 3500.0))
+        
+        norm_delay = avg_delay / max(latency_target, 1e-6)
+        norm_energy = total_energy / max(energy_target, 1e-6)
         
         # 核心成本
         core_cost = 2.0 * norm_delay + 1.2 * norm_energy + 0.02 * dropped_tasks

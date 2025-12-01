@@ -35,75 +35,98 @@ class RealisticContentGenerator:
     
     def __init__(self):
         # VEC内容类型规格
+        # 🔧 P0修复：对齐数据大小与TaskConfig.task_profiles定义
+        # task_profiles数据范围：
+        #   类型1: 50KB-200KB
+        #   类型2: 600KB-1.5MB
+        #   类型3: 2MB-4MB
+        #   类型4: 4.5MB-8MB
         self.content_specs = {
-            VECContentType.TRAFFIC_INFO: VECContentSpec(
-                content_type=VECContentType.TRAFFIC_INFO,
-                size_mb=0.1,           # 100KB - 实时交通数据
-                priority=5,             # 最高优先级
-                freshness_duration=60.0,  # 1分钟有效期
-                access_pattern='frequent'
-            ),
-            VECContentType.NAVIGATION: VECContentSpec(
-                content_type=VECContentType.NAVIGATION,
-                size_mb=0.5,           # 500KB - 路径数据
-                priority=4,             # 高优先级
-                freshness_duration=300.0,  # 5分钟有效期
-                access_pattern='burst'
-            ),
+            # 类型1: 极度敏感 (50KB-200KB)
             VECContentType.SAFETY_ALERT: VECContentSpec(
                 content_type=VECContentType.SAFETY_ALERT,
-                size_mb=0.05,          # 50KB - 安全警报
+                size_mb=0.075,         # 75KB - 安全警报 (约50-200KB范围内)
                 priority=5,             # 最高优先级
                 freshness_duration=30.0,  # 30秒有效期
                 access_pattern='burst'
             ),
-            VECContentType.PARKING_INFO: VECContentSpec(
-                content_type=VECContentType.PARKING_INFO,
-                size_mb=0.2,           # 200KB - 停车信息
-                priority=3,             # 中等优先级
-                freshness_duration=600.0, # 10分钟有效期
-                access_pattern='periodic'
+            VECContentType.SENSOR_DATA: VECContentSpec(
+                content_type=VECContentType.SENSOR_DATA,
+                size_mb=0.125,         # 125KB - 传感器数据 (约50-200KB范围内)
+                priority=4,             # 高优先级
+                freshness_duration=10.0,  # 10秒有效期
+                access_pattern='frequent'
+            ),
+            
+            # 类型2: 敏感 (600KB-1.5MB)
+            VECContentType.NAVIGATION: VECContentSpec(
+                content_type=VECContentType.NAVIGATION,
+                size_mb=0.9,           # 900KB - 路径数据 (约600KB-1.5MB范围内)
+                priority=4,             # 高优先级
+                freshness_duration=300.0,  # 5分钟有效期
+                access_pattern='burst'
             ),
             VECContentType.WEATHER_INFO: VECContentSpec(
                 content_type=VECContentType.WEATHER_INFO,
-                size_mb=0.3,           # 300KB - 天气数据
+                size_mb=0.75,          # 750KB - 天气数据 (约600KB-1.5MB范围内)
                 priority=2,             # 低优先级
                 freshness_duration=1800.0, # 30分钟有效期
                 access_pattern='periodic'
             ),
+            
+            # 类型3: 中度容忍 (2MB-4MB)
             VECContentType.MAP_DATA: VECContentSpec(
                 content_type=VECContentType.MAP_DATA,
-                size_mb=10.0,          # 10MB - 地图瓦片
+                size_mb=3.0,           # 3MB - 地图瓦片 (约2-4MB范围内)
                 priority=3,             # 中等优先级
                 freshness_duration=3600.0, # 1小时有效期
-                access_pattern='rare'
+                access_pattern='periodic'
+            ),
+            VECContentType.PARKING_INFO: VECContentSpec(
+                content_type=VECContentType.PARKING_INFO,
+                size_mb=2.5,           # 2.5MB - 停车信息 (约2-4MB范围内)
+                priority=3,             # 中等优先级
+                freshness_duration=600.0, # 10分钟有效期
+                access_pattern='periodic'
+            ),
+            
+            # 类型4: 容忍 (4.5MB-8MB)
+            VECContentType.TRAFFIC_INFO: VECContentSpec(
+                content_type=VECContentType.TRAFFIC_INFO,
+                size_mb=5.5,           # 5.5MB - 实时交通数据 (约4.5-8MB范围内)
+                priority=3,             # 中等优先级
+                freshness_duration=60.0,  # 1分钟有效期
+                access_pattern='frequent'
             ),
             VECContentType.ENTERTAINMENT: VECContentSpec(
                 content_type=VECContentType.ENTERTAINMENT,
-                size_mb=50.0,          # 50MB - 视频/音乐
+                size_mb=6.5,           # 6.5MB - 视频/音乐 (约4.5-8MB范围内)
                 priority=1,             # 最低优先级
                 freshness_duration=7200.0, # 2小时有效期
                 access_pattern='rare'
             ),
-            VECContentType.SENSOR_DATA: VECContentSpec(
-                content_type=VECContentType.SENSOR_DATA,
-                size_mb=0.1,           # 100KB - 传感器数据
-                priority=4,             # 高优先级
-                freshness_duration=10.0,  # 10秒有效期
-                access_pattern='frequent'
-            )
         }
         
-        # 内容生成权重（基于现实使用频率）
+        # 内容生成权重（基于现实使用频率，但调整以匹配任务类型分布）
+        # 🔧 P1修复：调整为符合VEC实际场景的分布
+        # 目标：类型1(极度敏感)=35%, 类型2(敏感)=25%, 类型3(中度)=25%, 类型4(容忍)=15%
+        # 合理性：紧急任务应占更高比例，低优先级任务应较少
         self.content_weights = {
-            VECContentType.TRAFFIC_INFO: 0.30,    # 30% - VEC最核心需求
-            VECContentType.NAVIGATION: 0.25,      # 25% - 导航高频使用
-            VECContentType.SAFETY_ALERT: 0.15,    # 15% - 安全相关
-            VECContentType.PARKING_INFO: 0.12,    # 12% - 城市刚需
-            VECContentType.SENSOR_DATA: 0.08,     # 8% - 传感器数据
-            VECContentType.WEATHER_INFO: 0.05,    # 5% - 天气查询
-            VECContentType.MAP_DATA: 0.03,        # 3% - 地图更新
-            VECContentType.ENTERTAINMENT: 0.02,   # 2% - 娱乐内容
+            # 类型1: 极度敏感 - 35%
+            VECContentType.SAFETY_ALERT: 0.20,    # 20% -> 类型1 (安全警报)
+            VECContentType.SENSOR_DATA: 0.15,     # 15% -> 类型1 (传感器数据)
+            
+            # 类型2: 敏感 - 25%
+            VECContentType.NAVIGATION: 0.15,      # 15% -> 类型2 (导航)
+            VECContentType.WEATHER_INFO: 0.10,    # 10% -> 类型2 (天气信息)
+            
+            # 类型3: 中度容忍 - 25%
+            VECContentType.MAP_DATA: 0.15,        # 15% -> 类型3 (地图数据)
+            VECContentType.PARKING_INFO: 0.10,    # 10% -> 类型3 (停车信息)
+            
+            # 类型4: 容忍 - 15%
+            VECContentType.TRAFFIC_INFO: 0.10,    # 10% -> 类型4 (交通信息)
+            VECContentType.ENTERTAINMENT: 0.05,   # 5%  -> 类型4 (娱乐)
         }
         
         # 内容ID计数器

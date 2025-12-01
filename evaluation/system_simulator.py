@@ -551,6 +551,17 @@ class CompleteSystemSimulator:
         except (ImportError, AttributeError) as e:
             logging.debug(f"Migration manager not available: {e}")
             self.migration_manager = None
+
+        # 初始化自适应缓存控制器
+        try:
+            from utils.adaptive_control import AdaptiveCacheController
+            self.adaptive_cache_controller = AdaptiveCacheController(
+                cache_capacity=1000.0  # Default RSU capacity
+            )
+            print("自适应缓存控制器已启用")
+        except (ImportError, AttributeError, RuntimeError) as e:
+            logging.warning(f"自适应缓存控制器加载失败: {e}")
+            self.adaptive_cache_controller = None
         
         # 一致性自检（不强制终止，仅提示）
         # Consistency check for topology configuration
@@ -1918,9 +1929,10 @@ class CompleteSystemSimulator:
         content_id, content_size_mb, content_priority = generate_realistic_content(vehicle_id, self.current_step)
         
         # 从 content_id 推断 VEC 场景类型（如 traffic_info, navigation 等）
-        # content_id 格式为 "{content_type}_{counter:04d}" (例如 "traffic_info_0012")
+        # content_id 格式为 "{content_type}_{counter:04d}" (例如 "traffic_info_0012" 或 "entertainment_0001")
+        # 🔧 修复：使用 rsplit 从右侧分割一次，正确提取包含下划线的类型名
         if '_' in content_id:
-            vec_content_type = content_id.split('_')[0] + '_' + content_id.split('_')[1]  # e.g., "traffic_info"
+            vec_content_type = content_id.rsplit('_', 1)[0]
         else:
             vec_content_type = 'general'
         
@@ -1928,16 +1940,29 @@ class CompleteSystemSimulator:
         # 这些都是可缓存的真实 VEC 场景
         scenario_name = vec_content_type
         
+        # 🔧 P0修复：对齐vec_type_configs与TaskConfig.task_profiles定义
         # 根据 VEC 内容类型设置计算和时延特性
+        # task_profiles定义：
+        #   类型1: 50-200KB, 60 cycles/bit, ≤0.2s (2 slots)
+        #   类型2: 600KB-1.5MB, 90 cycles/bit, ≤0.4s (4 slots)
+        #   类型3: 2-4MB, 120 cycles/bit, ≤0.5s (5 slots)
+        #   类型4: 4.5-8MB, 150 cycles/bit, ≤0.8s (8 slots)
         vec_type_configs = {
-            'traffic_info': {'compute_density': 300, 'deadline_range': (0.2, 1.0), 'task_type': 4, 'cache_priority': 0.9},
-            'navigation': {'compute_density': 400, 'deadline_range': (0.5, 2.0), 'task_type': 3, 'cache_priority': 0.85},
-            'safety_alert': {'compute_density': 200, 'deadline_range': (0.1, 0.5), 'task_type': 4, 'cache_priority': 1.0},
-            'parking_info': {'compute_density': 350, 'deadline_range': (0.3, 1.5), 'task_type': 3, 'cache_priority': 0.7},
-            'weather_info': {'compute_density': 250, 'deadline_range': (1.0, 3.0), 'task_type': 2, 'cache_priority': 0.5},
-            'map_data': {'compute_density': 500, 'deadline_range': (1.0, 5.0), 'task_type': 2, 'cache_priority': 0.6},
-            'entertainment': {'compute_density': 600, 'deadline_range': (2.0, 10.0), 'task_type': 1, 'cache_priority': 0.3},
-            'sensor_data': {'compute_density': 350, 'deadline_range': (0.1, 0.8), 'task_type': 4, 'cache_priority': 0.75},
+            # 类型1: 极度敏感 - 紧急制动、碰撞避免
+            'safety_alert': {'compute_density': 60, 'deadline_range': (0.18, 0.22), 'task_type': 1, 'cache_priority': 1.0},
+            'sensor_data': {'compute_density': 60, 'deadline_range': (0.18, 0.22), 'task_type': 1, 'cache_priority': 0.95},
+            
+            # 类型2: 敏感 - 导航、交通信号
+            'navigation': {'compute_density': 90, 'deadline_range': (0.38, 0.42), 'task_type': 2, 'cache_priority': 0.85},
+            'weather_info': {'compute_density': 90, 'deadline_range': (0.38, 0.42), 'task_type': 2, 'cache_priority': 0.7},
+            
+            # 类型3: 中度容忍 - 视频处理、图像识别
+            'map_data': {'compute_density': 120, 'deadline_range': (0.48, 0.52), 'task_type': 3, 'cache_priority': 0.8},
+            'parking_info': {'compute_density': 120, 'deadline_range': (0.48, 0.52), 'task_type': 3, 'cache_priority': 0.75},
+            
+            # 类型4: 容忍 - 数据分析、娱乐
+            'traffic_info': {'compute_density': 150, 'deadline_range': (0.78, 0.84), 'task_type': 4, 'cache_priority': 0.9},
+            'entertainment': {'compute_density': 150, 'deadline_range': (0.78, 0.84), 'task_type': 4, 'cache_priority': 0.5},
         }
         
         # 获取该 VEC 类型的配置（如果未知类型则使用默认值）
@@ -2319,6 +2344,62 @@ class CompleteSystemSimulator:
             # 🆕 Luo论文队列模型：任务完成时同步从clifetime_queues中移除
             self._remove_task_from_lifetime_queues(node, task)
             
+            # DEBUG LOGGING - ENTRY
+            # print(f"[DEBUG] Processing task {task.get('id')} at {node_type}, Content: {task.get('content_id')}")
+
+            # 🔧 修复：任务完成后尝试缓存内容
+            if node_type in ['RSU', 'UAV']:
+                cache_ctrl = getattr(self, 'adaptive_cache_controller', None)
+                content_id = task.get('content_id')
+                if cache_ctrl and content_id:
+                    try:
+                        # 获取内容大小和缓存状态
+                        data_size = self._get_realistic_content_size(content_id)
+                        cache_snapshot = node.get('cache', {})
+                        capacity = float(node.get('cache_capacity', 1000.0 if node_type == 'RSU' else 200.0))
+                        used = sum(float(item.get('size', 0.0)) for item in cache_snapshot.values())
+                        available = max(0.0, capacity - used)
+                        
+                        # 决策是否缓存
+                        should_cache, reason, evictions = cache_ctrl.should_cache_content(
+                            content_id, data_size, available, cache_snapshot, capacity,
+                            cache_priority=task.get('priority', 0.5)
+                        )
+                        
+                        # DEBUG LOGGING
+                        print(f"[DEBUG] Content: {content_id}, Should: {should_cache}, Reason: {reason}")
+                        
+                        if should_cache:
+                            if 'cache' not in node:
+                                node['cache'] = {}
+                            cache_dict = node['cache']
+                            
+                            # 执行淘汰
+                            reclaimed = 0.0
+                            for evict_id in evictions:
+                                removed = cache_dict.pop(evict_id, None)
+                                if removed:
+                                    reclaimed += float(removed.get('size', 0.0) or 0.0)
+                                    cache_ctrl.cache_stats['evicted_items'] += 1
+                            
+                            if reclaimed > 0.0:
+                                available += reclaimed
+                                
+                            # 写入缓存
+                            if available >= data_size:
+                                cache_dict[content_id] = {
+                                    'size': data_size,
+                                    'timestamp': self.current_time,
+                                    'reason': reason or 'post_process_cache',
+                                    'content_type': self._infer_content_type(content_id)
+                                }
+                                # 更新热度
+                                cache_ctrl.update_content_heat(content_id)
+                                print(f"[DEBUG] Cached {content_id} at {node_type}")
+                    except Exception as e:
+                        print(f"[DEBUG] Cache error: {e}")
+                        pass
+
             self.stats['completed_tasks'] += 1
             self.stats['processed_tasks'] = self.stats.get('processed_tasks', 0) + 1
 
@@ -3405,7 +3486,7 @@ class CompleteSystemSimulator:
                     self._store_in_neighbor_rsu_cache(neighbor, content_id, size_mb, cache_meta, cache_controller)
 
     def _dispatch_task(self, vehicle: Dict, task: Dict, actions: Dict, step_summary: Dict):
-        """鏍规嵁鍔ㄤ綔鍒嗛厤浠诲姟"""
+        """根据动作分配任务"""
         cache_controller = None
         if isinstance(actions, dict):
             cache_controller = actions.get('cache_controller')
@@ -3413,6 +3494,14 @@ class CompleteSystemSimulator:
             cache_controller = getattr(self, 'adaptive_cache_controller', None)
 
         content_id = task.get('content_id')
+        
+        # 🔧 修复：更新内容热度，确保缓存控制器能感知到内容访问
+        if cache_controller is not None and content_id:
+            try:
+                cache_controller.update_content_heat(content_id)
+            except Exception:
+                pass
+
         # 车辆端不再维护本地缓存，直接根据策略决定卸载或本地计算
         forced_mode = getattr(self, 'forced_offload_mode', '')
         if forced_mode != 'remote_only':
@@ -3767,30 +3856,17 @@ class CompleteSystemSimulator:
             self.stats['completed_tasks'] += 1
             self._accumulate_delay('delay_cache', delay)
             self._accumulate_energy('energy_cache', energy)
-            
-            # 按任务类别记录时延统计
-            self._record_task_type_delay(task, delay)
-            
-            if energy > 0:
-                self.stats['energy_downlink'] = self.stats.get('energy_downlink', 0.0) + energy
-                node['energy_consumed'] = node.get('energy_consumed', 0.0) + energy
-            # 🔥 记录RSU/UAV任务统计
-            if node_type == 'RSU':
-                step_summary['rsu_tasks'] = step_summary.get('rsu_tasks', 0) + 1
-            elif node_type == 'UAV':
-                step_summary['uav_tasks'] = step_summary.get('uav_tasks', 0) + 1
-            
-            # 🔧 记录可视化事件 (缓存命中)
-            if 'step_events' in step_summary:
-                try:
-                    v_id = int(vehicle['id'].split('_')[1])
-                    step_summary['step_events'].append({
-                        'type': node_type.lower(),
-                        'vehicle_id': v_id,
-                        'target_id': node_idx
-                    })
-                except (IndexError, ValueError):
-                    pass
+        # 🔧 记录可视化事件 (缓存命中)
+        if 'step_events' in step_summary:
+            try:
+                v_id = int(vehicle['id'].split('_')[1])
+                step_summary['step_events'].append({
+                    'type': node_type.lower(),
+                    'vehicle_id': v_id,
+                    'target_id': node_idx
+                })
+            except (IndexError, ValueError):
+                pass
             return True
 
         # 缓存未命中：计算上传开销
@@ -3960,6 +4036,53 @@ class CompleteSystemSimulator:
         # 统计所有优先级队列的总长度
         queue_length = sum(len(queue) for queue in vehicle.get('task_queue_by_priority', {}).values())
         vehicle['queue_length'] = queue_length
+        
+        # 🔧 修复：本地处理完成后尝试缓存内容
+        cache_ctrl = getattr(self, 'adaptive_cache_controller', None)
+        content_id = task.get('content_id')
+        if cache_ctrl and content_id:
+            try:
+                # 获取内容大小和缓存状态
+                data_size = self._get_realistic_content_size(content_id)
+                if 'device_cache' not in vehicle:
+                    vehicle['device_cache'] = {}
+                cache_snapshot = vehicle['device_cache']
+                
+                # 车辆缓存容量 (默认 500MB)
+                capacity = float(vehicle.get('cache_capacity', 500.0)) 
+                used = sum(float(item.get('size', 0.0)) for item in cache_snapshot.values())
+                available = max(0.0, capacity - used)
+                
+                # 决策是否缓存
+                should_cache, reason, evictions = cache_ctrl.should_cache_content(
+                    content_id, data_size, available, cache_snapshot, capacity,
+                    cache_priority=task.get('priority', 0.5)
+                )
+                
+                if should_cache:
+                    # 执行淘汰
+                    reclaimed = 0.0
+                    for evict_id in evictions:
+                        removed = cache_snapshot.pop(evict_id, None)
+                        if removed:
+                            reclaimed += float(removed.get('size', 0.0) or 0.0)
+                            cache_ctrl.cache_stats['evicted_items'] += 1
+                    
+                    if reclaimed > 0.0:
+                        available += reclaimed
+                        
+                    # 写入缓存
+                    if available >= data_size:
+                        cache_snapshot[content_id] = {
+                            'size': data_size,
+                            'timestamp': getattr(self, 'current_time', 0.0),
+                            'reason': reason or 'local_process_cache',
+                            'content_type': self._infer_content_type(content_id)
+                        }
+                        # 更新热度
+                        cache_ctrl.update_content_heat(content_id)
+            except Exception:
+                pass
         
         step_summary['local_tasks'] += 1
         

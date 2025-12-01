@@ -374,8 +374,8 @@ class GATRouterActor(nn.Module):
         num_rsus: int,
         num_uavs: int,
         vehicle_feature_dim: int = 5,
-        rsu_feature_dim: int = 6,  # 🔧 修复: RSU现在6维（+cpu_frequency）
-        uav_feature_dim: int = 6,  # 🔧 修复: UAV现在6维（+cpu_frequency）
+        rsu_feature_dim: int = 5,  # 🔧 修复2: RSU统一为5维（与实际状态一致）
+        uav_feature_dim: int = 5,  # 🔧 修复2: UAV统一为5维（与实际状态一致）
         global_feature_dim: int = 8,
         hidden_dim: int = 128,
         num_heads: int = 4,
@@ -515,7 +515,7 @@ class GATRouterActor(nn.Module):
         vehicle_features = state[:, idx:idx + self.num_vehicles * self.vehicle_feature_dim].view(batch_size, self.num_vehicles, self.vehicle_feature_dim)
         idx += self.num_vehicles * self.vehicle_feature_dim
         
-        # 🔧 修复: 使用实际维度（RSU=6, UAV=6）
+        # 🔧 修复2：使用实际维度（RSU=5, UAV=5）
         rsu_features = state[:, idx:idx + self.num_rsus * self.rsu_feature_dim].view(batch_size, self.num_rsus, self.rsu_feature_dim)
         idx += self.num_rsus * self.rsu_feature_dim
         

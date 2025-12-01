@@ -365,34 +365,35 @@ class TaskConfig:
         # 🔧 修复：提升任务到达率，增加系统负载，让智能体学会资源调度 (1.8 → 2.2)
         self.arrival_rate = 2.2   # tasks/s - 适度负载（12车×2.2 = 26.4 tasks/s总负载）
         
-        # 🎯 优化后任务参数：扩大数据范围以提高卸载收益
-        # 🔧 修复：提高数据大小范围（1-50 Mbits），让计算成本更高，上传开销占比降低
-        self.data_size_range = (1e6/8, 50e6/8)  # 1-50 Mbits = 0.125-6.25 MB (扩大3-4倍)
+        # 🎯 优化后任务参数：与task_profiles对齐
+        # 🔧 修正：数据范围覆盖所有4种任务类型 (50KB-8MB)
+        self.data_size_range = (50e3, 8e6)  # 50KB-8MB，覆盖所有类型
         self.task_data_size_range = self.data_size_range  # 兼容性别名
 
         # 计算周期配置 (基于分级计算密度)
-        # 最大计算量 = 50 Mbits × 150 cycles/bit = 7.5e9 cycles (类型4任务)
-        self.compute_cycles_range = (1e8, 7.5e9)  # cycles (覆盖60-150 cycles/bit全范围)
+        # 最大计算量 = 8MB × 8 bits/byte × 150 cycles/bit = 9.6e9 cycles (类型4任务)
+        self.compute_cycles_range = (50e3 * 8 * 60, 8e6 * 8 * 150)  # cycles (覆盖60-150 cycles/bit全范围)
         
-        # 🔧 修复问题9：截止时间配置对齐时隙边界（100ms时隙）
-        # ✅ 扩大范围以包含类型1任务(0.18-0.24s)、类型2(0.38-0.44s)等
-        self.deadline_range = (0.15, 0.95)  # seconds，扩大范围包含所有4种任务类型
+        # 🔧 修正：截止时间对齐类型4上限（8 slots = 0.8s）
+        # ✅ 范围覆盖类型1(0.18-0.24s)到类型4(0.78-0.86s)
+        self.deadline_range = (0.15, 0.85)  # seconds，对齐类型4上限0.8s
         # 输出比例配置
         self.task_output_ratio = 0.05  # 输出大小是输入大小的5%
         
-        # 🔧 收紧约束：任务类型阈值 - 充分利用100ms精细时隙
+        # 🔧 收紧约束：任务类型阈值 - 充分利用100ms精细时隙，避免过长延迟
         self.delay_thresholds = {
             'extremely_sensitive': 2,    # <= 2 slots = 0.2s
             'sensitive': 4,              # <= 4 slots = 0.4s
-            'moderately_tolerant': 6,    # <= 6 slots = 0.6s
+            'moderately_tolerant': 5,    # <= 5 slots = 0.5s (从6收紧到5)
         }
 
-        # Latency cost weights (aligned with Table IV in the reference paper)
+        # Latency cost weights (aligned with task_profiles and Table IV)
+        # 🔧 修正：与task_profiles中的latency_weight保持一致
         self.latency_cost_weights = {
-            1: 1.0,
-            2: 0.4,
-            3: 0.4,
-            4: 0.4,
+            1: 1.0,  # 极度敏感，最高权重
+            2: 0.7,  # 敏感，高权重
+            3: 0.5,  # 中度容忍，中等权重
+            4: 0.4,  # 容忍，低权重
         }
 
         # Deadline 放松参数
@@ -402,12 +403,15 @@ class TaskConfig:
         self.deadline_relax_fallback = 1.0  # 騍松因子改为1.0（无騍松），确保任务类型冠正
 
         # 🎯 优化后任务类型配置：分层合理化计算密度，扩大数据范围
-        # 原则：提高数据量，让卸载收益更明显（上传开销占比降低）
+        # 🔧 修正：消除数据范围重叠，控制跨度，对齐deadline
+        # 原则1：类型间留有明确间隙，避免边界模糊
+        # 原则2：每类跨度控制在2-2.5倍以内，提高分类稳定性
+        # 原则3：deadline与场景配置对齐，消除逻辑矛盾
         self.task_profiles: Dict[int, TaskProfileSpec] = {
-            1: TaskProfileSpec(1, (1e6/8, 4e6/8), 60, 3, 1.0),       # 60 cycles/bit, 0.3s - 极度敏感（125KB-500KB：紧急制动）
-            2: TaskProfileSpec(2, (3e6/8, 15e6/8), 90, 4, 0.4),      # 90 cycles/bit, 0.4s - 敏感（375KB-1.875MB：视频流）
-            3: TaskProfileSpec(3, (8e6/8, 30e6/8), 120, 5, 0.4),     # 120 cycles/bit, 0.5s - 中度容忍（1MB-3.75MB：图像识别）
-            4: TaskProfileSpec(4, (15e6/8, 50e6/8), 150, 8, 0.4),    # 150 cycles/bit, 0.8s - 容忍（1.875MB-6.25MB：深度学习）
+            1: TaskProfileSpec(1, (50e3, 200e3), 60, 2, 1.0),        # 60 cycles/bit, 0.2s - 极度敏感（50KB-200KB：紧急制动）
+            2: TaskProfileSpec(2, (600e3, 1.5e6), 90, 4, 0.7),       # 90 cycles/bit, 0.4s - 敏感（600KB-1.5MB：导航）
+            3: TaskProfileSpec(3, (2e6, 4e6), 120, 5, 0.5),          # 120 cycles/bit, 0.5s - 中度容忍（2MB-4MB：图像识别）
+            4: TaskProfileSpec(4, (4.5e6, 8e6), 150, 8, 0.4),        # 150 cycles/bit, 0.8s - 容忍（4.5MB-8MB：深度学习）
         }
         # Backwards-compatible dictionary view for legacy code
         self.task_type_specs = {
@@ -1212,15 +1216,16 @@ class NormalizationConfig:
         self.uav_energy_reference = float(os.environ.get('NORM_UAV_ENERGY_REF', '1000.0'))
 
         # 奖励归一化参考
+        # 🔧 P0修复：对齐energy_normalizer与config.rl.energy_target=3500J
         # 默认直接对齐 RL 核心目标，避免奖励归一化与目标值不一致导致的偏置
         self.delay_normalizer_value = float(os.environ.get('NORM_DELAY_NORMALIZER', '0.4'))
-        self.energy_normalizer_value = float(os.environ.get('NORM_ENERGY_NORMALIZER', '1200.0'))
+        self.energy_normalizer_value = float(os.environ.get('NORM_ENERGY_NORMALIZER', '3500.0'))
 
         # 全局性能参考（供奖励/指标归一化使用）
         self.delay_reference = float(os.environ.get('NORM_DELAY_REFERENCE', '0.4'))
-        self.delay_upper_reference = float(os.environ.get('NORM_DELAY_UPPER_REFERENCE', '0.8'))
-        self.energy_reference = float(os.environ.get('NORM_ENERGY_REFERENCE', '1200.0'))
-        self.energy_upper_reference = float(os.environ.get('NORM_ENERGY_UPPER_REFERENCE', '1800.0'))
+        self.delay_upper_reference = float(os.environ.get('NORM_DELAY_UPPER_REFERENCE', '1.0'))
+        self.energy_reference = float(os.environ.get('NORM_ENERGY_REFERENCE', '3500.0'))
+        self.energy_upper_reference = float(os.environ.get('NORM_ENERGY_UPPER_REFERENCE', '5000.0'))
 
 
 class SystemConfig:

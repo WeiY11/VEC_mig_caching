@@ -49,12 +49,12 @@ def create_optimized_config() -> EnhancedTD3Config:
         actor_lr=3e-5,    # 🔧 5e-5 -> 3e-5 (更精细的更新)
         critic_lr=8e-5,   # 保持 8e-5
 
-        # 🔧 探索策略优化 (大幅增强探索)
-        exploration_noise=0.30,  # 🔧 0.25 -> 0.30 (恢复高探索)
-        noise_decay=0.9998,      # 🔧 0.9995 -> 0.9998 (恢复慢衰减)
-        min_noise=0.05,          # 🔧 0.02 -> 0.05 (保持底噪)
-        target_noise=0.04,
-        noise_clip=0.12,
+        # 🔧 探索策略优化 (恢复标准探索以提升稳定性)
+        exploration_noise=0.15,  # 🔧 0.30 -> 0.15 (降低探索噪声，减少震荡)
+        noise_decay=0.998,       # 🔧 0.9998 -> 0.998 (加快噪声衰减，让后期更稳定)
+        min_noise=0.02,          # 🔧 0.05 -> 0.02 (降低底噪)
+        target_noise=0.02,       # 🔧 0.04 -> 0.02 (降低目标噪声)
+        noise_clip=0.05,         # 🔧 0.12 -> 0.05 (收紧裁剪范围)
 
         # 奖励归一化
         reward_norm_beta=0.997,
@@ -90,8 +90,8 @@ class OptimizedTD3Wrapper:
         
         # 计算维度
         vehicle_state_dim = num_vehicles * 5  # 车辆保持5维
-        rsu_state_dim = num_rsus * 6  # 🔧 RSU增加到6维（+cpu_frequency）
-        uav_state_dim = num_uavs * 6  # 🔧 UAV增加到6维（+cpu_frequency）
+        rsu_state_dim = num_rsus * 5  # 🔧 修复2：RSU统一为5维（与实际状态构建一致）
+        uav_state_dim = num_uavs * 5  # 🔧 修复2：UAV统一为5维（与实际状态构建一致）
         global_state_dim = 8
         base_state_dim = vehicle_state_dim + rsu_state_dim + uav_state_dim + global_state_dim
         
@@ -267,28 +267,27 @@ class OptimizedTD3Wrapper:
         for i in range(self.num_rsus):
             rsu_key = f'rsu_{i}'
             if rsu_key in node_states:
-                rsu_state = node_states[rsu_key][:6]  # 🔧 RSU现在6维（包括cpu_frequency）
+                rsu_state = node_states[rsu_key][:5]  # 🔧 修复2：RSU统一为5维
                 valid_state = [float(v) if np.isfinite(v) else 0.5 for v in rsu_state]
                 state_components.extend(valid_state)
             else:
-                state_components.extend([0.5, 0.5, 0.0, 0.0, 0.0, 0.625])  # 默认cpu_freq=12.5/20=0.625
+                state_components.extend([0.5, 0.5, 0.0, 0.0, 0.0])  # 默认5维
         
         for i in range(self.num_uavs):
             uav_key = f'uav_{i}'
             if uav_key in node_states:
-                uav_state = node_states[uav_key][:6]  # 🔧 UAV现在6维（包括cpu_frequency）
+                uav_state = node_states[uav_key][:5]  # 🔧 修复2：UAV统一为5维
                 valid_state = [float(v) if np.isfinite(v) else 0.5 for v in uav_state]
                 state_components.extend(valid_state)
             else:
-                state_components.extend([0.5, 0.5, 0.5, 0.0, 0.0, 0.25])  # 默认cpu_freq=5.0/20=0.25
+                state_components.extend([0.5, 0.5, 0.5, 0.0, 0.0])  # 默认5维（高度维度已包含）
         
         # 全局状态
-        # 🔧 修复：使用更合理的归一化因子（对齐目标值）
-        # 延迟目标 ~0.5s，能耗目标 ~5000J
-        # P0修复：从配置读取目标值，避免硬编码不一致
+        # 🔧 P0修复：归一化因子必须与UnifiedRewardCalculator严格对齐
+        # 从配置读取目标值，确保状态归一化与奖励计算使用相同基准
         from config import config
-        latency_target = float(getattr(config.rl, 'latency_target', 0.5))
-        energy_target = float(getattr(config.rl, 'energy_target', 5000.0))
+        latency_target = float(getattr(config.rl, 'latency_target', 0.4))  # 与config.rl默认值对齐
+        energy_target = float(getattr(config.rl, 'energy_target', 3500.0))  # 与config.rl默认值对齐
         
         global_state = [
             float(system_metrics.get('avg_task_delay', 0.0) / max(latency_target, 1e-6)),
@@ -326,10 +325,18 @@ class OptimizedTD3Wrapper:
         system_metrics: Dict,
         cache_metrics: Optional[Dict] = None,
         migration_metrics: Optional[Dict] = None
-    ) -> float:
-        """计算奖励"""
-        from utils.unified_reward_calculator import calculate_unified_reward
-        return calculate_unified_reward(system_metrics, cache_metrics, migration_metrics, algorithm="general")
+    ) -> tuple[float, Dict[str, float]]:
+        """
+        计算奖励并返回组件字典
+        
+        使用统一奖励计算器确保一致性。
+        归一化基准自动与状态归一化对齐（通过config.rl.latency_target和energy_target）。
+        
+        Returns:
+            tuple: (reward, reward_components)
+        """
+        from utils.unified_reward_calculator import _general_reward_calculator
+        return _general_reward_calculator.calculate_reward(system_metrics, cache_metrics, migration_metrics)
     
     def get_actions(self, state: np.ndarray, training: bool = True) -> Dict:
         """获取动作"""
