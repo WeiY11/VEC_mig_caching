@@ -249,6 +249,22 @@ class EnhancedTD3Agent:
             return self.log_alpha.exp().item()
         return 0.0
     
+
+    
+    def _clone_network(self, network: nn.Module) -> nn.Module:
+        """克隆网络用于创建target网络"""
+        import copy
+        clone = copy.deepcopy(network)
+        clone.to(self.device)
+        return clone
+    
+    @property
+    def alpha(self) -> float:
+        """获取当前熵温度参数"""
+        if self.use_entropy_reg:
+            return self.log_alpha.exp().item()
+        return 0.0
+    
     def select_action(self, state: np.ndarray, training: bool = True) -> np.ndarray:
         """选择动作
         
@@ -262,7 +278,13 @@ class EnhancedTD3Agent:
         Returns:
             action: 动作向量
         """
-        state_tensor = torch.FloatTensor(state).unsqueeze(0).to(self.device)
+        # 检查是否为批量输入
+        if state.ndim == 1:
+            state_tensor = torch.FloatTensor(state).unsqueeze(0).to(self.device)
+            is_batch = False
+        else:
+            state_tensor = torch.FloatTensor(state).to(self.device)
+            is_batch = True
         
         with torch.no_grad():
             # 直接使用状态，不需要手动添加中央状态
@@ -271,7 +293,10 @@ class EnhancedTD3Agent:
             # 生成动作
             action_tensor = self.actor(encoded_state)
         
-        action = action_tensor.cpu().numpy()[0]
+        if is_batch:
+            action = action_tensor.cpu().numpy()
+        else:
+            action = action_tensor.cpu().numpy()[0]
         
         # 添加探索噪声
         if training:

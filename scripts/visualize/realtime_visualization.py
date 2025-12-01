@@ -90,6 +90,7 @@ class TrainingDataStore:
 data_store = TrainingDataStore()
 
 # HTML模板（实时更新版本）
+# HTML模板（实时更新版本 - 带动画与CDN回退）
 HTML_TEMPLATE = """
 <!DOCTYPE html>
 <html lang="zh-CN">
@@ -97,8 +98,13 @@ HTML_TEMPLATE = """
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>VEC AI Training Monitor - {{ algorithm }}</title>
-    <script src="/static/js/socket.io.min.js"></script>
-    <script src="/static/js/plotly.min.js"></script>
+    
+    <!-- Socket.IO with CDN Fallback -->
+    <script src="/static/js/socket.io.min.js" onerror="this.onerror=null;this.src='https://cdn.socket.io/4.5.4/socket.io.min.js';"></script>
+    
+    <!-- Plotly.js with CDN Fallback -->
+    <script src="/static/js/plotly.min.js" onerror="this.onerror=null;this.src='https://cdn.plot.ly/plotly-2.24.1.min.js';"></script>
+    
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;700&display=swap" rel="stylesheet">
     <style>
         :root {
@@ -114,11 +120,7 @@ HTML_TEMPLATE = """
             --glass-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.37);
         }
 
-        * {
-            margin: 0;
-            padding: 0;
-            box-sizing: border-box;
-        }
+        * { margin: 0; padding: 0; box-sizing: border-box; }
 
         body {
             font-family: 'Inter', sans-serif;
@@ -129,179 +131,139 @@ HTML_TEMPLATE = """
             overflow-x: hidden;
         }
 
-        .container {
-            max-width: 1800px;
-            margin: 0 auto;
+        .container { max-width: 1800px; margin: 0 auto; }
+
+        /* Loading Overlay */
+        #loading-overlay {
+            position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+            background: rgba(15, 23, 42, 0.9);
+            z-index: 9999;
+            display: flex; justify-content: center; align-items: center; flex-direction: column;
+            transition: opacity 0.5s ease;
         }
+        .loader {
+            width: 48px; height: 48px;
+            border: 5px solid #FFF;
+            border-bottom-color: var(--accent-color);
+            border-radius: 50%;
+            animation: rotation 1s linear infinite;
+            margin-bottom: 20px;
+        }
+        @keyframes rotation { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
 
         /* Header */
         .header {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
+            display: flex; justify-content: space-between; align-items: center;
             padding: 20px 30px;
-            background: var(--card-bg);
-            backdrop-filter: blur(10px);
-            border-radius: 16px;
-            border: var(--card-border);
-            box-shadow: var(--glass-shadow);
-            margin-bottom: 24px;
+            background: var(--card-bg); backdrop-filter: blur(10px);
+            border-radius: 16px; border: var(--card-border);
+            box-shadow: var(--glass-shadow); margin-bottom: 24px;
         }
-
-        .header-title {
-            display: flex;
-            align-items: center;
-            gap: 15px;
-        }
-
         .header h1 {
-            font-size: 1.5rem;
-            font-weight: 700;
+            font-size: 1.5rem; font-weight: 700;
             background: linear-gradient(to right, #38bdf8, #818cf8);
-            -webkit-background-clip: text;
-            -webkit-text-fill-color: transparent;
+            -webkit-background-clip: text; -webkit-text-fill-color: transparent;
         }
-
         .status-badge {
-            display: flex;
-            align-items: center;
-            gap: 8px;
+            display: flex; align-items: center; gap: 8px;
             padding: 6px 12px;
             background: rgba(74, 222, 128, 0.1);
             border: 1px solid rgba(74, 222, 128, 0.2);
             border-radius: 20px;
-            font-size: 0.85rem;
-            color: var(--success-color);
+            font-size: 0.85rem; color: var(--success-color);
         }
-
         .status-dot {
-            width: 8px;
-            height: 8px;
-            background: var(--success-color);
-            border-radius: 50%;
-            box-shadow: 0 0 8px var(--success-color);
+            width: 8px; height: 8px; background: var(--success-color);
+            border-radius: 50%; box-shadow: 0 0 8px var(--success-color);
             animation: pulse 2s infinite;
         }
-
         @keyframes pulse {
             0% { opacity: 1; box-shadow: 0 0 0 0 rgba(74, 222, 128, 0.7); }
             70% { opacity: 0.7; box-shadow: 0 0 0 6px rgba(74, 222, 128, 0); }
             100% { opacity: 1; box-shadow: 0 0 0 0 rgba(74, 222, 128, 0); }
         }
 
-        /* Progress Bar */
-        .progress-container {
-            margin-bottom: 24px;
-            background: rgba(255, 255, 255, 0.05);
-            border-radius: 8px;
-            height: 6px;
-            overflow: hidden;
+        /* Topology Animation Section */
+        .topology-container {
+            background: var(--card-bg); backdrop-filter: blur(10px);
+            border: var(--card-border); border-radius: 16px;
+            padding: 20px; margin-bottom: 24px;
+            height: 300px; position: relative; overflow: hidden;
+        }
+        .topology-title {
+            position: absolute; top: 20px; left: 20px;
+            font-size: 1rem; font-weight: 600; color: var(--text-primary);
+            z-index: 10;
+        }
+        canvas#topology-canvas {
+            width: 100%; height: 100%;
+            display: block;
         }
 
+        /* Progress Bar */
+        .progress-container {
+            margin-bottom: 24px; background: rgba(255, 255, 255, 0.05);
+            border-radius: 8px; height: 6px; overflow: hidden;
+        }
         .progress-bar {
-            height: 100%;
-            background: linear-gradient(90deg, #38bdf8, #818cf8);
-            width: 0%;
-            transition: width 0.5s ease;
+            height: 100%; background: linear-gradient(90deg, #38bdf8, #818cf8);
+            width: 0%; transition: width 0.5s ease;
             box-shadow: 0 0 10px rgba(56, 189, 248, 0.5);
         }
 
         /* Metrics Grid */
         .metrics-grid {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
-            gap: 20px;
-            margin-bottom: 24px;
+            display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+            gap: 20px; margin-bottom: 24px;
         }
-
         .metric-card {
-            background: var(--card-bg);
-            backdrop-filter: blur(10px);
-            border: var(--card-border);
-            border-radius: 16px;
-            padding: 20px;
-            transition: transform 0.3s ease, box-shadow 0.3s ease;
+            background: var(--card-bg); backdrop-filter: blur(10px);
+            border: var(--card-border); border-radius: 16px;
+            padding: 20px; transition: transform 0.3s ease, box-shadow 0.3s ease;
         }
-
         .metric-card:hover {
-            transform: translateY(-4px);
-            box-shadow: 0 12px 40px rgba(0, 0, 0, 0.4);
+            transform: translateY(-4px); box-shadow: 0 12px 40px rgba(0, 0, 0, 0.4);
             border-color: rgba(56, 189, 248, 0.3);
         }
-
         .metric-label {
-            font-size: 0.85rem;
-            color: var(--text-secondary);
-            margin-bottom: 8px;
-            text-transform: uppercase;
-            letter-spacing: 0.05em;
+            font-size: 0.85rem; color: var(--text-secondary);
+            margin-bottom: 8px; text-transform: uppercase; letter-spacing: 0.05em;
         }
-
         .metric-value {
-            font-size: 1.8rem;
-            font-weight: 700;
-            color: var(--text-primary);
-            display: flex;
-            align-items: baseline;
-            gap: 4px;
+            font-size: 1.8rem; font-weight: 700; color: var(--text-primary);
+            display: flex; align-items: baseline; gap: 4px;
         }
-
-        .metric-unit {
-            font-size: 0.9rem;
-            color: var(--text-secondary);
-            font-weight: 400;
-        }
+        .metric-unit { font-size: 0.9rem; color: var(--text-secondary); font-weight: 400; }
 
         /* Charts Layout */
         .main-grid {
-            display: grid;
-            grid-template-columns: 1fr 1fr;
-            gap: 24px;
-            margin-bottom: 24px;
+            display: grid; grid-template-columns: 1fr 1fr;
+            gap: 24px; margin-bottom: 24px;
         }
-
         .chart-card {
-            background: var(--card-bg);
-            backdrop-filter: blur(10px);
-            border: var(--card-border);
-            border-radius: 16px;
-            padding: 20px;
-            height: 400px;
-            position: relative;
+            background: var(--card-bg); backdrop-filter: blur(10px);
+            border: var(--card-border); border-radius: 16px;
+            padding: 20px; height: 400px; position: relative;
         }
-        
-        .chart-card.full-width {
-            grid-column: 1 / -1;
-        }
-
+        .chart-card.full-width { grid-column: 1 / -1; }
         .chart-title {
-            font-size: 1rem;
-            font-weight: 600;
-            margin-bottom: 15px;
-            color: var(--text-primary);
-            display: flex;
-            align-items: center;
-            gap: 8px;
+            font-size: 1rem; font-weight: 600; margin-bottom: 15px;
+            color: var(--text-primary); display: flex; align-items: center; gap: 8px;
         }
-
         .chart-title::before {
-            content: '';
-            display: block;
-            width: 4px;
-            height: 16px;
-            background: var(--accent-color);
-            border-radius: 2px;
+            content: ''; display: block; width: 4px; height: 16px;
+            background: var(--accent-color); border-radius: 2px;
         }
 
-        /* Responsive */
-        @media (max-width: 1200px) {
-            .main-grid {
-                grid-template-columns: 1fr;
-            }
-        }
+        @media (max-width: 1200px) { .main-grid { grid-template-columns: 1fr; } }
     </style>
 </head>
 <body>
+    <div id="loading-overlay">
+        <div class="loader"></div>
+        <div style="color: #fff; font-size: 1.2rem;">Connecting to Training Server...</div>
+    </div>
+
     <div class="container">
         <!-- Header -->
         <header class="header">
@@ -315,6 +277,12 @@ HTML_TEMPLATE = """
                 <span id="status-text">Training Active</span>
             </div>
         </header>
+
+        <!-- Topology Animation -->
+        <div class="topology-container">
+            <div class="topology-title">Real-time Task Offloading</div>
+            <canvas id="topology-canvas"></canvas>
+        </div>
 
         <!-- Progress -->
         <div class="progress-container">
@@ -355,180 +323,399 @@ HTML_TEMPLATE = """
 
         <!-- Main Charts Area -->
         <div class="main-grid">
-            <!-- Reward Chart (Large) -->
             <div class="chart-card full-width">
                 <div class="chart-title">Reward Evolution</div>
-                <div id="reward-chart" style="width: 100%; height: 340px; color: var(--text-secondary);">Loading Chart...</div>
+                <div id="reward-chart" style="width: 100%; height: 340px;"></div>
             </div>
-
-            <!-- Task Assignment -->
             <div class="chart-card">
                 <div class="chart-title">Task Assignment Distribution</div>
-                <div id="assignment-chart" style="width: 100%; height: 340px; color: var(--text-secondary);">Loading Chart...</div>
+                <div id="assignment-chart" style="width: 100%; height: 340px;"></div>
             </div>
-
-            <!-- Delay -->
             <div class="chart-card">
                 <div class="chart-title">Average Latency</div>
-                <div id="delay-chart" style="width: 100%; height: 340px; color: var(--text-secondary);">Loading Chart...</div>
+                <div id="delay-chart" style="width: 100%; height: 340px;"></div>
             </div>
-
-            <!-- Cache & Completion -->
             <div class="chart-card">
                 <div class="chart-title">Cache Hit Rate</div>
-                <div id="cache-chart" style="width: 100%; height: 340px; color: var(--text-secondary);">Loading Chart...</div>
+                <div id="cache-chart" style="width: 100%; height: 340px;"></div>
             </div>
-
             <div class="chart-card">
                 <div class="chart-title">Completion Rate</div>
-                <div id="completion-chart" style="width: 100%; height: 340px; color: var(--text-secondary);">Loading Chart...</div>
+                <div id="completion-chart" style="width: 100%; height: 340px;"></div>
             </div>
-            
             <div class="chart-card full-width">
                  <div class="chart-title">System Energy Consumption</div>
-                 <div id="energy-chart" style="width: 100%; height: 340px; color: var(--text-secondary);">Loading Chart...</div>
+                 <div id="energy-chart" style="width: 100%; height: 340px;"></div>
             </div>
         </div>
     </div>
 
     <script>
-        const socket = io();
+        // --- Socket Connection ---
+        const socket = io({
+            reconnection: true,
+            reconnectionAttempts: Infinity,
+            reconnectionDelay: 1000
+        });
+
+        socket.on('connect', () => {
+            console.log("Connected to server");
+            document.getElementById('loading-overlay').style.opacity = '0';
+            setTimeout(() => {
+                document.getElementById('loading-overlay').style.display = 'none';
+            }, 500);
+        });
+
+        socket.on('connect_error', (err) => {
+            console.error("Connection error:", err);
+            // Don't show overlay on reconnect attempt to avoid flickering, just log
+        });
+
+        // --- Topology Animation Logic ---
+        const canvas = document.getElementById('topology-canvas');
+        const ctx = canvas.getContext('2d');
         
-        // Common Plotly Layout for Dark Theme
+        // Resize canvas
+        function resizeCanvas() {
+            canvas.width = canvas.offsetWidth;
+            canvas.height = canvas.offsetHeight;
+        }
+        window.addEventListener('resize', resizeCanvas);
+        resizeCanvas();
+
+        // System Nodes
+        const nodes = {
+            uavs: [],
+            rsus: [],
+            vehicles: []
+        };
+        const particles = []; // Task particles
+
+        // Coordinate Mapping
+        const SIM_W = 1030;
+        const SIM_H = 2060;
+        
+        function toCanvasX(simX) {
+            return (simX / SIM_W) * canvas.width;
+        }
+        
+        function toCanvasY(simY) {
+            // Invert Y because canvas 0 is top, sim 0 is bottom (or we map 2060 to top)
+            // Let's map Sim Y=0 to Canvas Bottom, Sim Y=2060 to Canvas Top
+            // Actually, usually map view is top-down. Let's assume Sim Y=0 is bottom.
+            return canvas.height - (simY / SIM_H) * canvas.height;
+        }
+
+        // Initialize static nodes (RSUs)
+        function initNodes() {
+            const w = canvas.width;
+            const h = canvas.height;
+            
+            // RSUs (Fixed positions from simulator)
+            // RSU_0: (615, 1610), RSU_1: (450, 1395), RSU_2: (615, 795), RSU_3: (450, 395)
+            const rsuData = [
+                {x: 615, y: 1610}, {x: 450, y: 1395}, {x: 615, y: 795}, {x: 450, y: 395}
+            ];
+            
+            nodes.rsus = rsuData.map((pos, i) => ({
+                x: toCanvasX(pos.x),
+                y: toCanvasY(pos.y),
+                type: 'RSU',
+                color: '#38bdf8',
+                id: i
+            }));
+
+            // UAVs (Fixed positions from simulator)
+            // UAV_0: (515, 1545), UAV_1: (515, 515)
+            const uavData = [
+                {x: 515, y: 1545}, {x: 515, y: 515}
+            ];
+            
+            nodes.uavs = uavData.map((pos, i) => ({
+                x: toCanvasX(pos.x),
+                y: toCanvasY(pos.y),
+                type: 'UAV',
+                color: '#c084fc', // Purple
+                angle: i * Math.PI,
+                id: i
+            }));
+
+            // Vehicles (Dynamic, updated via socket)
+            nodes.vehicles = [];
+            // Initial placeholders if needed, or wait for first update
+            for (let i=0; i<12; i++) {
+                 nodes.vehicles.push({
+                    x: -100, y: -100, // Off-screen initially
+                    type: 'Vehicle',
+                    color: '#facc15',
+                    id: i
+                });
+            }
+        }
+        initNodes(); // Initial setup
+        // Re-init on resize
+        window.addEventListener('resize', initNodes);
+
+        // Listen for topology updates
+        socket.on('topology_update', (data) => {
+            if (data.vehicles) {
+                // Update or create vehicles
+                data.vehicles.forEach(v => {
+                    let existing = nodes.vehicles.find(n => n.id === v.id);
+                    if (!existing) {
+                        existing = {
+                            id: v.id,
+                            type: 'Vehicle',
+                            color: '#facc15'
+                        };
+                        nodes.vehicles.push(existing);
+                    }
+                    existing.simX = v.x;
+                    existing.simY = v.y;
+                    existing.dir = v.dir;
+                    // Interpolation target could be added here for smoother animation
+                    existing.x = toCanvasX(v.x);
+                    existing.y = toCanvasY(v.y);
+                });
+            }
+        });
+
+        function drawRoads() {
+            ctx.fillStyle = 'rgba(255, 255, 255, 0.1)';
+            
+            // Main Road (Vertical at X=515, Width=30)
+            const mainX = toCanvasX(515 - 15);
+            const mainW = toCanvasX(515 + 15) - mainX;
+            ctx.fillRect(mainX, 0, mainW, canvas.height);
+            
+            // Upper Intersection (Horizontal at Y=1545, Width=30)
+            const upperY = toCanvasY(1545 + 15); // Top edge in canvas
+            const upperH = toCanvasY(1545 - 15) - upperY;
+            ctx.fillRect(0, upperY, canvas.width, upperH);
+            
+            // Lower Intersection (Horizontal at Y=515, Width=30)
+            const lowerY = toCanvasY(515 + 15);
+            const lowerH = toCanvasY(515 - 15) - lowerY;
+            ctx.fillRect(0, lowerY, canvas.width, lowerH);
+            
+            // Dashed Lines
+            ctx.strokeStyle = 'rgba(255, 255, 255, 0.3)';
+            ctx.setLineDash([5, 5]);
+            ctx.lineWidth = 1;
+            
+            // Main Center
+            ctx.beginPath();
+            ctx.moveTo(toCanvasX(515), 0);
+            ctx.lineTo(toCanvasX(515), canvas.height);
+            ctx.stroke();
+            
+            // Upper Center
+            ctx.beginPath();
+            ctx.moveTo(0, toCanvasY(1545));
+            ctx.lineTo(canvas.width, toCanvasY(1545));
+            ctx.stroke();
+            
+            // Lower Center
+            ctx.beginPath();
+            ctx.moveTo(0, toCanvasY(515));
+            ctx.lineTo(canvas.width, toCanvasY(515));
+            ctx.stroke();
+            
+            ctx.setLineDash([]);
+        }
+
+        // Animation Loop
+        function animate() {
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            const w = canvas.width;
+            const h = canvas.height;
+
+            drawRoads();
+
+            // Draw Connections (Backhaul) - Optional, maybe distracting with roads
+            // ctx.strokeStyle = 'rgba(255, 255, 255, 0.05)';
+            // ctx.lineWidth = 1;
+            // ctx.beginPath();
+            // ... (Skip RSU-RSU lines for cleaner look)
+
+            // Update & Draw UAVs
+            nodes.uavs.forEach(uav => {
+                uav.angle += 0.02;
+                // uav.x += Math.sin(uav.angle) * 0.5; // Hover effect
+                const hoverY = uav.y + Math.sin(uav.angle) * 5;
+                
+                ctx.fillStyle = uav.color;
+                ctx.beginPath();
+                ctx.arc(uav.x, hoverY, 8, 0, Math.PI*2);
+                ctx.fill();
+                // Label
+                ctx.fillStyle = '#fff';
+                ctx.font = '10px Inter';
+                ctx.fillText(`UAV_${uav.id}`, uav.x - 15, hoverY - 12);
+                
+                // Range Circle
+                ctx.strokeStyle = 'rgba(74, 222, 128, 0.1)';
+                ctx.beginPath();
+                ctx.arc(uav.x, hoverY, toCanvasX(350) - toCanvasX(0), 0, Math.PI*2); // 350m radius
+                ctx.stroke();
+            });
+
+            // Update & Draw RSUs
+            nodes.rsus.forEach(rsu => {
+                ctx.fillStyle = rsu.color;
+                ctx.beginPath();
+                ctx.rect(rsu.x - 6, rsu.y - 6, 12, 12);
+                ctx.fill();
+                ctx.fillStyle = '#fff';
+                ctx.font = '10px Inter';
+                ctx.fillText(`RSU_${rsu.id}`, rsu.x - 15, rsu.y - 12);
+            });
+
+            // Update & Draw Vehicles
+            nodes.vehicles.forEach(veh => {
+                // Position is updated via socket, just draw
+                if (veh.x === undefined) return;
+
+                ctx.fillStyle = veh.color;
+                ctx.beginPath();
+                // Draw as triangle pointing direction
+                ctx.save();
+                ctx.translate(veh.x, veh.y);
+                // veh.dir is in radians (0 = East, PI/2 = North)
+                // Canvas Y is inverted, so North is -Y.
+                // If sim dir 0 is East (X+), PI/2 is North (Y+).
+                // In canvas: 0 is Right (X+), -PI/2 is Up (Y-).
+                // So we need to negate the angle.
+                const angle = -(veh.dir || 0); 
+                ctx.rotate(angle);
+                ctx.moveTo(6, 0);
+                ctx.lineTo(-4, 4);
+                ctx.lineTo(-4, -4);
+                ctx.fill();
+                ctx.restore();
+                
+                // Label
+                // ctx.fillStyle = '#fff';
+                // ctx.font = '8px Inter';
+                // ctx.fillText(veh.id, veh.x, veh.y - 8);
+            });
+
+            // Update & Draw Particles (Tasks)
+            for(let i=particles.length-1; i>=0; i--) {
+                const p = particles[i];
+                const dx = p.targetX - p.x;
+                const dy = p.targetY - p.y;
+                const dist = Math.sqrt(dx*dx + dy*dy);
+                
+                if(dist < 5) {
+                    particles.splice(i, 1); // Arrived
+                    continue;
+                }
+                
+                p.x += (dx / dist) * p.speed;
+                p.y += (dy / dist) * p.speed;
+                
+                ctx.fillStyle = p.color;
+                ctx.beginPath();
+                ctx.arc(p.x, p.y, 3, 0, Math.PI*2);
+                ctx.fill();
+            }
+
+            requestAnimationFrame(animate);
+        }
+        animate();
+
+        // Handle Task Event
+        socket.on('task_event', (data) => {
+            // data: { type: 'local'|'rsu'|'uav', vehicle_id: 0-11, target_id: 0-N }
+            const veh = nodes.vehicles[data.vehicle_id % nodes.vehicles.length];
+            if(!veh) return;
+
+            let target = null;
+            let color = '#fff';
+
+            if(data.type === 'local') {
+                // Local processing: particle goes up slightly and fades (simulated by short target)
+                target = { x: veh.x, y: veh.y - 20 };
+                color = '#94a3b8'; // Grey
+            } else if(data.type === 'rsu') {
+                target = nodes.rsus[data.target_id % nodes.rsus.length];
+                color = '#38bdf8'; // Blue
+            } else if(data.type === 'uav') {
+                target = nodes.uavs[data.target_id % nodes.uavs.length];
+                color = '#4ade80'; // Green
+            }
+
+            if(target) {
+                particles.push({
+                    x: veh.x,
+                    y: veh.y,
+                    targetX: target.x,
+                    targetY: target.y,
+                    speed: 4 + Math.random() * 2,
+                    color: color
+                });
+            }
+        });
+
+        // --- Chart Logic (Existing) ---
         const commonLayout = {
             paper_bgcolor: 'rgba(0,0,0,0)',
             plot_bgcolor: 'rgba(0,0,0,0)',
             font: { color: '#94a3b8', family: 'Inter' },
             margin: { t: 10, b: 40, l: 50, r: 20 },
-            xaxis: { 
-                gridcolor: 'rgba(255,255,255,0.05)',
-                zerolinecolor: 'rgba(255,255,255,0.1)'
-            },
-            yaxis: { 
-                gridcolor: 'rgba(255,255,255,0.05)',
-                zerolinecolor: 'rgba(255,255,255,0.1)'
-            },
+            xaxis: { gridcolor: 'rgba(255,255,255,0.05)', zerolinecolor: 'rgba(255,255,255,0.1)' },
+            yaxis: { gridcolor: 'rgba(255,255,255,0.05)', zerolinecolor: 'rgba(255,255,255,0.1)' },
             hovermode: 'x unified',
             showlegend: true,
             legend: { orientation: 'h', y: 1.1 }
         };
 
-        // Initialize Charts
-        const rewardTrace = {
-            x: [], y: [], type: 'scatter', mode: 'lines',
-            name: 'Reward', line: { color: '#38bdf8', width: 2 },
-            fill: 'tozeroy', fillcolor: 'rgba(56, 189, 248, 0.1)'
-        };
+        const rewardTrace = { x: [], y: [], type: 'scatter', mode: 'lines', name: 'Reward', line: { color: '#38bdf8', width: 2 }, fill: 'tozeroy', fillcolor: 'rgba(56, 189, 248, 0.1)' };
         Plotly.newPlot('reward-chart', [rewardTrace], { ...commonLayout }, {responsive: true, displayModeBar: false});
 
-        const delayTrace = {
-            x: [], y: [], type: 'scatter', mode: 'lines',
-            name: 'Delay', line: { color: '#facc15', width: 2 }
-        };
+        const delayTrace = { x: [], y: [], type: 'scatter', mode: 'lines', name: 'Delay', line: { color: '#facc15', width: 2 } };
         Plotly.newPlot('delay-chart', [delayTrace], { ...commonLayout }, {responsive: true, displayModeBar: false});
 
-        const completionTrace = {
-            x: [], y: [], type: 'scatter', mode: 'lines',
-            name: 'Rate', line: { color: '#4ade80', width: 2 }
-        };
+        const completionTrace = { x: [], y: [], type: 'scatter', mode: 'lines', name: 'Rate', line: { color: '#4ade80', width: 2 } };
         Plotly.newPlot('completion-chart', [completionTrace], { ...commonLayout, yaxis: { ...commonLayout.yaxis, range: [0, 105] } }, {responsive: true, displayModeBar: false});
 
-        const cacheTrace = {
-            x: [], y: [], type: 'scatter', mode: 'lines',
-            name: 'Hit Rate', line: { color: '#c084fc', width: 2 }
-        };
+        const cacheTrace = { x: [], y: [], type: 'scatter', mode: 'lines', name: 'Hit Rate', line: { color: '#c084fc', width: 2 } };
         Plotly.newPlot('cache-chart', [cacheTrace], { ...commonLayout, yaxis: { ...commonLayout.yaxis, range: [0, 105] } }, {responsive: true, displayModeBar: false});
 
-        const energyTrace = {
-            x: [], y: [], type: 'scatter', mode: 'lines',
-            name: 'Energy', line: { color: '#f87171', width: 2 }
-        };
+        const energyTrace = { x: [], y: [], type: 'scatter', mode: 'lines', name: 'Energy', line: { color: '#f87171', width: 2 } };
         Plotly.newPlot('energy-chart', [energyTrace], { ...commonLayout }, {responsive: true, displayModeBar: false});
 
-        // Assignment Chart (Stacked Bar)
         const assignLocal = { x: [], y: [], type: 'bar', name: 'Local', marker: { color: '#94a3b8' } };
         const assignRSU = { x: [], y: [], type: 'bar', name: 'RSU', marker: { color: '#38bdf8' } };
         const assignUAV = { x: [], y: [], type: 'bar', name: 'UAV', marker: { color: '#4ade80' } };
-        
-        const assignmentLayout = { 
-            ...commonLayout, 
-            barmode: 'stack',
-            xaxis: { ...commonLayout.xaxis, title: 'Episode' },
-            yaxis: { ...commonLayout.yaxis, title: 'Task Count' }
-        };
-        Plotly.newPlot('assignment-chart', [assignLocal, assignRSU, assignUAV], assignmentLayout, {responsive: true, displayModeBar: false});
+        Plotly.newPlot('assignment-chart', [assignLocal, assignRSU, assignUAV], { ...commonLayout, barmode: 'stack', xaxis: { ...commonLayout.xaxis, title: 'Episode' }, yaxis: { ...commonLayout.yaxis, title: 'Task Count' } }, {responsive: true, displayModeBar: false});
 
-        // Data Buffers
-        let rewardHistory = [];
-
-        // Socket Events
+        // Socket Events for Metrics
         socket.on('training_update', function(data) {
-            // Update Metrics with animation
             updateMetric('current-episode', data.current_episode);
             updateMetric('latest-reward', data.latest_reward.toFixed(2));
             updateMetric('avg-reward', data.avg_reward.toFixed(2));
-            
-            if (data.latest_task_completion_rate !== undefined) {
-                document.getElementById('completion-rate').innerHTML = 
-                    (data.latest_task_completion_rate * 100).toFixed(1) + '<span class="metric-unit">%</span>';
-            }
-            if (data.latest_avg_delay !== undefined) {
-                document.getElementById('avg-delay').innerHTML = 
-                    data.latest_avg_delay.toFixed(3) + '<span class="metric-unit">s</span>';
-            }
-            if (data.latest_cache_hit_rate !== undefined) {
-                document.getElementById('cache-hit-rate').innerHTML = 
-                    (data.latest_cache_hit_rate * 100).toFixed(1) + '<span class="metric-unit">%</span>';
-            }
-            if (data.latest_total_energy !== undefined) {
-                document.getElementById('total-energy').innerHTML = 
-                    data.latest_total_energy.toFixed(0) + '<span class="metric-unit">J</span>';
-            }
-
-            // Update Progress
-            const progress = data.progress;
-            document.getElementById('progress-fill').style.width = progress + '%';
+            if (data.latest_task_completion_rate !== undefined) document.getElementById('completion-rate').innerHTML = (data.latest_task_completion_rate * 100).toFixed(1) + '<span class="metric-unit">%</span>';
+            if (data.latest_avg_delay !== undefined) document.getElementById('avg-delay').innerHTML = data.latest_avg_delay.toFixed(3) + '<span class="metric-unit">s</span>';
+            if (data.latest_cache_hit_rate !== undefined) document.getElementById('cache-hit-rate').innerHTML = (data.latest_cache_hit_rate * 100).toFixed(1) + '<span class="metric-unit">%</span>';
+            if (data.latest_total_energy !== undefined) document.getElementById('total-energy').innerHTML = data.latest_total_energy.toFixed(0) + '<span class="metric-unit">J</span>';
+            document.getElementById('progress-fill').style.width = data.progress + '%';
         });
 
         function updateMetric(id, value) {
             const el = document.getElementById(id);
             if (el.innerText !== value) {
-                el.style.opacity = 0;
-                setTimeout(() => {
-                    el.innerText = value;
-                    el.style.opacity = 1;
-                }, 200);
+                el.innerText = value;
             }
         }
 
         socket.on('chart_update', function(data) {
-            rewardHistory.push(data.reward);
-            
-            // Calculate Confidence Interval
-            let upper = null, lower = null;
-            if (rewardHistory.length >= 5) {
-                const window = Math.min(20, rewardHistory.length);
-                const recent = rewardHistory.slice(-window);
-                const mean = recent.reduce((a, b) => a + b, 0) / recent.length;
-                const variance = recent.reduce((sum, val) => sum + Math.pow(val - mean, 2), 0) / recent.length;
-                const std = Math.sqrt(variance);
-                upper = data.reward + std;
-                lower = data.reward - std;
-            }
-
-            // Update Reward Chart
-            const rewardUpdate = { x: [[data.episode]], y: [[data.reward]] };
-            if (upper !== null) {
-                // Add confidence traces if needed (simplified here to just main line for performance)
-            }
-            Plotly.extendTraces('reward-chart', rewardUpdate, [0]);
-
-            // Update Other Charts
+            Plotly.extendTraces('reward-chart', { x: [[data.episode]], y: [[data.reward]] }, [0]);
             if (data.metrics.avg_delay !== undefined) Plotly.extendTraces('delay-chart', { x: [[data.episode]], y: [[data.metrics.avg_delay]] }, [0]);
             if (data.metrics.task_completion_rate !== undefined) Plotly.extendTraces('completion-chart', { x: [[data.episode]], y: [[data.metrics.task_completion_rate * 100]] }, [0]);
             if (data.metrics.total_energy !== undefined) Plotly.extendTraces('energy-chart', { x: [[data.episode]], y: [[data.metrics.total_energy]] }, [0]);
             if (data.metrics.cache_hit_rate !== undefined) Plotly.extendTraces('cache-chart', { x: [[data.episode]], y: [[data.metrics.cache_hit_rate * 100]] }, [0]);
-            
             if (data.metrics.local_tasks_count !== undefined) {
                 Plotly.extendTraces('assignment-chart', {
                     x: [[data.episode], [data.episode], [data.episode]],
@@ -626,13 +813,8 @@ class RealtimeVisualizer:
     
     def complete(self):
         """标记训练完成"""
-        socketio.emit('training_complete', {
-            'total_episodes': data_store.current_episode,
-            'final_reward': data_store.episode_rewards[-1] if data_store.episode_rewards else 0
-        })
-        print("✅ 训练完成，可视化数据已更新")
-
-# 便捷函数
+        print("✅ 训练完成")
+    
 def create_visualizer(algorithm: str = "Unknown", total_episodes: int = 100, 
                      port: int = 5000, auto_open: bool = True) -> RealtimeVisualizer:
     """创建实时可视化器"""

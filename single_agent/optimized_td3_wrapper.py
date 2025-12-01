@@ -90,11 +90,13 @@ class OptimizedTD3Wrapper:
         num_rsus: int = 4,
         num_uavs: int = 2,
         use_central_resource: bool = True,
+        simulation_only: bool = False,
     ):
         self.num_vehicles = num_vehicles
         self.num_rsus = num_rsus
         self.num_uavs = num_uavs
         self.use_central_resource = use_central_resource
+        self.simulation_only = simulation_only
         
         # 创建优化配置
         config = create_optimized_config()
@@ -123,6 +125,12 @@ class OptimizedTD3Wrapper:
             self.central_resource_action_dim = 0
             self.action_dim = self.base_action_dim
         
+        # 如果只是仿真进程，跳过加载沉重的神经网络
+        if simulation_only:
+            self.agent = None
+            print("[OptimizedTD3] Simulation-only mode initialized (No Agent Loaded)")
+            return
+
         # 创建优化TD3智能体
         self.agent = EnhancedTD3Agent(
             state_dim=self.state_dim,
@@ -150,6 +158,10 @@ class OptimizedTD3Wrapper:
         self._queue_pressure_ema: Optional[float] = None
     
     def select_action(self, state: np.ndarray, training: bool = True) -> np.ndarray:
+        if self.agent is None:
+            # Simulation-only mode: return random action or zeros
+            # This shouldn't be called in worker process usually, as actions come from main process
+            return np.zeros(self.action_dim, dtype=np.float32)
         return self.agent.select_action(state, training=training)
     
     def store_experience(
@@ -284,9 +296,11 @@ class OptimizedTD3Wrapper:
                 state_components.extend([0.5, 0.5, 0.5, 0.0, 0.0, 0.25])  # 默认cpu_freq=5.0/20=0.25
         
         # 全局状态
+        # 🔧 修复：使用更合理的归一化因子（对齐目标值）
+        # 延迟目标 ~0.5s，能耗目标 ~5000J
         global_state = [
-            float(system_metrics.get('avg_task_delay', 0.0) / 1.0),
-            float(system_metrics.get('total_energy_consumption', 0.0) / 1000.0),
+            float(system_metrics.get('avg_task_delay', 0.0) / 0.5),  # 1.0 -> 0.5
+            float(system_metrics.get('total_energy_consumption', 0.0) / 5000.0),  # 1000.0 -> 5000.0
             float(system_metrics.get('task_completion_rate', 0.95)),
             float(system_metrics.get('cache_hit_rate', 0.85)),
             float(system_metrics.get('queue_overload_flag', 0.0)),
@@ -336,6 +350,7 @@ class OptimizedTD3Wrapper:
         actions = {}
         idx = 0
         
+        # 1. 基础动作 (Offload + RSU/UAV Selection + Control Params)
         base_segment = action[:self.base_action_dim]
         
         offload_preference = base_segment[:3]
@@ -349,10 +364,51 @@ class OptimizedTD3Wrapper:
         
         control_params = base_segment[idx:idx + 10]
         
-        actions['vehicle_agent'] = action.copy()
+        actions['vehicle_agent'] = action.copy() # 保留原始完整动作供参考
+        actions['offload_preference'] = {
+            'local': float(offload_preference[0]),
+            'rsu': float(offload_preference[1]),
+            'uav': float(offload_preference[2])
+        }
         actions['rsu_agent'] = rsu_selection
         actions['uav_agent'] = uav_selection
         actions['control_params'] = control_params
+        
+        # 2. 🔧 修复：提取中央资源动作 (Central Resource Allocation)
+        if self.use_central_resource:
+            # action的后半部分是中央资源动作
+            central_segment = action[self.base_action_dim:]
+            
+            # 确保长度匹配
+            expected_len = self.central_resource_action_dim
+            if len(central_segment) >= expected_len:
+                c_idx = 0
+                
+                # 车辆带宽分配权重 (num_vehicles)
+                bw_alloc = central_segment[c_idx:c_idx + self.num_vehicles]
+                c_idx += self.num_vehicles
+                
+                # 车辆计算资源分配权重 (num_vehicles)
+                comp_alloc = central_segment[c_idx:c_idx + self.num_vehicles]
+                c_idx += self.num_vehicles
+                
+                # RSU计算资源预留 (num_rsus)
+                rsu_alloc = central_segment[c_idx:c_idx + self.num_rsus]
+                c_idx += self.num_rsus
+                
+                # UAV计算资源预留 (num_uavs)
+                uav_alloc = central_segment[c_idx:c_idx + self.num_uavs]
+                
+                actions['central_resource'] = {
+                    'bandwidth_weights': bw_alloc,
+                    'compute_weights': comp_alloc,
+                    'rsu_reservation': rsu_alloc,
+                    'uav_reservation': uav_alloc
+                }
+            else:
+                # 维度不匹配时的回退
+                print(f"⚠️ 动作维度警告: Central segment len {len(central_segment)} < expected {expected_len}")
+                actions['central_resource'] = None
         
         return actions
 

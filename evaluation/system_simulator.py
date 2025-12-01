@@ -3779,6 +3779,18 @@ class CompleteSystemSimulator:
                 step_summary['rsu_tasks'] = step_summary.get('rsu_tasks', 0) + 1
             elif node_type == 'UAV':
                 step_summary['uav_tasks'] = step_summary.get('uav_tasks', 0) + 1
+            
+            # 🔧 记录可视化事件 (缓存命中)
+            if 'step_events' in step_summary:
+                try:
+                    v_id = int(vehicle['id'].split('_')[1])
+                    step_summary['step_events'].append({
+                        'type': node_type.lower(),
+                        'vehicle_id': v_id,
+                        'target_id': node_idx
+                    })
+                except (IndexError, ValueError):
+                    pass
             return True
 
         # 缓存未命中：计算上传开销
@@ -3849,6 +3861,18 @@ class CompleteSystemSimulator:
             step_summary['rsu_tasks'] = step_summary.get('rsu_tasks', 0) + 1
         elif node_type == 'UAV':
             step_summary['uav_tasks'] = step_summary.get('uav_tasks', 0) + 1
+        
+        # 🔧 记录可视化事件 (远程卸载)
+        if 'step_events' in step_summary:
+            try:
+                v_id = int(vehicle['id'].split('_')[1])
+                step_summary['step_events'].append({
+                    'type': node_type.lower(),
+                    'vehicle_id': v_id,
+                    'target_id': node_idx
+                })
+            except (IndexError, ValueError):
+                pass
         return True
 
     def _apply_queue_scheduling(self, node: Dict, node_type: str) -> None:
@@ -3938,6 +3962,18 @@ class CompleteSystemSimulator:
         vehicle['queue_length'] = queue_length
         
         step_summary['local_tasks'] += 1
+        
+        # 🔧 记录可视化事件
+        if 'step_events' in step_summary:
+            try:
+                v_id = int(vehicle['id'].split('_')[1])
+                step_summary['step_events'].append({
+                    'type': 'local',
+                    'vehicle_id': v_id,
+                    'target_id': 0
+                })
+            except (IndexError, ValueError):
+                pass
 
     def _record_forced_drop(self, vehicle: Dict, task: Dict, step_summary: Dict, reason: str = 'forced_drop') -> None:
         """记录因策略约束导致的任务丢弃事件
@@ -4368,12 +4404,27 @@ class CompleteSystemSimulator:
             'rsu_tasks': 0,  # RSU处理的任务数
             'uav_tasks': 0,  # UAV处理的任务数
             'local_cache_hits': 0,  # 本地缓存命中次数
-            'queue_overflow_drops': 0  # 本步因队列溢出的丢弃
+            'queue_overflow_drops': 0,  # 本步因队列溢出的丢弃
+            'step_events': [],  # 🔧 新增：用于实时可视化的事件列表
+            'vehicle_positions': [] # 🔧 新增：用于实时可视化的车辆位置
         }
 
         # 1. 更新车辆位置
         # Update vehicle positions based on movement model
         self._update_vehicle_positions()
+        
+        # 🔧 记录车辆位置供可视化使用
+        for v in self.vehicles:
+            try:
+                v_id = int(v['id'].split('_')[1])
+                step_summary['vehicle_positions'].append({
+                    'id': v_id,
+                    'x': float(v['position'][0]),
+                    'y': float(v['position'][1]),
+                    'dir': float(v.get('direction', 0.0))
+                })
+            except (IndexError, ValueError):
+                pass
 
         # 2. 生成任务并（可选）两阶段规划后分配
         # Generate new tasks for each vehicle first (batch), then optionally plan

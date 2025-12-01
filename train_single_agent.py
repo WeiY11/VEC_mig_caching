@@ -27,21 +27,6 @@ GNN Attention
 python train_single_agent.py --algorithm TD3 --episodes 200
 python train_single_agent.py --algorithm SAC --episodes 200
 
-✅ 方式1：启用所有通信增强（推荐）
-python train_single_agent.py --algorithm TD3 --episodes 200 --comm-enhancements
-✅ 方式2：单独启用某个功能
-# 只启用快衰落
-python train_single_agent.py --algorithm TD3 --episodes 200 --fast-fading
-# 只启用系统级干扰
-python train_single_agent.py --algorithm TD3 --episodes 200 --system-interference
-# 只启用动态带宽分配
-python train_single_agent.py --algorithm TD3 --episodes 200 --dynamic-bandwidth
-# 组合启用
-python train_single_agent.py --algorithm TD3 --episodes 200 --fast-fading --system-interference --dynamic-bandwidth
-
-# 如需禁用中央资源分配（不推荐，仅用于消融实验）
-python train_single_agent.py --algorithm TD3 --episodes 200 --no-central-resource
-
 🐍🖥️📚
 
 单智能体算法训练脚本
@@ -324,6 +309,25 @@ class SingleAgentTrainingEnvironment:
                 return
             setattr(rl, attr, float(value))
 
+        # Optimized defaults to strengthen dense signals and reduce reward sparsity
+        _force_override("RL_USE_DYNAMIC_REWARD_NORMALIZATION", "use_dynamic_reward_normalization", 1.0)
+        _force_override("RL_WEIGHT_LOSS_RATIO", "reward_weight_loss_ratio", 1.0)
+        _force_override("RL_WEIGHT_CACHE", "reward_weight_cache", 0.35)
+        _force_override("RL_WEIGHT_CACHE_BONUS", "reward_weight_cache_bonus", 0.8)
+        _force_override("RL_WEIGHT_CACHE_PRESSURE", "reward_weight_cache_pressure", 0.8)
+        _force_override("RL_WEIGHT_OFFLOAD_BONUS", "reward_weight_offload_bonus", 0.8)
+        _force_override("RL_WEIGHT_COMPLETION_GAP", "reward_weight_completion_gap", 0.95)
+        _force_override("RL_PENALTY_DROPPED", "reward_penalty_dropped", 0.35)
+        _force_override("RL_WEIGHT_QUEUE_OVERLOAD", "reward_weight_queue_overload", 1.2)
+        _force_override("RL_WEIGHT_REMOTE_REJECT", "reward_weight_remote_reject", 0.45)
+        _force_override("RL_LATENCY_TARGET", "latency_target", 1.6)
+        _force_override("RL_LATENCY_UPPER_TOL", "latency_upper_tolerance", 2.8)
+        _force_override("RL_ENERGY_TARGET", "energy_target", 8200.0)
+        _force_override("RL_ENERGY_UPPER_TOL", "energy_upper_tolerance", 12500.0)
+        _force_override("RL_SMOOTH_DELAY", "reward_smooth_delay_weight", 0.35)
+        _force_override("RL_SMOOTH_ENERGY", "reward_smooth_energy_weight", 0.45)
+        _force_override("RL_SMOOTH_ALPHA", "reward_smooth_alpha", 0.12)
+
         # 适度放宽奖惩权重，突出可靠性/队列信号
         _set_if_absent("RL_WEIGHT_COMPLETION_GAP", "reward_weight_completion_gap", 0.7)
         _set_if_absent("RL_PENALTY_DROPPED", "reward_penalty_dropped", 0.15, use_max=True)
@@ -366,8 +370,10 @@ class SingleAgentTrainingEnvironment:
         enforce_offload_mode: Optional[str] = None,
         fixed_offload_policy: Optional[str] = None,
         joint_controller: bool = False,
+        simulation_only: bool = False,
     ):
         self.input_algorithm = algorithm
+        self.simulation_only = simulation_only
         normalized_algorithm = algorithm.upper().replace('-', '_')
         alias_map = {
             "TD3LE": "TD3_LATENCY_ENERGY",
@@ -733,8 +739,10 @@ class SingleAgentTrainingEnvironment:
                 num_rsus,
                 num_uavs,
                 use_central_resource=self.central_resource_enabled,
+                simulation_only=self.simulation_only
             )
-            print(f"[OptimizedTD3] 使用精简优化配置 (Queue-aware Replay + GNN Attention)")
+            if not self.simulation_only:
+                print(f"[OptimizedTD3] 使用精简优化配置 (Queue-aware Replay + GNN Attention)")
         else:
             raise ValueError(f"不支持的算法: {algorithm}")
 
@@ -1099,8 +1107,15 @@ class SingleAgentTrainingEnvironment:
         
         return state
 
-    def step(self, action, state, actions_dict: Optional[Dict] = None) -> Tuple[np.ndarray, float, bool, Dict]:
+    def step(self, action, state: Optional[np.ndarray] = None, actions_dict: Optional[Dict] = None) -> Tuple[np.ndarray, float, bool, Dict]:
         """执行一步仿真，应用智能体动作到仿真器"""
+        # 🎯 如果未提供actions_dict，尝试从action分解
+        if actions_dict is None and hasattr(self.agent_env, 'decompose_action'):
+            try:
+                actions_dict = self.agent_env.decompose_action(action)
+            except Exception:
+                pass
+
         # 🎯 使用固定卸载策略（如果设置）
         if self.fixed_offload_policy is not None and actions_dict is not None:
             try:
@@ -1139,7 +1154,30 @@ class SingleAgentTrainingEnvironment:
         
         # 执行仿真步骤（传入动作）
         step_stats = self.simulator.run_simulation_step(0, sim_actions)
+        
+        # 🔧 实时可视化：发射任务事件
+        if getattr(self, 'visualizer', None) is not None:
+            step_events = step_stats.get('step_events', [])
+            for event in step_events:
+                try:
+                    self.visualizer.emit_task_event(
+                        event_type=event['type'],
+                        vehicle_id=event['vehicle_id'],
+                        target_id=event['target_id']
+                    )
+                except Exception:
+                    pass
+            
+            # 🔧 实时可视化：更新车辆位置拓扑
+            vehicle_positions = step_stats.get('vehicle_positions', [])
+            if vehicle_positions:
+                try:
+                    self.visualizer.emit_topology_update(vehicle_positions)
+                except Exception:
+                    pass
+        
         resource_state = self._collect_resource_state()
+
         
         # 收集下一步状态
         node_states = {}
@@ -1674,7 +1712,7 @@ class SingleAgentTrainingEnvironment:
         if episode_steps is not None and 'episode_steps' in self.episode_metrics:
             self.episode_metrics['episode_steps'].append(int(episode_steps))
     
-    def run_episode(self, episode: int, max_steps: Optional[int] = None) -> Dict:
+    def run_episode(self, episode: int, max_steps: Optional[int] = None, visualizer: Optional[Any] = None) -> Dict:
         """运行一个完整的训练轮次"""
         # 使用配置中的最大步数
         if max_steps is None:
@@ -1683,6 +1721,9 @@ class SingleAgentTrainingEnvironment:
         # 重置环境
         self._episode_counters_initialized = False
         state = self.reset_environment()
+        
+        # 🔧 设置可视化器
+        self.visualizer = visualizer
         
         # 🔧 保存当前episode编号
         self._current_episode = episode
@@ -1697,7 +1738,7 @@ class SingleAgentTrainingEnvironment:
         
         # PPO需要特殊处理
         if self.algorithm == "PPO":
-            return self._run_ppo_episode(episode, max_steps)
+            return self._run_ppo_episode(episode, max_steps, visualizer)
         
         for step in range(max_steps):
             # 选择动作
@@ -1750,23 +1791,8 @@ class SingleAgentTrainingEnvironment:
                 # 其他算法的默认处理
                 training_info = {'message': f'Unknown algorithm: {self.algorithm}'}
             
-            episode_info = training_info
-            
-            # 更新状态
-            state = next_state
-            episode_reward += reward
-            
-            # 检查是否结束
-            if done:
-                break
-        
-        # 记录轮次统计
+        # 🔧 修复：确保system_metrics被正确提取
         system_metrics = info.get('system_metrics', {})
-        self._record_episode_metrics(system_metrics, episode_steps=step + 1)
-        self._maybe_update_dynamic_energy_target(
-            episode,
-            float(system_metrics.get('total_energy_consumption', 0.0) or 0.0)
-        )
         
         return {
             'episode_reward': episode_reward,
@@ -1776,9 +1802,10 @@ class SingleAgentTrainingEnvironment:
             'steps': step + 1
         }
     
-    def _run_ppo_episode(self, episode: int, max_steps: int = 100) -> Dict:
+    def _run_ppo_episode(self, episode: int, max_steps: int = 100, visualizer: Optional[Any] = None) -> Dict:
         """运行PPO专用episode"""
         state = self.reset_environment()
+        self.visualizer = visualizer
         episode_reward = 0.0
         
         # 初始化变量
@@ -2189,7 +2216,7 @@ def train_single_algorithm(algorithm: str, num_episodes: Optional[int] = None, e
                           use_enhanced_cache: bool = False, disable_migration: bool = False,
                           enforce_offload_mode: Optional[str] = None, fixed_offload_policy: Optional[str] = None,
                           resume_from: Optional[str] = None, resume_lr_scale: Optional[float] = None,
-                          joint_controller: bool = False) -> Dict:
+                          joint_controller: bool = False, num_envs: int = 1) -> Dict:
     """训练单个算法
     
     Args:
@@ -2236,15 +2263,50 @@ def train_single_algorithm(algorithm: str, num_episodes: Optional[int] = None, e
     print("=" * 60)
     
     # 创建训练环境（应用额外场景覆盖）
-    training_env = SingleAgentTrainingEnvironment(
-        algorithm,
-        override_scenario=override_scenario,
-        use_enhanced_cache=use_enhanced_cache,
-        disable_migration=disable_migration,
-        enforce_offload_mode=enforce_offload_mode,
-        fixed_offload_policy=fixed_offload_policy,
-        joint_controller=joint_controller,
-    )
+    if num_envs > 1:
+        print(f"🚀 启动并行训练: {num_envs} 个环境进程")
+        from utils.vectorized_env import VectorizedSingleAgentEnvironment
+        
+        def make_env():
+            return SingleAgentTrainingEnvironment(
+                algorithm,
+                override_scenario=override_scenario,
+                use_enhanced_cache=use_enhanced_cache,
+                disable_migration=disable_migration,
+                enforce_offload_mode=enforce_offload_mode,
+                fixed_offload_policy=fixed_offload_policy,
+                joint_controller=joint_controller,
+                simulation_only=True  # 关键：子进程只跑仿真
+            )
+        
+        # 主环境用于保存模型和评估（加载完整Agent）
+        main_env = SingleAgentTrainingEnvironment(
+            algorithm,
+            override_scenario=override_scenario,
+            use_enhanced_cache=use_enhanced_cache,
+            disable_migration=disable_migration,
+            enforce_offload_mode=enforce_offload_mode,
+            fixed_offload_policy=fixed_offload_policy,
+            joint_controller=joint_controller,
+            simulation_only=False
+        )
+        
+        # 向量化环境用于收集经验
+        vec_env = VectorizedSingleAgentEnvironment([make_env for _ in range(num_envs)])
+        training_env = main_env  # 保持接口兼容，主要操作main_env
+        print(f"✅ 并行环境初始化完成")
+    else:
+        training_env = SingleAgentTrainingEnvironment(
+            algorithm,
+            override_scenario=override_scenario,
+            use_enhanced_cache=use_enhanced_cache,
+            disable_migration=disable_migration,
+            enforce_offload_mode=enforce_offload_mode,
+            fixed_offload_policy=fixed_offload_policy,
+            joint_controller=joint_controller,
+        )
+        vec_env = None
+
     canonical_algorithm = training_env.algorithm
     if canonical_algorithm != algorithm:
         print(f"⚙️  规范化算法标识: {canonical_algorithm}")
@@ -2347,10 +2409,74 @@ def train_single_algorithm(algorithm: str, num_episodes: Optional[int] = None, e
         episode_start_time = time.time()
         
         # 运行训练轮次
-        episode_result = training_env.run_episode(episode)
-        
-        # 记录训练数据
-        training_env.episode_rewards.append(episode_result['avg_reward'])
+        if vec_env is not None:
+            # 并行训练逻辑
+            # 1. 重置所有环境
+            states = vec_env.reset()
+            episode_rewards = np.zeros(num_envs)
+            episode_steps_count = np.zeros(num_envs)
+            active_envs = np.ones(num_envs, dtype=bool)
+            infos = []
+            
+            # 2. 步进循环 (以max_steps为准)
+            max_steps = config.experiment.max_steps_per_episode
+            
+            for step in range(max_steps):
+                # 批量选择动作
+                # 注意：main_env.agent_env 必须加载了 Agent
+                # states: (num_envs, state_dim)
+                # actions: (num_envs, action_dim)
+                actions = training_env.agent_env.select_action(states, training=True)
+                
+                # 批量执行动作
+                # vec_env.step 接受 actions 数组，返回 (next_states, rewards, dones, infos)
+                next_states, rewards, dones, step_infos = vec_env.step(actions)
+                
+                # 更新episode统计
+                episode_rewards[active_envs] += rewards[active_envs]
+                episode_steps_count[active_envs] += 1
+                infos.extend([info for i, info in enumerate(step_infos) if active_envs[i]])
+                
+                # 标记已完成的环境
+                active_envs = active_envs & ~dones
+                
+                # 更新Agent（使用主环境的Agent）
+                training_env.agent_env.update()
+                
+                # 更新状态
+                states = next_states
+                
+                if not np.any(active_envs):
+                    break
+            
+            # 记录平均奖励
+            avg_ep_reward = np.mean(episode_rewards)
+            
+            # 聚合多环境的system_metrics
+            aggregated_metrics = {}
+            if len(infos) > 0 and 'system_metrics' in infos[0]:
+                keys = infos[0]['system_metrics'].keys()
+                for key in keys:
+                    values = [info['system_metrics'].get(key, 0) for info in infos]
+                    try:
+                        aggregated_metrics[key] = np.mean([float(v) for v in values])
+                    except:
+                        aggregated_metrics[key] = values[0]
+            
+            episode_result = {
+                'avg_reward': avg_ep_reward,
+                'steps': int(np.mean(episode_steps_count)),
+                'system_metrics': aggregated_metrics,
+                'step_stats': infos[0].get('step_stats', {}) if len(infos) > 0 else {}
+            }
+            
+            # 记录到主环境用于统计
+            training_env.episode_rewards.append(avg_ep_reward)
+            
+        else:
+            # 原始串行训练
+            episode_result = training_env.run_episode(episode, visualizer=visualizer)
+            training_env.episode_rewards.append(episode_result['avg_reward'])
         
         episode_steps = episode_result.get('steps', config.experiment.max_steps_per_episode)
 
@@ -2373,13 +2499,15 @@ def train_single_algorithm(algorithm: str, num_episodes: Optional[int] = None, e
         training_env.performance_tracker['recent_completion'].update(system_metrics.get('task_completion_rate', 0))
         # 🌐 更新实时可视化
         if visualizer:
+            step_stats = episode_result.get('step_stats', {}) # Assuming step_stats is part of episode_result
             vis_metrics = {
                 'avg_delay': float(system_metrics.get('avg_task_delay', 0)),
                 'total_energy': float(system_metrics.get('total_energy_consumption', 0)),
                 'task_completion_rate': float(system_metrics.get('task_completion_rate', 0)),
                 'cache_hit_rate': float(system_metrics.get('cache_hit_rate', 0)),
                 'data_loss_ratio_bytes': float(system_metrics.get('data_loss_ratio_bytes', 0)),
-                'migration_success_rate': float(system_metrics.get('migration_success_rate', 0))
+                'migration_success_rate': float(system_metrics.get('migration_success_rate', 0)),
+                'vehicle_positions': step_stats.get('vehicle_positions', []) # 🔧 传递车辆位置
             }
             visualizer.update(episode, float(episode_result['avg_reward']), vis_metrics)
         
@@ -3000,6 +3128,8 @@ def main():
                         help='从已有模型 (.pth 或目录前缀) 继续训练，复用已学策略')
     parser.add_argument('--resume-lr-scale', type=float, default=None,
                         help='Warm-start 后的学习率缩放系数 (默认0.5，设为1可保留原值)')
+    parser.add_argument('--num-envs', type=int, default=4,
+                        help='并行训练环境数量 (默认: 4)')
     
     # 🆕 通信模型优化参数（3GPP标准增强）
     parser.add_argument('--comm-enhancements', action='store_true',
@@ -3169,7 +3299,8 @@ def main():
             fixed_offload_policy=getattr(args, 'fixed_offload_policy', None),  # 🎯 固定卸载策略
             silent_mode=args.silent_mode,
             resume_from=args.resume_from,
-            resume_lr_scale=args.resume_lr_scale
+            resume_lr_scale=args.resume_lr_scale,
+            num_envs=args.num_envs
         )
     else:
         print("请指定 --algorithm 或使用 --compare 标志")

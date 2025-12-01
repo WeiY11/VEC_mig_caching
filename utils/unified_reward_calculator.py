@@ -211,7 +211,7 @@ class UnifiedRewardCalculator:
         # 设置奖励裁剪范围，防止奖励值过大或过小
         # 成本最小化框架：所有算法统一使用负奖励范围
         # 奖励值越接近0表示成本越低（性能越好）
-        self.reward_clip_range = (-10.0, 0.0)
+        self.reward_clip_range = (-50.0, 0.0)
 
         print(f"[OK] Unified reward calculator ({self.algorithm})")
         print(
