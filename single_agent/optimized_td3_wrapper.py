@@ -33,12 +33,12 @@ from .common_state_action import (
 def create_optimized_config() -> EnhancedTD3Config:
     """创建精简优化配置 - ✨ 使用最新GAT优化
     
-    🔧 2024-12-02 v3修复：增强探索+学习率优化
+    🔧 2024-12-02 v7修复：1000 episode完全无学习
     核心修复：
-    1. 增加初始探索噪声 0.15 → 0.25 (更强的初始探索)
-    2. 加快噪声衰减 0.9995 → 0.999 (更快收敛)
-    3. 提高Critic学习率 3e-4 → 5e-4 (加快值函数学习)
-    4. 增加梯度更新次数
+    1. 缩短warmup 3000 → 500 (更快开始学习)
+    2. 降低初始探索噪声 0.25 → 0.15 (减少早期随机性)
+    3. 加快噪声衰减 0.999 → 0.997 (更快收敛)
+    4. 提高学习率 1e-4 → 3e-4 (加快梯度更新)
     """
     return EnhancedTD3Config(
         # ✅ 核心优化1：队列感知回放
@@ -60,22 +60,24 @@ def create_optimized_config() -> EnhancedTD3Config:
         use_entropy_reg=False,
         use_model_based_rollout=False,
 
-        # 🔧 基础参数优化
-        hidden_dim=384,
-        batch_size=512,
-        buffer_size=100000,
-        warmup_steps=3000,    # 🔧 5000 → 3000 (更快开始学习)
+        # 🔧 v10基础参数优化 - 更大网络容量
+        hidden_dim=1024,     # 🔧 v10: 768 → 1024
+        batch_size=512,      # 🔧 v10: 256 → 512 (更稳定)
+        buffer_size=300000,  # 🔧 v10: 200000 → 300000
+        warmup_steps=100,    # 🔧 v10: 200 → 100 (更快开始)
 
-        # 🔧 学习率优化 - 加快Critic学习
-        actor_lr=1e-4,
-        critic_lr=5e-4,       # 🔧 3e-4 → 5e-4 (加快Q网络学习)
+        # 🔧 v10学习率优化 - 更激进的学习率
+        actor_lr=3e-3,       # 🔧 v10: 1e-3 → 3e-3
+        critic_lr=5e-3,      # 🔧 v10: 2e-3 → 5e-3
 
-        # 🔧 探索噪声优化 - 更强的初始探索，更快的衰减
-        exploration_noise=0.25,   # 🔧 0.15 → 0.25 (更强的初始探索)
-        noise_decay=0.999,        # 🔧 0.9995 → 0.999 (更快衰减)
-        min_noise=0.03,           # 🔧 0.02 → 0.03 (保持最低探索)
-        target_noise=0.05,        # 🔧 0.03 → 0.05 (适当的目标噪声)
-        noise_clip=0.15,          # 🔧 0.1 → 0.15 (增大裁剪范围)
+        # 🔧 v12探索噪声优化 - 降低噪声减少方差
+        # 问题：0.35噪声导致训练不稳定，奖励震荡
+        # 解决：降低到0.15，加快衰减到0.99
+        exploration_noise=0.15,   # 🔧 v12: 0.35 → 0.15 (大幅降低)
+        noise_decay=0.99,         # 🔧 v12: 0.9998 → 0.99 (加快衰减)
+        min_noise=0.02,           # 🔧 v12: 0.10 → 0.02 (更低最小噪声)
+        target_noise=0.08,        # 🔧 v12: 0.15 → 0.08 (降低目标噪声)
+        noise_clip=0.15,          # 🔧 v12: 0.30 → 0.15 (降低噪声裁剪)
 
         # 🔧 奖励归一化
         reward_norm_beta=0.995,
@@ -123,10 +125,26 @@ class OptimizedTD3Wrapper:
             self.central_state_dim = 0
             self.state_dim = base_state_dim
         
-        # 动作空间配置 - 使用统一常量
+        # 动作空间配置 - 支持压缩模式
         import os
         self.simplified_action = os.environ.get('SIMPLIFIED_ACTION', '0').strip() in {'1', 'true', 'True'}
-        if self.simplified_action:
+        
+        # 🔧 v11: 压缩动作空间模式 - 26维 → 10维
+        # 默认启用压缩模式以加速收敛
+        self.compressed_action = os.environ.get('COMPRESSED_ACTION', '1').strip() in {'1', 'true', 'True'}
+        
+        if self.compressed_action:
+            # 压缩动作空间 (10维):
+            # [0:2] 卸载倾向 (edge_pref, local_pref) - 通过softmax展开为3维
+            # [2]   RSU偏好 - 广播到所有RSU
+            # [3]   UAV偏好 - 广播到所有UAV
+            # [4:8] 核心控制 (缓存激进度, 迁移阈值, 负载均衡, 能效权重)
+            # [8:10] 资源策略 (计算优先级, 带宽优先级)
+            self.compressed_base_dim = 8  # 基础压缩动作 (不含中央资源)
+            self.compressed_central_dim = 2  # 压缩中央资源动作
+            self.base_action_dim = self.compressed_base_dim
+            print(f"[OptimizedTD3] 🚀 压缩动作空间已启用 (10维 vs 原26维, 减少60%)")
+        elif self.simplified_action:
             self.base_action_dim = 8  # 简化版：只保留核心控制
             print("[OptimizedTD3] 🔧 简化动作空间已启用 (8维基础动作)")
         else:
@@ -137,7 +155,12 @@ class OptimizedTD3Wrapper:
             # 中央资源分配模式
             self.aggregated_central = os.environ.get('AGGREGATED_CENTRAL', '1').strip() in {'1', 'true', 'True'}
             
-            if self.aggregated_central:
+            if self.compressed_action:
+                # 🔧 v11: 压缩中央资源动作 (2维)
+                self.num_vehicle_groups = CENTRAL_VEHICLE_GROUPS
+                self.central_resource_action_dim = self.compressed_central_dim  # 2维
+                print(f"[OptimizedTD3] 🚀 压缩中央资源模式 ({self.central_resource_action_dim}维)")
+            elif self.aggregated_central:
                 # 聚合模式：使用统一常量
                 self.num_vehicle_groups = CENTRAL_VEHICLE_GROUPS
                 self.central_resource_action_dim = CENTRAL_VEHICLE_GROUPS + CENTRAL_RSU_AGGREGATE + CENTRAL_UAV_AGGREGATE
@@ -325,12 +348,11 @@ class OptimizedTD3Wrapper:
                 state_components.extend([0.5, 0.5, 0.5, 0.0, 0.0])  # 默认5维（高度维度已包含）
         
         # 全局状态
-        # 🔧 P0修复：归一化因子必须与UnifiedRewardCalculator严格对齐
-        # 从配置读取目标值，确保状态归一化与奖励计算使用相同基准
-        # 🔧 2024-12-02 修复：默认值对齐实际系统性能
+        # 🔧 v12修复：状态归一化与奖励归一化严格对齐
+        # 统一使用降低的目标值，让实际值产生更大差异
         from config import config
-        latency_target = float(getattr(config.rl, 'latency_target', 1.5))     # 🔧 0.4 → 1.5 (对齐实际延迟)
-        energy_target = float(getattr(config.rl, 'energy_target', 1000.0))    # 🔧 3500 → 1000 (对齐实际能耗)
+        latency_target = float(getattr(config.rl, 'latency_target', 0.3))     # 🔧 v12: 0.3 (降低目标)
+        energy_target = float(getattr(config.rl, 'energy_target', 200.0))     # 🔧 v12: 200 (降低目标)
         
         global_state = [
             float(system_metrics.get('avg_task_delay', 0.0) / max(latency_target, 1e-6)),
@@ -388,8 +410,12 @@ class OptimizedTD3Wrapper:
         return actions
     
     def decompose_action(self, action: np.ndarray) -> Dict:
-        """分解动作"""
+        """分解动作 - 支持压缩动作空间解压"""
         actions = {}
+        
+        # 🔧 v11: 压缩动作空间解压
+        if self.compressed_action:
+            return self._decompose_compressed_action(action)
         
         # 1. 基础动作 (Offload + RSU/UAV Selection + Control Params)
         base_segment = action[:self.base_action_dim]
@@ -493,6 +519,140 @@ class OptimizedTD3Wrapper:
             else:
                 print(f"⚠️ 动作维度警告: Central segment len {len(central_segment)} < expected {expected_len}")
                 actions['central_resource'] = None
+        
+        return actions
+
+    def _decompose_compressed_action(self, action: np.ndarray) -> Dict:
+        """🔧 v11: 解压缩压缩动作 (10维 → 完整动作字典)
+        
+        压缩动作结构 (10维):
+            [0:2]  卸载倾向: [edge_pref, local_pref]
+                   → 通过softmax展开为 [local, rsu, uav]
+            [2]    RSU偏好: 主动级在中心RSU
+            [3]    UAV偏好: UAV整体使用倾向
+            [4:8]  核心控制: [缓存激进度, 迁移阈值, 负载均衡, 能效权重]
+            [8:10] 资源策略: [计算优先级, 带宽优先级]
+        """
+        actions = {}
+        
+        # 确保动作长度足够
+        if len(action) < self.action_dim:
+            action = np.pad(action, (0, self.action_dim - len(action)), mode='constant')
+        
+        # ========== 1. 解压基础动作 (8维) ==========
+        
+        # [0:2] 卸载倾向 → 展开为3维
+        edge_pref = float(action[0])  # 边缘卸载偏好 (RSU+UAV)
+        local_pref = float(action[1])  # 本地处理偏好
+        
+        # 将 [edge_pref, local_pref] 转换为 [local, rsu, uav] 分布
+        # 使用tanh输出。edge_pref > 0 倾向卸载，< 0 倾向本地
+        offload_raw = np.array([
+            local_pref,           # 本地偏好
+            edge_pref * 0.6,      # RSU偏好 (边缘的主要部分)
+            edge_pref * 0.4       # UAV偏好 (边缘的辅助部分)
+        ], dtype=np.float32)
+        offload_preference = softmax(offload_raw)
+        
+        # [2] RSU偏好 → 广播到所有RSU (加入位置偏移创造差异)
+        rsu_center_pref = float(action[2])
+        rsu_selection = np.zeros(self.num_rsus, dtype=np.float32)
+        for r in range(self.num_rsus):
+            # 距离中心RSU越远，权重越低
+            distance_factor = 1.0 - 0.2 * abs(r - self.num_rsus // 2)
+            rsu_selection[r] = rsu_center_pref * distance_factor
+        
+        # [3] UAV偏好 → 广播到所有UAV
+        uav_pref = float(action[3])
+        uav_selection = np.full(self.num_uavs, uav_pref, dtype=np.float32)
+        
+        # [4:8] 核心控制参数 → 展开到10维
+        core_control = action[4:8] if len(action) > 4 else np.zeros(4)
+        control_params = np.zeros(10, dtype=np.float32)
+        # 映射关系:
+        # core[0]=缓存激进度 → ctrl[0]缓存激进度 + ctrl[3]协作缓存权重
+        # core[1]=迁移阈值   → ctrl[4]迁移阈值 + ctrl[5]迁移成本权重
+        # core[2]=负载均衡   → ctrl[7]负载均衡权重 + ctrl[8]队列感知
+        # core[3]=能效权重   → ctrl[9]能效权重
+        if len(core_control) >= 4:
+            control_params[0] = float(core_control[0])  # 缓存激进度
+            control_params[1] = float(core_control[0]) * 0.5  # 驱逐阈值(关联)
+            control_params[2] = 0.0  # 本地缓存优先级(默认)
+            control_params[3] = float(core_control[0]) * 0.5  # 协作缓存权重
+            control_params[4] = float(core_control[1])  # 迁移阈值
+            control_params[5] = float(core_control[1]) * 0.5  # 迁移成本权重
+            control_params[6] = 0.0  # 迁移紧迫因子(默认)
+            control_params[7] = float(core_control[2])  # 负载均衡权重
+            control_params[8] = float(core_control[2]) * 0.5  # 队列感知因子
+            control_params[9] = float(core_control[3])  # 能效权重
+        
+        # ========== 2. 构建动作字典 ==========
+        actions['vehicle_agent'] = action.copy()
+        actions['offload_preference'] = {
+            'local': float(offload_preference[0]),
+            'rsu': float(offload_preference[1]),
+            'uav': float(offload_preference[2])
+        }
+        actions['rsu_agent'] = rsu_selection
+        actions['uav_agent'] = uav_selection
+        actions['control_params'] = control_params
+        
+        # 解析控制参数为语义化字典
+        actions['cache_params'] = {
+            'aggressiveness': float(control_params[0]),
+            'eviction_threshold': float(control_params[1]),
+            'priority_local': float(control_params[2]),
+            'collaborative_weight': float(control_params[3]),
+        }
+        actions['migration_params'] = {
+            'threshold': float(control_params[4]),
+            'cost_weight': float(control_params[5]),
+            'urgency_factor': float(control_params[6]),
+        }
+        actions['joint_params'] = {
+            'load_balance_weight': float(control_params[7]),
+            'queue_aware_factor': float(control_params[8]),
+            'energy_efficiency_weight': float(control_params[9]),
+        }
+        
+        # ========== 3. 解压中央资源动作 (2维) ==========
+        if self.use_central_resource:
+            # [8:10] 资源策略 → 展开为完整资源分配
+            resource_segment = action[self.compressed_base_dim:self.compressed_base_dim + self.compressed_central_dim]
+            
+            compute_priority = float(resource_segment[0]) if len(resource_segment) > 0 else 0.0
+            bandwidth_priority = float(resource_segment[1]) if len(resource_segment) > 1 else 0.0
+            
+            # 根据优先级生成资源分配
+            # 计算优先级高 → 更多资源分配给高计算需求的节点
+            # 带宽优先级高 → 更多带宽分配给高通信需求的节点
+            
+            # 生成车辆分组权重 (4组)
+            bw_alloc = np.zeros(self.num_vehicles, dtype=np.float32)
+            comp_alloc = np.zeros(self.num_vehicles, dtype=np.float32)
+            vehicles_per_group = self.num_vehicles // 4
+            
+            for g in range(4):
+                start_v = g * vehicles_per_group
+                end_v = min(start_v + vehicles_per_group, self.num_vehicles)
+                # 组权重基于优先级和组索引
+                group_compute_w = compute_priority * (1.0 - 0.1 * g)
+                group_bw_w = bandwidth_priority * (1.0 - 0.1 * g)
+                bw_alloc[start_v:end_v] = group_bw_w
+                comp_alloc[start_v:end_v] = group_compute_w
+            
+            # RSU和UAV资源分配
+            rsu_alloc = np.full(self.num_rsus, compute_priority * 0.8, dtype=np.float32)
+            uav_alloc = np.full(self.num_uavs, compute_priority * 0.6, dtype=np.float32)
+            
+            actions['central_resource'] = {
+                'bandwidth_weights': softmax(bw_alloc + 1e-6),
+                'compute_weights': softmax(comp_alloc + 1e-6),
+                'rsu_reservation': softmax(rsu_alloc + 1e-6),
+                'uav_reservation': softmax(uav_alloc + 1e-6)
+            }
+        else:
+            actions['central_resource'] = None
         
         return actions
 

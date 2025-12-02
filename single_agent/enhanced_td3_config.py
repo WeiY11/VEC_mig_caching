@@ -20,27 +20,27 @@ class EnhancedTD3Config:
     """增强型TD3配置 - 集成5项高级优化"""
     
     # ========== 基础TD3参数 ==========
-    # 网络结构
-    hidden_dim: int = 512
-    actor_lr: float = 2e-4
-    critic_lr: float = 3e-4
-    graph_embed_dim: int = 128
+    # 🔧 v10优化：大幅增加网络容量 + 更激进学习率
+    hidden_dim: int = 1024          # 🔧 v10: 768 → 1024
+    actor_lr: float = 3e-3          # 🔧 v10: 1e-3 → 3e-3 (更激进)
+    critic_lr: float = 5e-3         # 🔧 v10: 2e-3 → 5e-3 (更激进)
+    graph_embed_dim: int = 384      # 🔧 v10: 256 → 384
     
     # 训练参数
-    batch_size: int = 512  # 🔧 P1修复：提高 384 → 512
-    buffer_size: int = 100000
-    tau: float = 0.005
-    gamma: float = 0.99
+    batch_size: int = 512  # 🔧 v10: 256 → 512 (更大batch更稳定)
+    buffer_size: int = 300000  # 🔧 v10: 200000 → 300000
+    tau: float = 0.005          # 🔧 v10: 0.01 → 0.005 (更慢更新更稳定)
+    gamma: float = 0.99         # 🔧 v10: 0.98 → 0.99 (更长视野)
     
     # TD3特有
     policy_delay: int = 2
     target_noise: float = 0.05
     noise_clip: float = 0.2
     
-    # 探索参数
-    exploration_noise: float = 0.25
-    noise_decay: float = 0.997  # 🔧 P1修复：加快衰减 0.9993 → 0.997
-    min_noise: float = 0.05
+    # 探索参数 - 🔧 v10优化
+    exploration_noise: float = 0.35  # 🔧 v10: 0.30 → 0.35 (更高初始噪声)
+    noise_decay: float = 0.9998      # 🔧 v10: 0.9995 → 0.9998 (慢衰减)
+    min_noise: float = 0.10          # 🔧 v10: 0.08 → 0.10 (更高最小噪声)
     
     # 梯度裁剪
     gradient_clip_norm: float = 0.5
@@ -110,8 +110,8 @@ class EnhancedTD3Config:
     beta_increment: float = 5e-6  # beta增长率
     
     # ========== 其他 ==========
-    warmup_steps: int = 500  # 🔧 P1修复：缩短预热 2000 → 500
-    update_freq: int = 2  # 更新频率
+    warmup_steps: int = 200  # 🔧 v9: 500 → 200 (更快开始学习)
+    update_freq: int = 1     # 🔧 v9: 2 → 1 (每步都更新)
     device: str = 'cuda'  # 设备
     
     # 后期稳定策略

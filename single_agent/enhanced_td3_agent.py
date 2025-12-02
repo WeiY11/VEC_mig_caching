@@ -96,13 +96,23 @@ class EnhancedTD3Agent:
             actor_input_dim = self.graph_encoder.output_dim
         
         # Actor主网络（不再需要手动添加central_state_dim）
-        # 🎯 修复: 直接使用graph_encoder的输出维度
+        # 🔧 v10优化: 5层深度网络 + Residual风格 + 更大容量
+        # 关键变化：增加网络深度和宽度，提升表达能力
         self.actor = nn.Sequential(
             nn.Linear(actor_input_dim, config.hidden_dim),
-            nn.ReLU(),
+            nn.LayerNorm(config.hidden_dim),
+            nn.GELU(),  # 🔧 v10: ReLU → GELU (更平滑梯度)
+            nn.Dropout(0.05),  # 🔧 v10: 轻微dropout防止过拟合
             nn.Linear(config.hidden_dim, config.hidden_dim),
-            nn.ReLU(),
-            nn.Linear(config.hidden_dim, action_dim),
+            nn.LayerNorm(config.hidden_dim),
+            nn.GELU(),
+            nn.Linear(config.hidden_dim, config.hidden_dim),  # 🔧 v10: 第3层
+            nn.LayerNorm(config.hidden_dim),
+            nn.GELU(),
+            nn.Linear(config.hidden_dim, config.hidden_dim // 2),  # 🔧 v10: 第4层
+            nn.LayerNorm(config.hidden_dim // 2),
+            nn.GELU(),
+            nn.Linear(config.hidden_dim // 2, action_dim),  # 🔧 v10: 第5层
             nn.Tanh(),
         ).to(self.device)
         
@@ -138,6 +148,39 @@ class EnhancedTD3Agent:
             lr=config.actor_lr
         )
         self.critic_optimizer = optim.Adam(self.critic.parameters(), lr=config.critic_lr)
+        
+        # 🔧 v10: 添加带预热的学习率调度器
+        self.use_lr_scheduler = True
+        self.warmup_epochs = 50  # 预热50个episode
+        
+        # 使用带预热的余弦退火
+        self.actor_scheduler = optim.lr_scheduler.CosineAnnealingLR(
+            self.actor_optimizer, T_max=1000, eta_min=1e-5
+        )
+        self.critic_scheduler = optim.lr_scheduler.CosineAnnealingLR(
+            self.critic_optimizer, T_max=1000, eta_min=2e-5
+        )
+        
+        # 预热调度器
+        self.actor_warmup = optim.lr_scheduler.LinearLR(
+            self.actor_optimizer, start_factor=0.1, end_factor=1.0, total_iters=self.warmup_epochs
+        )
+        self.critic_warmup = optim.lr_scheduler.LinearLR(
+            self.critic_optimizer, start_factor=0.1, end_factor=1.0, total_iters=self.warmup_epochs
+        )
+        
+        # 组合调度器：预热 + 余弦退火
+        self.actor_combined_scheduler = optim.lr_scheduler.SequentialLR(
+            self.actor_optimizer,
+            schedulers=[self.actor_warmup, self.actor_scheduler],
+            milestones=[self.warmup_epochs]
+        )
+        self.critic_combined_scheduler = optim.lr_scheduler.SequentialLR(
+            self.critic_optimizer,
+            schedulers=[self.critic_warmup, self.critic_scheduler],
+            milestones=[self.warmup_epochs]
+        )
+        print(f"[EnhancedTD3] 🔧 v10: 学习率调度器已启用 (预热{self.warmup_epochs}epochs + 余弦退火)")
         
         # ========== 熵正则化 ==========
         if config.use_entropy_reg:
@@ -219,7 +262,9 @@ class EnhancedTD3Agent:
         self.alpha_values = []
 
         # ========== 奖励归一化与收敛监测 ==========
-        self.use_reward_norm = bool(getattr(config, "use_reward_normalization", False))
+        # 🔧 v8修复: 强制禁用运行时奖励归一化，防止信号被压缩
+        # 问题：EMA归一化会将奖励差异压缩到极小范围，导致无法学习
+        self.use_reward_norm = False  # 🔧 强制禁用
         self.reward_norm_beta = float(getattr(config, "reward_norm_beta", 0.996))
         self.reward_norm_clip = float(getattr(config, "reward_norm_clip", 6.0))
         self.reward_mean = 0.0
@@ -249,22 +294,6 @@ class EnhancedTD3Agent:
             return self.log_alpha.exp().item()
         return 0.0
     
-
-    
-    def _clone_network(self, network: nn.Module) -> nn.Module:
-        """克隆网络用于创建target网络"""
-        import copy
-        clone = copy.deepcopy(network)
-        clone.to(self.device)
-        return clone
-    
-    @property
-    def alpha(self) -> float:
-        """获取当前熵温度参数"""
-        if self.use_entropy_reg:
-            return self.log_alpha.exp().item()
-        return 0.0
-    
     def select_action(self, state: np.ndarray, training: bool = True) -> np.ndarray:
         """选择动作
         
@@ -275,7 +304,7 @@ class EnhancedTD3Agent:
             state: 状态向量（已包含中央资源状态）
             training: 是否训练模式
         
-        Returns:
+        Returns：
             action: 动作向量
         """
         # 🧊 预热阶段：使用完全随机动作，确保早期探索充分
@@ -310,17 +339,13 @@ class EnhancedTD3Agent:
         return action
 
     def _normalize_reward_value(self, reward: float) -> float:
-        """运行时奖励归一化，降低高方差对TD误差的冲击。"""
-        if not self.use_reward_norm:
-            return float(reward)
-        r = float(reward)
-        beta = self.reward_norm_beta
-        delta = r - self.reward_mean
-        self.reward_mean = beta * self.reward_mean + (1 - beta) * r
-        self.reward_var = beta * self.reward_var + (1 - beta) * (delta ** 2)
-        std = max(self.reward_var ** 0.5, 1e-3)
-        norm_r = (r - self.reward_mean) / std
-        return float(np.clip(norm_r, -self.reward_norm_clip, self.reward_norm_clip))
+        """运行时奖励归一化 - 🔧 v8修复：强制禁用
+        
+        禁用原因：EMA归一化会压缩奖励信号差异，导致策略无法区分好坏动作。
+        在1000-2000 episode测试中观察到奖励始终在[-0.85, -0.70]范围波动。
+        """
+        # 🔧 v8: 直接返回原始奖励，不做归一化
+        return float(reward)
 
     def set_episode_count(self, episode: int, recent_reward: float = None):
         """让外层训练器传入episode编号，便于噪声退火/收敛检测。"""
@@ -440,6 +465,13 @@ class EnhancedTD3Agent:
             self.exploration_noise * self.config.noise_decay
         )
         training_info['exploration_noise'] = self.exploration_noise
+        
+        # 🔧 v10: 更新组合学习率调度器
+        if hasattr(self, 'use_lr_scheduler') and self.use_lr_scheduler:
+            self.actor_combined_scheduler.step()
+            self.critic_combined_scheduler.step()
+            training_info['actor_lr'] = self.actor_optimizer.param_groups[0]['lr']
+            training_info['critic_lr'] = self.critic_optimizer.param_groups[0]['lr']
         
         return training_info
     
