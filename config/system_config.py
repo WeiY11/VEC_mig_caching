@@ -207,9 +207,9 @@ class RLConfig:
         self.state_dim = 20
         self.action_dim = 10
         self.hidden_dim = 256
-        self.lr = 0.0003
-        self.actor_lr = 0.0003
-        self.critic_lr = 0.0003
+        self.lr = 0.0001  # 🔧 0.0003 → 0.0001 (降低学习率，提高稳定性)
+        self.actor_lr = 0.0001  # 🔧 0.0003 → 0.0001
+        self.critic_lr = 0.0001  # 🔧 0.0003 → 0.0001
         self.gamma = 0.995  # Adjusted for 0.1 s slots (~sqrt of 0.99)
         self.tau = 0.005
         self.batch_size = 256          # 提高批次大小（128→256）提高样本效率
@@ -217,9 +217,9 @@ class RLConfig:
         self.noise_std = 0.05          # 降低噪声标准差
         self.policy_delay = 2
         self.noise_clip = 0.3           # 降低噪声裁剪
-        self.exploration_noise = 0.1   # 初始探索噪声（将通过衰减降低）
-        self.policy_noise = 0.1         # 降低策略噪声
-        self.target_noise = 0.1         # 降低目标噪声
+        self.exploration_noise = 0.05   # 🔧 0.1 → 0.05 (大幅降低初始噪声)
+        self.policy_noise = 0.05         # 🔧 0.1 → 0.05 (降低策略噪声)
+        self.target_noise = 0.05         # 🔧 0.1 → 0.05 (降低目标噪声)
         self.update_freq = 1
         self.buffer_size = 200000      # 与memory_size保持一致
         self.warmup_steps = 1000
@@ -230,48 +230,57 @@ class RLConfig:
         self.min_lr = 0.00005          # 最小学习率
         
         # 🆕 噪声衰减策略（提高后期稳定性）
-        self.noise_decay = 0.998       # 每轮噪声衰减率
-        self.min_noise = 0.01          # 最小探索噪声
+        self.noise_decay = 0.99       # 🔧 0.995 → 0.99 (加快衰减，更快减少震荡)
+        self.min_noise = 0.005         # 🔧 0.01 → 0.005 (降低最小噪声)
         
-        # 🎯 优化后奖励权重：平衡核心成本与辅助项
-        # 🔧 修复：降低辅助项权重，避免掩盖核心成本（时延+能耗）
-        self.reward_weight_delay = 0.5  # 时延权重（核心）- 从3.0大幅降低
-        self.reward_weight_energy = 0.3  # 能耗权重（核心）- 从2.0大幅降低
-        self.reward_penalty_dropped = 0.01  # 丢弃惩罚（轻量）- 从0.02降低
-        self.completion_target = 0.88  # 务实目标（高负载合理完成率）
-        self.reward_weight_completion_gap = 0.1  # 完成率缺口惩罚（降低）- 从0.3降低
-        self.reward_weight_loss_ratio = 0.1  # 数据丢失惩罚（大幅降低）- 从0.5降低
-        self.cache_pressure_threshold = 0.9  # 缓存利用率软阈值（允许更高占用）
-        self.reward_weight_cache_pressure = 0.1  # 缓存压力惩罚（降低）
-        self.reward_weight_cache_bonus = 0.5  # 命中奖励（降低）
-        self.reward_weight_queue_overload = 0.05  # 队列过载惩罚（降低）
+        # 🎯 核心奖励权重：ONLY延迟+能耗
+        # 🔧 2024-12-02 激进简化：删除所有辅助惩罚项，只保留核心目标
+        #    问题：图表显示目标函数（delay+energy）已经稳定在0.55-0.75
+        #          但奖励剧烈震荡-0.025到-0.040，说明辅助项加了太多噪声
+        #    策略：只优化核心目标，让智能体专注学习delay和energy的权衡
+        self.reward_weight_delay = 1.0  # 🔧 0.5 → 1.0 (提升权重，突出核心)
+        self.reward_weight_energy = 1.0  # 🔧 0.5 → 1.0 (提升权重，平衡)
+        
+        # 关键惩罚：只保留任务丢弃（这是硬约束）
+        # 🔧 0.01 → 1.0 (大幅提升，确保丢包成本 > 处理成本，防止Lazy Agent)
+        self.reward_penalty_dropped = 1.0
+        self.completion_target = 0.88  # 保持不变
+        
+        # 🚫 大幅降低或禁用所有辅助惩罚项（这些都在加噪声）
+        self.reward_weight_completion_gap = 0.0  # 🔧 0.02 → 0.0 (禁用，completion已经99.9%)
+        self.reward_weight_loss_ratio = 0.0  # 🔧 0.05 → 0.0 (禁用，与delay高度相关)
+        self.reward_weight_cache_pressure = 0.0  # 🔧 0.05 → 0.0 (禁用，让系统自由探索)
+        self.reward_weight_cache_bonus = 0.0  # 🔧 0.15 → 0.0 (禁用，不人工引导)
+        self.reward_weight_queue_overload = 0.0  # 🔧 0.02 → 0.0 (禁用)
 
         # ⚠️ 已弃用参数（保留以兼容旧代码）
         self.reward_weight_loss = 0.0      # 已移除：data_loss是时延的衡生指标
         self.reward_weight_completion = 0.0  # 已集成到dropped_penalty
-        # 缓存权重适度提升，激励智能缓存
-        self.reward_weight_cache = 0.4  # 
-        self.reward_weight_migration = 0.1
-        self.reward_weight_joint = 0.05   # 联动奖励权重
-        self.reward_weight_remote_reject = 0.5  # 远端拒绝惩罚
-        # 边缘计算卸载奖励：强化激励RSU/UAV处理，避免全本地处理
-        # 🔧 修复:大幅降低人工引导权重，让智能体自主学习
-        # 注意:这个配置在unified_reward_calculator中使用,与td3_optimized.py中的奖励不同
-        self.reward_weight_offload_bonus = 0.1  # 强卸载奖励（5.0→0.1），减少人工偏置
-        # 本地处理能耗惩罚：添加轻微惩罚，避免智能体过度依赖本地处理
-        # 🔧 修复:降低本地处理惩罚 (1.5→0.0)
-        self.reward_weight_local_penalty = 0.0  # 本地处理惩罚（1.5→0.0），消除本地惩罚
+        # 🚫 禁用所有辅助优化项（专注核心目标）
+        self.reward_weight_cache = 0.0  # 🔧 0.1 → 0.0 (禁用缓存惩罚)
+        self.reward_weight_migration = 0.0  # 🔧 0.05 → 0.0 (禁用迁移惩罚)
+        self.reward_weight_joint = 0.0  # 🔧 0.02 → 0.0 (禁用联动奖励)
+        self.reward_weight_remote_reject = 0.0  # 🔧 0.08 → 0.0 (禁用远程拒绝惩罚)
+        self.reward_weight_offload_bonus = 0.0  # 🔧 0.05 → 0.0 (禁用卸载奖励)
+        self.reward_weight_local_penalty = 0.0  # 保持禁用
 
         # 🎯 延时-能耗优化目标阈值（供算法动态调整）
         # 🔧 基准目标值会在训练中根据实际系统表现自动调整（最多放宽3倍）
-        # 初始目标：保守估计，让系统在前几轭episode后自适应放宽
+        # 初始目标：保守估计，让系统在前几个episode后自适应放宽
         # 🚀 关键修复:能耗目标值调整至实际水平,避免奖励过低
         # 问题:原目标energy_target=3000J,但实际能耗在6000-9000J,导致norm_energy>2.0,奖励永远为负
         # 解决:调整target=7000J(实际中值),tolerance=10000J,让奖励在合理范围
-        self.latency_target = 0.4  # 初始时延目标 - 从0.8降低以匹配实际性能
-        self.latency_upper_tolerance = 1.0  # 容忍上限 - 从2.0降低
-        self.energy_target = 3500.0  # 能耗目标 - 从7000降低以匹配实际水平
-        self.energy_upper_tolerance = 5000.0  # 容忍上限 - 从10000降低
+        # 🔧 2024-12-02: 归一化目标再次调整（产生更明显的学习信号）
+        # 当前问题：目标函数稳定但奖励震荡 → 辅助项噪声过大
+        # 新策略：提高归一化目标，让更多episode产生正成本，增强梯度
+        #         同时禁用所有辅助项，让核心信号清晰可见
+        self.latency_target = 1.5  # 🔧 1.6 → 1.5 (降低目标，让50%episode产生成本)
+        self.latency_upper_tolerance = 2.2  # 🔧 2.5 → 2.2
+        # 🔧 修复：能耗目标改为Step级别 (25J/step)，而非Episode级别 (900J/episode)
+        # 12车辆*5W + RSU*25W + UAV*25W ≈ 110W静态功率 -> 11J/step
+        # 加上动态功耗，预计20-30J/step
+        self.energy_target = 1000.0  # 🔧 200.0 → 1000.0 (Aligned with dynamic energy ~900J)
+        self.energy_upper_tolerance = 2000.0  # 🔧 500.0 → 2000.0
 
         # 🆕 动态归一化开关
         self.use_dynamic_reward_normalization = False  # 禁用以改善收敛性（原为True）
@@ -1216,16 +1225,17 @@ class NormalizationConfig:
         self.uav_energy_reference = float(os.environ.get('NORM_UAV_ENERGY_REF', '1000.0'))
 
         # 奖励归一化参考
-        # 🔧 P0修复：对齐energy_normalizer与config.rl.energy_target=3500J
+        # 🔧 P0修复：对齐energy_normalizer与config.rl.energy_target=900J
+        # 🔧 P0修复：对齐delay_normalizer与config.rl.latency_target=1.5s
         # 默认直接对齐 RL 核心目标，避免奖励归一化与目标值不一致导致的偏置
-        self.delay_normalizer_value = float(os.environ.get('NORM_DELAY_NORMALIZER', '0.4'))
-        self.energy_normalizer_value = float(os.environ.get('NORM_ENERGY_NORMALIZER', '3500.0'))
+        self.delay_normalizer_value = float(os.environ.get('NORM_DELAY_NORMALIZER', '1.5'))  # 🔧 0.4 → 1.5 (对齐RLConfig)
+        self.energy_normalizer_value = float(os.environ.get('NORM_ENERGY_NORMALIZER', '900.0'))  # 🔧 3500 → 900 (对齐RLConfig)
 
         # 全局性能参考（供奖励/指标归一化使用）
-        self.delay_reference = float(os.environ.get('NORM_DELAY_REFERENCE', '0.4'))
-        self.delay_upper_reference = float(os.environ.get('NORM_DELAY_UPPER_REFERENCE', '1.0'))
-        self.energy_reference = float(os.environ.get('NORM_ENERGY_REFERENCE', '3500.0'))
-        self.energy_upper_reference = float(os.environ.get('NORM_ENERGY_UPPER_REFERENCE', '5000.0'))
+        self.delay_reference = float(os.environ.get('NORM_DELAY_REFERENCE', '1.5'))  # 🔧 0.4 → 1.5
+        self.delay_upper_reference = float(os.environ.get('NORM_DELAY_UPPER_REFERENCE', '2.2'))  # 🔧 1.0 → 2.2
+        self.energy_reference = float(os.environ.get('NORM_ENERGY_REFERENCE', '1000.0'))  # 🔧 200 → 1000
+        self.energy_upper_reference = float(os.environ.get('NORM_ENERGY_UPPER_REFERENCE', '2000.0'))  # 🔧 500 → 2000
 
 
 class SystemConfig:

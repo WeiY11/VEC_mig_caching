@@ -68,6 +68,9 @@ class VectorizedSingleAgentEnvironment:
     Vectorized environment that runs multiple SingleAgentTrainingEnvironment instances in parallel.
     """
     def __init__(self, env_fns: List[callable]):
+        import traceback
+        print("DEBUG: VectorizedSingleAgentEnvironment instantiated!")
+        traceback.print_stack()
         self.num_envs = len(env_fns)
         self.remotes, self.work_remotes = zip(*[mp.Pipe() for _ in range(self.num_envs)])
         self.ps = [

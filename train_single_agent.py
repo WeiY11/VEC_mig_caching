@@ -104,7 +104,7 @@ from utils.normalization_utils import (
 # 🤖 导入自适应控制组件
 from utils.adaptive_control import AdaptiveCacheController, AdaptiveMigrationController, map_agent_actions_to_params
 from decision.strategy_coordinator import StrategyCoordinator
-from utils.unified_reward_calculator import update_reward_targets
+from utils.unified_reward_calculator import update_reward_targets, _general_reward_calculator
 
 # 导入各种单智能体算法
 from single_agent.ddpg import DDPGEnvironment
@@ -120,16 +120,17 @@ from single_agent.optimized_td3_wrapper import OptimizedTD3Environment
 from utils.html_report_generator import HTMLReportGenerator
 
 # 🌐 导入实时可视化模块
-try:
-    from scripts.visualize.realtime_visualization import create_visualizer
-    REALTIME_AVAILABLE = True
-except ImportError:
-    try:
-        from scripts.visualize.realtime_visualization_simple import create_visualizer
-        REALTIME_AVAILABLE = True
-    except ImportError:
-        REALTIME_AVAILABLE = False
-    print("⚠️  实时可视化功能不可用，请运行: pip install flask flask-socketio")
+# try:
+#     from scripts.visualize.realtime_visualization import create_visualizer
+#     REALTIME_AVAILABLE = True
+# except ImportError:
+#     try:
+#         from scripts.visualize.realtime_visualization_simple import create_visualizer
+#         REALTIME_AVAILABLE = True
+#     except ImportError:
+#         REALTIME_AVAILABLE = False
+#     print("⚠️  实时可视化功能不可用，请运行: pip install flask flask-socketio")
+REALTIME_AVAILABLE = False
 
 # 尝试导入PyTorch以设置随机种子；如果不可用则跳过
 try:
@@ -315,37 +316,30 @@ class SingleAgentTrainingEnvironment:
             setattr(rl, attr, float(value))
             overridden_keys.append(f"{attr}={value}")
 
-        # Optimized defaults to strengthen dense signals and reduce reward sparsity
-        # 🔧 修复：关闭动态归一化，使用固定基准以稳定训练
-        _force_override("RL_USE_DYNAMIC_REWARD_NORMALIZATION", "use_dynamic_reward_normalization", 0.0)
-        
-        _force_override("RL_WEIGHT_LOSS_RATIO", "reward_weight_loss_ratio", 1.0)
-        _force_override("RL_WEIGHT_CACHE", "reward_weight_cache", 0.35)
-        _force_override("RL_WEIGHT_CACHE_BONUS", "reward_weight_cache_bonus", 0.8)
-        _force_override("RL_WEIGHT_CACHE_PRESSURE", "reward_weight_cache_pressure", 0.8)
-        _force_override("RL_WEIGHT_OFFLOAD_BONUS", "reward_weight_offload_bonus", 0.8)
-        _force_override("RL_WEIGHT_COMPLETION_GAP", "reward_weight_completion_gap", 0.95)
-        _force_override("RL_PENALTY_DROPPED", "reward_penalty_dropped", 0.35)
-        _force_override("RL_WEIGHT_QUEUE_OVERLOAD", "reward_weight_queue_overload", 1.2)
-        _force_override("RL_WEIGHT_REMOTE_REJECT", "reward_weight_remote_reject", 0.45)
-        
-        # 🔧 修复：将目标值调整为更合理范围，基于实际系统性能
-        # 实际观察: Delay ~5s, Energy ~31000J
-        # 设定可达目标: Delay 2.5s (50%改进), Energy 20000J (35%改进)
-        _force_override("RL_LATENCY_TARGET", "latency_target", 2.5)
-        _force_override("RL_LATENCY_UPPER_TOL", "latency_upper_tolerance", 5.0)
-        _force_override("RL_ENERGY_TARGET", "energy_target", 20000.0)
-        _force_override("RL_ENERGY_UPPER_TOL", "energy_upper_tolerance", 35000.0)
-        
-        _force_override("RL_SMOOTH_DELAY", "reward_smooth_delay_weight", 0.35)
-        _force_override("RL_SMOOTH_ENERGY", "reward_smooth_energy_weight", 0.45)
-        _force_override("RL_SMOOTH_ALPHA", "reward_smooth_alpha", 0.12)
+        # 🚫 禁用所有覆盖，使用system_config.py中的优化权重
+        # _force_override("RL_USE_DYNAMIC_REWARD_NORMALIZATION", "use_dynamic_reward_normalization", 0.0)
+        # _force_override("RL_WEIGHT_LOSS_RATIO", "reward_weight_loss_ratio", 1.0)
+        # _force_override("RL_WEIGHT_CACHE", "reward_weight_cache", 0.35)
+        # _force_override("RL_WEIGHT_CACHE_BONUS", "reward_weight_cache_bonus", 0.8)
+        # _force_override("RL_WEIGHT_CACHE_PRESSURE", "reward_weight_cache_pressure", 0.8)
+        # _force_override("RL_WEIGHT_OFFLOAD_BONUS", "reward_weight_offload_bonus", 0.8)
+        # _force_override("RL_WEIGHT_COMPLETION_GAP", "reward_weight_completion_gap", 0.95)
+        # _force_override("RL_PENALTY_DROPPED", "reward_penalty_dropped", 0.35)
+        # _force_override("RL_WEIGHT_QUEUE_OVERLOAD", "reward_weight_queue_overload", 1.2)
+        # _force_override("RL_WEIGHT_REMOTE_REJECT", "reward_weight_remote_reject", 0.45)
+        # _force_override("RL_LATENCY_TARGET", "latency_target", 2.5)
+        # _force_override("RL_LATENCY_UPPER_TOL", "latency_upper_tolerance", 5.0)
+        # _force_override("RL_ENERGY_TARGET", "energy_target", 20000.0)
+        # _force_override("RL_ENERGY_UPPER_TOL", "energy_upper_tolerance", 35000.0)
+        # _force_override("RL_SMOOTH_DELAY", "reward_smooth_delay_weight", 0.35)
+        # _force_override("RL_SMOOTH_ENERGY", "reward_smooth_energy_weight", 0.45)
+        # _force_override("RL_SMOOTH_ALPHA", "reward_smooth_alpha", 0.12)
 
-        # 适度放宽奖惩权重，突出可靠性/队列信号
-        _set_if_absent("RL_WEIGHT_COMPLETION_GAP", "reward_weight_completion_gap", 0.7)
-        _set_if_absent("RL_PENALTY_DROPPED", "reward_penalty_dropped", 0.15, use_max=True)
-        _set_if_absent("RL_WEIGHT_QUEUE_OVERLOAD", "reward_weight_queue_overload", 0.8, use_max=True)
-        _set_if_absent("RL_WEIGHT_REMOTE_REJECT", "reward_weight_remote_reject", 0.25, use_max=True)
+        # 🚫 禁用这些覆盖，使用system_config.py中的优化值
+        # _set_if_absent("RL_WEIGHT_COMPLETION_GAP", "reward_weight_completion_gap", 0.7)
+        # _set_if_absent("RL_PENALTY_DROPPED", "reward_penalty_dropped", 0.15, use_max=True)
+        # _set_if_absent("RL_WEIGHT_QUEUE_OVERLOAD", "reward_weight_queue_overload", 0.8, use_max=True)
+        # _set_if_absent("RL_WEIGHT_REMOTE_REJECT", "reward_weight_remote_reject", 0.25, use_max=True)
 
         if overridden_keys:
             print(f"\n⚡ OPTIMIZED_TD3 Configuration Overrides:")
@@ -353,10 +347,13 @@ class SingleAgentTrainingEnvironment:
                 print(f"   - {k}")
             print("")
 
+        # ✅ 启用update_reward_targets，使用system_config.py中的优化目标值
+        # 确保全局单例计算器使用正确的归一化目标
+        # 🔧 2024-12-02 激进简化：降低归一化目标，增强核心信号
         try:
             update_reward_targets(
-                latency_target=float(getattr(rl, "latency_target", 2.3)),
-                energy_target=float(getattr(rl, "energy_target", 9600.0)),
+                latency_target=float(getattr(rl, "latency_target", 1.5)),
+                energy_target=float(getattr(rl, "energy_target", 200.0)),
             )
         except Exception:
             pass
@@ -838,7 +835,7 @@ class SingleAgentTrainingEnvironment:
             'recent_completion': MovingAverage(100)
         }
         self._reward_baseline: Dict[str, float] = {}
-        self._energy_target_per_vehicle = float(os.environ.get('ENERGY_TARGET_PER_VEHICLE', 220.0))
+        self._energy_target_per_vehicle = float(os.environ.get('ENERGY_TARGET_PER_VEHICLE', '75.0'))  # 🔧 220 → 75 (使启发式目标 = 75×12 = 900J)
         self._dynamic_energy_target = float(getattr(config.rl, 'energy_target', 1200.0))
         heuristic_energy_target = max(
             self._dynamic_energy_target,
@@ -861,6 +858,8 @@ class SingleAgentTrainingEnvironment:
         
         print(f"✓ {self.algorithm}训练环境初始化完成")
         print(f"✓ 算法类型: 单智能体")
+        
+
     
     def _calculate_correct_cache_utilization(self, cache: Dict, cache_capacity_mb: float) -> float:
         """
@@ -967,27 +966,34 @@ class SingleAgentTrainingEnvironment:
         delta_dropped = max(0, total_dropped - baseline['dropped'])
         delta_delay = max(0.0, total_delay - baseline['delay'])
         delta_energy = max(0.0, total_energy - baseline['energy'])
+        
+        # 🔧 修复：减去静态能耗，只奖励动态能耗
+        # 静态功率 = RSU静态 * num_rsus + UAV静态 * num_uavs
+        rsu_static = getattr(config.compute, 'rsu_static_power', 25.0)
+        uav_static = getattr(config.compute, 'uav_static_power', 2.5)
+        static_power = (self.num_rsus * rsu_static) + (self.num_uavs * uav_static)
+        time_slot = getattr(config.experiment, 'time_slot', 0.1)
+        static_energy_step = static_power * time_slot
+        
+        # 确保不减成负数
+        dynamic_delta_energy = max(0.0, delta_energy - static_energy_step)
+        
         delta_generated = max(0.0, total_generated - baseline['generated_bytes'])
         delta_loss_bytes = max(0.0, total_dropped_bytes - baseline['dropped_bytes'])
 
-        tasks_for_delay = delta_processed if delta_processed > 0 else max(1, total_processed)
-        avg_delay_increment = delta_delay / max(1, tasks_for_delay)
+        if delta_processed > 0:
+            avg_delay_for_reward = delta_delay / delta_processed
+        else:
+            avg_delay_for_reward = 0.0
 
         completion_total = delta_processed + delta_dropped
         completion_rate = normalize_ratio(delta_processed, completion_total, default=1.0)
         loss_ratio = normalize_ratio(delta_loss_bytes, delta_generated)
-
-        avg_delay_for_reward = avg_delay_increment if avg_delay_increment > 0 else float(stats.get('avg_task_delay', 0.0) or 0.0)
-        energy_per_task = delta_energy / max(1, delta_processed) if delta_processed > 0 else 0.0
-        smoothed_delay, smoothed_energy_per_task = self._apply_reward_smoothing(
-            avg_delay_for_reward,
-            energy_per_task
-        )
-        smoothed_energy_total = smoothed_energy_per_task * max(1, delta_processed)
-
+        # 🔧 修复：直接使用delta_energy，移除平滑和回退逻辑
+        # 之前的回退导致在无任务处理的step使用了累积能耗（~900J），导致奖励崩塌
         reward_snapshot = {
-            'avg_task_delay': smoothed_delay,
-            'total_energy_consumption': smoothed_energy_total if smoothed_energy_total > 0 else float(stats.get('total_energy_consumption', 0.0) or 0.0),
+            'avg_task_delay': avg_delay_for_reward,
+            'total_energy_consumption': dynamic_delta_energy,
             'dropped_tasks': delta_dropped,
             'task_completion_rate': completion_rate,
             'data_loss_bytes': delta_loss_bytes,
@@ -1224,7 +1230,8 @@ class SingleAgentTrainingEnvironment:
             uav_state = np.array([
                 normalize_scalar(uav['position'][0], 'uav_position_range', 1000.0),  # 位置x
                 normalize_scalar(uav['position'][1], 'uav_position_range', 1000.0),  # 位置y
-                normalize_scalar(uav['position'][2], 'uav_altitude_range', 200.0),   # 位置z（高度）
+                # 🔧 修复：使用队列利用率代替高度（高度对决策影响小，队列负载关键）
+                normalize_scalar(len(uav.get('computation_queue', [])), 'uav_queue_capacity', 20.0),   # 队列利用率
                 self._calculate_correct_cache_utilization(uav.get('cache', {}), uav.get('cache_capacity', 200.0)),  # 缓存利用率
                 normalize_scalar(uav.get('energy_consumed', 0.0), 'uav_energy_reference', 1000.0),  # 能耗
             ])
@@ -1468,7 +1475,28 @@ class SingleAgentTrainingEnvironment:
             print(f"⚠️ 仿真器能耗为0，使用估算能耗: {total_energy:.1f}J")
         else:
             episode_incremental_energy = max(0.0, current_total_energy - getattr(self, '_episode_energy_base', 0.0))
-            total_energy = episode_incremental_energy
+            
+            # 🔧 关键修复：移除静态能耗基线，只奖励动态能耗优化
+            # 静态能耗 = (RSU静态功率 * RSU数量 + UAV静态功率 * UAV数量) * 持续时间
+            # 这样可以让智能体专注于优化那 ~200J 的动态能耗，而不是被 ~2000J 的静态能耗淹没
+            rsu_static = getattr(config.compute, 'rsu_static_power', 25.0)
+            uav_static = getattr(config.compute, 'uav_static_power', 2.5)
+            # 车辆静态能耗通常不计入系统运营成本（属于用户设备），但为了严谨也可以减去
+            # 这里主要关注基础设施能耗
+            static_power_total = (self.num_rsus * rsu_static) + (self.num_uavs * uav_static)
+            
+            # 计算当前episode已运行时间的静态能耗
+            # 使用仿真器当前时间作为持续时间
+            current_duration = self.simulator.current_time
+            static_energy_baseline = static_power_total * current_duration
+            
+            # 动态能耗 = 总能耗 - 静态基线
+            # 限制为非负，防止因浮点误差出现负值
+            dynamic_energy = max(0.0, episode_incremental_energy - static_energy_baseline)
+            
+            # ⚠️ 仍然记录总能耗用于展示，但使用动态能耗用于奖励计算
+            total_energy = dynamic_energy
+            # print(f"DEBUG: Total={episode_incremental_energy:.1f}J, Static={static_energy_baseline:.1f}J, Dynamic={dynamic_energy:.1f}J")
 
         energy_base = getattr(self, '_episode_energy_component_base', {})
         def _episode_energy(bucket_key: str) -> float:
@@ -2302,10 +2330,16 @@ def train_single_algorithm(algorithm: str, num_episodes: Optional[int] = None, e
         save_interval = config.experiment.save_interval
     
     print(f"\n>> 开始{algorithm}单智能体算法训练")
+    print(f"DEBUG: config.rl.energy_target = {getattr(config.rl, 'energy_target', 'N/A')}")
     print("=" * 60)
+    
+
+    
+
     
     # 创建训练环境（应用额外场景覆盖）
     if num_envs > 1:
+        print(f"DEBUG: Entering parallel training block with num_envs={num_envs}")
         print(f"🚀 启动并行训练: {num_envs} 个环境进程")
         from utils.vectorized_env import VectorizedSingleAgentEnvironment
         
@@ -2432,11 +2466,16 @@ def train_single_algorithm(algorithm: str, num_episodes: Optional[int] = None, e
             f"能耗={getattr(config.rl, 'reward_weight_energy', 0.0):.2f}, "
             f"丢弃={getattr(config.rl, 'reward_penalty_dropped', 0.0):.2f}"
         )
-        print(
-            f"  目标约束: 时延≤{getattr(config.rl, 'latency_target', 0.0):.2f}s, "
-            f"能耗≤{getattr(config.rl, 'energy_target', 0.0):.0f}J"
-        )
-    print("-" * 60)
+        print(f"  【配置目标】")
+        print(f"    - latency_target:    {getattr(config.rl, 'latency_target', 'N/A')}s")
+        print(f"    - energy_target:     {getattr(config.rl, 'energy_target', 'N/A')}J")
+        print(f"  【权重】")
+        print(f"    - ω_T (delay):       {_general_reward_calculator.weight_delay:.2f}")
+        print(f"    - ω_E (energy):      {_general_reward_calculator.weight_energy:.2f}")
+        print(f"  【其他配置】")
+        print(f"    - 丢弃惩罚:          {_general_reward_calculator.penalty_dropped:.2f}")
+        print(f"    - 奖励裁剪范围:      {_general_reward_calculator.reward_clip_range}")
+        print("=" * 60 + "\n")
     
     # 创建结果目录
     os.makedirs(f"results/single_agent/{algorithm.lower()}", exist_ok=True)
@@ -2739,34 +2778,11 @@ def train_single_algorithm(algorithm: str, num_episodes: Optional[int] = None, e
         print(f"   - 优化建议与结论")
         
         # 询问用户是否保存报告（静默模式下自动保存）
-        if silent_mode:
-            # 静默模式：自动保存，不打开浏览器
-            if report_generator.save_report(html_content, report_path):
-                print(f"✅ 报告已自动保存到: {report_path}")
-            else:
-                print("❌ 报告保存失败")
+        # 🔧 强制自动保存，不询问用户
+        if report_generator.save_report(html_content, report_path):
+            print(f"✅ 报告已自动保存到: {report_path}")
         else:
-            # 交互模式：询问用户
-            print("\n" + "-" * 60)
-            save_choice = input("💾 是否保存HTML训练报告? (y/n, 默认y): ").strip().lower()
-            
-            if save_choice in ['', 'y', 'yes', '是']:
-                if report_generator.save_report(html_content, report_path):
-                    print(f"✅ 报告已保存到: {report_path}")
-                    print(f"💡 提示: 使用浏览器打开该文件即可查看完整报告")
-                    
-                    # 尝试自动打开报告（可选）
-                    auto_open = input("🌐 是否在浏览器中打开报告? (y/n, 默认n): ").strip().lower()
-                    if auto_open in ['y', 'yes', '是']:
-                        import webbrowser
-                        abs_path = os.path.abspath(report_path)
-                        webbrowser.open(f'file://{abs_path}')
-                        print("✅ 报告已在浏览器中打开")
-                else:
-                    print("❌ 报告保存失败")
-            else:
-                print("ℹ️ 报告未保存")
-                print(f"💡 如需查看，请手动运行报告生成功能")
+            print("❌ 报告保存失败")
     
     except Exception as e:
         print(f"⚠️ 生成训练报告时出错: {e}")

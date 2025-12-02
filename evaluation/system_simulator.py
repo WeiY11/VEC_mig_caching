@@ -2264,6 +2264,21 @@ class CompleteSystemSimulator:
         queue = node.get('computation_queue', [])
         queue_len = len(queue)
         if queue_len == 0:
+            # 🔧 修复：即使队列为空，RSU/UAV也消耗静态功耗
+            if node_type in ['RSU', 'UAV']:
+                # 获取静态功耗配置
+                if node_type == 'RSU':
+                    static_power = getattr(self.sys_config.compute, 'rsu_static_power', 25.0) if self.sys_config else 25.0
+                else:
+                    static_power = getattr(self.sys_config.compute, 'uav_static_power', 2.5) if self.sys_config else 2.5
+                
+                # 计算静态能耗
+                static_energy = static_power * self.time_slot
+                
+                # 累加能耗
+                self._accumulate_energy('energy_compute', static_energy)
+                node['energy_consumed'] = node.get('energy_consumed', 0.0) + static_energy
+
             self._record_mm1_queue_length(node_type, node_idx, 0)
             return
 
@@ -2336,6 +2351,28 @@ class CompleteSystemSimulator:
             consumed_ratio = float(np.clip(consumed_ratio, 0.0, 1.0))
             incremental_service = consumed_ratio * self.time_slot
             task['service_time'] = task.get('service_time', 0.0) + incremental_service
+
+            # 🔧 修复：计算RSU/UAV处理能耗
+            # Fix: Calculate energy consumption for RSU/UAV processing
+            if node_type in ['RSU', 'UAV']:
+                # 获取节点配置
+                if node_type == 'RSU':
+                    cpu_freq = getattr(self.sys_config.compute, 'rsu_cpu_freq', 12.5e9) if self.sys_config else 12.5e9
+                    static_power = getattr(self.sys_config.compute, 'rsu_static_power', 25.0) if self.sys_config else 25.0
+                else:
+                    cpu_freq = getattr(self.sys_config.compute, 'uav_cpu_freq', 5.0e9) if self.sys_config else 5.0e9
+                    static_power = getattr(self.sys_config.compute, 'uav_static_power', 2.5) if self.sys_config else 2.5
+                
+                # 动态功耗系数
+                kappa = 1e-28
+                dynamic_power = kappa * (cpu_freq ** 3)
+                
+                # 计算本时隙消耗的能耗
+                step_energy = (dynamic_power + static_power) * incremental_service
+                
+                # 累加能耗
+                self._accumulate_energy('energy_compute', step_energy)
+                node['energy_consumed'] = node.get('energy_consumed', 0.0) + step_energy
 
             if task['work_remaining'] > 0.0:
                 new_queue.append(task)

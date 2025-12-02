@@ -134,9 +134,11 @@ class UnifiedRewardCalculator:
         self.weight_cache = float(getattr(config.rl, "reward_weight_cache", 0.0))
         self.weight_cache_bonus = float(getattr(config.rl, "reward_weight_cache_bonus", 0.0))
         self.weight_migration = float(getattr(config.rl, "reward_weight_migration", 0.0))
-        self.weight_joint = float(getattr(config.rl, "reward_weight_joint", 0.05))
-        # 边缘计算卸载奖励：适度激励远程处理（默认0.5）
-        self.weight_offload_bonus = float(getattr(config.rl, "reward_weight_offload_bonus", 0.5))
+        # 🔧 P0修复：将fallback默认值从0.05改为0.0，防止bonus抵消core_cost
+        self.weight_joint = float(getattr(config.rl, "reward_weight_joint", 0.0))
+        # 边缘计算卸载奖励：适度激励远程处理（默认0.0，避免干扰核心优化）
+        # 🔧 P0修复：将fallback默认值从0.5改为0.0，防止bonus抵消core_cost
+        self.weight_offload_bonus = float(getattr(config.rl, "reward_weight_offload_bonus", 0.0))
         # 本地处理惩罚：移除额外惩罚（默认0.0）
         self.weight_local_penalty = float(getattr(config.rl, "reward_weight_local_penalty", 0.0))
         self.completion_target = float(getattr(config.rl, "completion_target", 0.95))
@@ -153,7 +155,6 @@ class UnifiedRewardCalculator:
         # 分段容错/钳位
         self.total_cost_clip = float(getattr(config.rl, "reward_total_cost_clip", 120.0))
         self.component_clip = float(getattr(config.rl, "reward_component_clip", 25.0))
-
         # 归一化任务优先级权重（如果存在）
         # Normalise priority weights if they exist.
         priority_weights = getattr(config, "task", None)
@@ -214,8 +215,9 @@ class UnifiedRewardCalculator:
         # 设置奖励裁剪范围，防止奖励值过大或过小
         # 成本最小化框架：所有算法统一使用负奖励范围
         # 奖励值越接近0表示成本越低（性能越好）
-        # 🔧 范围调整：基于实际训练数据，大多数奖励在[-20, 0]区间
-        self.reward_clip_range = (-50.0, 0.0)  # 保持宽松范围以应对极端情况
+        # 🔧 权重优化阶段2：收紧裁剪范围，限制极端惩罚，稳定Q值估计
+        # 实际训练数据显示99%奖励在[-3, -1]，异常值<-3占3.88%
+        self.reward_clip_range = (-10.0, 0.0)  # 🔧 -50 → -10 (收紧5倍，限制异常惩罚)
 
         print(f"[OK] Unified reward calculator ({self.algorithm})")
         print(
@@ -374,34 +376,37 @@ class UnifiedRewardCalculator:
             """将任意非负值按scale归一化并tanh压缩。"""
             return float(np.tanh(max(0.0, value) / max(scale, 1e-6)))
 
-        # --- 核心成本：只惩罚超出目标的部分 ---
+        # --- 核心成本：直接归一化，不使用tanh平滑 ---
+        # 🔧 关键修复：移除_excess和tanh平滑，使用简单的线性归一化
+        # 问题：_excess只惩罚超出目标的部分，导致实际delay=1.5s时penalty=0
+        # 解决：直接使用 delay/target，让智能体能够看到清晰的优化信号
         if getattr(self, "use_dynamic_normalization", False):
             # 更新统计值
             self.delay_rms.update(m.avg_delay)
             self.energy_rms.update(m.total_energy)
             
-            # 使用动态均值作为归一化基准，但保留target作为"理想"参考
-            # 如果当前均值远大于target，说明环境很难，归一化因子增大，避免惩罚过大
-            # 如果当前均值小于target，说明环境容易，归一化因子减小（但不低于target），保持敏感度
+            # 使用动态均值作为归一化基准
             dyn_delay_norm = max(self.latency_target, self.delay_rms.mean)
             dyn_energy_norm = max(self.energy_target, self.energy_rms.mean)
             
-            norm_delay = _excess(m.avg_delay, self.latency_target) / max(dyn_delay_norm, 1e-6)
-            norm_energy = _excess(m.total_energy, self.energy_target) / max(dyn_energy_norm, 1e-6)
+            norm_delay = m.avg_delay / max(dyn_delay_norm, 1e-6)
+            norm_energy = m.total_energy / max(dyn_energy_norm, 1e-6)
             
-            # 平滑函数也使用动态scale
-            delay_penalty = self.weight_delay * _smooth_excess(m.avg_delay, self.latency_target, scale=dyn_delay_norm/self.latency_target)
-            energy_penalty = self.weight_energy * _smooth_excess(m.total_energy, self.energy_target, scale=dyn_energy_norm/self.energy_target)
+            delay_penalty = self.weight_delay * norm_delay
+            energy_penalty = self.weight_energy * norm_energy
         else:
-            norm_delay = _excess(m.avg_delay, self.latency_target) / max(self.latency_target, 1e-6)
-            norm_energy = _excess(m.total_energy, self.energy_target) / max(self.energy_target, 1e-6)
-            delay_penalty = self.weight_delay * _smooth_excess(m.avg_delay, self.latency_target, 1.0)
-            energy_penalty = self.weight_energy * _smooth_excess(m.total_energy, self.energy_target, 1.0)
+            # 🔧 直接归一化，不使用_excess
+            norm_delay = m.avg_delay / max(self.delay_normalizer, 1e-6)
+            norm_energy = m.total_energy / max(self.energy_normalizer, 1e-6)
+            delay_penalty = self.weight_delay * norm_delay
+            energy_penalty = self.weight_energy * norm_energy
             
         core_cost = delay_penalty + energy_penalty
 
         # --- 稳定化惩罚项（全部平滑到[0,1]） ---
-        drop_penalty = self.penalty_dropped * _smooth_ratio(m.dropped_tasks, 3.0)
+        # --- 稳定化惩罚项（全部平滑到[0,1]） ---
+        # 🔧 修复：丢弃惩罚改为线性，避免tanh饱和导致大量丢包时惩罚封顶
+        drop_penalty = self.penalty_dropped * m.dropped_tasks
         completion_gap = max(0.0, self.completion_target - m.completion_rate)
         completion_gap_penalty = self.weight_completion_gap * _smooth_ratio(completion_gap, 0.2)
         data_loss_penalty = self.weight_loss_ratio * _smooth_ratio(m.data_loss_ratio, 0.2)
@@ -512,6 +517,16 @@ class UnifiedRewardCalculator:
         metrics = self._extract_metrics(system_metrics, cache_metrics, migration_metrics)
         components = self._compute_components(metrics)
         components = self._compose_reward(components, metrics.completion_rate)
+        
+        # 🔍 临时诊断：打印奖励分解，找出被压缩的原因
+        if self._debug_count <= 5:
+            print(f"[RewardBreakdown] Episode {self._debug_count}:")
+            print(f"  norm_delay={components.norm_delay:.4f}, norm_energy={components.norm_energy:.4f}")
+            print(f"  core_cost={components.core_cost:.4f}")
+            print(f"  offload_bonus={components.offload_bonus:.4f}")
+            print(f"  total_cost={components.total_cost:.4f}")
+            print(f"  reward_pre_clip={components.reward_pre_clip:.4f}")
+            print(f"  reward_final={components.reward:.4f}")
         
         # 构造奖励组件字典供调试使用
         reward_components = {
