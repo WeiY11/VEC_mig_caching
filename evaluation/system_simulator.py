@@ -2331,9 +2331,23 @@ class CompleteSystemSimulator:
         new_queue: List[Dict] = []
         current_time = getattr(self, 'current_time', 0.0)
         
-        # 🔧 修复v2：移除频率缩放，使用固定的work_capacity
-        # work_capacity_cfg已经是基于实际硬件校准的经验值
-        work_capacity = self.time_slot * work_capacity_cfg
+        # 🔧 修复v3：基于实际计算周期和CPU频率计算处理进度
+        # 问题原因：原work_remaining=0.5是抽象值，导致任务总是4-5个时隙完成
+        # 解决方案：使用实际的compute_cycles和cpu_freq计算
+        
+        # 获取节点CPU频率
+        if node_type == 'RSU':
+            cpu_freq = getattr(self.sys_config.compute, 'rsu_cpu_freq', 12.5e9) if self.sys_config else 12.5e9
+        elif node_type == 'UAV':
+            cpu_freq = getattr(self.sys_config.compute, 'uav_cpu_freq', 5.0e9) if self.sys_config else 5.0e9
+        else:
+            cpu_freq = 2.5e9  # Vehicle默认
+        
+        # 每个时隙可处理的计算周期数
+        cycles_per_slot = cpu_freq * self.time_slot
+        
+        # 本时隙已使用的周期（用于容量限制）
+        total_cycles_used = 0.0
 
         for idx, task in enumerate(queue):
             if current_time - task.get('queued_at', -1e9) < self.time_slot:
@@ -2343,14 +2357,37 @@ class CompleteSystemSimulator:
             if idx >= tasks_to_process:
                 new_queue.append(task)
                 continue
-
-            previous_work = float(task.get('work_remaining', 0.5))
-            remaining_work = max(0.0, previous_work - work_capacity)
-            task['work_remaining'] = remaining_work
-            consumed_ratio = (previous_work - remaining_work) / max(work_capacity, 1e-9)
+            
+            # 🔧 修复v3：使用实际剩余计算周期
+            # 首次处理时，从compute_cycles初始化
+            if 'remaining_cycles' not in task:
+                task['remaining_cycles'] = float(task.get('compute_cycles', 1e9))
+            
+            previous_cycles = task['remaining_cycles']
+            
+            # 计算本时隙可分配给此任务的周期数
+            # 容量限制：节点每时隙只能处理 cycles_per_slot 周期
+            available_cycles = max(0.0, cycles_per_slot - total_cycles_used)
+            cycles_to_process = min(previous_cycles, available_cycles)
+            
+            remaining_cycles = max(0.0, previous_cycles - cycles_to_process)
+            task['remaining_cycles'] = remaining_cycles
+            total_cycles_used += cycles_to_process
+            
+            # 计算实际处理时间和服务时间
+            actual_processing_time = cycles_to_process / cpu_freq if cpu_freq > 0 else 0.0
+            task['service_time'] = task.get('service_time', 0.0) + actual_processing_time
+            
+            # 兼容性：保留work_remaining用于其他模块
+            original_cycles = float(task.get('compute_cycles', 1e9))
+            if original_cycles > 0:
+                task['work_remaining'] = remaining_cycles / original_cycles
+            else:
+                task['work_remaining'] = 0.0
+            
+            consumed_ratio = cycles_to_process / max(previous_cycles, 1e-9)
             consumed_ratio = float(np.clip(consumed_ratio, 0.0, 1.0))
-            incremental_service = consumed_ratio * self.time_slot
-            task['service_time'] = task.get('service_time', 0.0) + incremental_service
+            incremental_service = actual_processing_time
 
             # 🔧 修复：计算RSU/UAV处理能耗
             # Fix: Calculate energy consumption for RSU/UAV processing
@@ -2374,7 +2411,7 @@ class CompleteSystemSimulator:
                 self._accumulate_energy('energy_compute', step_energy)
                 node['energy_consumed'] = node.get('energy_consumed', 0.0) + step_energy
 
-            if task['work_remaining'] > 0.0:
+            if task.get('remaining_cycles', 0.0) > 0.0:
                 new_queue.append(task)
                 continue
 
@@ -2475,19 +2512,15 @@ class CompleteSystemSimulator:
                     kappa = getattr(self.sys_config.compute, 'rsu_kappa', kappa)
                     static_power = getattr(self.sys_config.compute, 'rsu_static_power', static_power)
                 
-                # 🔧 修复：计算实际处理时间（假设任务需要固定计算周期）
-                # work_capacity已经是处理时间，我们需要反推计算周期数
-                # 假设基准频率12.5GHz下，work_capacity就是实际时间
-                base_freq = 12.5e9  # 基准频率
-                # 计算周期数（相对于基准频率）
-                total_cycles = work_capacity * base_freq
-                # 实际处理时间 = 周期数 / 实际频率
-                actual_processing_time = total_cycles / cpu_freq
+                # 🔧 修复v3：使用任务实际的compute_cycles计算处理时间和能耗
+                task_compute_cycles = float(task.get('compute_cycles', 1e9))
+                # 实际处理时间 = 计算周期 / CPU频率
+                task_processing_time = task_compute_cycles / cpu_freq
                 
                 # 动态功耗 = κ × f³
                 dynamic_power = kappa * (cpu_freq ** 3)
                 # 总能耗 = (动态功耗 + 静态功耗) × 实际处理时间
-                task_energy = (dynamic_power + static_power) * actual_processing_time
+                task_energy = (dynamic_power + static_power) * task_processing_time
                 
             elif node_type == 'UAV':
                 # 🔧 优化: 统一从配置读取UAV能耗参数
@@ -2505,27 +2538,25 @@ class CompleteSystemSimulator:
                     kappa3 = getattr(self.sys_config.compute, 'uav_kappa3', default_kappa3)
                     static_power = getattr(self.sys_config.compute, 'uav_static_power', default_static)
                     hover_power = getattr(self.sys_config.compute, 'uav_hover_power', default_hover)
-                    base_freq = getattr(self.sys_config.compute, 'uav_initial_freq', default_cpu_freq)
                 else:
                     cpu_freq = node.get('cpu_freq', default_cpu_freq)
                     kappa3 = default_kappa3
                     static_power = default_static
                     hover_power = default_hover
-                    base_freq = default_cpu_freq
                 
-                # 🔧 修复：UAV同样需要考虑实际处理时间
-                # 使用配置的UAV初始频率作为基准频率
-                total_cycles = work_capacity * base_freq
-                actual_processing_time = total_cycles / cpu_freq
+                # 🔧 修复v3：使用任务实际的compute_cycles
+                task_compute_cycles = float(task.get('compute_cycles', 1e9))
+                task_processing_time = task_compute_cycles / cpu_freq
                 
                 # 动态功耗 = κ × f³
                 dynamic_power = kappa3 * (cpu_freq ** 3)
                 # UAV总能耗 = (动态 + 静态 + 悬停) × 实际处理时间
-                task_energy = (dynamic_power + static_power + hover_power) * actual_processing_time
+                task_energy = (dynamic_power + static_power + hover_power) * task_processing_time
                 
             else:
                 # 其他节点类型使用简化模型
-                task_energy = 10.0 * work_capacity
+                task_compute_cycles = float(task.get('compute_cycles', 1e9))
+                task_energy = 1e-9 * task_compute_cycles  # 简化：每cycle约1nJ
             self._accumulate_energy('energy_compute', task_energy)
             node['energy_consumed'] = node.get('energy_consumed', 0.0) + task_energy
 
@@ -3183,20 +3214,66 @@ class CompleteSystemSimulator:
         return int(np.random.poisson(lam))
 
     def _choose_offload_target(self, actions: Dict, rsu_available: bool, uav_available: bool) -> str:
-        """鏍规嵁鏅鸿兘浣撴彁渚涚殑鍋忓ソ閫夋嫨鍗歌浇鐩爣"""
+        """
+        根据智能体偏好选择卸载目标
+        
+        🔧 优化：添加队列感知的决策逻辑
+        - 考虑各类节点的队列负载状态
+        - 动态调整卸载概率避免过载节点
+        - 智能体偏好仍然是主要决策因素
+        """
+        import os
+        
         prefs = actions.get('vehicle_offload_pref') or {}
-        probs = np.array([
+        base_probs = np.array([
             max(0.0, float(prefs.get('local', 0.0))),
             max(0.0, float(prefs.get('rsu', 0.0))) if rsu_available else 0.0,
             max(0.0, float(prefs.get('uav', 0.0))) if uav_available else 0.0,
         ], dtype=float)
         
         # 🔧 修复NaN问题：清理初始概率中的NaN值
+        base_probs = np.nan_to_num(base_probs, nan=0.0, posinf=0.0, neginf=0.0)
+        
+        # 🔧 优化：队列感知的决策调整
+        # 计算各类节点的平均队列负载
+        queue_factors = np.ones(3, dtype=float)
+        
+        # 1. 计算RSU平均队列负载（如果可用）
+        if rsu_available and self.rsus:
+            rsu_queue_loads = []
+            for rsu in self.rsus:
+                queue_len = len(rsu.get('computation_queue', []))
+                capacity = self.rsu_nominal_capacity
+                load = queue_len / max(1.0, capacity)
+                rsu_queue_loads.append(load)
+            avg_rsu_load = np.mean(rsu_queue_loads) if rsu_queue_loads else 0.0
+            # 负载越高，选择概率越低（但不完全拒绝）
+            # 使用sigmoid-like衰减：当负载>1时开始显著降低
+            queue_factors[1] = 1.0 / (1.0 + max(0.0, avg_rsu_load - 0.5))
+        
+        # 2. 计算UAV平均队列负载（如果可用）
+        if uav_available and self.uavs:
+            uav_queue_loads = []
+            for uav in self.uavs:
+                queue_len = len(uav.get('computation_queue', []))
+                capacity = self.uav_nominal_capacity
+                load = queue_len / max(1.0, capacity)
+                uav_queue_loads.append(load)
+            avg_uav_load = np.mean(uav_queue_loads) if uav_queue_loads else 0.0
+            queue_factors[2] = 1.0 / (1.0 + max(0.0, avg_uav_load - 0.5))
+        
+        # 3. 本地处理（车辆）的负载因子保持为1.0
+        # 本地处理通常作为fallback，不需要额外调整
+        
+        # 🔧 控制队列感知的影响程度（可通过环境变量调整）
+        queue_weight = float(os.environ.get('QUEUE_AWARE_WEIGHT', '0.3'))
+        adjusted_factors = 1.0 - queue_weight + queue_weight * queue_factors
+        
+        # 应用队列感知调整
+        probs = base_probs * adjusted_factors
         probs = np.nan_to_num(probs, nan=0.0, posinf=0.0, neginf=0.0)
 
         # 🔧 禁用guidance干扰：对比实验时不应用guidance修正，保持智能体原始决策
-        # 原因：guidance的offload_prior/distance_focus/cache_focus会修改概率，干扰偏置实验
-        import os
         apply_guidance = os.environ.get('APPLY_RL_GUIDANCE', '0') == '1'
         
         if apply_guidance:
@@ -3581,7 +3658,14 @@ class CompleteSystemSimulator:
             self._handle_local_processing(vehicle, task, step_summary)
 
     def _assign_to_rsu(self, vehicle: Dict, task: Dict, actions: Dict, step_summary: Dict) -> bool:
-        """???RSU??????????????????"""
+        """
+        将任务分配到RSU处理
+        
+        🔧 优化：增强队列感知的节点选择逻辑
+        - 结合智能体偏好和队列负载状态
+        - 距离因素作为辅助参考
+        - 避免向过载节点卸载任务
+        """
         if not self.rsus:
             return False
 
@@ -3616,53 +3700,75 @@ class CompleteSystemSimulator:
         candidate_indices = np.array([idx for idx, _, _ in filtered], dtype=int)
         distances = np.array([dist for _, _, dist in filtered], dtype=float)
 
+        # 🔧 优化：初始化权重数组
         probs = np.ones_like(distances)
+        
+        # 1. 应用智能体的RSU选择偏好
         rsu_pref = actions.get('rsu_selection_probs')
         if isinstance(rsu_pref, (list, tuple, np.ndarray)) and len(rsu_pref) == len(self.rsus):
             pref_values = np.array([max(0.0, float(rsu_pref[idx])) for idx in candidate_indices], dtype=float)
-            # 🔧 修复NaN问题：清理输入数据
             pref_values = np.nan_to_num(pref_values, nan=1.0, posinf=1.0, neginf=1.0)
-            pref_values = np.maximum(pref_values, 1e-10)  # 确保不为0
+            pref_values = np.maximum(pref_values, 1e-10)
+            # 🔧 优化：增强智能体偏好的影响力（使用幂次放大）
+            pref_values = np.power(pref_values, 1.5)  # 放大偏好差异
             probs *= pref_values
             probs = np.nan_to_num(probs, nan=1.0, posinf=1.0, neginf=1.0)
+        
+        # 2. 🔧 优化：添加队列负载因子
+        queue_factors = np.ones_like(distances)
+        for i, idx in enumerate(candidate_indices):
+            rsu = self.rsus[idx]
+            queue_len = len(rsu.get('computation_queue', []))
+            capacity = self.rsu_nominal_capacity
+            load = queue_len / max(1.0, capacity)
+            # 负载越高，选择概率越低
+            # 使用软衰减：queue_factor = exp(-load * decay_rate)
+            queue_factors[i] = np.exp(-load * 0.5)  # decay_rate=0.5
+        
+        probs *= queue_factors
+        probs = np.nan_to_num(probs, nan=1.0, posinf=1.0, neginf=1.0)
+        
+        # 3. 🔧 优化：添加距离因子（距离越近越好）
+        max_dist = max(distances) if len(distances) > 0 else 1.0
+        distance_factors = 1.0 - 0.3 * (distances / max(max_dist, 1e-6))  # 最远节点衰减30%
+        distance_factors = np.clip(distance_factors, 0.5, 1.0)
+        probs *= distance_factors
+        probs = np.nan_to_num(probs, nan=1.0, posinf=1.0, neginf=1.0)
 
+        # 4. 应用rl_guidance（如果启用）
         guidance = actions.get('rl_guidance') or {}
         if isinstance(guidance, dict):
             rsu_prior = np.array(guidance.get('rsu_prior', []), dtype=float)
             if rsu_prior.size >= len(self.rsus):
-                # 🔧 修复NaN问题：清理prior数据
                 rsu_prior = np.nan_to_num(rsu_prior, nan=1.0, posinf=1.0, neginf=1.0)
                 prior_vals = np.clip(rsu_prior[candidate_indices], 1e-4, None)
                 probs *= prior_vals
                 probs = np.nan_to_num(probs, nan=1.0, posinf=1.0, neginf=1.0)
-                probs = np.maximum(probs, 1e-10)  # 确保不为0
+                probs = np.maximum(probs, 1e-10)
             
             cache_focus = guidance.get('cache_focus')
             if isinstance(cache_focus, (list, tuple)) and len(cache_focus) >= 2:
                 cache_weight = float(np.clip(cache_focus[1], 0.0, 1.0))
                 cache_weight = np.nan_to_num(cache_weight, nan=0.0)
                 power_val = 0.8 + 0.4 * cache_weight
-                # 🔧 修复NaN问题：确保 probs 为正后再做幂运算
                 probs = np.maximum(probs, 1e-10)
                 probs = np.power(probs, power_val)
                 probs = np.nan_to_num(probs, nan=1.0, posinf=1.0, neginf=1.0)
-                probs = np.maximum(probs, 1e-10)  # 再次确保
+                probs = np.maximum(probs, 1e-10)
             
             distance_focus = guidance.get('distance_focus')
             if isinstance(distance_focus, (list, tuple)) and len(distance_focus) >= 2:
                 distance_weight = float(np.clip(distance_focus[1], 0.0, 1.0))
                 distance_weight = np.nan_to_num(distance_weight, nan=0.0)
                 power_val = 0.8 + 0.4 * distance_weight
-                # 🔧 修复NaN问题：确保 probs 为正后再做幂运算
                 probs = np.maximum(probs, 1e-10)
                 probs = np.power(probs, power_val)
                 probs = np.nan_to_num(probs, nan=1.0, posinf=1.0, neginf=1.0)
-                probs = np.maximum(probs, 1e-10)  # 再次确保
+                probs = np.maximum(probs, 1e-10)
 
         weights = probs
-        # 🔧 修复NaN问题：清理权重并确保有效
         weights = np.nan_to_num(weights, nan=1.0, posinf=1.0, neginf=1.0)
-        weights = np.maximum(weights, 1e-10)  # 确保所有权重为正
+        weights = np.maximum(weights, 1e-10)
         
         weight_sum = weights.sum()
         if weight_sum <= 0 or not np.isfinite(weight_sum):
@@ -3670,18 +3776,15 @@ class CompleteSystemSimulator:
             weight_sum = weights.sum()
 
         weights = weights / weight_sum
-        # 最终检查
         weights = np.nan_to_num(weights, nan=1.0/len(weights), posinf=0.0, neginf=0.0)
         weights = np.clip(weights, 0.0, 1.0)
         
-        # 确保概率总和为1
         final_sum = weights.sum()
         if final_sum > 0 and np.isfinite(final_sum):
             weights = weights / final_sum
         else:
             weights = np.ones_like(weights) / len(weights)
         
-        # 绝对最终检查
         if not np.isfinite(weights).all():
             weights = np.ones_like(weights) / len(weights)
         ordered_choices = list(np.random.choice(
@@ -3709,7 +3812,14 @@ class CompleteSystemSimulator:
 
 
     def _assign_to_uav(self, vehicle: Dict, task: Dict, actions: Dict, step_summary: Dict) -> bool:
-        """???UAV????????????????"""
+        """
+        将任务分配到UAV处理
+        
+        🔧 优化：增强队列感知的节点选择逻辑
+        - 结合智能体偏好和队列负载状态
+        - 距离因素作为辅助参考
+        - 避免向过载节点卸载任务
+        """
         if not self.uavs:
             return False
 
@@ -3744,42 +3854,65 @@ class CompleteSystemSimulator:
         candidate_indices = np.array([idx for idx, _, _ in filtered], dtype=int)
         distances = np.array([dist for _, _, dist in filtered], dtype=float)
 
+        # 🔧 优化：初始化权重数组
         probs = np.ones_like(distances)
+        
+        # 1. 应用智能体的UAV选择偏好
         uav_pref = actions.get('uav_selection_probs')
         if isinstance(uav_pref, (list, tuple, np.ndarray)) and len(uav_pref) == len(self.uavs):
             pref_values = np.array([max(0.0, float(uav_pref[idx])) for idx in candidate_indices], dtype=float)
-            # 🔧 修复NaN问题：清理输入数据
             pref_values = np.nan_to_num(pref_values, nan=1.0, posinf=1.0, neginf=1.0)
-            pref_values = np.maximum(pref_values, 1e-10)  # 确保不为0
+            pref_values = np.maximum(pref_values, 1e-10)
+            # 🔧 优化：增强智能体偏好的影响力（使用幂次放大）
+            pref_values = np.power(pref_values, 1.5)  # 放大偏好差异
             probs *= pref_values
             probs = np.nan_to_num(probs, nan=1.0, posinf=1.0, neginf=1.0)
+        
+        # 2. 🔧 优化：添加队列负载因子
+        queue_factors = np.ones_like(distances)
+        for i, idx in enumerate(candidate_indices):
+            uav = self.uavs[idx]
+            queue_len = len(uav.get('computation_queue', []))
+            capacity = self.uav_nominal_capacity
+            load = queue_len / max(1.0, capacity)
+            # 负载越高，选择概率越低
+            # UAV容量较小，使用更强的衰减
+            queue_factors[i] = np.exp(-load * 0.7)  # decay_rate=0.7 (比RSU更强)
+        
+        probs *= queue_factors
+        probs = np.nan_to_num(probs, nan=1.0, posinf=1.0, neginf=1.0)
+        
+        # 3. 🔧 优化：添加距离因子（距离越近越好）
+        max_dist = max(distances) if len(distances) > 0 else 1.0
+        distance_factors = 1.0 - 0.4 * (distances / max(max_dist, 1e-6))  # UAV距离影响更大
+        distance_factors = np.clip(distance_factors, 0.4, 1.0)
+        probs *= distance_factors
+        probs = np.nan_to_num(probs, nan=1.0, posinf=1.0, neginf=1.0)
 
+        # 4. 应用rl_guidance（如果启用）
         guidance = actions.get('rl_guidance') or {}
         if isinstance(guidance, dict):
             uav_prior = np.array(guidance.get('uav_prior', []), dtype=float)
             if uav_prior.size >= len(self.uavs):
-                # 🔧 修复NaN问题：清理prior数据
                 uav_prior = np.nan_to_num(uav_prior, nan=1.0, posinf=1.0, neginf=1.0)
                 prior_vals = np.clip(uav_prior[candidate_indices], 1e-4, None)
                 probs *= prior_vals
                 probs = np.nan_to_num(probs, nan=1.0, posinf=1.0, neginf=1.0)
-                probs = np.maximum(probs, 1e-10)  # 确保不为0
+                probs = np.maximum(probs, 1e-10)
             
             distance_focus = guidance.get('distance_focus')
             if isinstance(distance_focus, (list, tuple)) and len(distance_focus) >= 3:
                 distance_weight = float(np.clip(distance_focus[2], 0.0, 1.0))
                 distance_weight = np.nan_to_num(distance_weight, nan=0.0)
                 power_val = 0.8 + 0.4 * distance_weight
-                # 🔧 修复NaN问题：确保 probs 为正后再做幂运算
                 probs = np.maximum(probs, 1e-10)
                 probs = np.power(probs, power_val)
                 probs = np.nan_to_num(probs, nan=1.0, posinf=1.0, neginf=1.0)
-                probs = np.maximum(probs, 1e-10)  # 再次确保
+                probs = np.maximum(probs, 1e-10)
 
         weights = probs
-        # 🔧 修复NaN问题：清理权重并确保有效
         weights = np.nan_to_num(weights, nan=1.0, posinf=1.0, neginf=1.0)
-        weights = np.maximum(weights, 1e-10)  # 确保所有权重为正
+        weights = np.maximum(weights, 1e-10)
         
         weight_sum = weights.sum()
         if weight_sum <= 0 or not np.isfinite(weight_sum):
@@ -3787,18 +3920,15 @@ class CompleteSystemSimulator:
             weight_sum = weights.sum()
 
         weights = weights / weight_sum
-        # 最终检查
         weights = np.nan_to_num(weights, nan=1.0/len(weights), posinf=0.0, neginf=0.0)
         weights = np.clip(weights, 0.0, 1.0)
         
-        # 确保概率总和为1
         final_sum = weights.sum()
         if final_sum > 0 and np.isfinite(final_sum):
             weights = weights / final_sum
         else:
             weights = np.ones_like(weights) / len(weights)
         
-        # 绝对最终检查
         if not np.isfinite(weights).all():
             weights = np.ones_like(weights) / len(weights)
         
@@ -3893,6 +4023,35 @@ class CompleteSystemSimulator:
             self.stats['completed_tasks'] += 1
             self._accumulate_delay('delay_cache', delay)
             self._accumulate_energy('energy_cache', energy)
+            
+            # 🔧 增强状态转移透明度：记录缓存命中任务详情
+            target_key = 'rsu' if node_type == 'RSU' else 'uav'
+            execution_detail = {
+                'task_id': task.get('id', 'unknown'),
+                'vehicle_id': vehicle.get('id', 'unknown'),
+                'target_type': target_key,
+                'target_id': node_idx,
+                'result': 'completed',
+                'delay': delay,
+                'energy': energy,
+                'data_size_mb': task.get('data_size', 0.0),
+                'task_type': task.get('task_type', 0),
+                'cache_hit': True,
+            }
+            step_summary['task_execution_details'].append(execution_detail)
+            
+            # 更新执行摘要
+            exec_summary = step_summary['execution_summary']
+            exec_summary['completed'] += 1
+            exec_summary['cache_hits'] += 1
+            exec_summary['offload_distribution'][target_key] += 1
+            
+            # 计算平均延迟和能耗（加权平均）
+            target_count = exec_summary['offload_distribution'][target_key]
+            prev_avg_delay = exec_summary['avg_delay_by_target'][target_key]
+            prev_avg_energy = exec_summary['avg_energy_by_target'][target_key]
+            exec_summary['avg_delay_by_target'][target_key] = ((target_count - 1) * prev_avg_delay + delay) / target_count
+            exec_summary['avg_energy_by_target'][target_key] = ((target_count - 1) * prev_avg_energy + energy) / target_count
         # 🔧 记录可视化事件 (缓存命中)
         if 'step_events' in step_summary:
             try:
@@ -3975,6 +4134,27 @@ class CompleteSystemSimulator:
         elif node_type == 'UAV':
             step_summary['uav_tasks'] = step_summary.get('uav_tasks', 0) + 1
         
+        # 🔧 增强状态转移透明度：记录远程卸载任务详情（排队中）
+        target_key = 'rsu' if node_type == 'RSU' else 'uav'
+        execution_detail = {
+            'task_id': task.get('id', 'unknown'),
+            'vehicle_id': vehicle.get('id', 'unknown'),
+            'target_type': target_key,
+            'target_id': node_idx,
+            'result': 'queued',  # 任务被排队，稍后处理
+            'delay': upload_delay,  # 已知的上传延迟
+            'energy': upload_energy,  # 已知的上传能耗
+            'data_size_mb': task.get('data_size', 0.0),
+            'task_type': task.get('task_type', 0),
+            'cache_hit': False,
+            'queue_position': len(queue),  # 队列位置
+        }
+        step_summary['task_execution_details'].append(execution_detail)
+        
+        # 更新执行摘要
+        exec_summary = step_summary['execution_summary']
+        exec_summary['offload_distribution'][target_key] += 1
+        
         # 🔧 记录可视化事件 (远程卸载)
         if 'step_events' in step_summary:
             try:
@@ -4042,6 +4222,7 @@ class CompleteSystemSimulator:
         本地处理任务
         
         在车辆本地设备上处理任务，计算延迟和能耗。
+        🔧 2024-12-02 修复：检查任务是否在deadline内完成
         
         Args:
             vehicle: 车辆字典
@@ -4055,6 +4236,22 @@ class CompleteSystemSimulator:
             return
 
         processing_delay, energy = self._estimate_local_processing(task, vehicle)
+        
+        # 🔧 修复：检查本地处理是否在deadline内完成
+        # 任务完成时间 = 当前时间 + 处理延迟
+        completion_time = self.current_time + processing_delay
+        task_deadline = task.get('deadline', float('inf'))
+        
+        if completion_time > task_deadline:
+            # 任务无法在deadline内完成，标记为丢弃
+            self.stats['dropped_tasks'] = self.stats.get('dropped_tasks', 0) + 1
+            self.stats['dropped_data_bytes'] = self.stats.get('dropped_data_bytes', 0.0) + float(task.get('data_size_bytes', 0.0))
+            task['dropped'] = True
+            task['drop_reason'] = 'local_deadline_exceeded'
+            step_summary['dropped_tasks'] = step_summary.get('dropped_tasks', 0) + 1
+            step_summary['local_drops'] = step_summary.get('local_drops', 0) + 1
+            return
+        
         self.stats['processed_tasks'] += 1
         self.stats['completed_tasks'] += 1
         self._accumulate_delay('delay_processing', processing_delay)
@@ -4123,6 +4320,33 @@ class CompleteSystemSimulator:
         
         step_summary['local_tasks'] += 1
         
+        # 🔧 增强状态转移透明度：记录本地处理任务详情
+        execution_detail = {
+            'task_id': task.get('id', 'unknown'),
+            'vehicle_id': vehicle.get('id', 'unknown'),
+            'target_type': 'local',
+            'target_id': None,
+            'result': 'completed',
+            'delay': processing_delay,
+            'energy': energy,
+            'data_size_mb': task.get('data_size', 0.0),
+            'task_type': task.get('task_type', 0),
+            'cache_hit': False,
+        }
+        step_summary['task_execution_details'].append(execution_detail)
+        
+        # 更新执行摘要
+        exec_summary = step_summary['execution_summary']
+        exec_summary['completed'] += 1
+        exec_summary['offload_distribution']['local'] += 1
+        
+        # 计算平均延迟和能耗（加权平均）
+        local_count = exec_summary['offload_distribution']['local']
+        prev_avg_delay = exec_summary['avg_delay_by_target']['local']
+        prev_avg_energy = exec_summary['avg_energy_by_target']['local']
+        exec_summary['avg_delay_by_target']['local'] = ((local_count - 1) * prev_avg_delay + processing_delay) / local_count
+        exec_summary['avg_energy_by_target']['local'] = ((local_count - 1) * prev_avg_energy + energy) / local_count
+        
         # 🔧 记录可视化事件
         if 'step_events' in step_summary:
             try:
@@ -4172,6 +4396,28 @@ class CompleteSystemSimulator:
         forced_key = 'forced_drops'
         step_summary[forced_key] = step_summary.get(forced_key, 0) + 1
         step_summary['last_forced_drop_reason'] = reason
+        
+        # 🔧 增强状态转移透明度：记录丢弃任务详情
+        execution_detail = {
+            'task_id': task.get('id', 'unknown'),
+            'vehicle_id': vehicle.get('id', 'unknown'),
+            'target_type': 'dropped',
+            'target_id': None,
+            'result': 'dropped',
+            'delay': 0.0,
+            'energy': 0.0,
+            'data_size_mb': task.get('data_size', 0.0),
+            'task_type': task.get('task_type', 0),
+            'cache_hit': False,
+            'drop_reason': reason,
+        }
+        step_summary['task_execution_details'].append(execution_detail)
+        
+        # 更新执行摘要
+        exec_summary = step_summary['execution_summary']
+        exec_summary['dropped'] += 1
+        drop_reasons = exec_summary['drop_reasons']
+        drop_reasons[reason] = drop_reasons.get(reason, 0) + 1
 
     
     def check_adaptive_migration(self, agents_actions: Optional[Dict] = None):
@@ -4566,7 +4812,18 @@ class CompleteSystemSimulator:
             'local_cache_hits': 0,  # 本地缓存命中次数
             'queue_overflow_drops': 0,  # 本步因队列溢出的丢弃
             'step_events': [],  # 🔧 新增：用于实时可视化的事件列表
-            'vehicle_positions': [] # 🔧 新增：用于实时可视化的车辆位置
+            'vehicle_positions': [],  # 🔧 新增：用于实时可视化的车辆位置
+            # 🔧 增强状态转移透明度：详细任务执行反馈
+            'task_execution_details': [],  # 每个任务的详细执行信息
+            'execution_summary': {  # 本步执行摘要
+                'completed': 0,  # 成功完成的任务数
+                'dropped': 0,  # 丢弃的任务数
+                'cache_hits': 0,  # 缓存命中数
+                'offload_distribution': {'local': 0, 'rsu': 0, 'uav': 0},
+                'avg_delay_by_target': {'local': 0.0, 'rsu': 0.0, 'uav': 0.0},
+                'avg_energy_by_target': {'local': 0.0, 'rsu': 0.0, 'uav': 0.0},
+                'drop_reasons': {},  # 丢弃原因统计
+            }
         }
 
         # 1. 更新车辆位置

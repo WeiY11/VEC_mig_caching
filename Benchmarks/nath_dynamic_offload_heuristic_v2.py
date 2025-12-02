@@ -47,15 +47,22 @@ class DynamicOffloadHeuristic:
         return weight_channel * ch - (self.delay_weight * queue_penalty + self.energy_weight * load_penalty)
 
     def _parse_state(self, state: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-        """Robustly split flat state: vehicles(?*5) + rsu(num_rsus*6) + uav(num_uavs*6) + global(8)."""
+        """
+        Robustly split flat state: vehicles(?*5) + rsu(num_rsus*5) + uav(num_uavs*5) + global(8).
+        
+        State dimensions (unified 5-dim per node):
+        - Vehicle: [pos_x, pos_y, velocity, queue, energy]
+        - RSU: [pos_x, pos_y, cache_util, queue, energy]
+        - UAV: [pos_x, pos_y, queue, cache_util, energy]
+        """
         flat = np.array(state, dtype=np.float32).reshape(-1)
         
         # Try different suffix lengths to find one that makes veh_len divisible by 5
         possible_suffixes = [8, 10, 24, 26] # 8 (global), 10 (global+?), 24 (global+central 16), 26 (global+central+?)
         
         veh_dim = 5
-        rsu_dim = 6
-        uav_dim = 6
+        rsu_dim = 5  # 统一为5维：pos_x, pos_y, cache_util, queue, energy
+        uav_dim = 5  # 统一为5维：pos_x, pos_y, queue, cache_util, energy
         
         rsu_total = self.num_rsus * rsu_dim
         uav_total = self.num_uavs * uav_dim
@@ -80,7 +87,7 @@ class DynamicOffloadHeuristic:
             best_suffix = 8
             best_veh_len = len(flat) - 8 - rsu_total - uav_total
 
-        print(f"DEBUG: flat.shape={flat.shape} suffix={best_suffix} veh_len={best_veh_len}")
+        # print(f"DEBUG: flat.shape={flat.shape} suffix={best_suffix} veh_len={best_veh_len}")  # 调试用，已注释
         
         useful_len = len(flat) - best_suffix
         
@@ -185,15 +192,15 @@ class DynamicOffloadHeuristic:
             offload_prob_uav = 0.3
         
         # RSU selection: prefer RSU with lowest queue (index 3)
-        # RSU state: x, y, cache, queue, energy, cpu
-        rsu_queues = rsu_states[:, 3]
+        # RSU state (5维): [pos_x, pos_y, cache_util, queue, energy]
+        rsu_queues = rsu_states[:, 3]  # queue is index 3
         # Softmax (negative queue)
         rsu_probs = np.exp(-5.0 * rsu_queues)
         rsu_probs /= (np.sum(rsu_probs) + 1e-6)
         
-        # UAV selection: prefer UAV with lowest energy consumption (index 4)?
-        # UAV state: x, y, z, cache, energy, cpu
-        uav_energy = uav_states[:, 4]
+        # UAV selection: prefer UAV with lowest energy consumption (index 4)
+        # UAV state (5维): [pos_x, pos_y, queue, cache_util, energy]
+        uav_energy = uav_states[:, 4]  # energy is index 4
         uav_probs = np.exp(-5.0 * uav_energy)
         uav_probs /= (np.sum(uav_probs) + 1e-6)
         

@@ -149,12 +149,14 @@ class UnifiedRewardCalculator:
         self.weight_queue_overload = float(getattr(config.rl, "reward_weight_queue_overload", 0.0))
         self.weight_remote_reject = float(getattr(config.rl, "reward_weight_remote_reject", 0.0))
         self.latency_target = float(getattr(config.rl, "latency_target", 1.5))
-        self.energy_target = float(getattr(config.rl, "energy_target", 9000.0))
+        self.energy_target = float(getattr(config.rl, "energy_target", 1000.0))  # 🔧 9000 → 1000 (对齐实际能耗)
         self.latency_tolerance = float(getattr(config.rl, "latency_upper_tolerance", self.latency_target * 2.0))
         self.energy_tolerance = float(getattr(config.rl, "energy_upper_tolerance", self.energy_target * 1.5))
         # 分段容错/钳位
-        self.total_cost_clip = float(getattr(config.rl, "reward_total_cost_clip", 120.0))
-        self.component_clip = float(getattr(config.rl, "reward_component_clip", 25.0))
+        # 🔧 2024-12-02 修复：收紧total_cost_clip与component_clip
+        # 配合归一化目标修复（energy_target=1000J），成本应在更小范围
+        self.total_cost_clip = float(getattr(config.rl, "reward_total_cost_clip", 10.0))  # 🔧 120 → 10
+        self.component_clip = float(getattr(config.rl, "reward_component_clip", 3.0))    # 🔧 25 → 3
         # 归一化任务优先级权重（如果存在）
         # Normalise priority weights if they exist.
         priority_weights = getattr(config, "task", None)
@@ -215,9 +217,10 @@ class UnifiedRewardCalculator:
         # 设置奖励裁剪范围，防止奖励值过大或过小
         # 成本最小化框架：所有算法统一使用负奖励范围
         # 奖励值越接近0表示成本越低（性能越好）
-        # 🔧 权重优化阶段2：收紧裁剪范围，限制极端惩罚，稳定Q值估计
-        # 实际训练数据显示99%奖励在[-3, -1]，异常值<-3占3.88%
-        self.reward_clip_range = (-10.0, 0.0)  # 🔧 -50 → -10 (收紧5倍，限制异常惩罚)
+        # 🔧 2024-12-02 修复：收紧裁剪范围，稳定Q值估计
+        # 问题：原[-10, 0]仍然可能产生较大方差，导致Q网络bias
+        # 解决：进一步收紧到[-5, 0]，配合归一化目标修复
+        self.reward_clip_range = (-5.0, 0.0)  # 🔧 -10 → -5 (收紧2倍)
 
         print(f"[OK] Unified reward calculator ({self.algorithm})")
         print(
@@ -486,10 +489,18 @@ class UnifiedRewardCalculator:
         
         所有算法统一使用成本最小化奖励：reward = -total_cost
         奖励范围: [-10.0, 0.0]，越接近0表示性能越好
+        
+        🔧 2024-12-02 v4修复：添加Reward Scaling放大奖励差异
+        问题：奖励信号太弱(~0.01方差)，TD3梯度不明显
+        解决：使用reward_scale放大差异，让策略改进更明显
         """
-        # 成本最小化：奖励 = -成本，所有算法统一
-        reward_raw = -abs(components.total_cost)
-        reward_clipped = float(np.clip(reward_raw, self.reward_clip_range[0], self.reward_clip_range[1]))
+        # 🔧 Reward Scaling：放大奖励信号
+        # 从config读取，默认5.0（将奖励差异放大5倍）
+        reward_scale = float(getattr(config.rl, 'reward_scale', 5.0))
+        
+        # 成本最小化：奖励 = -成本 * scale
+        reward_raw = -abs(components.total_cost) * reward_scale
+        reward_clipped = float(np.clip(reward_raw, self.reward_clip_range[0] * reward_scale, self.reward_clip_range[1]))
         components.reward_pre_clip = reward_raw
         components.reward = reward_clipped if np.isfinite(reward_clipped) else 0.0
         return components

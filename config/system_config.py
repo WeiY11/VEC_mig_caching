@@ -233,25 +233,25 @@ class RLConfig:
         self.noise_decay = 0.99       # 🔧 0.995 → 0.99 (加快衰减，更快减少震荡)
         self.min_noise = 0.005         # 🔧 0.01 → 0.005 (降低最小噪声)
         
-        # 🎯 核心奖励权重：ONLY延迟+能耗
-        # 🔧 2024-12-02 激进简化：删除所有辅助惩罚项，只保留核心目标
-        #    问题：图表显示目标函数（delay+energy）已经稳定在0.55-0.75
-        #          但奖励剧烈震荡-0.025到-0.040，说明辅助项加了太多噪声
-        #    策略：只优化核心目标，让智能体专注学习delay和energy的权衡
-        self.reward_weight_delay = 1.0  # 🔧 0.5 → 1.0 (提升权重，突出核心)
-        self.reward_weight_energy = 1.0  # 🔧 0.5 → 1.0 (提升权重，平衡)
+        # 🎯 核心奖励权重：延迟+能耗+完成率
+        # 🔧 2024-12-02 v6修复：500 episode后仍无学习，增强奖励塑形
+        #    问题：奖励信号太弱(-0.89~-0.90)，信噪比低，无法学习
+        #    策略：增强完成率惩罚，让22%任务丢弃产生更强的梯度信号
+        self.reward_weight_delay = 0.3  # 🔧 1.0 → 0.3 (降低，让完成率主导)
+        self.reward_weight_energy = 0.2  # 🔧 1.0 → 0.2 (降低，让完成率主导)
         
-        # 关键惩罚：只保留任务丢弃（这是硬约束）
-        # 🔧 0.01 → 1.0 (大幅提升，确保丢包成本 > 处理成本，防止Lazy Agent)
-        self.reward_penalty_dropped = 1.0
-        self.completion_target = 0.88  # 保持不变
+        # 🔥 关键惩罚：大幅增强任务丢弃惩罚
+        # 🔧 1.0 → 0.5 (每丢弃1个任务扣0.5分，22%丢弃率≈44任务/episode≈-22分)
+        self.reward_penalty_dropped = 0.5
+        self.completion_target = 0.85  # 🔧 0.88 → 0.85 (更宽松目标)
         
-        # 🚫 大幅降低或禁用所有辅助惩罚项（这些都在加噪声）
-        self.reward_weight_completion_gap = 0.0  # 🔧 0.02 → 0.0 (禁用，completion已经99.9%)
-        self.reward_weight_loss_ratio = 0.0  # 🔧 0.05 → 0.0 (禁用，与delay高度相关)
-        self.reward_weight_cache_pressure = 0.0  # 🔧 0.05 → 0.0 (禁用，让系统自由探索)
-        self.reward_weight_cache_bonus = 0.0  # 🔧 0.15 → 0.0 (禁用，不人工引导)
-        self.reward_weight_queue_overload = 0.0  # 🔧 0.02 → 0.0 (禁用)
+        # 🔥 启用完成率差距惩罚：让智能体关注完成率
+        # 77%完成率 vs 85%目标 = 8% gap → 惩罚 0.4 * 0.08 / 0.2 ≈ 0.16/step
+        self.reward_weight_completion_gap = 2.0  # 🔧 0.0 → 2.0 (强惩罚)
+        self.reward_weight_loss_ratio = 0.0  # 保持禁用
+        self.reward_weight_cache_pressure = 0.0  # 保持禁用
+        self.reward_weight_cache_bonus = 0.0  # 保持禁用
+        self.reward_weight_queue_overload = 0.0  # 保持禁用
 
         # ⚠️ 已弃用参数（保留以兼容旧代码）
         self.reward_weight_loss = 0.0      # 已移除：data_loss是时延的衡生指标
@@ -368,32 +368,29 @@ class TaskConfig:
     def __init__(self):
         self.num_priority_levels = 4
         
-        # 🎯 高负载场景配置：平衡真实性与实验有效性
-        # 目标：本地计算完成率降至75-80%，保留策略差异性
-        self.task_compute_density = 100  # cycles per bit - 默认计算密度（视频处理级别）
-        # 🔧 修复：提升任务到达率，增加系统负载，让智能体学会资源调度 (1.8 → 2.2)
-        self.arrival_rate = 2.2   # tasks/s - 适度负载（12车×2.2 = 26.4 tasks/s总负载）
+        # 🎯 极限负载场景：强制降低完成率到75-85%
+        # 🔧 2024-12-02 v4修复：v3仍然完成率99.97%，没有学习空间
+        # 问题诊断：2000 episode后奖励仅改呙1%，任务太简单
+        self.task_compute_density = 100  # 🔧 v5: 200 → 100
+        self.arrival_rate = 3.5   # 🔧 v5: 10 → 3.5
         
-        # 🎯 优化后任务参数：与task_profiles对齐
-        # 🔧 修正：数据范围覆盖所有4种任务类型 (50KB-8MB)
-        self.data_size_range = (50e3, 8e6)  # 50KB-8MB，覆盖所有类型
-        self.task_data_size_range = self.data_size_range  # 兼容性别名
+        # 🎯 数据范围：300KB-5MB
+        self.data_size_range = (300e3, 5e6)
+        self.task_data_size_range = self.data_size_range
 
-        # 计算周期配置 (基于分级计算密度)
-        # 最大计算量 = 8MB × 8 bits/byte × 150 cycles/bit = 9.6e9 cycles (类型4任务)
-        self.compute_cycles_range = (50e3 * 8 * 60, 8e6 * 8 * 150)  # cycles (覆盖60-150 cycles/bit全范围)
+        # 计算周期配置
+        self.compute_cycles_range = (300e3 * 8 * 100, 5e6 * 8 * 100)
         
-        # 🔧 修正：截止时间对齐类型4上限（8 slots = 0.8s）
-        # ✅ 范围覆盖类型1(0.18-0.24s)到类型4(0.78-0.86s)
-        self.deadline_range = (0.15, 0.85)  # seconds，对齐类型4上限0.8s
+        # 🔧 收紧截止时间
+        self.deadline_range = (0.15, 0.50)
         # 输出比例配置
         self.task_output_ratio = 0.05  # 输出大小是输入大小的5%
         
-        # 🔧 收紧约束：任务类型阈值 - 充分利用100ms精细时隙，避免过长延迟
+        # 任务类型阈值
         self.delay_thresholds = {
-            'extremely_sensitive': 2,    # <= 2 slots = 0.2s
-            'sensitive': 4,              # <= 4 slots = 0.4s
-            'moderately_tolerant': 5,    # <= 5 slots = 0.5s (从6收紧到5)
+            'extremely_sensitive': 2,
+            'sensitive': 3,
+            'moderately_tolerant': 4,
         }
 
         # Latency cost weights (aligned with task_profiles and Table IV)
@@ -411,16 +408,12 @@ class TaskConfig:
         # 低四亚蹡：每个类枠先恰会正。描例：简回因子=1.3是削溥计帄，将保骇时閒=0.3的任务上升。
         self.deadline_relax_fallback = 1.0  # 騍松因子改为1.0（无騍松），确保任务类型冠正
 
-        # 🎯 优化后任务类型配置：分层合理化计算密度，扩大数据范围
-        # 🔧 修正：消除数据范围重叠，控制跨度，对齐deadline
-        # 原则1：类型间留有明确间隙，避免边界模糊
-        # 原则2：每类跨度控制在2-2.5倍以内，提高分类稳定性
-        # 原则3：deadline与场景配置对齐，消除逻辑矛盾
+        # 任务类型配置
         self.task_profiles: Dict[int, TaskProfileSpec] = {
-            1: TaskProfileSpec(1, (50e3, 200e3), 60, 2, 1.0),        # 60 cycles/bit, 0.2s - 极度敏感（50KB-200KB：紧急制动）
-            2: TaskProfileSpec(2, (600e3, 1.5e6), 90, 4, 0.7),       # 90 cycles/bit, 0.4s - 敏感（600KB-1.5MB：导航）
-            3: TaskProfileSpec(3, (2e6, 4e6), 120, 5, 0.5),          # 120 cycles/bit, 0.5s - 中度容忍（2MB-4MB：图像识别）
-            4: TaskProfileSpec(4, (4.5e6, 8e6), 150, 8, 0.4),        # 150 cycles/bit, 0.8s - 容忍（4.5MB-8MB：深度学习）
+            1: TaskProfileSpec(1, (100e3, 500e3), 80, 2, 1.0),
+            2: TaskProfileSpec(2, (500e3, 2e6), 100, 3, 0.7),
+            3: TaskProfileSpec(3, (2e6, 4e6), 120, 4, 0.5),
+            4: TaskProfileSpec(4, (4e6, 5e6), 150, 5, 0.4),
         }
         # Backwards-compatible dictionary view for legacy code
         self.task_type_specs = {
@@ -435,14 +428,14 @@ class TaskConfig:
 
         # 场景定义
         self.scenarios: List[TaskScenarioSpec] = [
-            TaskScenarioSpec('emergency_brake', 0.18, 0.22, 1, 1.0, 0.25),  # 权重25% - 大幅提高
-            TaskScenarioSpec('collision_avoid', 0.18, 0.24, 1, 1.0, 0.20),  # 权重20%
-            TaskScenarioSpec('navigation', 0.38, 0.42, 2, 1.0, 0.15),
-            TaskScenarioSpec('traffic_signal', 0.38, 0.44, 2, 1.0, 0.10),
-            TaskScenarioSpec('video_process', 0.58, 0.64, 3, 1.0, 0.15),
-            TaskScenarioSpec('image_recognition', 0.58, 0.66, 3, 1.0, 0.10),
-            TaskScenarioSpec('data_analysis', 0.78, 0.84, 4, 1.0, 0.04),
-            TaskScenarioSpec('ml_training', 0.78, 0.86, 4, 1.0, 0.01),
+            TaskScenarioSpec('emergency_brake', 0.15, 0.25, 1, 1.0, 0.25),
+            TaskScenarioSpec('collision_avoid', 0.18, 0.28, 1, 1.0, 0.20),
+            TaskScenarioSpec('navigation', 0.25, 0.35, 2, 1.0, 0.15),
+            TaskScenarioSpec('traffic_signal', 0.28, 0.38, 2, 1.0, 0.10),
+            TaskScenarioSpec('video_process', 0.35, 0.45, 3, 1.0, 0.15),
+            TaskScenarioSpec('image_recognition', 0.38, 0.48, 3, 1.0, 0.10),
+            TaskScenarioSpec('data_analysis', 0.42, 0.50, 4, 1.0, 0.04),
+            TaskScenarioSpec('ml_training', 0.45, 0.52, 4, 1.0, 0.01),
         ]
         self._scenario_weights = [scenario.weight for scenario in self.scenarios]
         self._scenario_lookup = {scenario.name: scenario for scenario in self.scenarios}

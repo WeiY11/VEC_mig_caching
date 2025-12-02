@@ -349,11 +349,13 @@ class SingleAgentTrainingEnvironment:
 
         # ✅ 启用update_reward_targets，使用system_config.py中的优化目标值
         # 确保全局单例计算器使用正确的归一化目标
-        # 🔧 2024-12-02 激进简化：降低归一化目标，增强核心信号
+        # 🔧 2024-12-02 修复：能耗目标对齐实际系统能耗(~1000J/episode)
+        # 问题原因：原200J目标导致norm_energy=35，奖励=-130（极端负值）
+        # 解决方案：目标值与实际能耗匹配，使norm_energy≈1，奖励在[-3,-1]合理范围
         try:
             update_reward_targets(
                 latency_target=float(getattr(rl, "latency_target", 1.5)),
-                energy_target=float(getattr(rl, "energy_target", 200.0)),
+                energy_target=float(getattr(rl, "energy_target", 1000.0)),  # 🔧 200 → 1000 (对齐实际能耗)
             )
         except Exception:
             pass
@@ -1298,10 +1300,27 @@ class SingleAgentTrainingEnvironment:
         # 判断是否结束
         done = False  # 单智能体环境通常不会提前结束
         
+        # 🔧 增强状态转移透明度：提取任务执行详情
+        task_execution_details = step_stats.get('task_execution_details', [])
+        execution_summary = step_stats.get('execution_summary', {})
+        
         # 附加信息
         info = {
             'step_stats': step_stats,
-            'system_metrics': system_metrics
+            'system_metrics': system_metrics,
+            # 🔧 新增：详细的任务执行反馈
+            'task_feedback': {
+                'execution_details': task_execution_details,  # 每个任务的详细执行信息
+                'summary': execution_summary,  # 本步执行摘要
+                'step_generated': step_stats.get('generated_tasks', 0),  # 本步生成任务数
+                'step_completed': execution_summary.get('completed', 0),  # 本步完成任务数
+                'step_dropped': execution_summary.get('dropped', 0),  # 本步丢弃任务数
+                'step_cache_hits': execution_summary.get('cache_hits', 0),  # 本步缓存命中数
+                'offload_distribution': execution_summary.get('offload_distribution', {}),  # 卸载分布
+                'avg_delay_by_target': execution_summary.get('avg_delay_by_target', {}),  # 各目标平均延迟
+                'avg_energy_by_target': execution_summary.get('avg_energy_by_target', {}),  # 各目标平均能耗
+                'drop_reasons': execution_summary.get('drop_reasons', {}),  # 丢弃原因统计
+            }
         }
         
         return next_state, reward, done, info

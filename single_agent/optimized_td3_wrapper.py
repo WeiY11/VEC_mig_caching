@@ -15,14 +15,35 @@ from scipy.special import softmax
 
 from .enhanced_td3_agent import EnhancedTD3Agent
 from .enhanced_td3_config import EnhancedTD3Config
+from .common_state_action import (
+    UnifiedStateActionSpace,
+    ACTION_DIM_OFFLOAD_PREF,
+    ACTION_DIM_CONTROL_PARAMS,
+    CENTRAL_VEHICLE_GROUPS,
+    CENTRAL_RSU_AGGREGATE,
+    CENTRAL_UAV_AGGREGATE,
+    STATE_DIM_PER_VEHICLE,
+    STATE_DIM_PER_RSU,
+    STATE_DIM_PER_UAV,
+    STATE_DIM_GLOBAL,
+    STATE_DIM_CENTRAL,
+)
 
 
 def create_optimized_config() -> EnhancedTD3Config:
-    """创建精简优化配置 - ✨ 使用最新GAT优化"""
+    """创建精简优化配置 - ✨ 使用最新GAT优化
+    
+    🔧 2024-12-02 v3修复：增强探索+学习率优化
+    核心修复：
+    1. 增加初始探索噪声 0.15 → 0.25 (更强的初始探索)
+    2. 加快噪声衰减 0.9995 → 0.999 (更快收敛)
+    3. 提高Critic学习率 3e-4 → 5e-4 (加快值函数学习)
+    4. 增加梯度更新次数
+    """
     return EnhancedTD3Config(
         # ✅ 核心优化1：队列感知回放
         use_queue_aware_replay=True,
-        queue_priority_weight=0.2,  # 保持降低的权重
+        queue_priority_weight=0.2,
         queue_occ_coef=0.5,
         packet_loss_coef=0.3,
         migration_cong_coef=0.2,
@@ -30,7 +51,7 @@ def create_optimized_config() -> EnhancedTD3Config:
         
         # ✅ 核心优化2：GNN注意力
         use_gat_router=True,
-        num_attention_heads=6,  # 🔧 4 -> 6 (恢复适中复杂度)
+        num_attention_heads=6,
         gat_hidden_dim=192,
         gat_dropout=0.15,
 
@@ -39,25 +60,25 @@ def create_optimized_config() -> EnhancedTD3Config:
         use_entropy_reg=False,
         use_model_based_rollout=False,
 
-        # 🔧 基础参数优化 - 阶段2：提升学习效率
-        hidden_dim=512,
-        batch_size=512,  # 🔧 768 -> 512 (阶段2：减小33%，提高更新频率)
+        # 🔧 基础参数优化
+        hidden_dim=384,
+        batch_size=512,
         buffer_size=100000,
-        warmup_steps=5000,  # 🔧 2000 -> 5000 (阶段2：增加2.5倍，约50 episodes充分预热)
+        warmup_steps=3000,    # 🔧 5000 → 3000 (更快开始学习)
 
-        # 🔧 学习率优化 - 阶段2：提升学习率，加快策略更新
-        actor_lr=6e-5,    # 🔧 3e-5 -> 6e-5 (阶段2：提升2倍)
-        critic_lr=1.5e-4, # 🔧 8e-5 -> 1.5e-4 (阶段2：提升1.875倍，保持比例2.5)
+        # 🔧 学习率优化 - 加快Critic学习
+        actor_lr=1e-4,
+        critic_lr=5e-4,       # 🔧 3e-4 → 5e-4 (加快Q网络学习)
 
-        # 🔧 探索策略优化 - 阶段1收敛性修复 (已完成)
-        exploration_noise=0.08,  # 🔧 阶段1: 0.15 -> 0.08 (降低47%)
-        noise_decay=0.995,       # 🔧 阶段1: 0.998 -> 0.995 (加快衰减)
-        min_noise=0.01,          # 🔧 阶段1: 0.02 -> 0.01
-        target_noise=0.015,      # 🔧 阶段1: 0.02 -> 0.015
-        noise_clip=0.03,         # 🔧 阶段1: 0.05 -> 0.03
+        # 🔧 探索噪声优化 - 更强的初始探索，更快的衰减
+        exploration_noise=0.25,   # 🔧 0.15 → 0.25 (更强的初始探索)
+        noise_decay=0.999,        # 🔧 0.9995 → 0.999 (更快衰减)
+        min_noise=0.03,           # 🔧 0.02 → 0.03 (保持最低探索)
+        target_noise=0.05,        # 🔧 0.03 → 0.05 (适当的目标噪声)
+        noise_clip=0.15,          # 🔧 0.1 → 0.15 (增大裁剪范围)
 
-        # 奖励归一化
-        reward_norm_beta=0.997,
+        # 🔧 奖励归一化
+        reward_norm_beta=0.995,
         reward_norm_clip=5.0,
     )
 
@@ -88,28 +109,49 @@ class OptimizedTD3Wrapper:
         # 创建优化配置
         config = create_optimized_config()
         
-        # 计算维度
-        vehicle_state_dim = num_vehicles * 5  # 车辆保持5维
-        rsu_state_dim = num_rsus * 5  # 🔧 修复2：RSU统一为5维（与实际状态构建一致）
-        uav_state_dim = num_uavs * 5  # 🔧 修复2：UAV统一为5维（与实际状态构建一致）
-        global_state_dim = 8
+        # 计算维度 - 使用统一常量
+        vehicle_state_dim = num_vehicles * STATE_DIM_PER_VEHICLE  # 车辆保持5维
+        rsu_state_dim = num_rsus * STATE_DIM_PER_RSU  # RSU统一为5维
+        uav_state_dim = num_uavs * STATE_DIM_PER_UAV  # UAV统一为5维
+        global_state_dim = STATE_DIM_GLOBAL
         base_state_dim = vehicle_state_dim + rsu_state_dim + uav_state_dim + global_state_dim
         
         if use_central_resource:
-            self.central_state_dim = 16
-            # 🔧 P0修复：正确计算state_dim，加上central_state_dim
+            self.central_state_dim = STATE_DIM_CENTRAL
             self.state_dim = base_state_dim + self.central_state_dim
         else:
             self.central_state_dim = 0
             self.state_dim = base_state_dim
         
-        self.base_action_dim = 3 + num_rsus + num_uavs + 10
+        # 动作空间配置 - 使用统一常量
+        import os
+        self.simplified_action = os.environ.get('SIMPLIFIED_ACTION', '0').strip() in {'1', 'true', 'True'}
+        if self.simplified_action:
+            self.base_action_dim = 8  # 简化版：只保留核心控制
+            print("[OptimizedTD3] 🔧 简化动作空间已启用 (8维基础动作)")
+        else:
+            # 原始版：使用统一计算函数
+            self.base_action_dim = UnifiedStateActionSpace.calculate_action_dim(num_rsus, num_uavs, include_central=False)
         
         if use_central_resource:
-            self.central_resource_action_dim = num_vehicles + num_vehicles + num_rsus + num_uavs
+            # 中央资源分配模式
+            self.aggregated_central = os.environ.get('AGGREGATED_CENTRAL', '1').strip() in {'1', 'true', 'True'}
+            
+            if self.aggregated_central:
+                # 聚合模式：使用统一常量
+                self.num_vehicle_groups = CENTRAL_VEHICLE_GROUPS
+                self.central_resource_action_dim = CENTRAL_VEHICLE_GROUPS + CENTRAL_RSU_AGGREGATE + CENTRAL_UAV_AGGREGATE
+                print(f"[OptimizedTD3] 🔧 聚合中央资源模式 ({self.central_resource_action_dim}维)")
+            else:
+                # 原始模式
+                self.num_vehicle_groups = num_vehicles
+                self.central_resource_action_dim = num_vehicles + num_vehicles + num_rsus + num_uavs
+            
             self.action_dim = self.base_action_dim + self.central_resource_action_dim
         else:
             self.central_resource_action_dim = 0
+            self.aggregated_central = False
+            self.num_vehicle_groups = num_vehicles
             self.action_dim = self.base_action_dim
         
         # 如果只是仿真进程，跳过加载沉重的神经网络
@@ -285,9 +327,10 @@ class OptimizedTD3Wrapper:
         # 全局状态
         # 🔧 P0修复：归一化因子必须与UnifiedRewardCalculator严格对齐
         # 从配置读取目标值，确保状态归一化与奖励计算使用相同基准
+        # 🔧 2024-12-02 修复：默认值对齐实际系统性能
         from config import config
-        latency_target = float(getattr(config.rl, 'latency_target', 0.4))  # 与config.rl默认值对齐
-        energy_target = float(getattr(config.rl, 'energy_target', 3500.0))  # 与config.rl默认值对齐
+        latency_target = float(getattr(config.rl, 'latency_target', 1.5))     # 🔧 0.4 → 1.5 (对齐实际延迟)
+        energy_target = float(getattr(config.rl, 'energy_target', 1000.0))    # 🔧 3500 → 1000 (对齐实际能耗)
         
         global_state = [
             float(system_metrics.get('avg_task_delay', 0.0) / max(latency_target, 1e-6)),
@@ -347,21 +390,37 @@ class OptimizedTD3Wrapper:
     def decompose_action(self, action: np.ndarray) -> Dict:
         """分解动作"""
         actions = {}
-        idx = 0
         
         # 1. 基础动作 (Offload + RSU/UAV Selection + Control Params)
         base_segment = action[:self.base_action_dim]
         
-        offload_preference = base_segment[:3]
-        idx = 3
-        
-        rsu_selection = base_segment[idx:idx + self.num_rsus]
-        idx += self.num_rsus
-        
-        uav_selection = base_segment[idx:idx + self.num_uavs]
-        idx += self.num_uavs
-        
-        control_params = base_segment[idx:idx + 10]
+        # 🔧 简化动作处理：8维 → 展开为完整格式
+        if self.simplified_action:
+            # 简化动作结构 (8维):
+            # [0:3] 卸载偏好 (local, rsu, uav)
+            # [3]   RSU聚合权重 (广播到所有RSU)
+            # [4]   UAV聚合权重 (广播到所有UAV)
+            # [5:8] 核心控制参数 (缓存激进度, 迁移倾向, 负载均衡)
+            offload_preference = base_segment[:3]
+            rsu_aggregate = float(base_segment[3]) if len(base_segment) > 3 else 0.0
+            uav_aggregate = float(base_segment[4]) if len(base_segment) > 4 else 0.0
+            core_control = base_segment[5:8] if len(base_segment) > 5 else np.zeros(3)
+            
+            # 广播到所有RSU/UAV
+            rsu_selection = np.full(self.num_rsus, rsu_aggregate, dtype=np.float32)
+            uav_selection = np.full(self.num_uavs, uav_aggregate, dtype=np.float32)
+            # 扩展核心控制到10维
+            control_params = np.zeros(10, dtype=np.float32)
+            control_params[:len(core_control)] = core_control
+        else:
+            # 原始动作处理 (19维)
+            offload_preference = base_segment[:3]
+            idx = 3
+            rsu_selection = base_segment[idx:idx + self.num_rsus]
+            idx += self.num_rsus
+            uav_selection = base_segment[idx:idx + self.num_uavs]
+            idx += self.num_uavs
+            control_params = base_segment[idx:idx + 10]
         
         actions['vehicle_agent'] = action.copy() # 保留原始完整动作供参考
         actions['offload_preference'] = {
@@ -378,25 +437,52 @@ class OptimizedTD3Wrapper:
             # action的后半部分是中央资源动作
             central_segment = action[self.base_action_dim:]
             
-            # 确保长度匹配
             expected_len = self.central_resource_action_dim
             if len(central_segment) >= expected_len:
-                c_idx = 0
                 
-                # 车辆带宽分配权重 (num_vehicles)
-                bw_alloc = central_segment[c_idx:c_idx + self.num_vehicles]
-                c_idx += self.num_vehicles
-                
-                # 车辆计算资源分配权重 (num_vehicles)
-                comp_alloc = central_segment[c_idx:c_idx + self.num_vehicles]
-                c_idx += self.num_vehicles
-                
-                # RSU计算资源预留 (num_rsus)
-                rsu_alloc = central_segment[c_idx:c_idx + self.num_rsus]
-                c_idx += self.num_rsus
-                
-                # UAV计算资源预留 (num_uavs)
-                uav_alloc = central_segment[c_idx:c_idx + self.num_uavs]
+                if self.aggregated_central:
+                    # 🔧 聚合模式：7维 → 展开为完整资源分配
+                    # [0:4] 4组车辆资源分配
+                    # [4:6] 2个RSU聚合权重
+                    # [6]   1个UAV聚合权重
+                    c_idx = 0
+                    group_weights = central_segment[c_idx:c_idx + self.num_vehicle_groups]  # 4维
+                    c_idx += self.num_vehicle_groups
+                    rsu_weights = central_segment[c_idx:c_idx + 2]  # 2维
+                    c_idx += 2
+                    uav_weight = float(central_segment[c_idx]) if c_idx < len(central_segment) else 0.0  # 1维
+                    
+                    # 将组权重广播到每辆车 (4组 → 12车)
+                    vehicles_per_group = self.num_vehicles // self.num_vehicle_groups
+                    bw_alloc = np.zeros(self.num_vehicles, dtype=np.float32)
+                    comp_alloc = np.zeros(self.num_vehicles, dtype=np.float32)
+                    for g in range(self.num_vehicle_groups):
+                        start_v = g * vehicles_per_group
+                        end_v = min(start_v + vehicles_per_group, self.num_vehicles)
+                        group_w = float(group_weights[g]) if g < len(group_weights) else 0.0
+                        bw_alloc[start_v:end_v] = group_w
+                        comp_alloc[start_v:end_v] = group_w  # 带宽和计算共享权重
+                    
+                    # 将RSU权重广播 (2 → 4 RSUs)
+                    rsu_alloc = np.zeros(self.num_rsus, dtype=np.float32)
+                    rsus_per_group = max(1, self.num_rsus // 2)
+                    for r in range(self.num_rsus):
+                        group_idx = min(r // rsus_per_group, 1)
+                        rsu_alloc[r] = float(rsu_weights[group_idx]) if group_idx < len(rsu_weights) else 0.0
+                    
+                    # UAV统一权重
+                    uav_alloc = np.full(self.num_uavs, uav_weight, dtype=np.float32)
+                    
+                else:
+                    # 原始模式：30维完整分配
+                    c_idx = 0
+                    bw_alloc = central_segment[c_idx:c_idx + self.num_vehicles]
+                    c_idx += self.num_vehicles
+                    comp_alloc = central_segment[c_idx:c_idx + self.num_vehicles]
+                    c_idx += self.num_vehicles
+                    rsu_alloc = central_segment[c_idx:c_idx + self.num_rsus]
+                    c_idx += self.num_rsus
+                    uav_alloc = central_segment[c_idx:c_idx + self.num_uavs]
                 
                 actions['central_resource'] = {
                     'bandwidth_weights': softmax(bw_alloc),
@@ -405,7 +491,6 @@ class OptimizedTD3Wrapper:
                     'uav_reservation': softmax(uav_alloc)
                 }
             else:
-                # 维度不匹配时的回退
                 print(f"⚠️ 动作维度警告: Central segment len {len(central_segment)} < expected {expected_len}")
                 actions['central_resource'] = None
         

@@ -499,97 +499,10 @@ class DDPGEnvironment:
             self.state_dim
         )
     
-    def _get_state_vector_legacy(self, node_states: Dict, system_metrics: Dict) -> np.ndarray:
-        """
-        遗留的状态构建方法（保留作参考）
-        """
-        state_components = []
-        
-        # 1. 车辆状态 (12×5=60维) - 与TD3一致
-        for i in range(12):
-            vehicle_key = f'vehicle_{i}'
-            if vehicle_key in node_states:
-                vehicle_state = node_states[vehicle_key]
-                # 确保数值有效性
-                valid_state = []
-                for val in vehicle_state[:5]:
-                    if np.isfinite(val):
-                        valid_state.append(float(val))
-                    else:
-                        valid_state.append(0.5)
-                state_components.extend(valid_state)
-                
-                # 补齐到5维
-                while len(state_components) % 5 != 0:
-                    state_components.append(0.0)
-            else:
-                # 默认车辆状态: [位置x, 位置y, 速度, 队列, 能耗]
-                state_components.extend([0.5, 0.5, 0.0, 0.0, 0.0])
-        
-        # 2. RSU状态 (6×9=54维) - 与TD3一致
-        for i in range(6):
-            rsu_key = f'rsu_{i}'
-            if rsu_key in node_states:
-                rsu_state = node_states[rsu_key]
-                # 确保数值有效性和维度正确
-                valid_rsu_state = []
-                for j, val in enumerate(rsu_state[:9]):
-                    if np.isfinite(val):
-                        # 对缓存利用率(第2维)进行特殊检查
-                        if j == 2:  # 缓存利用率维度
-                            valid_rsu_state.append(min(1.0, max(0.0, float(val))))
-                        else:
-                            valid_rsu_state.append(float(val))
-                    else:
-                        valid_rsu_state.append(0.5 if j < 2 else 0.0)
-                
-                # 补齐到9维
-                while len(valid_rsu_state) < 9:
-                    valid_rsu_state.append(0.0)
-                
-                state_components.extend(valid_rsu_state)
-            else:
-                # 默认RSU状态: [位置x, 位置y, 缓存利用率, 队列, 能耗, 缓存参数4维]
-                state_components.extend([0.5, 0.5, 0.0, 0.0, 0.0, 0.7, 0.35, 0.05, 0.3])
-        
-        # 3. UAV状态 (2×8=16维) - 与TD3一致
-        for i in range(2):
-            uav_key = f'uav_{i}'
-            if uav_key in node_states:
-                uav_state = node_states[uav_key]
-                # 确保数值有效性
-                valid_uav_state = []
-                for j, val in enumerate(uav_state[:8]):
-                    if np.isfinite(val):
-                        # 对缓存利用率(第3维)进行特殊处理
-                        if j == 3:  # 缓存利用率维度
-                            valid_uav_state.append(min(1.0, max(0.0, float(val))))
-                        else:
-                            valid_uav_state.append(float(val))
-                    else:
-                        valid_uav_state.append(0.5 if j < 3 else 0.0)
-                
-                # 补齐到8维
-                while len(valid_uav_state) < 8:
-                    valid_uav_state.append(0.0)
-                
-                state_components.extend(valid_uav_state)
-            else:
-                # 默认UAV状态: [位置x, 位置y, 位置z, 缓存利用率, 能耗, 迁移参数3维]
-                state_components.extend([0.5, 0.5, 0.5, 0.0, 0.0, 0.75, 1.0, 0.3])
-        
-        # 确保状态向量正好是130维
-        state_vector = np.array(state_components[:130], dtype=np.float32)
-        
-        # 如果维度不足130，补齐
-        if len(state_vector) < 130:
-            padding_needed = 130 - len(state_vector)
-            state_vector = np.pad(state_vector, (0, padding_needed), mode='constant', constant_values=0.5)
-        
-        # 数值安全检查
-        state_vector = np.nan_to_num(state_vector, nan=0.5, posinf=1.0, neginf=0.0)
-        
-        return state_vector
+    # 注意: 遗留的 _get_state_vector_legacy 方法已删除
+    # 请使用 get_state_vector() 方法，它调用 UnifiedStateActionSpace.build_state_vector()
+    # 统一状态空间定义：车辆5维、RSU 5维、UAV 5维（详见 common_state_action.py）
+    
     
     def decompose_action(self, action: np.ndarray) -> Dict[str, np.ndarray]:
         """将全局动作分解为各子策略动作"""

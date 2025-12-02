@@ -1657,12 +1657,15 @@ class TD3Environment:
     
     def calculate_reward(self, system_metrics: Dict, 
                        cache_metrics: Optional[Dict] = None,
-                       migration_metrics: Optional[Dict] = None) -> float:
+                       migration_metrics: Optional[Dict] = None) -> tuple[float, Dict[str, float]]:
         """
         使用统一奖励计算器
+        
+        Returns:
+            tuple: (reward, reward_components)
         """
-        from utils.unified_reward_calculator import calculate_unified_reward
-        return calculate_unified_reward(system_metrics, cache_metrics, migration_metrics, algorithm="general")
+        from utils.unified_reward_calculator import _general_reward_calculator
+        return _general_reward_calculator.calculate_reward(system_metrics, cache_metrics, migration_metrics)
     
     def train_step(self, state: np.ndarray, action: Union[np.ndarray, int], reward: float,
                    next_state: np.ndarray, done: bool) -> Dict:
