@@ -57,8 +57,13 @@ class DynamicOffloadHeuristic:
         """
         flat = np.array(state, dtype=np.float32).reshape(-1)
         
-        # Try different suffix lengths to find one that makes veh_len divisible by 5
-        possible_suffixes = [8, 10, 24, 26] # 8 (global), 10 (global+?), 24 (global+central 16), 26 (global+central+?)
+        # Try different suffix lengths to find one that makes veh_len divisible by 5.
+        # train_single_agent builds state as:
+        #   vehicles(5*num_vehicles) + rsu(5*num_rsus) + uav(5*num_uavs) + global(16)
+        #   plus optional central resource state (16)
+        # That means realistic suffix candidates are: 16 (global), 32 (global+central),
+        # and for backward compatibility, a minimal 8.
+        possible_suffixes = sorted({16, 32, 8, 24}, reverse=True)
         
         veh_dim = 5
         rsu_dim = 5  # 统一为5维：pos_x, pos_y, cache_util, queue, energy
@@ -86,6 +91,12 @@ class DynamicOffloadHeuristic:
             print(f"WARNING: Could not determine correct suffix for state len {len(flat)}. Defaulting to 8.")
             best_suffix = 8
             best_veh_len = len(flat) - 8 - rsu_total - uav_total
+        
+        if best_veh_len < 0:
+            best_veh_len = 0
+        if best_veh_len % veh_dim != 0:
+            # Truncate to nearest lower multiple of veh_dim to avoid reshape failure
+            best_veh_len = (best_veh_len // veh_dim) * veh_dim
 
         # print(f"DEBUG: flat.shape={flat.shape} suffix={best_suffix} veh_len={best_veh_len}")
         

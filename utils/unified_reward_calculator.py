@@ -382,7 +382,7 @@ class UnifiedRewardCalculator:
         # 这些项之前相互抵消，导致奖励差异只有3-5%
         completion_gap = max(0.0, self.completion_target - m.completion_rate)
         completion_gap_penalty = self.weight_completion_gap * completion_gap
-        data_loss_penalty = 0.0       # 禁用
+        data_loss_penalty = self.weight_loss_ratio * m.data_loss_ratio
         cache_pressure_penalty = 0.0  # 禁用
         queue_penalty = 0.0           # 禁用
         remote_reject_penalty = 0.0   # 禁用
@@ -394,8 +394,8 @@ class UnifiedRewardCalculator:
         joint_bonus = 0.0             # 禁用
         joint_coupling_penalty = 0.0  # 禁用
 
-        # --- 🔧 v13: 极简总成本 = core_cost + drop_penalty ---
-        total_cost = core_cost + drop_penalty + completion_gap_penalty
+        # --- 🔧 v15: 恢复完整总成本 = core_cost + drop_penalty + completion + data_loss ---
+        total_cost = core_cost + drop_penalty + completion_gap_penalty + data_loss_penalty
         total_cost = float(np.clip(total_cost, 0.0, self.total_cost_clip))
 
         return RewardComponents(
@@ -421,23 +421,58 @@ class UnifiedRewardCalculator:
         )
 
     def _compose_reward(self, components: RewardComponents, completion_rate: float) -> RewardComponents:
-        """组装最终奖励，使用配置的裁剪范围
+        """组装最终奖励
         
-        所有算法统一使用成本最小化奖励：reward = -total_cost
-        奖励范围: [-10.0, 0.0]，越接近0表示性能越好
+        🔧 MDP优化v2.0: 转为正向奖励空间 [0, 10]
         
-        🔧 2024-12-02 v4修复：添加Reward Scaling放大奖励差异
-        问题：奖励信号太弱(~0.01方差)，TD3梯度不明显
-        解决：使用reward_scale放大差异，让策略改进更明显
+        优化点:
+        1. 使用正向奖励（基线奖励 - 成本）替代负向奖励
+        2. 增加任务完成率bonus，提供即时反馈
+        3. 放大奖励差异，让策略改进更明显
+        
+        奖励范围: [0, 10]，越接近10表示性能越好
+        - 0: 最差情况（高延迟、高能耗、低完成率）
+        - 10: 理想情况（低延迟、低能耗、高完成率）
         """
-        # 🔧 Reward Scaling：放大奖励信号
-        # 🔧 v7修复：5.0 → 1.0 (移除过度放大，降低奖励方差)
-        # 问题：reward_scale=5导致奖励在-1200~-1700波动，差异被放大后更难学习
-        reward_scale = float(getattr(config.rl, 'reward_scale', 1.0))
+        import os
         
-        # 成本最小化：奖励 = -成本 * scale
-        reward_raw = -abs(components.total_cost) * reward_scale
-        reward_clipped = float(np.clip(reward_raw, self.reward_clip_range[0] * reward_scale, self.reward_clip_range[1]))
+        # 检查是否启用正向奖励模式
+        use_positive_reward = os.environ.get('MDP_POSITIVE_REWARD', '1') == '1'
+        
+        if use_positive_reward:
+            # === 正向奖励模式 ===
+            # 基线奖励：表示理想情况的最高分
+            baseline_reward = 10.0
+            
+            # 核心成本归一化到[0, baseline]范围
+            # total_cost 通常在 [0, total_cost_clip] 范围
+            normalized_cost = min(components.total_cost / max(self.total_cost_clip, 1.0), 1.0)
+            
+            # 基础奖励 = 基线 - 成本
+            base_reward = baseline_reward * (1.0 - normalized_cost * 0.8)  # 成本最多扣除80%
+            
+            # 任务完成率bonus：提供即时正向反馈
+            completion_bonus = completion_rate * 2.0  # 最高+2分
+            
+            # 低延迟奖励：鼓励快速处理
+            if components.norm_delay < 0.5:  # 延迟低于目标的50%
+                delay_bonus = (0.5 - components.norm_delay) * 2.0  # 最高+1分
+            else:
+                delay_bonus = 0.0
+            
+            # 组合奖励
+            reward_raw = base_reward + completion_bonus + delay_bonus
+            
+            # 裁剪到[0, 12]范围
+            reward_clipped = float(np.clip(reward_raw, 0.0, 12.0))
+        else:
+            # === 原始负向奖励模式（保留兼容性） ===
+            reward_scale = float(getattr(config.rl, 'reward_scale', 1.0))
+            reward_raw = -abs(components.total_cost) * reward_scale
+            reward_clipped = float(np.clip(reward_raw, 
+                                           self.reward_clip_range[0] * reward_scale, 
+                                           self.reward_clip_range[1]))
+        
         components.reward_pre_clip = reward_raw
         components.reward = reward_clipped if np.isfinite(reward_clipped) else 0.0
         return components
@@ -489,6 +524,109 @@ class UnifiedRewardCalculator:
         
         final_reward = components.reward if np.isfinite(components.reward) else 0.0
         return final_reward, reward_components
+    
+    def calculate_instant_reward(
+        self,
+        step_metrics: Dict,
+        prev_metrics: Dict = None,
+    ) -> tuple[float, Dict[str, float]]:
+        """
+        🆕 MDP优化: 计算即时奖励（基于单步增量）
+        
+        优化点:
+        1. 使用单步增量而非累积值
+        2. 提供即时任务完成奖励
+        3. 奖励与动作直接相关，增强因果关系
+        
+        Args:
+            step_metrics: 本步的增量指标
+                - step_completed: 本步完成任务数
+                - step_dropped: 本步丢弃任务数
+                - step_energy: 本步能耗(J)
+                - step_delay: 本步平均延迟(s)
+                - cache_hits: 本步缓存命中数
+            prev_metrics: 上一步的指标（用于计算改善）
+        
+        Returns:
+            (instant_reward, reward_breakdown)
+        """
+        prev_metrics = prev_metrics or {}
+        
+        # 提取本步指标
+        step_completed = int(step_metrics.get('step_completed', 0))
+        step_dropped = int(step_metrics.get('step_dropped', 0))
+        step_energy = float(step_metrics.get('step_energy', 0.0))
+        step_delay = float(step_metrics.get('step_delay', 0.0))
+        cache_hits = int(step_metrics.get('cache_hits', 0))
+        step_total = step_completed + step_dropped
+        
+        # === 即时奖励组件 ===
+        
+        # 1. 任务完成奖励（每完成一个任务+1分）
+        completion_reward = float(step_completed) * 1.0
+        
+        # 2. 任务丢弃惩罚（每丢弃一个任务-2分）
+        drop_penalty = float(step_dropped) * 2.0
+        
+        # 3. 能耗惩罚（归一化后的能耗）
+        energy_penalty = min(1.0, step_energy / 100.0) * 1.0  # 每步100J扣分1分
+        
+        # 4. 延迟惩罚（仅当延迟超过目标时）
+        delay_target = 0.5  # 目标延迟0.5s
+        if step_delay > delay_target:
+            delay_penalty = (step_delay - delay_target) * 2.0  # 每超过0.1s扣分0.2分
+        else:
+            delay_penalty = 0.0
+            # 低延迟奖励
+            delay_bonus = (delay_target - step_delay) / delay_target * 0.5
+            completion_reward += delay_bonus
+        
+        # 5. 缓存命中奖励
+        cache_reward = float(cache_hits) * 0.5
+        
+        # 6. 改善奖励（如果有上一步数据）
+        improvement_bonus = 0.0
+        if prev_metrics:
+            prev_delay = float(prev_metrics.get('step_delay', step_delay))
+            prev_energy = float(prev_metrics.get('step_energy', step_energy))
+            
+            # 延迟改善
+            if step_delay < prev_delay:
+                improvement_bonus += (prev_delay - step_delay) * 1.0
+            
+            # 能耗改善
+            if step_energy < prev_energy:
+                improvement_bonus += (prev_energy - step_energy) / 100.0 * 0.5
+        
+        # === 组合最终奖励 ===
+        # 基线奖励 + 完成奖励 - 惩罚
+        baseline = 2.0  # 每步基线奖励
+        instant_reward = (
+            baseline
+            + completion_reward
+            + cache_reward
+            + improvement_bonus
+            - drop_penalty
+            - energy_penalty
+            - delay_penalty
+        )
+        
+        # 裁剪到合理范围
+        instant_reward = float(np.clip(instant_reward, -5.0, 10.0))
+        
+        # 构造奖励分解
+        reward_breakdown = {
+            'baseline': baseline,
+            'completion': completion_reward,
+            'cache': cache_reward,
+            'improvement': improvement_bonus,
+            'drop_penalty': -drop_penalty,
+            'energy_penalty': -energy_penalty,
+            'delay_penalty': -delay_penalty if step_delay > delay_target else 0.0,
+            'total': instant_reward,
+        }
+        
+        return instant_reward, reward_breakdown
 
     def update_targets(
         self,

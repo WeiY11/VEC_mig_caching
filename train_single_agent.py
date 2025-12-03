@@ -354,8 +354,8 @@ class SingleAgentTrainingEnvironment:
         # 解决方案：目标值与实际能耗匹配，使norm_energy≈1，奖励在[-3,-1]合理范围
         try:
             update_reward_targets(
-                latency_target=float(getattr(rl, "latency_target", 1.5)),
-                energy_target=float(getattr(rl, "energy_target", 1000.0)),  # 🔧 200 → 1000 (对齐实际能耗)
+                latency_target=float(getattr(rl, "latency_target", 0.30)),
+                energy_target=float(getattr(rl, "energy_target", 200.0)),  # 🔧 v15: 1000 → 200 (对齐Wrapper)
             )
         except Exception:
             pass

@@ -65,14 +65,18 @@ def run_rl(algo: str, episodes: int, seed: int, env_cfg, max_steps_per_ep: int =
     set_global_seeds(seed)
     env = VecEnvWrapper(**env_cfg)
     total_steps = max_steps_per_ep * episodes
+    warmup_cap = max(total_steps // 2, 1000)
     if algo == "td3":
         cfg = CAMTD3Config(num_rsus=env_cfg["num_rsus"], num_uavs=env_cfg["num_uavs"])
+        cfg.start_steps = min(cfg.start_steps, warmup_cap)
         return train_cam_td3(env, cfg, max_steps=total_steps, seed=seed)
     if algo == "ddpg":
         cfg = DDPGConfig()
+        cfg.start_steps = min(cfg.start_steps, warmup_cap)
         return train_ddpg(env, cfg, max_steps=total_steps, seed=seed)
     if algo == "sac":
         cfg = RobustSACConfig()
+        cfg.start_steps = min(cfg.start_steps, warmup_cap)
         return train_robust_sac(env, cfg, max_steps=total_steps, seed=seed)
     raise ValueError(f"Unsupported RL algo: {algo}")
 
@@ -190,7 +194,7 @@ def run_sa(env_cfg, episodes: int, seed: int):
         act[:3] = probs.astype(np.float32)
         return act
 
-    def eval_once(params: np.ndarray, eval_idx: int) -> Tuple[float, Dict[str, float]]:
+    def eval_once(params: np.ndarray, eval_idx: int) -> float:
         set_global_seeds(seed + eval_idx)
         env = VecEnvWrapper(**env_cfg)
         act = params_to_action(params)
@@ -205,6 +209,15 @@ def run_sa(env_cfg, episodes: int, seed: int):
 
         for _ in range(max_steps_per_ep):
             state, _, done, info = env.step(act)
+            reward, metrics = compute_reward_from_info(info)
+            ep_r += reward
+            cur_ep_delay.append(metrics.get("avg_task_delay", 0.0))
+            cur_ep_energy += metrics.get("total_energy_consumption", 0.0)
+            cur_ep_completed.append(metrics.get("task_completion_rate", 0.0))
+            cur_ep_dropped += metrics.get("dropped_tasks", 0)
+            cur_ep_cache_hits.append(metrics.get("cache_hit_rate", 0.0))
+            if done:
+                break
         return ep_r
 
     def evaluate_fn(params: np.ndarray) -> float:

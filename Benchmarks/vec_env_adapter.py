@@ -76,7 +76,7 @@ class VecEnvWrapper:
 
     def __init__(
         self,
-        algorithm: str = "TD3",
+        algorithm: str = "OPTIMIZED_TD3",
         num_vehicles: int = 12,
         num_rsus: int = 4,
         num_uavs: int = 2,

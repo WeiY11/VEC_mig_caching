@@ -242,46 +242,31 @@ class RLConfig:
         self.reward_weight_energy = 1.5  # 🔧 v14: 3.0 → 1.5 (降低50%)
         
         # 🔥 关键修复：降低任务丢弃惩罚
-        # 🔧 0.05 → 0.02 (进一步降低，避免过度惩罚)
-        self.reward_penalty_dropped = 0.02
-        self.completion_target = 0.75  # 🔧 0.80 → 0.75 (更宽松目标)
+        # 🔧 0.02 → 0.1 (增强惩罚，使其高于处理成本)
+        self.reward_penalty_dropped = 0.1
+        self.completion_target = 0.95  # 🔧 0.75 → 0.95 (恢复高标准)
         
         # 🔥 启用完成率差距惩罚：让智能体关注完成率
-        # 🔧 0.5 → 0.3 (降低，避免过度惩罚)
-        self.reward_weight_completion_gap = 0.3
-        self.reward_weight_loss_ratio = 0.0  # 保持禁用
+        # 🔧 0.3 → 1.0 (增强，强迫完成任务)
+        self.reward_weight_completion_gap = 1.0
+        # 🔥 启用数据丢失惩罚：防止智能体通过丢包作弊
+        # 🔧 0.0 → 1.0 (启用，强迫关注数据完整性)
+        self.reward_weight_loss_ratio = 1.0
         self.reward_weight_cache_pressure = 0.0  # 保持禁用
         self.reward_weight_cache_bonus = 0.0  # 保持禁用
         self.reward_weight_queue_overload = 0.0  # 保持禁用
-
-        # ⚠️ 已弃用参数（保留以兼容旧代码）
-        self.reward_weight_loss = 0.0      # 已移除：data_loss是时延的衡生指标
-        self.reward_weight_completion = 0.0  # 已集成到dropped_penalty
-        # 🚫 禁用所有辅助优化项（专注核心目标）
-        self.reward_weight_cache = 0.0  # 🔧 0.1 → 0.0 (禁用缓存惩罚)
-        self.reward_weight_migration = 0.0  # 🔧 0.05 → 0.0 (禁用迁移惩罚)
-        self.reward_weight_joint = 0.0  # 🔧 0.02 → 0.0 (禁用联动奖励)
-        self.reward_weight_remote_reject = 0.0  # 🔧 0.08 → 0.0 (禁用远程拒绝惩罚)
-        self.reward_weight_offload_bonus = 0.0  # 🔧 0.05 → 0.0 (禁用卸载奖励)
-        self.reward_weight_local_penalty = 0.0  # 保持禁用
-
-        # 🎯 延时-能耗优化目标阈值（供算法动态调整）
-        # 🔧 v14修复：归一化目标对齐实际观测值，让norm值在0.8-1.2范围
-        #    问题诊断：v13中latency_target=0.1, energy_target=50导致norm值波动1.5-2.0
-        #    加上reward_scale=5，200步累积后episode奖励方差高达3000，无法学习
-        #    策略：将目标设置为实际均值（delay~0.15s, energy~75J）
-        self.latency_target = 0.15  # 🔧 v14: 0.1 → 0.15 (对齐实际均值)
-        self.latency_upper_tolerance = 0.30  # 🔧 v14: 保持0.3
-        self.energy_target = 75.0   # 🔧 v14: 50.0 → 75.0 (对齐实际均值)
-        self.energy_upper_tolerance = 150.0  # 🔧 v14: 保持150.0
+        # 🔧 归一化目标调整
+        self.latency_target = 4.0  # 延迟目标（中间值）
+        self.latency_upper_tolerance = 6.5  # 延迟上限（匹配最大deadline）
+        self.energy_target = 500.0   # 能耗目标
+        self.energy_upper_tolerance = 800.0  # 能耗上限
 
         # 🌟 动态归一化开关
         self.use_dynamic_reward_normalization = False  # 禁用以改善收敛性
         
-        # 🔧 v14修复：大幅降低reward_scale减少奖励方差
-        # 问题：scale=5.0导致episode奖励在-3400~-6700波动（方差100%）
-        # 策略：scale=2.0，让奖励差异适中但方差可控
-        self.reward_scale = 2.0  # 🔧 v14: 5.0 → 2.0 (降低方差)
+        # 🔧 v15修复：恢复标准reward_scale
+        # 策略：scale=1.0，避免过度放大噪音
+        self.reward_scale = 1.0  # 🔧 v15: 2.0 → 1.0
 
 class QueueConfig:
     """
@@ -323,12 +308,10 @@ class QueueConfig:
         self.rsu_nominal_capacity = float(os.environ.get('QUEUE_RSU_NOMINAL_CAPACITY', '50.0'))
         self.uav_nominal_capacity = float(os.environ.get('QUEUE_UAV_NOMINAL_CAPACITY', '30.0'))
         self.vehicle_nominal_capacity = float(os.environ.get('QUEUE_VEHICLE_NOMINAL_CAPACITY', '20.0'))
-        # 🔧 修复：扩大队列字节容量，匹配任务数据大小增加（3-4倍）
-        # 平均任务大小：1.5 MB (原 500 KB)
-        # Capacity limits (bytes) used for queue admission control
-        self.vehicle_queue_capacity = float(os.environ.get('QUEUE_VEHICLE_CAPACITY', '8e8'))     # 250MB → 800MB
-        self.rsu_queue_capacity = float(os.environ.get('QUEUE_RSU_CAPACITY', '5e9'))            # 1.5GB → 5GB
-        self.uav_queue_capacity = float(os.environ.get('QUEUE_UAV_CAPACITY', '2e9'))            # 600MB → 2GB
+        # 🔧 修正：符合实际场景的队列字节容量
+        self.vehicle_queue_capacity = float(os.environ.get('QUEUE_VEHICLE_CAPACITY', '50e6'))     # 50MB
+        self.rsu_queue_capacity = float(os.environ.get('QUEUE_RSU_CAPACITY', '200e6'))            # 200MB
+        self.uav_queue_capacity = float(os.environ.get('QUEUE_UAV_CAPACITY', '100e6'))            # 100MB
 
 class TaskConfig:
     """
@@ -366,21 +349,21 @@ class TaskConfig:
     def __init__(self):
         self.num_priority_levels = 4
         
-        # 🎯 极限负载场景：强制降低完成率到75-85%
-        # 🔧 2024-12-02 v4修复：v3仍然完成率99.97%，没有学习空间
-        # 问题诊断：2000 episode后奖励仅改呙1%，任务太简单
-        self.task_compute_density = 100  # 🔧 v5: 200 → 100
-        self.arrival_rate = 3.5   # 🔧 v5: 10 → 3.5
+        # 🎯 表格2对齐：计算密度
+        # 任务大小5-10MB，CPU cycles 10^8-10^9
+        # compute_density = cycles / bits ≈ 10^8 / (5*8*10^6) ≈ 2.5 cycles/bit
+        self.task_compute_density = 2.5  # 🔧 表格2: cycles/bit
+        self.arrival_rate = 3.5
         
-        # 🎯 数据范围：300KB-5MB
-        self.data_size_range = (300e3, 5e6)
+        # 🎯 表格2对齐：数据范围 5-10 MB
+        self.data_size_range = (5e6, 10e6)  # 🔧 表格2: 5-10 MB
         self.task_data_size_range = self.data_size_range
 
-        # 计算周期配置
-        self.compute_cycles_range = (300e3 * 8 * 100, 5e6 * 8 * 100)
+        # 🎯 表格2对齐：计算周期 10^8 - 10^9 cycles
+        self.compute_cycles_range = (1e8, 1e9)  # 🔧 表格2: 10^8 - 10^9 cycles
         
-        # 🔧 收紧截止时间
-        self.deadline_range = (0.15, 0.50)
+        # 🔧 修正：截止时间范围与场景匹配
+        self.deadline_range = (1.0, 6.5)  # 1-6.5秒，覆盖所有场景
         # 输出比例配置
         self.task_output_ratio = 0.05  # 输出大小是输入大小的5%
         
@@ -406,12 +389,12 @@ class TaskConfig:
         # 低四亚蹡：每个类枠先恰会正。描例：简回因子=1.3是削溥计帄，将保骇时閒=0.3的任务上升。
         self.deadline_relax_fallback = 1.0  # 騍松因子改为1.0（无騍松），确保任务类型冠正
 
-        # 任务类型配置
+        # 🔧 表格2对齐：任务类型配置（数据范围在5-10MB内细分）
         self.task_profiles: Dict[int, TaskProfileSpec] = {
-            1: TaskProfileSpec(1, (100e3, 500e3), 80, 2, 1.0),
-            2: TaskProfileSpec(2, (500e3, 2e6), 100, 3, 0.7),
-            3: TaskProfileSpec(3, (2e6, 4e6), 120, 4, 0.5),
-            4: TaskProfileSpec(4, (4e6, 5e6), 150, 5, 0.4),
+            1: TaskProfileSpec(1, (5e6, 6e6), 2.5, 2, 1.0),      # 5-6 MB
+            2: TaskProfileSpec(2, (6e6, 7.5e6), 2.5, 3, 0.7),    # 6-7.5 MB
+            3: TaskProfileSpec(3, (7.5e6, 9e6), 2.5, 4, 0.5),    # 7.5-9 MB
+            4: TaskProfileSpec(4, (9e6, 10e6), 2.5, 5, 0.4),     # 9-10 MB
         }
         # Backwards-compatible dictionary view for legacy code
         self.task_type_specs = {
@@ -424,16 +407,18 @@ class TaskConfig:
             for k, v in self.task_profiles.items()
         }
 
-        # 场景定义
+        # 🔧 修正：场景deadline与类型判定匹配
+        # 类型1: slots<=2 (avg<=2s), 类型2: slots=3 (3<=avg<4s)
+        # 类型3: slots=4 (4<=avg<5s), 类型4: slots>=5 (avg>=5s)
         self.scenarios: List[TaskScenarioSpec] = [
-            TaskScenarioSpec('emergency_brake', 0.15, 0.25, 1, 1.0, 0.25),
-            TaskScenarioSpec('collision_avoid', 0.18, 0.28, 1, 1.0, 0.20),
-            TaskScenarioSpec('navigation', 0.25, 0.35, 2, 1.0, 0.15),
-            TaskScenarioSpec('traffic_signal', 0.28, 0.38, 2, 1.0, 0.10),
-            TaskScenarioSpec('video_process', 0.35, 0.45, 3, 1.0, 0.15),
-            TaskScenarioSpec('image_recognition', 0.38, 0.48, 3, 1.0, 0.10),
-            TaskScenarioSpec('data_analysis', 0.42, 0.50, 4, 1.0, 0.04),
-            TaskScenarioSpec('ml_training', 0.45, 0.52, 4, 1.0, 0.01),
+            TaskScenarioSpec('emergency_brake', 1.0, 2.0, 1, 1.0, 0.25),    # avg=1.5 -> slots=1 -> 类型1
+            TaskScenarioSpec('collision_avoid', 1.5, 2.5, 1, 1.0, 0.20),    # avg=2.0 -> slots=2 -> 类型1
+            TaskScenarioSpec('navigation', 3.0, 4.0, 2, 1.0, 0.15),         # avg=3.5 -> slots=3 -> 类型2
+            TaskScenarioSpec('traffic_signal', 3.0, 3.8, 2, 1.0, 0.10),     # avg=3.4 -> slots=3 -> 类型2
+            TaskScenarioSpec('video_process', 4.0, 5.0, 3, 1.0, 0.15),      # avg=4.5 -> slots=4 -> 类型3
+            TaskScenarioSpec('image_recognition', 4.2, 4.8, 3, 1.0, 0.10),  # avg=4.5 -> slots=4 -> 类型3
+            TaskScenarioSpec('data_analysis', 5.0, 6.0, 4, 1.0, 0.04),      # avg=5.5 -> slots=5 -> 类型4
+            TaskScenarioSpec('ml_training', 5.5, 6.5, 4, 1.0, 0.01),        # avg=6.0 -> slots=6 -> 类型4
         ]
         self._scenario_weights = [scenario.weight for scenario in self.scenarios]
         self._scenario_lookup = {scenario.name: scenario for scenario in self.scenarios}
@@ -812,7 +797,7 @@ class ComputeConfig:
         self.total_rsu_compute = 50e9        # 总RSU计算:50 GHz(4个RSU共享,每个12.5GHz)
         # 🔧 UAV优化2025-01-13:提升UAV总算力以匹配服务能力优化
         # NVIDIA Jetson Xavier NX Boost模式：6核@2.2GHz，等效约实际可用算力5.0GHz/核
-        self.total_uav_compute = 10e9        # 总UAV计算:10 GHz(2个UAV共享,每个5.0GHz)
+        self.total_uav_compute = 14e9        # 🔧 表格2: UAV 6-8 GHz × 2 = 14 GHz
         
         # 🔑 初始CPU频率配置（仅用于节点初始化，运行时由中央智能体动态调整）
         # 两种模式：
@@ -822,16 +807,14 @@ class ComputeConfig:
         # 初始分配策略(均匀分配作为baseline)
         self.vehicle_initial_freq = self.total_vehicle_compute / 12   # 1.5 GHz - 初始均分
         self.rsu_initial_freq = self.total_rsu_compute / 4            # 12.5 GHz - 初始均分
-        # 🔧 UAV优化2025-01-13:提升初始频率至5.0 GHz
-        self.uav_initial_freq = self.total_uav_compute / 2            # 5.0 GHz - 初始均分
+        self.uav_initial_freq = self.total_uav_compute / 2  # 7 GHz - 表格2对齐
         
         # 🔧 问题2修复：CPU频率范围更新为论文要求
         # 车辆支持动态调频（DVFS），范围 fv ∈ [1, 2] GHz
         self.vehicle_cpu_freq_range = (1.0e9, 2.0e9)  # 1.0-2.0 GHz（论文要求）
         self.rsu_cpu_freq_range = (self.rsu_initial_freq, self.rsu_initial_freq)
-        # 🔧 UAV优化：启用动态调频（DVFS）以优化能耗
-        # Jetson Xavier NX支持3.0-7.0 GHz范围调频（基于多核Boost算力）
-        self.uav_cpu_freq_range = (3.0e9, 7.0e9)  # 3.0-7.0 GHz（支持DVFS）
+        # 🔧 表格2对齐：UAV CPU频率范围 6-8 GHz
+        self.uav_cpu_freq_range = (6.0e9, 8.0e9)  # 🔧 表格2: 6-8 GHz
         
         # 默认频率（用于初始化，保留兼容性）
         self.vehicle_default_freq = self.vehicle_initial_freq
@@ -885,16 +868,16 @@ class NetworkConfig:
     """
     
     def __init__(self):
-        self.time_slot_duration = 0.1  # seconds - 🔧 改为100ms，更精细的控制粒度
-        self.bandwidth = 100e6  # Hz - 🎯 总带宽100MHz（5G NR高带宽，匹配卸载需求）
+        self.time_slot_duration = 1.0  # 🔧 表格2: 1.0s
+        self.bandwidth = 40e6  # 🔧 表格2: 40 MHz
         # 🔧 修复：载波频率应与CommunicationConfig保持一致（3.5 GHz）
         self.carrier_frequency = 3.5e9  # Hz - 3GPP NR n78频段
-        self.noise_power = -174  # dBm/Hz
-        self.path_loss_exponent = 2.0
+        self.noise_power = -100  # 🔧 表格2: -100 dBm
+        self.path_loss_exponent = 3.0  # 🔧 表格2: 3
         self.coverage_radius = 300  # meters - RSU覆盖半径
         # 🔧 UAV优化：增加UAV覆盖半径配置
         self.uav_coverage_radius = 500  # meters - UAV覆盖半径（高空优势）
-        self.uav_altitude = 120.0       # meters - UAV飞行高度
+        self.uav_altitude = 100.0       # 🔧 表格2: 100m
         self.interference_threshold = 0.1
         self.handover_threshold = 0.2
         
@@ -903,9 +886,9 @@ class NetworkConfig:
         self.num_rsus = 4       # 更新为4个RSU（单向双路口场景）
         self.num_uavs = 2       # 恢复到原始设置，符合论文要求
         
-        # 网络拓扑参数
-        self.area_width = 2500  # meters - 缩小仿真区域
-        self.area_height = 2500  # meters
+        # 🔧 表格2对齐：区域范围与实际场景对齐
+        self.area_width = 1030   # 🔧 实际场景宽度
+        self.area_height = 2060  # 🔧 实际场景高度
         self.min_distance = 50  # meters
         
         # 连接参数
@@ -954,10 +937,10 @@ class CommunicationConfig:
     """
     
     def __init__(self):
-        # 3GPP标准发射功率
-        self.vehicle_tx_power = 23.0  # dBm (200mW) - 3GPP标准
-        self.rsu_tx_power = 46.0      # dBm (40W) - 3GPP标准
-        self.uav_tx_power = 30.0      # dBm (1W) - 3GPP标准
+        # 🔧 表格2对齐：发射功率
+        self.vehicle_tx_power = 30.0  # 🔧 表格2: 1W = 30 dBm
+        self.rsu_tx_power = 40.0      # 🔧 表格2: 10W = 40 dBm
+        self.uav_tx_power = 23.0      # 0.2W = 23 dBm
         
         # 🔧 问题7修复：电路功率按节点类型差异化
         self.vehicle_circuit_power = 0.35  # W - 车辆RF前端（单天线）
@@ -979,35 +962,37 @@ class CommunicationConfig:
         
         self.noise_figure = 9.0       # dB - 3GPP标准
         
-        # 🎯 总带宽池配置（中央智能体动态分配）
-        self.total_bandwidth = 100e6   # 100 MHz - 5G NR高带宽（匹配卸载通信需求）
+        # 🔧 表格2对齐：带宽配置
+        self.total_bandwidth = 40e6   # 🔧 表格2: 40 MHz
         self.channel_bandwidth = 5e6  # 5 MHz per channel
-        self.uplink_bandwidth = 50e6  # 50 MHz（边缘计算上行密集，确保卸载通畅）
-        self.downlink_bandwidth = 50e6  # 50 MHz
+        # 不再划分上下行，统一使用总带宽
+        self.uplink_bandwidth = 40e6  # 上行=总带宽
+        self.downlink_bandwidth = 40e6  # 下行=总带宽
         
-        # 🔧 论文对齐：RSU/UAV下行带宽配置
-        # MEC服务器（RSU）下行带宽: B_ES^down = 1000 MHz
-        # 🔧 UAV优化：提升UAV下行带宽以降低返回延迟
-        # UAV下行带宽: B_u^down = 50 MHz（从10MHz提升5倍）
-        self.rsu_downlink_bandwidth = 1000e6  # 1000 MHz (1 GHz) - 论文要求
-        self.uav_downlink_bandwidth = 50e6    # 50 MHz - 优化后（原10MHz）
+        # RSU/UAV下行带宽
+        self.rsu_downlink_bandwidth = 1000e6  # 1000 MHz
+        self.uav_downlink_bandwidth = 10e6    # 🔧 表格2: 10 MHz
         
         # 🔧 修复问题1：载波频率修正为3.5 GHz（符合论文要求和3GPP NR n78频段）
         self.carrier_frequency = 3.5e9  # 3.5 GHz - 3GPP NR n78频段（论文要求3.3-3.8 GHz，典型3.5 GHz）
         self.speed_of_light = 3e8       # m/s
-        self.thermal_noise_density = -174.0  # dBm/Hz - 3GPP标准
+        self.thermal_noise_density = -100.0  # 🔧 表格2: -100 dBm
         
         # 3GPP标准天线增益
         self.antenna_gain_rsu = 15.0     # dBi
         self.antenna_gain_uav = 5.0      # dBi
         self.antenna_gain_vehicle = 3.0  # dBi
         
-        # 🔧 修复问题2/3/9：完善3GPP标准路径损耗参数（从硬编码移到配置）
-        self.los_threshold = 50.0        # m - 3GPP TS 38.901视距临界距离
+        # 🔧 表格2对齐：路径损耗参数
+        self.los_threshold = 50.0        # m - 视距临界距离
         self.los_decay_factor = 100.0    # m - LoS概率衰减因子
-        self.shadowing_std_los = 4.0     # dB - LoS阴影衰落标准差（3GPP UMi场景）
-        self.shadowing_std_nlos = 7.82   # dB - NLoS阴影衰落标准差（3GPP UMi场景）
-        self.min_distance = 0.5          # m - 3GPP最小距离（UMi场景为0.5米）
+        self.shadowing_std_los = 4.0     # dB - LoS阴影衰落标准差
+        self.shadowing_std_nlos = 7.82   # dB - NLoS阴影衰落标准差
+        self.min_distance = 0.5          # m - 最小距离
+        
+        # 🔧 表格2对齐：信道增益和NLoS衰减参数
+        self.channel_gain_at_1m = 1.42e-4  # 🔧 表格2: 1.42×10^-4
+        self.nlos_attenuation_factor = 0.01  # 🔧 表格2: NLoS衰减因子
         
         # 🔧 修复问题5：编码效率提升至5G NR标准（Polar/LDPC编码）
         self.coding_efficiency = 0.9     # 5G NR编码效率（论文建议0.85-0.95）
@@ -1139,11 +1124,10 @@ class CacheConfig:
     """
     
     def __init__(self):
-        # 🔧 修复：缓存容量配置，匹配任务数据大小增加（3倍）
-        # 平均任务大小：1.5 MB (原 500 KB)，单任务结果：75 KB (原 25 KB)
-        self.vehicle_cache_capacity = 3e9   # 3 GB (原 1 GB)
-        self.rsu_cache_capacity = 30e9      # 30 GB (原 10 GB) - 边缘服务器缓存
-        self.uav_cache_capacity = 6e9       # 6 GB (原 2 GB) - 轻量级UAV缓存
+        # 🔧 修正：符合实际场景的缓存容量
+        self.vehicle_cache_capacity = 100e6   # 100 MB
+        self.rsu_cache_capacity = 200e6       # 200 MB
+        self.uav_cache_capacity = 150e6       # 150 MB
         
         # 🎯 P0-1优化：差异化缓存替换策略配置
         # 针对不同节点类型使用最优策略
@@ -1215,18 +1199,15 @@ class NormalizationConfig:
         self.rsu_energy_reference = float(os.environ.get('NORM_RSU_ENERGY_REF', '1000.0'))
         self.uav_energy_reference = float(os.environ.get('NORM_UAV_ENERGY_REF', '1000.0'))
 
-        # 奖励归一化参考
-        # 🔧 P0修复：对齐energy_normalizer与config.rl.energy_target=900J
-        # 🔧 P0修复：对齐delay_normalizer与config.rl.latency_target=1.5s
-        # 默认直接对齐 RL 核心目标，避免奖励归一化与目标值不一致导致的偏置
-        self.delay_normalizer_value = float(os.environ.get('NORM_DELAY_NORMALIZER', '1.5'))  # 🔧 0.4 → 1.5 (对齐RLConfig)
-        self.energy_normalizer_value = float(os.environ.get('NORM_ENERGY_NORMALIZER', '900.0'))  # 🔧 3500 → 900 (对齐RLConfig)
+        # 🔧 归一化因子与RLConfig目标值对齐
+        self.delay_normalizer_value = float(os.environ.get('NORM_DELAY_NORMALIZER', '4.0'))  # 对齐latency_target
+        self.energy_normalizer_value = float(os.environ.get('NORM_ENERGY_NORMALIZER', '500.0'))  # 对齐energy_target
 
-        # 全局性能参考（供奖励/指标归一化使用）
-        self.delay_reference = float(os.environ.get('NORM_DELAY_REFERENCE', '1.5'))  # 🔧 0.4 → 1.5
-        self.delay_upper_reference = float(os.environ.get('NORM_DELAY_UPPER_REFERENCE', '2.2'))  # 🔧 1.0 → 2.2
-        self.energy_reference = float(os.environ.get('NORM_ENERGY_REFERENCE', '1000.0'))  # 🔧 200 → 1000
-        self.energy_upper_reference = float(os.environ.get('NORM_ENERGY_UPPER_REFERENCE', '2000.0'))  # 🔧 500 → 2000
+        # 全局性能参考
+        self.delay_reference = float(os.environ.get('NORM_DELAY_REFERENCE', '4.0'))
+        self.delay_upper_reference = float(os.environ.get('NORM_DELAY_UPPER_REFERENCE', '6.5'))
+        self.energy_reference = float(os.environ.get('NORM_ENERGY_REFERENCE', '500.0'))
+        self.energy_upper_reference = float(os.environ.get('NORM_ENERGY_UPPER_REFERENCE', '800.0'))
 
 
 class SystemConfig:
@@ -1285,7 +1266,7 @@ class SystemConfig:
         
         # 仿真配置
         self.simulation_time = 1000
-        self.time_slot = 0.1  # 🔧 改为100ms，与network.time_slot_duration一致
+        self.time_slot = 1.0  # 🔧 表格2: 1.0s
         
         # 性能配置
         self.enable_performance_optimization = True

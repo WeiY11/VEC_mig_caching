@@ -46,7 +46,7 @@ def run_optimized_td3(args, override_scenario: dict | None = None) -> str | None
         str(args.uavs),
         "--silent-mode",
     ]
-    if args.extra_args:
+    if getattr(args, "extra_args", None):
         cmd.extend(args.extra_args)
 
     log_dir = "results/benchmark_refs"
