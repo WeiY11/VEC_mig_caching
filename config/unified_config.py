@@ -216,6 +216,9 @@ class RewardConfig:
     weight_completion_gap: float = 1.0
     weight_loss_ratio: float = 1.0
     
+    # 🆕 卸载效率奖励权重（鼓励边缘卸载而非本地处理）
+    weight_offload_efficiency: float = 1.5  # 边缘卸载奖励权重，默认1.5
+    
     # 归一化范围
     latency_min: float = 0.05
     latency_target: float = 0.3

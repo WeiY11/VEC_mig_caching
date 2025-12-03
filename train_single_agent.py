@@ -165,7 +165,7 @@ try:
     import torch
     # 🚀 GPU优化: 启用cuDNN benchmark和混合精度
     if torch.cuda.is_available():
-        torch.backends.cudnn.benchmark = True  # 自动调优卷积算法
+        torch.backends.cudnn.benchmark = False  # MLP不需要cudnn优化
         print(f"🚀 GPU优化已启用: {torch.cuda.get_device_name(0)}")
         print(f"   - cuDNN benchmark: 已启用")
         print(f"   - 混合精度(AMP): 已启用")
@@ -1241,6 +1241,19 @@ class SingleAgentTrainingEnvironment:
         # 执行仿真步骤（传入动作）
         step_stats = self.simulator.run_simulation_step(0, sim_actions)
         
+        # 🔧 新增：打印实际卸载比例（任务数 + 数据量）
+        if step_count % 50 == 0:
+            # 按任务数统计
+            local_task_ratio = step_stats.get('local_offload_ratio', 0.33)
+            rsu_task_ratio = step_stats.get('rsu_offload_ratio', 0.33)
+            uav_task_ratio = step_stats.get('uav_offload_ratio', 0.34)
+            # 按数据量统计
+            local_data_ratio = step_stats.get('local_data_ratio', 0.33)
+            rsu_data_ratio = step_stats.get('rsu_data_ratio', 0.33)
+            uav_data_ratio = step_stats.get('uav_data_ratio', 0.34)
+            print(f"   ├─ 按任务数: Local:{local_task_ratio:.1%}, RSU:{rsu_task_ratio:.1%}, UAV:{uav_task_ratio:.1%}")
+            print(f"   └─ 按数据量: Local:{local_data_ratio:.1%}, RSU:{rsu_data_ratio:.1%}, UAV:{uav_data_ratio:.1%}")
+        
         # 🔧 实时可视化：发射任务事件
         if getattr(self, 'visualizer', None) is not None:
             step_events = step_stats.get('step_events', [])
@@ -1613,10 +1626,6 @@ class SingleAgentTrainingEnvironment:
         migrations_executed = int(safe_get('migrations_executed', 0))
         migrations_successful = int(safe_get('migrations_successful', 0))
         migration_success_rate = normalize_ratio(migrations_successful, migrations_executed)
-        
-        # 🔧 调试迁移统计
-        if migrations_executed > 0:
-            print(f"🔍 迁移统计: 执行{migrations_executed}次, 成功{migrations_successful}次, 成功率{migration_success_rate:.1%}")
 
         episode_cache_requests = max(
             0,
@@ -1672,13 +1681,16 @@ class SingleAgentTrainingEnvironment:
         episode_steps = getattr(self, '_episode_steps', 1)
         avg_reward = episode_reward / max(1, episode_steps)
         
+        # 🔧 计算平均能耗（与平均时延统一维度）
+        avg_energy = total_energy / max(1, episode_processed) if episode_processed > 0 else 0.0
+        
         # 🔧 优化：每10轮打印一次训练进度，包含关键指标
         if current_episode > 0 and (current_episode % 10 == 0 or avg_delay > 0.2):
             print(
-                f"[Training] Episode {current_episode:04d}: Reward {avg_reward:.2f}, Delay {avg_delay:.3f}s, Energy {total_energy:.2f}J, "
+                f"[Training] Episode {current_episode:04d}: Reward {avg_reward:.2f}, "
+                f"Delay {avg_delay:.3f}s/task, Energy {avg_energy:.2f}J/task ({episode_processed}任务), "
                 f"Completion {completion_rate:.1%}, MigSuccess {migration_success_rate:.1%}, "
-                f"缓存命中 {cache_hit_rate:.1%}, 数据损失 {data_loss_ratio_bytes:.1%}, "
-                f"缓存淘汰率 {cache_eviction_rate:.1%}"
+                f"缓存命中 {cache_hit_rate:.1%}, 数据损失 {data_loss_ratio_bytes:.1%}"
             )
 
         # 🤖 更新缓存控制器统计（如果有实际数据）
@@ -1933,7 +1945,7 @@ class SingleAgentTrainingEnvironment:
             training_info = {}
             
             # 训练智能体 - 所有算法现在都支持Union类型统一接口
-            # 确保action类型安全转换
+            # 确保 action 类型安全转换
             if self.algorithm == "DQN":
                 # DQN首选整数动作，但接受Union类型
                 safe_action = self._safe_int_conversion(action)
@@ -1941,7 +1953,27 @@ class SingleAgentTrainingEnvironment:
             elif self.algorithm in ["DDPG", "TD3", "TD3_LATENCY_ENERGY", "SAC", "OPTIMIZED_TD3"]:
                 # 连续动作算法首选numpy数组，但接受Union类型
                 safe_action = action if isinstance(action, np.ndarray) else np.array([action], dtype=np.float32)
-                training_info = self.agent_env.train_step(state, safe_action, reward, next_state, done)
+                            
+                # 🚀 GPU优化：使用update_freq控制更新频率，降低GPU负载
+                # 先存储经验，然后根据频率决定是否更新网络
+                update_freq = getattr(getattr(self.agent_env, 'config', None), 'update_freq', 1)
+                if not hasattr(self, '_global_step_count'):
+                    self._global_step_count = 0
+                self._global_step_count += 1
+                            
+                # 每步都存储经验，但只在符合频率时更新网络
+                if hasattr(self.agent_env, 'store_experience'):
+                    self.agent_env.store_experience(state, safe_action, reward, next_state, done)
+                            
+                if self._global_step_count % update_freq == 0:
+                    # 执行实际的网络更新
+                    if hasattr(self.agent_env, 'update'):
+                        training_info = self.agent_env.update()
+                    else:
+                        training_info = self.agent_env.train_step(state, safe_action, reward, next_state, done)
+                else:
+                    # 跳过网络更新，返回空信息
+                    training_info = {'skipped_update': True}
             elif self.algorithm == "PPO":
                 # PPO使用特殊的episode级别训练，train_step为占位符
                 # 保持原action类型即可，因为PPO的train_step不做实际处理

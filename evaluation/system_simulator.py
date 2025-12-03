@@ -2621,26 +2621,11 @@ class CompleteSystemSimulator:
 
             # 🔧 修复：添加下行传输能耗（将处理结果传回车辆）
             # Fix: Add downlink transmission energy (return result to vehicle)
-            result_size = task.get('data_size_bytes', 1e6) * 0.05  # Result is typically 5% of input
-            if result_size > 0:
-                # Find the vehicle to calculate distance
-                vehicle_id = task.get('vehicle_id', 'V_0')
-                vehicle = next((v for v in self.vehicles if v['id'] == vehicle_id), None)
-                
-                if vehicle:
-                    v_pos = np.array(vehicle.get('position', [0.0, 0.0, 0.0]))
-                    n_pos = np.array(node.get('position', [0.0, 0.0, 0.0]))
-                    distance = self.calculate_distance(v_pos, n_pos)
-                    
-                    down_delay, down_energy = self._estimate_transmission(
-                        result_size, distance, node_type.lower()
-                    )
-                    
-                    # Accumulate downlink delay and energy
-                    self._accumulate_delay('delay_downlink', down_delay)
-                    self._accumulate_energy('energy_transmit_downlink', down_energy)
-                    self.stats['energy_downlink'] = self.stats.get('energy_downlink', 0.0) + down_energy
-                    node['energy_consumed'] = node.get('energy_consumed', 0.0) + down_energy
+            # 🚀 优化：忽略回传时延和能耗（仿真简化假设）
+            # Optimization: Ignore downlink delay and energy (simplified simulation)
+            # result_size = task.get('data_size_bytes', 1e6) * 0.05  # Result is typically 5% of input
+            # if result_size > 0:
+            #     ... downlink calculation disabled ...
 
             task['completed'] = True
 
@@ -3367,11 +3352,12 @@ class CompleteSystemSimulator:
                     probs = np.nan_to_num(probs, nan=0.0, posinf=0.0, neginf=0.0)
 
         # 最终检查：如果概率总和仍然为0或无效，使用默认概率
+        # 🔧 优化：默认优先卸载到RSU/UAV
         if not np.isfinite(probs).all() or probs.sum() <= 0:
             probs = np.array([
-                0.34,
-                0.33 if rsu_available else 0.0,
-                0.33 if uav_available else 0.0
+                0.10,                                    # local = 10%
+                0.60 if rsu_available else 0.0,          # rsu = 60%
+                0.30 if uav_available else 0.0           # uav = 30%
             ], dtype=float)
 
         if probs.sum() <= 0:
@@ -4072,11 +4058,11 @@ class CompleteSystemSimulator:
             
             # ✅ 如果需要返回结果，计算下行传输能耗（很小，结果只有输入的5%）
             # If result needs to be returned, calculate downlink transmission energy
-            result_size = task.get('data_size_bytes', 1e6) * 0.05  # 结果是输入的5%
-            if result_size > 0:
-                down_delay, down_energy = self._estimate_transmission(result_size, float(distance), node_type.lower())
-                delay += down_delay  # 加上下行延迟
-                energy = down_energy  # 只有下行传输有能耗
+            # 🚀 优化：忽略回传时延和能耗（仿真简化假设）
+            # Optimization: Ignore downlink delay and energy (simplified simulation)
+            # result_size = task.get('data_size_bytes', 1e6) * 0.05  # 结果是输入的5%
+            # if result_size > 0:
+            #     ... downlink calculation disabled ...
             
             self.stats['processed_tasks'] += 1
             self.stats['completed_tasks'] += 1
@@ -4187,11 +4173,14 @@ class CompleteSystemSimulator:
         self._apply_queue_scheduling(node, node_type)
         self._append_active_task(task_entry)
         self._record_mm1_arrival(node_type, node_idx)
-        # 🔥 记录RSU/UAV任务统计
+        # 🔥 记录RSU/UAV任务统计（任务数 + 数据量）
+        task_data_mb = float(task.get('data_size', 0.0))
         if node_type == 'RSU':
             step_summary['rsu_tasks'] = step_summary.get('rsu_tasks', 0) + 1
+            step_summary['rsu_data_mb'] = step_summary.get('rsu_data_mb', 0.0) + task_data_mb
         elif node_type == 'UAV':
             step_summary['uav_tasks'] = step_summary.get('uav_tasks', 0) + 1
+            step_summary['uav_data_mb'] = step_summary.get('uav_data_mb', 0.0) + task_data_mb
         
         # 🔧 增强状态转移透明度：记录远程卸载任务详情（排队中）
         target_key = 'rsu' if node_type == 'RSU' else 'uav'
@@ -4378,6 +4367,7 @@ class CompleteSystemSimulator:
                 pass
         
         step_summary['local_tasks'] += 1
+        step_summary['local_data_mb'] = step_summary.get('local_data_mb', 0.0) + float(task.get('data_size', 0.0))
         
         # 🔧 增强状态转移透明度：记录本地处理任务详情
         execution_detail = {
@@ -4576,7 +4566,6 @@ class CompleteSystemSimulator:
             
             if should_migrate:
                 self.stats['migrations_executed'] = self.stats.get('migrations_executed', 0) + 1
-                print(f"馃幆 {node_id} 瑙﹀彂杩佺Щ: {reason} (绱ф€ュ害:{urgency:.3f})")
                 if coordinator is not None:
                     try:
                         coordinator.notify_migration_triggered(node_id, reason, urgency, current_state)
@@ -4615,7 +4604,6 @@ class CompleteSystemSimulator:
             
             if should_migrate:
                 self.stats['migrations_executed'] = self.stats.get('migrations_executed', 0) + 1
-                print(f"馃幆 {node_id} 瑙﹀彂杩佺Щ: {reason} (绱ф€ュ害:{urgency:.3f})")
                 if coordinator is not None:
                     try:
                         coordinator.notify_migration_triggered(node_id, reason, urgency, current_state)
@@ -4868,6 +4856,10 @@ class CompleteSystemSimulator:
             'remote_tasks': 0,  # 远程卸载的任务数
             'rsu_tasks': 0,  # RSU处理的任务数
             'uav_tasks': 0,  # UAV处理的任务数
+            # 🔧 新增：按数据量统计（MB）
+            'local_data_mb': 0.0,  # 本地处理的数据量
+            'rsu_data_mb': 0.0,  # RSU处理的数据量
+            'uav_data_mb': 0.0,  # UAV处理的数据量
             'local_cache_hits': 0,  # 本地缓存命中次数
             'queue_overflow_drops': 0,  # 本步因队列溢出的丢弃
             'step_events': [],  # 🔧 新增：用于实时可视化的事件列表
@@ -4964,17 +4956,28 @@ class CompleteSystemSimulator:
         step_summary['uav_queue_lengths'] = [len(uav.get('computation_queue', [])) for uav in self.uavs]
         step_summary['active_tasks'] = len(self.active_tasks)
         
-        # 🔧 新增：计算卸载比例指标（用于奖励函数）
+        # 🔧 计算卸载比例指标（用于奖励函数）
+        # 1. 按任务数统计
         total_tasks = step_summary['local_tasks'] + step_summary['rsu_tasks'] + step_summary['uav_tasks']
         if total_tasks > 0:
             step_summary['local_offload_ratio'] = step_summary['local_tasks'] / total_tasks
             step_summary['rsu_offload_ratio'] = step_summary['rsu_tasks'] / total_tasks
             step_summary['uav_offload_ratio'] = step_summary['uav_tasks'] / total_tasks
         else:
-            # 默认值（没有任务时）
             step_summary['local_offload_ratio'] = 0.33
             step_summary['rsu_offload_ratio'] = 0.33
             step_summary['uav_offload_ratio'] = 0.34
+        
+        # 2. 按数据量统计（更准确反映实际负载分布）
+        total_data_mb = step_summary['local_data_mb'] + step_summary['rsu_data_mb'] + step_summary['uav_data_mb']
+        if total_data_mb > 0:
+            step_summary['local_data_ratio'] = step_summary['local_data_mb'] / total_data_mb
+            step_summary['rsu_data_ratio'] = step_summary['rsu_data_mb'] / total_data_mb
+            step_summary['uav_data_ratio'] = step_summary['uav_data_mb'] / total_data_mb
+        else:
+            step_summary['local_data_ratio'] = 0.33
+            step_summary['rsu_data_ratio'] = 0.33
+            step_summary['uav_data_ratio'] = 0.34
 
         stability_metrics = self._monitor_queue_stability()
         for key, value in stability_metrics.items():

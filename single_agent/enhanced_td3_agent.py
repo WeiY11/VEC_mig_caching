@@ -161,8 +161,8 @@ class EnhancedTD3Agent:
         )
         self.critic_optimizer = optim.Adam(self.critic.parameters(), lr=config.critic_lr)
         
-        # 🔧 v10: 添加带预热的学习率调度器
-        self.use_lr_scheduler = True
+        # 🔧 学习率调度器 - 禁用(对短期训练效果不好)
+        self.use_lr_scheduler = False
         self.warmup_epochs = 50  # 预热50个episode
         
         # 使用带预热的余弦退火

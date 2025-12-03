@@ -106,7 +106,7 @@ class TaskMigrationManager:
                     node_id, state, node_states
                 )
                 # 🔧 修复：提高迁移触发阈值，减少频繁迁移
-                if should_migrate and urgency_score > 1.2:
+                if should_migrate and urgency_score > 0.3:  # 修复：从1.2降为0.3（urgency最大为1.0）
                     # 瀵绘壘杩佺Щ鐩爣
                     target_node = self._find_best_target(node_id, "rsu", node_states, node_positions)
                     if target_node:

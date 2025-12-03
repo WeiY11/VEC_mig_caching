@@ -116,7 +116,7 @@ class EnhancedTD3Config:
     device: str = 'cuda'  # 设备
     
     # ========== 🚀 性能优化参数 (v22新增) ==========
-    use_amp: bool = True  # 混合精度训练(AMP) - 减少显存占用，加速计算
+    use_amp: bool = False  # 混合精度训练(AMP) - 对MLP效果有限,已禁用
     use_async_transfer: bool = True  # 异步数据传输
     num_workers: int = 2  # 数据预取进程数
     pin_memory: bool = True  # 锁页内存加速CPU-GPU传输

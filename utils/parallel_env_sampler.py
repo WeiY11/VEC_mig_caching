@@ -305,7 +305,7 @@ def setup_gpu_optimization():
         import torch
         if torch.cuda.is_available():
             # 启用cuDNN自动调优
-            torch.backends.cudnn.benchmark = True
+            torch.backends.cudnn.benchmark = False
             # 使用确定性算法（可选，可能降低性能）
             # torch.backends.cudnn.deterministic = True
             

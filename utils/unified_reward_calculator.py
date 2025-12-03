@@ -416,9 +416,10 @@ class UnifiedRewardCalculator:
         # 🎯 卸载效率奖励设计：
         # - 边缘处理(RSU/UAV)通常比本地处理更高效
         # - remote_ratio ∈ [0, 1]，越高越好
-        # - 奖励 = weight × remote_ratio，权重为1.0
+        # - 奖励 = weight × remote_ratio
         # - 这提供了一个智能体动作可直接影响的信号
-        offload_efficiency_weight = float(getattr(config.rl, 'reward_weight_offload_efficiency', 1.0))
+        # 🔧 v20: 从配置读取卸载效率权重，默认1.5（增强卸载激励）
+        offload_efficiency_weight = float(getattr(config.rl, 'reward_weight_offload_efficiency', 1.5))
         offload_bonus = offload_efficiency_weight * remote_ratio
         
         # 🆕 v19: 延迟改善放大器

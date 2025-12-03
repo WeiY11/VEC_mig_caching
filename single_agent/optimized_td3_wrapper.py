@@ -31,15 +31,22 @@ from .common_state_action import (
 
 
 def create_optimized_config() -> EnhancedTD3Config:
-    """创建精简优化配置 - ✨ 使用最新GAT优化 + 🚀 GPU性能优化
+    """创建精简优化配置 - 🚀 轻量化版本
     
-    🔧 2024-12-03 v23: 增强探索防止局部最优
+    🔧 2024-12-04 v25: 轻量化网络加速训练
     核心优化：
-    1. batch_size 1024 (大幅提高GPU利用率)
-    2. gradient_steps 8 (每步更多梯度更新)
-    3. 启用AMP混合精度训练
-    4. 🆕 增强探索噪声 + 熵正则化 (防止局部最优)
+    1. hidden_dim 256 (网络小了，训练快4倍)
+    2. batch_size 256 (适中批量)
+    3. gradient_steps 1 (每步只更新一次)
+    4. 简化注意力机制
     """
+    import os
+    
+    # 🚀 从环境变量读取配置
+    gradient_steps = int(os.environ.get('TD3_GRADIENT_STEPS', '1'))  # 默认1
+    batch_size = int(os.environ.get('TD3_BATCH_SIZE', '256'))  # 默认256
+    hidden_dim = int(os.environ.get('TD3_HIDDEN_DIM', '256'))  # 默认256
+    
     return EnhancedTD3Config(
         # ✅ 核心优化1：队列感知回放
         use_queue_aware_replay=True,
@@ -49,46 +56,42 @@ def create_optimized_config() -> EnhancedTD3Config:
         migration_cong_coef=0.2,
         queue_metrics_ema_decay=0.8,
         
-        # ✅ 核心优化2：GNN注意力
+        # ✅ 核心优化2：GNN注意力 (简化版)
         use_gat_router=True,
-        num_attention_heads=6,
-        gat_hidden_dim=192,
-        gat_dropout=0.15,
+        num_attention_heads=4,    # 🔧 6→4 减少计算量
+        gat_hidden_dim=128,       # 🔧 192→128 网络更小
+        gat_dropout=0.1,          # 🔧 0.15→0.1
 
-        # 🆕 v23: 启用熵正则化防止局部最优
+        # 简化的训练配置
         use_distributional_critic=False,
-        use_entropy_reg=True,           # 🆕 启用熵正则化
-        auto_tune_alpha=True,           # 自动调节温度
-        initial_alpha=0.3,              # 较高初始温度鼓励探索
-        use_grouped_temperature=True,   # 分组温度
-        offload_temp=2.0,               # 卸载决策高温探索
-        cache_temp=0.8,                 # 缓存决策中等温度
+        use_entropy_reg=False,    # 🔧 关闭熵正则化，加速训练
+        auto_tune_alpha=False,
         use_model_based_rollout=False,
 
-        # 🚀 v22 GPU性能优化 - 大幅提高利用率
-        hidden_dim=1024,          # 网络容量
-        batch_size=1024,          # 大batch提高GPU利用率
-        buffer_size=500000,       
-        warmup_steps=300,         # 🆕 v23: 100→300 更长warmup充分探索
-        gradient_steps=8,         # 每步更多梯度更新
+        # 🚀 v25 轻量化网络
+        hidden_dim=hidden_dim,    # 🔧 1024→256 网络小4倍
+        batch_size=batch_size,    # 🔧 512→256
+        buffer_size=100000,       # 🔧 500000→100000
+        warmup_steps=200,         # 🔧 300→200
+        gradient_steps=gradient_steps,
         
-        # 🚀 v22 性能优化参数
-        use_amp=True,             # 混合精度训练
-        use_async_transfer=True,  # 异步数据传输
-        pin_memory=True,          # 锁页内存
+        # 性能优化
+        use_amp=True,
+        use_async_transfer=True,
+        pin_memory=True,
 
-        # 🔧 v15学习率优化
+        # 学习率
         actor_lr=3e-4,
         critic_lr=3e-4,
 
-        # 🆕 v23: 增强探索噪声 - 跳出局部最优
-        exploration_noise=0.4,    # 🆕 0.25→0.4 更高初始噪声
-        noise_decay=0.9992,       # 🆕 0.995→0.9992 更慢衰减
-        min_noise=0.12,           # 🆕 0.05→0.12 更高最小噪声
-        target_noise=0.2,         # 🆕 0.15→0.2
-        noise_clip=0.4,           # 🆕 0.30→0.4
+        # 探索噪声
+        exploration_noise=0.25,   # 🔧 0.4→0.25 适中噪声
+        noise_decay=0.998,        # 🔧 正常衰减
+        min_noise=0.08,           # 🔧 0.12→0.08
+        target_noise=0.15,
+        noise_clip=0.3,
 
-        # 🔧 奖励归一化
+        # 奖励归一化
         reward_norm_beta=0.995,
         reward_norm_clip=5.0,
     )
@@ -588,13 +591,20 @@ class OptimizedTD3Wrapper:
         edge_pref = float(action[0])  # 边缘卸载偏好 (RSU+UAV)
         local_pref = float(action[1])  # 本地处理偏好
         
-        # 将 [edge_pref, local_pref] 转换为 [local, rsu, uav] 分布
-        # 使用tanh输出。edge_pref > 0 倾向卸载，< 0 倾向本地
+        # 🔧 修复v12: 对称的偏好映射，避免本地偏好被系统性放大
+        # 使用tanh输出范围[-1, 1]，通过对称缩放确保公平竞争
+        # edge_pref > 0 倾向卸载，local_pref > 0 倾向本地
+        # 将边缘偏好拆分为RSU(60%)和UAV(40%)，但保持总权重与本地相当
+        edge_scale = max(0.01, abs(edge_pref) + abs(local_pref))  # 防止除零
         offload_raw = np.array([
-            local_pref,           # 本地偏好
-            edge_pref * 0.6,      # RSU偏好 (边缘的主要部分)
-            edge_pref * 0.4       # UAV偏好 (边缘的辅助部分)
+            local_pref * 0.8,              # 本地偏好 (略微削弱，鼓励卸载探索)
+            edge_pref * 0.6,               # RSU偏好 (边缘的主要部分)
+            edge_pref * 0.4                # UAV偏好 (边缘的辅助部分)
         ], dtype=np.float32)
+        
+        # 🔧 添加卸载倾向偏移：默认略微偏向边缘处理
+        offload_bias = np.array([-0.3, 0.2, 0.1], dtype=np.float32)  # 降低本地基线
+        offload_raw = offload_raw + offload_bias
         offload_preference = softmax(offload_raw)
         
         # [2] RSU偏好 → 广播到所有RSU (加入位置偏移创造差异)

@@ -187,6 +187,11 @@ class TD3Config:
         if 'TD3_ATTENTION_SCALE' in os.environ:
             self.attention_scale = float(os.environ['TD3_ATTENTION_SCALE'])
             print(f"[TD3Config] attention_scale: {self.attention_scale}")
+        
+        # 🚀 GPU负载控制：用于平衡CPU/GPU利用率
+        if 'TD3_UPDATE_FREQ' in os.environ:
+            self.update_freq = int(os.environ['TD3_UPDATE_FREQ'])
+            print(f"[TD3Config] 🚀 update_freq: {self.update_freq} (每{self.update_freq}步更新一次网络)")
 
     # PER 参数（优化以减少低质量样本影响）
     per_alpha: float = 0.6  # 🔧 回调优先级指数，减轻早期过度关注
@@ -201,7 +206,7 @@ class TD3Config:
     td_error_clip: float = 4.0
     
     # 训练频率
-    update_freq: int = 2  # 🚀 加速：每2步更新一次（降低计算量）
+    update_freq: int = 4  # 🚀 GPU优化：每4步更新一次（平衡CPU/GPU负载）
     warmup_steps: int = 2000  # 🚀 加速：减半warmup
 
 
@@ -877,13 +882,9 @@ class TD3Agent:
         
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         
-        # 🚀 GPU混合精度训练支持
-        self.use_amp = torch.cuda.is_available()
-        if self.use_amp:
-            self.scaler = torch.cuda.amp.GradScaler()
-            print(f"🚀 启用GPU加速 + 混合精度训练 (AMP)")
-        else:
-            self.scaler: Optional[torch.cuda.amp.GradScaler] = None
+        # AMP对MLP效果有限,禁用
+        self.use_amp = False
+        self.scaler = None
 
         offload_dim = 3 + num_rsus + num_uavs
         cache_dim = action_dim - offload_dim
@@ -939,9 +940,6 @@ class TD3Agent:
         # 🔧 暂时禁用学习率调度器，避免短期训练中学习率过快衰减
         # self.actor_lr_scheduler = optim.lr_scheduler.ExponentialLR(self.actor_optimizer, gamma=0.995)
         # self.critic_lr_scheduler = optim.lr_scheduler.ExponentialLR(self.critic_optimizer, gamma=0.995)
-        
-        if not self.use_amp:
-            self.scaler = None
         
         # 经验回放缓冲区
         # PER beta参数
