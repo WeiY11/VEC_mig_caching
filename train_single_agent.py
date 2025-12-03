@@ -120,17 +120,17 @@ from single_agent.optimized_td3_wrapper import OptimizedTD3Environment
 from utils.html_report_generator import HTMLReportGenerator
 
 # 🌐 导入实时可视化模块
-# try:
-#     from scripts.visualize.realtime_visualization import create_visualizer
-#     REALTIME_AVAILABLE = True
-# except ImportError:
-#     try:
-#         from scripts.visualize.realtime_visualization_simple import create_visualizer
-#         REALTIME_AVAILABLE = True
-#     except ImportError:
-#         REALTIME_AVAILABLE = False
-#     print("⚠️  实时可视化功能不可用，请运行: pip install flask flask-socketio")
-REALTIME_AVAILABLE = False
+try:
+    from scripts.visualize.realtime_visualization import create_visualizer
+    REALTIME_AVAILABLE = True
+except ImportError:
+    try:
+        from scripts.visualize.realtime_visualization_simple import create_visualizer
+        REALTIME_AVAILABLE = True
+    except ImportError:
+        REALTIME_AVAILABLE = False
+        create_visualizer = None
+        print("⚠️  实时可视化功能不可用，请运行: pip install flask flask-socketio")
 
 # 尝试导入PyTorch以设置随机种子；如果不可用则跳过
 try:
@@ -1594,10 +1594,15 @@ class SingleAgentTrainingEnvironment:
 
         # 🔍 调试日志：能耗与迁移敏感区间
         current_episode = getattr(self, '_current_episode', 0)
-        if current_episode > 0 and (current_episode % 50 == 0 or avg_delay > 0.2 or migration_success_rate < 0.9):
+        episode_reward = getattr(self, '_episode_reward', 0.0)
+        episode_steps = getattr(self, '_episode_steps', 1)
+        avg_reward = episode_reward / max(1, episode_steps)
+        
+        # 🔧 优化：每10轮打印一次训练进度，包含关键指标
+        if current_episode > 0 and (current_episode % 10 == 0 or avg_delay > 0.2):
             print(
-                f"[调试] Episode {current_episode:04d}: 延迟 {avg_delay:.3f}s, 能耗 {total_energy:.2f}J, "
-                f"完成率 {completion_rate:.1%}, 迁移成功率 {migration_success_rate:.1%}, "
+                f"[Training] Episode {current_episode:04d}: Reward {avg_reward:.2f}, Delay {avg_delay:.3f}s, Energy {total_energy:.2f}J, "
+                f"Completion {completion_rate:.1%}, MigSuccess {migration_success_rate:.1%}, "
                 f"缓存命中 {cache_hit_rate:.1%}, 数据损失 {data_loss_ratio_bytes:.1%}, "
                 f"缓存淘汰率 {cache_eviction_rate:.1%}"
             )

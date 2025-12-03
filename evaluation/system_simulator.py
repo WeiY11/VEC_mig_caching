@@ -420,7 +420,7 @@ class CompleteSystemSimulator:
                 'tasks': [],
                 'energy_consumed': 0.0,
                 'device_cache': {},  # 车载缓存
-                'device_cache_capacity': 32.0,  # 车载缓存容量(MB)
+                'device_cache_capacity': 100.0,  # 车载缓存容量(MB) - 100MB
                 # 🎯 Phase 2本地调度参数
                 'cpu_freq': self.vehicle_cpu_freq,  # 分配的CPU频率（Hz）
                 'cpu_frequency': self.vehicle_cpu_freq,  # 🔧 新增：与状态编码字段名一致
@@ -467,8 +467,8 @@ class CompleteSystemSimulator:
                 'position': rsu_positions[i],
                 'coverage_radius': self.coverage_radius,  # 覆盖半径(m)
                 'cache': {},  # 缓存字典
-                'cache_capacity': 1000.0,  # 缓存容量(MB) - 1GB边缘服务器缓存
-                'cache_capacity_bytes': (getattr(self.sys_config.cache, 'rsu_cache_capacity', 1e9) if self.sys_config is not None else 1e9),
+                'cache_capacity': 200.0,  # 缓存容量(MB) - 200MB边缘服务器缓存
+                'cache_capacity_bytes': (getattr(self.sys_config.cache, 'rsu_cache_capacity', 200e6) if self.sys_config is not None else 200e6),
                 'cpu_freq': self.rsu_cpu_freq,  # 🆕 CPU频率(Hz)
                 'cpu_frequency': self.rsu_cpu_freq,  # 🔧 新增：与状态编码字段名一致
                 'computation_queue': [],  # 计算任务队列
@@ -515,8 +515,8 @@ class CompleteSystemSimulator:
                 'velocity': 0.0,  # 当前速度(m/s)
                 'coverage_radius': self.uav_coverage_radius,  # 🔧 修复: 从配置读取覆盖半径
                 'cache': {},  # 缓存字典
-                'cache_capacity': 200.0,  # 缓存容量(MB) - 200MB轻量级UAV缓存
-                'cache_capacity_bytes': (getattr(self.sys_config.cache, 'uav_cache_capacity', 200e6) if self.sys_config is not None else 200e6),
+                'cache_capacity': 150.0,  # 缓存容量(MB) - 150MB轻量级UAV缓存
+                'cache_capacity_bytes': (getattr(self.sys_config.cache, 'uav_cache_capacity', 150e6) if self.sys_config is not None else 150e6),
                 'cpu_freq': self.uav_cpu_freq,  # 🆕 CPU频率(Hz)
                 'cpu_frequency': self.uav_cpu_freq,  # 🔧 新增：与状态编码字段名一致
                 'computation_queue': [],  # 计算任务队列
@@ -1997,7 +1997,7 @@ class CompleteSystemSimulator:
 
         if self.config.get('high_load_mode', False):
             complexity_multiplier = self.config.get('task_complexity_multiplier', 1.5)
-            data_size_mb = min(data_size_mb * 1.1, 2.0)
+            data_size_mb = min(data_size_mb * 1.1, 12.0)
             data_size_bytes = data_size_mb * 1e6
             effective_density = min(effective_density * 1.05, 200)
 

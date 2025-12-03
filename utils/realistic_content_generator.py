@@ -45,14 +45,14 @@ class RealisticContentGenerator:
             # 类型1: 极度敏感 (50KB-200KB)
             VECContentType.SAFETY_ALERT: VECContentSpec(
                 content_type=VECContentType.SAFETY_ALERT,
-                size_mb=0.075,         # 75KB - 安全警报 (约50-200KB范围内)
+                size_mb=0.15,          # 150KB - 安全警报 (类型1: 50-200KB)
                 priority=5,             # 最高优先级
                 freshness_duration=30.0,  # 30秒有效期
                 access_pattern='burst'
             ),
             VECContentType.SENSOR_DATA: VECContentSpec(
                 content_type=VECContentType.SENSOR_DATA,
-                size_mb=0.125,         # 125KB - 传感器数据 (约50-200KB范围内)
+                size_mb=0.25,          # 250KB - 传感器数据 (类型1: 200-300KB)
                 priority=4,             # 高优先级
                 freshness_duration=10.0,  # 10秒有效期
                 access_pattern='frequent'
@@ -61,14 +61,14 @@ class RealisticContentGenerator:
             # 类型2: 敏感 (600KB-1.5MB)
             VECContentType.NAVIGATION: VECContentSpec(
                 content_type=VECContentType.NAVIGATION,
-                size_mb=0.9,           # 900KB - 路径数据 (约600KB-1.5MB范围内)
+                size_mb=1.2,           # 1.2MB - 路径数据 (类型2: 1-2MB)
                 priority=4,             # 高优先级
                 freshness_duration=300.0,  # 5分钟有效期
                 access_pattern='burst'
             ),
             VECContentType.WEATHER_INFO: VECContentSpec(
                 content_type=VECContentType.WEATHER_INFO,
-                size_mb=0.75,          # 750KB - 天气数据 (约600KB-1.5MB范围内)
+                size_mb=1.5,           # 1.5MB - 天气数据 (类型2: 1-2MB)
                 priority=2,             # 低优先级
                 freshness_duration=1800.0, # 30分钟有效期
                 access_pattern='periodic'
@@ -77,14 +77,14 @@ class RealisticContentGenerator:
             # 类型3: 中度容忍 (2MB-4MB)
             VECContentType.MAP_DATA: VECContentSpec(
                 content_type=VECContentType.MAP_DATA,
-                size_mb=3.0,           # 3MB - 地图瓦片 (约2-4MB范围内)
+                size_mb=3.5,           # 3.5MB - 地图瓦片 (类型3: 3-5MB)
                 priority=3,             # 中等优先级
                 freshness_duration=3600.0, # 1小时有效期
                 access_pattern='periodic'
             ),
             VECContentType.PARKING_INFO: VECContentSpec(
                 content_type=VECContentType.PARKING_INFO,
-                size_mb=2.5,           # 2.5MB - 停车信息 (约2-4MB范围内)
+                size_mb=4.0,           # 4.0MB - 停车信息 (类型3: 3-5MB)
                 priority=3,             # 中等优先级
                 freshness_duration=600.0, # 10分钟有效期
                 access_pattern='periodic'
@@ -93,14 +93,14 @@ class RealisticContentGenerator:
             # 类型4: 容忍 (4.5MB-8MB)
             VECContentType.TRAFFIC_INFO: VECContentSpec(
                 content_type=VECContentType.TRAFFIC_INFO,
-                size_mb=5.5,           # 5.5MB - 实时交通数据 (约4.5-8MB范围内)
+                size_mb=6.0,           # 6.0MB - 实时交通数据 (类型4: 5-8MB)
                 priority=3,             # 中等优先级
                 freshness_duration=60.0,  # 1分钟有效期
                 access_pattern='frequent'
             ),
             VECContentType.ENTERTAINMENT: VECContentSpec(
                 content_type=VECContentType.ENTERTAINMENT,
-                size_mb=6.5,           # 6.5MB - 视频/音乐 (约4.5-8MB范围内)
+                size_mb=8.0,           # 8.0MB - 视频/音乐 (类型4: 5-10MB)
                 priority=1,             # 最低优先级
                 freshness_duration=7200.0, # 2小时有效期
                 access_pattern='rare'
@@ -134,10 +134,10 @@ class RealisticContentGenerator:
         # 控制内容目录规模，促进内容复用以产生缓存命中
         try:
             import os
-            self.catalog_size = int(os.environ.get("CONTENT_CATALOG_SIZE", "20"))
-            self.catalog_size = max(5, self.catalog_size)
+            self.catalog_size = int(os.environ.get("CONTENT_CATALOG_SIZE", "200"))
+            self.catalog_size = max(50, self.catalog_size)
         except Exception:
-            self.catalog_size = 20
+            self.catalog_size = 200
     
     def generate_content_request(self, vehicle_id: str, step: int) -> Tuple[str, VECContentSpec]:
         """

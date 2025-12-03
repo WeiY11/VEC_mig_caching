@@ -290,7 +290,7 @@ class EnhancedTD3Agent:
     @property
     def alpha(self) -> float:
         """获取当前熵温度参数"""
-        if self.use_entropy_reg:
+        if self.use_entropy_reg and self.log_alpha is not None:
             return self.log_alpha.exp().item()
         return 0.0
     

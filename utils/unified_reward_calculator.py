@@ -437,7 +437,9 @@ class UnifiedRewardCalculator:
         import os
         
         # 检查是否启用正向奖励模式
-        use_positive_reward = os.environ.get('MDP_POSITIVE_REWARD', '1') == '1'
+        # 🔧 修复：默认禁用正向奖励，回归传统的负值惩罚模式
+        # 用户反馈正向奖励导致曲线平坦，无法观察到收敛趋势
+        use_positive_reward = os.environ.get('MDP_POSITIVE_REWARD', '0') == '1'
         
         if use_positive_reward:
             # === 正向奖励模式 ===
