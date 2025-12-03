@@ -1,0 +1,214 @@
+# =============================================================================
+# VEC边缘计算系统 - 统一默认配置
+# 参考Xuance框架风格设计
+# 
+# 使用方式：
+#   python train_single_agent.py --config config/defaults.yaml
+#   python train_single_agent.py --config config/my_experiment.yaml
+#
+# 优先级：环境变量 > 命令行参数 > YAML配置 > Python默认值
+# =============================================================================
+
+# 配置元信息
+config_version: "2.0"
+config_source: "defaults.yaml"
+
+# -----------------------------------------------------------------------------
+# 网络拓扑配置
+# -----------------------------------------------------------------------------
+network:
+  num_vehicles: 12           # 车辆数量
+  num_rsus: 4                # RSU数量
+  num_uavs: 2                # UAV数量
+  area_width: 1030.0         # 区域宽度 (m)
+  area_height: 2060.0        # 区域高度 (m)
+  coverage_radius: 300.0     # RSU覆盖半径 (m)
+  uav_coverage_radius: 500.0 # UAV覆盖半径 (m)
+  uav_altitude: 100.0        # UAV飞行高度 (m)
+
+# -----------------------------------------------------------------------------
+# 通信参数配置 (3GPP标准)
+# -----------------------------------------------------------------------------
+communication:
+  bandwidth: 40.0e6          # 总带宽 40 MHz
+  carrier_frequency: 3.5e9   # 载波频率 3.5 GHz (NR n78频段)
+  noise_power: -100.0        # 噪声功率 (dBm)
+  path_loss_exponent: 3.0    # 路径损耗指数
+  
+  # 发射功率 (dBm)
+  vehicle_tx_power: 30.0     # 车辆 1W = 30 dBm
+  rsu_tx_power: 40.0         # RSU 10W = 40 dBm
+  uav_tx_power: 23.0         # UAV 0.2W = 23 dBm
+  
+  # 天线增益 (dBi)
+  antenna_gain_rsu: 15.0
+  antenna_gain_uav: 5.0
+  antenna_gain_vehicle: 3.0
+  
+  # 遮挡模型
+  enable_blockage: true
+  building_density: 0.3      # 建筑密度 (0=郊区, 0.5=城市, 1.0=密集城区)
+  
+  # 编码效率
+  coding_efficiency: 0.9     # 5G NR编码效率
+
+# -----------------------------------------------------------------------------
+# 计算资源配置
+# -----------------------------------------------------------------------------
+compute:
+  # 总计算资源池 (Hz)
+  total_vehicle_compute: 18.0e9   # 18 GHz (12车辆共享)
+  total_rsu_compute: 50.0e9       # 50 GHz (4个RSU共享)
+  total_uav_compute: 14.0e9       # 14 GHz (2个UAV共享)
+  
+  # CPU频率范围 (Hz)
+  vehicle_cpu_freq_min: 1.0e9
+  vehicle_cpu_freq_max: 2.0e9
+  rsu_cpu_freq: 12.5e9
+  uav_cpu_freq_min: 6.0e9
+  uav_cpu_freq_max: 8.0e9
+  
+  # 能耗参数
+  vehicle_kappa: 1.5e-28     # 车辆功耗系数
+  rsu_kappa: 5.0e-32         # RSU功耗系数
+  uav_kappa: 8.89e-31        # UAV功耗系数
+  vehicle_static_power: 5.0  # 车辆静态功耗 (W)
+  rsu_static_power: 25.0     # RSU静态功耗 (W)
+  uav_static_power: 2.5      # UAV静态功耗 (W)
+  uav_hover_power: 15.0      # UAV悬停功耗 (W)
+  
+  parallel_efficiency: 0.8   # 并行处理效率
+
+# -----------------------------------------------------------------------------
+# 任务生成配置
+# -----------------------------------------------------------------------------
+task:
+  arrival_rate: 3.5          # 任务到达率 (tasks/s)
+  data_size_min: 5.0e6       # 最小数据量 5 MB
+  data_size_max: 10.0e6      # 最大数据量 10 MB
+  compute_density: 2.5       # 计算密度 (cycles/bit)
+  compute_cycles_min: 1.0e8  # 最小计算周期
+  compute_cycles_max: 5.0e9  # 最大计算周期
+  deadline_min: 1.0          # 最小截止时间 (s)
+  deadline_max: 6.5          # 最大截止时间 (s)
+  output_ratio: 0.05         # 输出/输入比例
+
+# -----------------------------------------------------------------------------
+# 队列管理配置
+# -----------------------------------------------------------------------------
+queue:
+  max_lifetime: 10           # 最大生命周期 (时隙数)
+  max_queue_size: 100        # 队列最大容量
+  priority_levels: 4         # 优先级级别
+  aging_factor: 0.25         # 老化因子
+  max_load_factor: 1.5       # 最大负载因子
+  
+  rsu_nominal_capacity: 50.0
+  uav_nominal_capacity: 30.0
+  vehicle_nominal_capacity: 20.0
+
+# -----------------------------------------------------------------------------
+# 任务迁移配置
+# -----------------------------------------------------------------------------
+migration:
+  migration_bandwidth: 100.0e6    # 迁移带宽 (bps)
+  migration_threshold: 0.8        # 迁移阈值
+  rsu_overload_threshold: 0.70    # RSU过载阈值
+  uav_overload_threshold: 0.70    # UAV过载阈值
+  cooldown_period: 0.5            # 冷却期 (s)
+  max_migration_distance: 1000.0  # 最大迁移距离 (m)
+
+# -----------------------------------------------------------------------------
+# 缓存配置
+# -----------------------------------------------------------------------------
+cache:
+  vehicle_cache_capacity: 100.0e6  # 车辆缓存 100 MB
+  rsu_cache_capacity: 200.0e6      # RSU缓存 200 MB
+  uav_cache_capacity: 150.0e6      # UAV缓存 150 MB
+  cache_replacement_policy: "HYBRID"
+  cache_hit_threshold: 0.8
+  enable_predictive_caching: true
+
+# -----------------------------------------------------------------------------
+# TD3算法配置 (核心！)
+# -----------------------------------------------------------------------------
+td3:
+  # 网络结构
+  hidden_dim: 256
+  graph_embed_dim: 128
+  
+  # 学习率
+  actor_lr: 9.0e-5
+  critic_lr: 9.0e-5
+  
+  # 训练参数
+  batch_size: 384
+  buffer_size: 100000
+  warmup_steps: 1000
+  
+  # TD3特有参数
+  gamma: 0.99              # 折扣因子
+  tau: 0.005               # 软更新系数
+  policy_delay: 2          # 策略延迟更新
+  
+  # 探索参数
+  exploration_noise: 0.18  # 初始探索噪声
+  noise_decay: 0.9996      # 噪声衰减率
+  min_noise: 0.05          # 最小噪声
+  target_noise: 0.05       # 目标策略平滑噪声
+  noise_clip: 0.2          # 噪声裁剪范围
+  
+  # 正则化
+  gradient_clip_norm: 0.5  # 梯度裁剪
+  use_gradient_clip: true
+  cql_alpha: 0.12          # CQL正则强度
+  
+  # 注意力机制
+  use_actor_attention: true
+  use_critic_attention: true
+  attention_min_gate: 0.6
+
+# -----------------------------------------------------------------------------
+# 奖励函数配置
+# -----------------------------------------------------------------------------
+reward:
+  # 权重 (延迟+能耗等权重)
+  weight_delay: 0.5
+  weight_energy: 0.5
+  penalty_dropped: 1.0
+  weight_completion_gap: 1.0
+  weight_loss_ratio: 1.0
+  
+  # min-max归一化范围
+  latency_min: 0.05        # 最优延迟 (s)
+  latency_target: 0.3      # 目标延迟 (s)
+  latency_max: 2.0         # 最差延迟 (s)
+  energy_min: 1000.0       # 最优能耗 (J)
+  energy_target: 10000.0   # 目标能耗 (J)
+  energy_max: 25000.0      # 最差能耗 (J)
+  
+  use_dynamic_normalization: false
+  reward_scale: 1.0
+
+# -----------------------------------------------------------------------------
+# 实验配置
+# -----------------------------------------------------------------------------
+experiment:
+  num_episodes: 1000       # 训练轮次
+  max_steps_per_episode: 200
+  eval_interval: 50
+  save_interval: 100
+  log_interval: 20
+  warmup_episodes: 10
+  num_runs: 3
+  random_seed: 42
+
+# -----------------------------------------------------------------------------
+# 系统配置
+# -----------------------------------------------------------------------------
+system:
+  device: "auto"           # auto, cpu, cuda
+  num_threads: 4
+  time_slot_duration: 1.0  # 时隙长度 (s)
+  simulation_time: 1000
+  enable_performance_optimization: true

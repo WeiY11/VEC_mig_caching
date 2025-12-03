@@ -11,7 +11,7 @@ CAMTD3 = 基于中央资源分配的缓存感知任务迁移系统
 │   ├── 缓存决策（Cache-Aware）
 │   ├── 任务迁移（Migration）
 │   └── 任务调度
-python train_single_agent.py --algorithm OPTIMIZED_TD3 --episodes 1000 --num-vehicles 12 --seed 42 --num-envs 1
+python train_single_agent.py --algorithm OPTIMIZED_TD3 --episodes 1000 --num-vehicles 12 --seed 42
 
 Queue-aware Replay
 •训练效率提升35%
@@ -113,6 +113,8 @@ from typing import Dict, List, Tuple, Optional, Any
 
 # 导入核心模块
 from config import config
+# 🆕 统一配置管理模块
+from config.unified_config import get_config, print_config, create_legacy_compatible_config
 from evaluation.system_simulator import CompleteSystemSimulator
 try:
     from evaluation.enhanced_system_simulator import EnhancedSystemSimulator
@@ -739,13 +741,22 @@ class SingleAgentTrainingEnvironment:
             topology_optimizer = FixedTopologyOptimizer()
             opt_params = topology_optimizer.get_optimized_params(num_vehicles)
             
-            # 应用优化的超参数到TD3配置
-            os.environ['TD3_HIDDEN_DIM'] = str(opt_params.get('hidden_dim', 400))
-            os.environ['TD3_ACTOR_LR'] = str(opt_params.get('actor_lr', 1e-4))
-            os.environ['TD3_CRITIC_LR'] = str(opt_params.get('critic_lr', 8e-5))
-            os.environ['TD3_BATCH_SIZE'] = str(opt_params.get('batch_size', 256))
+            # 应用优化的超参数到TD3配置（但尊重命令行参数的优先级）
+            # 仅当环境变量为默认值时才覆盖
+            current_actor_lr = os.environ.get('TD3_ACTOR_LR', '5e-5')
+            current_batch_size = os.environ.get('TD3_BATCH_SIZE', '512')
             
-            print(f"[FIXED-TOPOLOGY] 车辆数:{num_vehicles} → Hidden:{opt_params['hidden_dim']}, LR:{opt_params['actor_lr']:.1e}, Batch:{opt_params['batch_size']}")
+            os.environ['TD3_HIDDEN_DIM'] = str(opt_params.get('hidden_dim', 400))
+            # 仅当不是命令行指定时才使用优化值
+            if current_actor_lr == '5e-5':  # 默认值
+                os.environ['TD3_ACTOR_LR'] = str(opt_params.get('actor_lr', 1e-4))
+            if current_batch_size == '512':  # 默认值
+                os.environ['TD3_BATCH_SIZE'] = str(opt_params.get('batch_size', 256))
+            os.environ['TD3_CRITIC_LR'] = str(opt_params.get('critic_lr', 8e-5))
+            
+            final_actor_lr = os.environ.get('TD3_ACTOR_LR')
+            final_batch = os.environ.get('TD3_BATCH_SIZE')
+            print(f"[FIXED-TOPOLOGY] 车辆数:{num_vehicles} → Hidden:{opt_params['hidden_dim']}, LR:{final_actor_lr}, Batch:{final_batch}")
             print(f"[FIXED-TOPOLOGY] 保持固定: RSU=4, UAV=2（验证算法策略有效性）")
         
         # 🔧 优化：所有算法统一传入拓扑参数，实现动态适配
@@ -1151,7 +1162,13 @@ class SingleAgentTrainingEnvironment:
         self._reset_reward_baseline(stats_snapshot)
         
         resource_state = self._collect_resource_state()
-        state = self.agent_env.get_state_vector(node_states, system_metrics, resource_state)
+        # 兼容不同算法的get_state_vector签名
+        try:
+            # 尝试传入resource_state（OPTIMIZED_TD3等支持）
+            state = self.agent_env.get_state_vector(node_states, system_metrics, resource_state)
+        except TypeError:
+            # 回退到只传刲2个参数（SAC/PPO/DDPG/DQN等）
+            state = self.agent_env.get_state_vector(node_states, system_metrics)
         
         return state
 
@@ -1205,9 +1222,17 @@ class SingleAgentTrainingEnvironment:
             
             if step_count % 50 == 0:
                 offload_pref = actions_dict['offload_preference']
-                local_val = offload_pref.get('local', 0.0)
-                rsu_val = offload_pref.get('rsu', 0.0)
-                uav_val = offload_pref.get('uav', 0.0)
+                # 兼容字典和numpy数组格式
+                if isinstance(offload_pref, dict):
+                    local_val = offload_pref.get('local', 0.0)
+                    rsu_val = offload_pref.get('rsu', 0.0)
+                    uav_val = offload_pref.get('uav', 0.0)
+                elif isinstance(offload_pref, np.ndarray) and len(offload_pref) >= 3:
+                    local_val = float(offload_pref[0])
+                    rsu_val = float(offload_pref[1])
+                    uav_val = float(offload_pref[2])
+                else:
+                    local_val = rsu_val = uav_val = 0.33
                 print(f"🔍 [Step {step_count}] 卸载偏好 → Local:{local_val:.3f}, RSU:{rsu_val:.3f}, UAV:{uav_val:.3f}")
         
         # 构造传递给仿真器的动作（将连续动作映射为本地/RSU/UAV偏好）
@@ -1282,8 +1307,11 @@ class SingleAgentTrainingEnvironment:
         # 计算系统指标
         system_metrics = self._calculate_system_metrics(step_stats)
         
-        # 获取下一状态
-        next_state = self.agent_env.get_state_vector(node_states, system_metrics, resource_state)
+        # 获取下一状态 (兼容不同算法签名)
+        try:
+            next_state = self.agent_env.get_state_vector(node_states, system_metrics, resource_state)
+        except TypeError:
+            next_state = self.agent_env.get_state_vector(node_states, system_metrics)
         
         # 🔧 增强：计算包含子系统指标的奖励
         cache_metrics = self.adaptive_cache_controller.get_cache_metrics()
@@ -1309,7 +1337,13 @@ class SingleAgentTrainingEnvironment:
                     print(f"⚠️ 指导反馈更新失败: {exc}")
 
         reward_source = system_metrics.get('reward_snapshot', system_metrics)
-        reward, reward_components = self.agent_env.calculate_reward(reward_source, cache_metrics, migration_metrics)
+        # 兼容不同算法的calculate_reward返回格式
+        reward_result = self.agent_env.calculate_reward(reward_source, cache_metrics, migration_metrics)
+        if isinstance(reward_result, tuple) and len(reward_result) == 2:
+            reward, reward_components = reward_result
+        else:
+            reward = float(reward_result)
+            reward_components = {'total_reward': reward}
         
         # 将奖励组件添加到step_stats供调试使用
         step_stats['reward_components'] = reward_components
@@ -3287,7 +3321,80 @@ def main():
     parser.add_argument('--dynamic-bandwidth', action='store_true',
                         help='启用动态带宽分配 Enable dynamic bandwidth allocation')
     
+    # 🆕 统一配置模块参数（TD3超参数）
+    parser.add_argument('--config', '-c', type=str, default=None,
+                        help='YAML配置文件路径（支持统一配置模块）')
+    parser.add_argument('--actor-lr', type=float, default=None,
+                        help='Actor学习率')
+    parser.add_argument('--critic-lr', type=float, default=None,
+                        help='Critic学习率')
+    parser.add_argument('--batch-size', type=int, default=None,
+                        help='批次大小')
+    parser.add_argument('--buffer-size', type=int, default=None,
+                        help='经验回放缓冲区大小')
+    parser.add_argument('--gamma', type=float, default=None,
+                        help='折扣因子')
+    parser.add_argument('--tau', type=float, default=None,
+                        help='软更新系数')
+    parser.add_argument('--exploration-noise', type=float, default=None,
+                        help='初始探索噪声')
+    parser.add_argument('--hidden-dim', type=int, default=None,
+                        help='隐藏层维度')
+    parser.add_argument('--arrival-rate', type=float, default=None,
+                        help='任务到达率 (tasks/s)')
+    parser.add_argument('--print-config', action='store_true',
+                        help='打印当前配置摘要')
+    
     args = parser.parse_args()
+
+    # 🆕 统一配置模块集成
+    unified_cfg = None
+    if args.config or any([
+        args.actor_lr, args.critic_lr, args.batch_size, args.buffer_size,
+        args.gamma, args.tau, args.exploration_noise, args.hidden_dim, args.arrival_rate
+    ]):
+        # 使用统一配置模块加载配置
+        from config.unified_config import UnifiedConfig, TD3Config, TaskConfig
+        unified_cfg = get_config(yaml_file=args.config, validate=False)
+        
+        # 应用命令行覆盖
+        if args.actor_lr is not None:
+            unified_cfg.td3.actor_lr = args.actor_lr
+            config.rl.actor_lr = args.actor_lr
+        if args.critic_lr is not None:
+            unified_cfg.td3.critic_lr = args.critic_lr
+            config.rl.critic_lr = args.critic_lr
+        if args.batch_size is not None:
+            unified_cfg.td3.batch_size = args.batch_size
+            config.rl.batch_size = args.batch_size
+        if args.buffer_size is not None:
+            unified_cfg.td3.buffer_size = args.buffer_size
+            config.rl.memory_size = args.buffer_size
+        if args.gamma is not None:
+            unified_cfg.td3.gamma = args.gamma
+            config.rl.gamma = args.gamma
+        if args.tau is not None:
+            unified_cfg.td3.tau = args.tau
+            config.rl.tau = args.tau
+        if args.exploration_noise is not None:
+            unified_cfg.td3.exploration_noise = args.exploration_noise
+            config.rl.exploration_noise = args.exploration_noise
+        if args.hidden_dim is not None:
+            unified_cfg.td3.hidden_dim = args.hidden_dim
+            config.rl.hidden_dim = args.hidden_dim
+        if args.arrival_rate is not None:
+            unified_cfg.task.arrival_rate = args.arrival_rate
+            config.task.arrival_rate = args.arrival_rate
+        
+        print("\n📝 统一配置模块已启用")
+        print(f"   配置来源: {unified_cfg.config_source}")
+    
+    # 打印配置摘要
+    if args.print_config:
+        if unified_cfg is None:
+            unified_cfg = get_config(validate=False)
+        print_config(unified_cfg, sections=['network', 'td3', 'reward', 'task'])
+        return
 
     if args.seed is not None:
         os.environ['RANDOM_SEED'] = str(args.seed)
@@ -3300,6 +3407,30 @@ def main():
     os.environ.setdefault('RL_SMOOTH_DELAY', '0.6')
     os.environ.setdefault('RL_SMOOTH_ENERGY', '0.6')
     os.environ.setdefault('RL_SMOOTH_ALPHA', '0.25')
+    
+    # 🆕 命令行参数覆盖环境变量（最高优先级）
+    if args.actor_lr is not None:
+        os.environ['TD3_ACTOR_LR'] = str(args.actor_lr)
+        config.rl.actor_lr = args.actor_lr
+    if args.critic_lr is not None:
+        os.environ['TD3_CRITIC_LR'] = str(args.critic_lr)
+        config.rl.critic_lr = args.critic_lr
+    if args.batch_size is not None:
+        os.environ['TD3_BATCH_SIZE'] = str(args.batch_size)
+        config.rl.batch_size = args.batch_size
+    if args.buffer_size is not None:
+        config.rl.memory_size = args.buffer_size
+        config.rl.buffer_size = args.buffer_size
+    if args.gamma is not None:
+        config.rl.gamma = args.gamma
+    if args.tau is not None:
+        config.rl.tau = args.tau
+    if args.exploration_noise is not None:
+        config.rl.exploration_noise = args.exploration_noise
+    if args.hidden_dim is not None:
+        config.rl.hidden_dim = args.hidden_dim
+    if args.arrival_rate is not None:
+        config.task.arrival_rate = args.arrival_rate
     
     # 🔧 v21: 性能优化设置
     os.environ.setdefault('SILENT_MODE', '1')  # 减少I/O开销

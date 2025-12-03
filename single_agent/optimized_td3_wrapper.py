@@ -357,16 +357,24 @@ class OptimizedTD3Wrapper:
                 state_components.extend([0.5, 0.5, 0.5, 0.0, 0.0])  # 默认5维（高度维度已包含）
         
         # 全局状态 (16维 = 基础8维 + 任务类型8维)
-        # 🔧 v24修复：状态维度与STATE_DIM_GLOBAL常量严格对齐
-        # 问题诊断：之前只构建8维全局状态，但预期16维，导致8维被padding填充
+        # 🔧 v27优化：状态归一化与奖励归一化保持一致(min-max)
         from config import config
-        latency_target = float(getattr(config.rl, 'latency_target', 0.1))     # 🔧 v16: 0.1s
-        energy_target = float(getattr(config.rl, 'energy_target', 10000.0))  # 🔧 v16: 10000J
+        # 延迟归一化参数
+        delay_min = float(getattr(config.rl, 'latency_min', 0.05))
+        delay_max = float(getattr(config.rl, 'latency_upper_tolerance', 2.0))
+        delay_range = max(delay_max - delay_min, 1e-6)
+        # 能耗归一化参数
+        energy_min = float(getattr(config.rl, 'energy_min', 1000.0))
+        energy_max = float(getattr(config.rl, 'energy_upper_tolerance', 25000.0))
+        energy_range = max(energy_max - energy_min, 1e-6)
         
-        # 基础全局状态 (8维)
+        # 基础全局状态 (8维) - 使用min-max归一化到[0,1]
+        avg_delay = float(system_metrics.get('avg_task_delay', 0.0))
+        total_energy = float(system_metrics.get('total_energy_consumption', 0.0))
+        
         base_global = [
-            float(system_metrics.get('avg_task_delay', 0.0) / max(latency_target, 1e-6)),
-            float(system_metrics.get('total_energy_consumption', 0.0) / max(energy_target, 1e-6)),
+            float(np.clip((avg_delay - delay_min) / delay_range, 0.0, 2.0)),  # 延迟归一化
+            float(np.clip((total_energy - energy_min) / energy_range, 0.0, 2.0)),  # 能耗归一化
             float(system_metrics.get('task_completion_rate', 0.95)),
             float(system_metrics.get('cache_hit_rate', 0.85)),
             float(system_metrics.get('queue_overload_flag', 0.0)),

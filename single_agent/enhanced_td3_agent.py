@@ -482,8 +482,8 @@ class EnhancedTD3Agent:
         )
         training_info['exploration_noise'] = self.exploration_noise
         
-        # 🔧 v10: 更新组合学习率调度器
-        if hasattr(self, 'use_lr_scheduler') and self.use_lr_scheduler:
+        # 🔧 v10: 更新组合学习率调度器（确保在optimizer.step()之后调用）
+        if hasattr(self, 'use_lr_scheduler') and self.use_lr_scheduler and self.update_count > 0:
             self.actor_combined_scheduler.step()
             self.critic_combined_scheduler.step()
             training_info['actor_lr'] = self.actor_optimizer.param_groups[0]['lr']
@@ -578,7 +578,7 @@ class EnhancedTD3Agent:
         
         # 🚀 AMP混合精度计算
         if self.use_amp:
-            with torch.cuda.amp.autocast():
+            with torch.amp.autocast('cuda'):
                 current_q1, current_q2 = self.critic(states, actions)
                 td_errors_q1 = current_q1 - target_q
                 td_errors_q2 = current_q2 - target_q
@@ -616,7 +616,7 @@ class EnhancedTD3Agent:
         
         # 🚀 AMP混合精度计算
         if self.use_amp:
-            with torch.cuda.amp.autocast():
+            with torch.amp.autocast('cuda'):
                 encoded_states = self.graph_encoder(states)
                 actions = self.actor(encoded_states)
                 

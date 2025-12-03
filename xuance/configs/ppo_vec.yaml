@@ -1,0 +1,86 @@
+# =============================================================================
+# XuanCe VEC Environment - PPO Configuration
+# VEC边缘计算系统 - PPO算法配置
+# =============================================================================
+
+dl_toolbox: "torch"
+project_name: "VEC_Edge_Computing"
+logger: "tensorboard"
+wandb_user_name: "vec_user"
+render: false
+render_mode: "rgb_array"
+fps: 30
+test_mode: false
+
+device: "cuda:0"
+distributed_training: false
+master_port: "12355"
+
+# PPO Algorithm settings
+agent: "PPO_Clip"
+env_name: "VEC"
+env_id: "VEC-v1"
+env_seed: 42
+vectorize: "DummyVecEnv"
+learner: "PPOCLIP_Learner"
+policy: "Gaussian_AC"
+representation: "Basic_MLP"
+
+# Network architecture
+representation_hidden_size: [256, 256]
+actor_hidden_size: [256, 256]
+critic_hidden_size: [256, 256]
+activation: "relu"
+activation_action: "tanh"
+
+seed: 42
+parallels: 4
+
+# Training settings
+running_steps: 200000
+horizon_size: 256
+
+# PPO specific parameters
+learning_rate: 0.0003
+gamma: 0.99
+n_epochs: 10
+n_minibatch: 4
+clip_range: 0.2
+vf_coef: 0.5
+ent_coef: 0.01
+
+# GAE
+use_gae: true
+gae_lambda: 0.95
+
+# Gradient clipping
+use_grad_clip: true
+grad_clip_norm: 0.5
+
+# Normalization
+use_obsnorm: true
+use_rewnorm: true
+use_advnorm: true
+obsnorm_range: 5
+rewnorm_range: 5
+
+# Evaluation
+test_steps: 10000
+eval_interval: 10000
+test_episode: 5
+
+log_dir: "./logs/ppo_vec/"
+model_dir: "./models/ppo_vec/"
+
+# VEC Environment Settings
+vec_config:
+  num_vehicles: 12
+  num_rsus: 4
+  num_uavs: 2
+  arrival_rate: 3.5
+  max_episode_steps: 200
+  use_enhanced_cache: true
+  disable_migration: false
+  reward_weight_delay: 0.5
+  reward_weight_energy: 0.5
+  reward_penalty_dropped: 1.0
