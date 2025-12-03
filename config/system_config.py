@@ -234,16 +234,16 @@ class RLConfig:
         self.min_noise = 0.005         # 🔧 0.01 → 0.005 (降低最小噪声)
         
         # 🎯 核心奖励权重：延迟+能耗+完成率
-        # 🔧 v14修复：降低核心权重减少奖励方差
-        #    问题诊断：v12中delay=5.0, energy=3.0加上reward_scale=5
-        #    导致episode奖励在-3400~-6700波动（方差100%）
-        #    策略：降低到delay=2.0, energy=1.5，配合scale=2.0
-        self.reward_weight_delay = 2.0   # 🔧 v14: 5.0 → 2.0 (降低60%)
-        self.reward_weight_energy = 1.5  # 🔧 v14: 3.0 → 1.5 (降低50%)
+        # 🔧 v27优化：延迟能耗并重，使用等权重+动态归一化
+        #    方法：将延迟和能耗都归一化到[0,1]范围，然后等权重相加
+        #    reward = -(0.5 * norm_delay + 0.5 * norm_energy)
+        #    这样智能体直接优化加权和的最小化
+        self.reward_weight_delay = 0.5   # 🔧 v27: 等权重
+        self.reward_weight_energy = 0.5  # 🔧 v27: 等权重
         
         # 🔥 关键修复：降低任务丢弃惩罚
-        # 🔧 0.02 → 0.1 (增强惩罚，使其高于处理成本)
-        self.reward_penalty_dropped = 0.1
+        # 🔧 0.1 → 1.0 (大幅增强惩罚，防止"懒惰智能体"策略——即发现丢弃比处理更划算)
+        self.reward_penalty_dropped = 1.0
         self.completion_target = 0.95  # 🔧 0.75 → 0.95 (恢复高标准)
         
         # 🔥 启用完成率差距惩罚：让智能体关注完成率
@@ -255,11 +255,18 @@ class RLConfig:
         self.reward_weight_cache_pressure = 0.0  # 保持禁用
         self.reward_weight_cache_bonus = 0.0  # 保持禁用
         self.reward_weight_queue_overload = 0.0  # 保持禁用
-        # 🔧 归一化目标调整
-        self.latency_target = 4.0  # 延迟目标（中间值）
-        self.latency_upper_tolerance = 6.5  # 延迟上限（匹配最大deadline）
-        self.energy_target = 500.0   # 能耗目标
-        self.energy_upper_tolerance = 800.0  # 能耗上限
+        # 🔧 v27优化：使用min-max归一化，确保延迟和能耗在相同量级[0,1]
+        # 设计理念：norm = (value - min) / (max - min)
+        #   - 当value=min时，norm=0（最优，无惩罚）
+        #   - 当value=max时，norm=1（最差，最大惩罚）
+        # 延迟范围：[0.05s, 2.0s] - RSU处理到本地处理复杂任务
+        self.latency_min = 0.05       # 🔧 v27: 最优延迟(卸载到RSU处理简单任务)
+        self.latency_target = 0.3     # 🔧 v27: 目标延迟(卸载到RSU处理中等任务)
+        self.latency_upper_tolerance = 2.0  # 🔧 v27: 最差延迟(本地处理复杂任务)
+        # 能耗范围：[1000J, 25000J] - 低负载到高负载场景
+        self.energy_min = 1000.0      # 🔧 v27: 最优能耗(episode)
+        self.energy_target = 10000.0  # 🔧 v27: 目标能耗(episode)
+        self.energy_upper_tolerance = 25000.0  # 🔧 v27: 最差能耗(episode)
 
         # 🌟 动态归一化开关
         self.use_dynamic_reward_normalization = False  # 禁用以改善收敛性
@@ -353,14 +360,17 @@ class TaskConfig:
         # 任务大小5-10MB，CPU cycles 10^8-10^9
         # compute_density = cycles / bits ≈ 10^8 / (5*8*10^6) ≈ 2.5 cycles/bit
         self.task_compute_density = 2.5  # 🔧 表格2: cycles/bit
-        self.arrival_rate = 3.5
+        self.arrival_rate = 3.5  # 🔧 恢复原值
         
         # 🎯 表格2对齐：数据范围 5-10 MB
         self.data_size_range = (5e6, 10e6)  # 🔧 表格2: 5-10 MB
         self.task_data_size_range = self.data_size_range
 
         # 🎯 表格2对齐：计算周期 10^8 - 10^9 cycles
-        self.compute_cycles_range = (1e8, 1e9)  # 🔧 表格2: 10^8 - 10^9 cycles
+        # 🔧 v25修复：增加复杂任务占比，让智能体学习卸载策略
+        # 问题诊断：当前任务太简单(1e8-1e9)，车辆本地处理只需78ms
+        # 解决方案：提高计算周期上限，让复杂任务必须卸载到RSU/UAV
+        self.compute_cycles_range = (1e8, 5e9)  # 🔧 v25: 1e9 → 5e9 (增加5倍复杂度)
         
         # 🔧 修正：截止时间范围与场景匹配
         self.deadline_range = (1.0, 6.5)  # 1-6.5秒，覆盖所有场景
@@ -407,18 +417,18 @@ class TaskConfig:
             for k, v in self.task_profiles.items()
         }
 
-        # 🔧 修正：场景deadline与类型判定匹配
-        # 类型1: slots<=2 (avg<=2s), 类型2: slots=3 (3<=avg<4s)
-        # 类型3: slots=4 (4<=avg<5s), 类型4: slots>=5 (avg>=5s)
+        # 🔧 v25修复：调整场景权重，增加复杂任务占比
+        # 问题：紧急任务占比45% (0.25+0.20)，导致本地处理偏好过高
+        # 解决：增加中等/高复杂度任务，让智能体学习卸载的好处
         self.scenarios: List[TaskScenarioSpec] = [
-            TaskScenarioSpec('emergency_brake', 1.0, 2.0, 1, 1.0, 0.25),    # avg=1.5 -> slots=1 -> 类型1
-            TaskScenarioSpec('collision_avoid', 1.5, 2.5, 1, 1.0, 0.20),    # avg=2.0 -> slots=2 -> 类型1
-            TaskScenarioSpec('navigation', 3.0, 4.0, 2, 1.0, 0.15),         # avg=3.5 -> slots=3 -> 类型2
-            TaskScenarioSpec('traffic_signal', 3.0, 3.8, 2, 1.0, 0.10),     # avg=3.4 -> slots=3 -> 类型2
-            TaskScenarioSpec('video_process', 4.0, 5.0, 3, 1.0, 0.15),      # avg=4.5 -> slots=4 -> 类型3
-            TaskScenarioSpec('image_recognition', 4.2, 4.8, 3, 1.0, 0.10),  # avg=4.5 -> slots=4 -> 类型3
-            TaskScenarioSpec('data_analysis', 5.0, 6.0, 4, 1.0, 0.04),      # avg=5.5 -> slots=5 -> 类型4
-            TaskScenarioSpec('ml_training', 5.5, 6.5, 4, 1.0, 0.01),        # avg=6.0 -> slots=6 -> 类型4
+            TaskScenarioSpec('emergency_brake', 1.0, 2.0, 1, 1.0, 0.15),    # 🔧 0.25→0.15 减少紧急任务
+            TaskScenarioSpec('collision_avoid', 1.5, 2.5, 1, 1.0, 0.10),    # 🔧 0.20→0.10
+            TaskScenarioSpec('navigation', 3.0, 4.0, 2, 1.0, 0.15),         # 保持
+            TaskScenarioSpec('traffic_signal', 3.0, 3.8, 2, 1.0, 0.10),     # 保持
+            TaskScenarioSpec('video_process', 4.0, 5.0, 3, 1.0, 0.20),      # 🔧 0.15→0.20 增加复杂任务
+            TaskScenarioSpec('image_recognition', 4.2, 4.8, 3, 1.0, 0.15),  # 🔧 0.10→0.15
+            TaskScenarioSpec('data_analysis', 5.0, 6.0, 4, 1.0, 0.10),      # 🔧 0.04→0.10 增加高复杂度任务
+            TaskScenarioSpec('ml_training', 5.5, 6.5, 4, 1.0, 0.05),        # 🔧 0.01→0.05
         ]
         self._scenario_weights = [scenario.weight for scenario in self.scenarios]
         self._scenario_lookup = {scenario.name: scenario for scenario in self.scenarios}

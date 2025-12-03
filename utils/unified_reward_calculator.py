@@ -148,8 +148,8 @@ class UnifiedRewardCalculator:
         self.weight_cache_pressure = float(getattr(config.rl, "reward_weight_cache_pressure", 0.0))
         self.weight_queue_overload = float(getattr(config.rl, "reward_weight_queue_overload", 0.0))
         self.weight_remote_reject = float(getattr(config.rl, "reward_weight_remote_reject", 0.0))
-        self.latency_target = float(getattr(config.rl, "latency_target", 1.5))
-        self.energy_target = float(getattr(config.rl, "energy_target", 1000.0))  # 🔧 9000 → 1000 (对齐实际能耗)
+        self.latency_target = float(getattr(config.rl, "latency_target", 0.1))  # 🔧 v16: 0.1s
+        self.energy_target = float(getattr(config.rl, "energy_target", 10000.0))  # 🔧 v16: 10000J
         self.latency_tolerance = float(getattr(config.rl, "latency_upper_tolerance", self.latency_target * 2.0))
         self.energy_tolerance = float(getattr(config.rl, "energy_upper_tolerance", self.energy_target * 1.5))
         # 分段容错/钳位
@@ -172,13 +172,22 @@ class UnifiedRewardCalculator:
             # 默认所有任务类型权重相等
             self.task_priority_weights = {1: 0.25, 2: 0.25, 3: 0.25, 4: 0.25}
 
-        # 🔧 P0修复：归一化因子必须与优化目标值严格对齐
-        # Normalisation factors MUST align with optimization targets (latency_target and energy_target).
-        # 目标值从config.rl读取：latency_target=0.4s, energy_target=3500J
-        # 归一化基准直接使用这些目标值，确保状态归一化与奖励计算一致
-        # ⚠️ 关键：OptimizedTD3Wrapper的状态归一化也使用相同的config.rl目标值
-        self.delay_normalizer = self.latency_target  # 与目标值对齐
-        self.energy_normalizer = self.energy_target  # 与目标值对齐
+        # 🔧 v27优化：使用min-max归一化，确保延迟和能耗在相同量级[0,1]
+        # 问题：简单除以target会导致范围差异巨大
+        # 解决：使用(value - min) / (max - min)归一化到[0,1]
+        # 这样延迟和能耗都有相同的信号强度
+        self.delay_min = float(getattr(config.rl, "latency_min", 0.05))  # 最优延迟(RSU处理简单任务)
+        self.delay_max = float(getattr(config.rl, "latency_upper_tolerance", 2.0))  # 最差延迟(本地处理复杂任务)
+        self.energy_min = float(getattr(config.rl, "energy_min", 1000.0))  # 最优能耗(episode)
+        self.energy_max = float(getattr(config.rl, "energy_upper_tolerance", 25000.0))  # 最差能耗(episode)
+        
+        # 归一化范围
+        self.delay_range = max(self.delay_max - self.delay_min, 1e-6)
+        self.energy_range = max(self.energy_max - self.energy_min, 1e-6)
+        
+        # 保留旧参数兼容性
+        self.delay_normalizer = self.latency_target
+        self.energy_normalizer = self.energy_target
         self.delay_bonus_scale = max(1e-6, self.latency_target)
         self.energy_bonus_scale = max(1e-6, self.energy_target)
         
@@ -357,46 +366,71 @@ class UnifiedRewardCalculator:
 
     def _compute_components(self, m: RewardMetrics) -> RewardComponents:
         """
-        🔧 v13优化：极简成本计算
+        🔧 v27优化：使用min-max归一化，延迟和能耗都在[0,1]范围
         
-        核心策略：只保留delay和energy的核心成本，移除所有bonus项
-        问题诊断：之前bonus和penalty相互抵消，导致总差异只有3-5%
-        解决方案：极简化奖励函数，让智能体能清晰看到优化方向
+        设计理念：
+        1. norm = (value - min) / (max - min) → [0, 1]
+        2. 当value=min时，norm=0（最优，无惩罚）
+        3. 当value=max时，norm=1（最差，最大惩罚）
+        4. 超出范围时线性外推（允许norm>1）
+        
+        这样智能体直接优化：minimize(0.5*norm_delay + 0.5*norm_energy)
         """
-        import os
-
-        # 🔧 v13极简版：只保留核心成本，移除所有bonus项
-        # 目标：让奖励差异最大化，让智能体能清晰看到优化方向
+        # --- 核心成本：min-max归一化到[0,1] ---
+        # 延迟归一化
+        delay_val = max(0.0, m.avg_delay)
+        norm_delay = (delay_val - self.delay_min) / self.delay_range
+        norm_delay = max(0.0, norm_delay)  # 不允许负值
         
-        # --- 核心成本：线性归一化 ---
-        norm_delay = m.avg_delay / max(self.delay_normalizer, 1e-6)
-        norm_energy = m.total_energy / max(self.energy_normalizer, 1e-6)
+        # 能耗归一化
+        energy_val = max(0.0, m.total_energy)
+        norm_energy = (energy_val - self.energy_min) / self.energy_range
+        norm_energy = max(0.0, norm_energy)  # 不允许负值
+        
+        # 加权和（等权重0.5+0.5=1.0）
         delay_penalty = self.weight_delay * norm_delay
         energy_penalty = self.weight_energy * norm_energy
         core_cost = delay_penalty + energy_penalty
 
-        # --- 🔧 v13: 简化丢弃惩罚 ---
+        # --- 简化丢弃惩罚 ---
         drop_penalty = self.penalty_dropped * m.dropped_tasks
         
-        # --- 🔧 v13: 移除所有复杂的bonus和penalty项 ---
-        # 这些项之前相互抵消，导致奖励差异只有3-5%
+        # --- 其他惩罚项 ---
         completion_gap = max(0.0, self.completion_target - m.completion_rate)
         completion_gap_penalty = self.weight_completion_gap * completion_gap
         data_loss_penalty = self.weight_loss_ratio * m.data_loss_ratio
-        cache_pressure_penalty = 0.0  # 禁用
-        queue_penalty = 0.0           # 禁用
-        remote_reject_penalty = 0.0   # 禁用
-        local_penalty = 0.0           # 禁用
-        cache_penalty = 0.0           # 禁用
-        migration_penalty = 0.0       # 禁用
-        offload_bonus = 0.0           # 禁用
-        cache_bonus = 0.0             # 禁用
-        joint_bonus = 0.0             # 禁用
-        joint_coupling_penalty = 0.0  # 禁用
+        cache_pressure_penalty = 0.0
+        queue_penalty = 0.0
+        remote_reject_penalty = 0.0
+        local_penalty = 0.0
+        cache_penalty = 0.0
+        migration_penalty = 0.0
+        cache_bonus = 0.0
+        joint_bonus = 0.0
+        joint_coupling_penalty = 0.0
+        
+        # 🆕 v19: 卸载效率奖励（放大决策差异信号）
+        # remote_ratio = RSU卸载 + UAV卸载 的比例
+        remote_ratio = m.rsu_offload_ratio + m.uav_offload_ratio
+        
+        # 🎯 卸载效率奖励设计：
+        # - 边缘处理(RSU/UAV)通常比本地处理更高效
+        # - remote_ratio ∈ [0, 1]，越高越好
+        # - 奖励 = weight × remote_ratio，权重为1.0
+        # - 这提供了一个智能体动作可直接影响的信号
+        offload_efficiency_weight = float(getattr(config.rl, 'reward_weight_offload_efficiency', 1.0))
+        offload_bonus = offload_efficiency_weight * remote_ratio
+        
+        # 🆕 v19: 延迟改善放大器
+        # 当延迟低于目标时给予额外奖励
+        delay_improvement_bonus = 0.0
+        if norm_delay < 1.0:  # 延迟低于目标
+            delay_improvement_bonus = (1.0 - norm_delay) * 0.5  # 最高0.5的奖励
 
-        # --- 🔧 v15: 恢复完整总成本 = core_cost + drop_penalty + completion + data_loss ---
         total_cost = core_cost + drop_penalty + completion_gap_penalty + data_loss_penalty
-        total_cost = float(np.clip(total_cost, 0.0, self.total_cost_clip))
+        # 减去奖励项（奖励是负成本）
+        total_cost = total_cost - offload_bonus - delay_improvement_bonus
+        total_cost = float(np.clip(total_cost, -self.total_cost_clip, self.total_cost_clip))
 
         return RewardComponents(
             norm_delay=norm_delay,
@@ -492,26 +526,22 @@ class UnifiedRewardCalculator:
                 - reward: 总奖励标量值
                 - reward_components: 包含各分量的字典
         """
-        # Debug print for first few calls to verify input range
+        # 🔧 修复: 只在主进程打印调试信息，避免并行环境日志混乱
+        import os
+        is_main_process = os.environ.get('WORKER_ID', '0') == '0'
+        
         if not hasattr(self, '_debug_count'):
             self._debug_count = 0
-        if self._debug_count < 10:
-            print(f"[RewardDebug] Metrics: delay={system_metrics.get('avg_task_delay', 0):.4f}, energy={system_metrics.get('total_energy_consumption', 0):.1f}, completion={system_metrics.get('task_completion_rate', 0):.2f}")
-            self._debug_count += 1
 
         metrics = self._extract_metrics(system_metrics, cache_metrics, migration_metrics)
         components = self._compute_components(metrics)
         components = self._compose_reward(components, metrics.completion_rate)
         
-        # 🔍 临时诊断：打印奖励分解，找出被压缩的原因
-        if self._debug_count <= 5:
-            print(f"[RewardBreakdown] Episode {self._debug_count}:")
-            print(f"  norm_delay={components.norm_delay:.4f}, norm_energy={components.norm_energy:.4f}")
-            print(f"  core_cost={components.core_cost:.4f}")
-            print(f"  offload_bonus={components.offload_bonus:.4f}")
-            print(f"  total_cost={components.total_cost:.4f}")
-            print(f"  reward_pre_clip={components.reward_pre_clip:.4f}")
-            print(f"  reward_final={components.reward:.4f}")
+        # 仅主进程打印前2次调试信息
+        if is_main_process and self._debug_count < 2:
+            print(f"[RewardDebug] delay={system_metrics.get('avg_task_delay', 0):.4f}, energy={system_metrics.get('total_energy_consumption', 0):.1f}")
+            print(f"  reward={components.reward:.4f}, core_cost={components.core_cost:.4f}")
+            self._debug_count += 1
         
         # 构造奖励组件字典供调试使用
         reward_components = {

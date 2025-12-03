@@ -31,14 +31,14 @@ from .common_state_action import (
 
 
 def create_optimized_config() -> EnhancedTD3Config:
-    """创建精简优化配置 - ✨ 使用最新GAT优化
+    """创建精简优化配置 - ✨ 使用最新GAT优化 + 🚀 GPU性能优化
     
-    🔧 2024-12-02 v7修复：1000 episode完全无学习
-    核心修复：
-    1. 缩短warmup 3000 → 500 (更快开始学习)
-    2. 降低初始探索噪声 0.25 → 0.15 (减少早期随机性)
-    3. 加快噪声衰减 0.999 → 0.997 (更快收敛)
-    4. 提高学习率 1e-4 → 3e-4 (加快梯度更新)
+    🔧 2024-12-03 v23: 增强探索防止局部最优
+    核心优化：
+    1. batch_size 1024 (大幅提高GPU利用率)
+    2. gradient_steps 8 (每步更多梯度更新)
+    3. 启用AMP混合精度训练
+    4. 🆕 增强探索噪声 + 熵正则化 (防止局部最优)
     """
     return EnhancedTD3Config(
         # ✅ 核心优化1：队列感知回放
@@ -55,29 +55,38 @@ def create_optimized_config() -> EnhancedTD3Config:
         gat_hidden_dim=192,
         gat_dropout=0.15,
 
-        # ❌ 禁用其他优化
+        # 🆕 v23: 启用熵正则化防止局部最优
         use_distributional_critic=False,
-        use_entropy_reg=False,
+        use_entropy_reg=True,           # 🆕 启用熵正则化
+        auto_tune_alpha=True,           # 自动调节温度
+        initial_alpha=0.3,              # 较高初始温度鼓励探索
+        use_grouped_temperature=True,   # 分组温度
+        offload_temp=2.0,               # 卸载决策高温探索
+        cache_temp=0.8,                 # 缓存决策中等温度
         use_model_based_rollout=False,
 
-        # 🔧 v10基础参数优化 - 更大网络容量
-        hidden_dim=1024,     # 🔧 v10: 768 → 1024
-        batch_size=512,      # 🔧 v10: 256 → 512 (更稳定)
-        buffer_size=300000,  # 🔧 v10: 200000 → 300000
-        warmup_steps=100,    # 🔧 v10: 200 → 100 (更快开始)
+        # 🚀 v22 GPU性能优化 - 大幅提高利用率
+        hidden_dim=1024,          # 网络容量
+        batch_size=1024,          # 大batch提高GPU利用率
+        buffer_size=500000,       
+        warmup_steps=300,         # 🆕 v23: 100→300 更长warmup充分探索
+        gradient_steps=8,         # 每步更多梯度更新
+        
+        # 🚀 v22 性能优化参数
+        use_amp=True,             # 混合精度训练
+        use_async_transfer=True,  # 异步数据传输
+        pin_memory=True,          # 锁页内存
 
-        # 🔧 v15学习率优化 - 降低学习率以提高稳定性
-        actor_lr=3e-4,       # 🔧 v15: 3e-3 → 3e-4 (降低10倍)
-        critic_lr=3e-4,      # 🔧 v15: 5e-3 → 3e-4 (降低10倍)
+        # 🔧 v15学习率优化
+        actor_lr=3e-4,
+        critic_lr=3e-4,
 
-        # 🔧 v15探索噪声优化 - 增加噪声以打破局部最优
-        # 问题：0.15噪声导致陷入"丢包"局部最优
-        # 解决：增加到0.25，减慢衰减到0.995
-        exploration_noise=0.25,   # 🔧 v15: 0.15 → 0.25 (增加探索)
-        noise_decay=0.995,        # 🔧 v15: 0.99 → 0.995 (减慢衰减)
-        min_noise=0.05,           # 🔧 v15: 0.02 → 0.05 (更高最小噪声)
-        target_noise=0.15,        # 🔧 v15: 0.08 → 0.15 (增加目标噪声)
-        noise_clip=0.30,          # 🔧 v15: 0.15 → 0.30 (增加噪声裁剪)
+        # 🆕 v23: 增强探索噪声 - 跳出局部最优
+        exploration_noise=0.4,    # 🆕 0.25→0.4 更高初始噪声
+        noise_decay=0.9992,       # 🆕 0.995→0.9992 更慢衰减
+        min_noise=0.12,           # 🆕 0.05→0.12 更高最小噪声
+        target_noise=0.2,         # 🆕 0.15→0.2
+        noise_clip=0.4,           # 🆕 0.30→0.4
 
         # 🔧 奖励归一化
         reward_norm_beta=0.995,
@@ -347,14 +356,15 @@ class OptimizedTD3Wrapper:
             else:
                 state_components.extend([0.5, 0.5, 0.5, 0.0, 0.0])  # 默认5维（高度维度已包含）
         
-        # 全局状态
-        # 🔧 v12修复：状态归一化与奖励归一化严格对齐
-        # 统一使用降低的目标值，让实际值产生更大差异
+        # 全局状态 (16维 = 基础8维 + 任务类型8维)
+        # 🔧 v24修复：状态维度与STATE_DIM_GLOBAL常量严格对齐
+        # 问题诊断：之前只构建8维全局状态，但预期16维，导致8维被padding填充
         from config import config
-        latency_target = float(getattr(config.rl, 'latency_target', 0.30))     # 🔧 v15: 0.30 (对齐config)
-        energy_target = float(getattr(config.rl, 'energy_target', 200.0))     # 🔧 v15: 200.0 (对齐config)
+        latency_target = float(getattr(config.rl, 'latency_target', 0.1))     # 🔧 v16: 0.1s
+        energy_target = float(getattr(config.rl, 'energy_target', 10000.0))  # 🔧 v16: 10000J
         
-        global_state = [
+        # 基础全局状态 (8维)
+        base_global = [
             float(system_metrics.get('avg_task_delay', 0.0) / max(latency_target, 1e-6)),
             float(system_metrics.get('total_energy_consumption', 0.0) / max(energy_target, 1e-6)),
             float(system_metrics.get('task_completion_rate', 0.95)),
@@ -364,6 +374,31 @@ class OptimizedTD3Wrapper:
             float(system_metrics.get('uav_offload_ratio', 0.2)),
             float(system_metrics.get('local_offload_ratio', 0.3)),
         ]
+        
+        # 🆕 v24: 任务类型特征 (8维) - 修复维度不一致bug
+        # 从system_metrics提取任务类型相关特征
+        queue_dist = system_metrics.get('task_type_queue_distribution', [])
+        deadline_norm = system_metrics.get('task_type_deadline_remaining', [])
+        
+        # 确保4维队列分布
+        if not isinstance(queue_dist, (list, np.ndarray)) or len(queue_dist) < 4:
+            queue_dist = [0.25, 0.25, 0.25, 0.25]  # 默认均匀分布
+        else:
+            queue_dist = list(queue_dist)[:4]
+            while len(queue_dist) < 4:
+                queue_dist.append(0.25)
+        
+        # 确保4维截止期裕度
+        if not isinstance(deadline_norm, (list, np.ndarray)) or len(deadline_norm) < 4:
+            deadline_norm = [0.5, 0.5, 0.5, 0.5]  # 默认中等裕度
+        else:
+            deadline_norm = list(deadline_norm)[:4]
+            while len(deadline_norm) < 4:
+                deadline_norm.append(0.5)
+        
+        # 组合全局状态 (16维)
+        global_state = base_global + [float(np.clip(v, 0.0, 1.0)) for v in queue_dist] + \
+                       [float(np.clip(v, 0.0, 1.0)) for v in deadline_norm]
         global_state = [float(v) if np.isfinite(v) else 0.0 for v in global_state]
         state_components.extend(global_state)
         

@@ -27,8 +27,8 @@ class EnhancedTD3Config:
     graph_embed_dim: int = 384      # 🔧 v10: 256 → 384
     
     # 训练参数
-    batch_size: int = 512  # 🔧 v10: 256 → 512 (更大batch更稳定)
-    buffer_size: int = 300000  # 🔧 v10: 200000 → 300000
+    batch_size: int = 1024  # 🔧 v22: 512 → 1024 (更大batch提高GPU利用率)
+    buffer_size: int = 500000  # 🔧 v22: 300000 → 500000 (支持更长训练)
     tau: float = 0.005          # 🔧 v10: 0.01 → 0.005 (更慢更新更稳定)
     gamma: float = 0.99         # 🔧 v10: 0.98 → 0.99 (更长视野)
     
@@ -112,7 +112,15 @@ class EnhancedTD3Config:
     # ========== 其他 ==========
     warmup_steps: int = 200  # 🔧 v9: 500 → 200 (更快开始学习)
     update_freq: int = 1     # 🔧 v9: 2 → 1 (每步都更新)
+    gradient_steps: int = 8  # 🔧 v22: 4 → 8 每步多次梯度更新 (大幅提高GPU利用率)
     device: str = 'cuda'  # 设备
+    
+    # ========== 🚀 性能优化参数 (v22新增) ==========
+    use_amp: bool = True  # 混合精度训练(AMP) - 减少显存占用，加速计算
+    use_async_transfer: bool = True  # 异步数据传输
+    num_workers: int = 2  # 数据预取进程数
+    pin_memory: bool = True  # 锁页内存加速CPU-GPU传输
+    prefetch_factor: int = 2  # 预取批次数
     
     # 后期稳定策略
     late_stage_start_updates: int = 50000

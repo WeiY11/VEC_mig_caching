@@ -195,8 +195,17 @@ class CompleteSystemSimulator:
         Args:
             config: 配置字典，包含网络拓扑、仿真参数等
                    如果为None，则使用默认配置
+                   
+        🔧 v20修复：支持确定性初始化模式
+        config['deterministic_init'] = True 时，使用固定的车辆初始位置
+        减少episode间的随机性，帮助智能体更稳定地学习
         """
         self.config = config or self.get_default_config()
+        # 🔧 v20: 确定性初始化模式
+        self.deterministic_init = bool(self.config.get('deterministic_init', False))
+        if self.deterministic_init:
+            # print("[Simulator] 🔒 确定性初始化模式已启用 - 车辆位置固定")
+            pass
         self.allow_local_processing = bool(self.config.get('allow_local_processing', True))
         forced_mode = str(self.config.get('forced_offload_mode', '')).strip().lower()
         self.forced_offload_mode = forced_mode if forced_mode in {'local_only', 'remote_only'} else ''
@@ -393,24 +402,51 @@ class CompleteSystemSimulator:
 
         # 车辆初始化：落在道路上，方向为东(0)或西(pi)，车道内微扰
         # Vehicle initialization: positioned on road, heading east (0) or west (pi), with lane perturbation
-        # 🔧 修复：根据新场景范围调整车辆初始化区域
+        # 🔧 v20修复：支持确定性初始化模式
         self.vehicles = []
+        
+        # 🔧 v20: 预定义的固定车辆位置（用于确定性模式）
+        # 12辆车均匀分布：6辆在主干道(南北向)，6辆在横向道路(东西向)
+        deterministic_vehicle_configs = [
+            # 主干道车辆 (V0-V5)
+            {'x': 515.0, 'y': 600.0, 'dir': np.pi/2, 'v': 10.0},   # V0: 向南
+            {'x': 520.0, 'y': 800.0, 'dir': -np.pi/2, 'v': 11.0}, # V1: 向北
+            {'x': 510.0, 'y': 1000.0, 'dir': np.pi/2, 'v': 12.0}, # V2: 向南
+            {'x': 518.0, 'y': 1200.0, 'dir': -np.pi/2, 'v': 10.5},# V3: 向北
+            {'x': 512.0, 'y': 1400.0, 'dir': np.pi/2, 'v': 11.5}, # V4: 向南
+            {'x': 522.0, 'y': 1500.0, 'dir': -np.pi/2, 'v': 9.5}, # V5: 向北
+            # 横向道路车辆 (V6-V11)
+            {'x': 200.0, 'y': 1548.0, 'dir': 0.0, 'v': 10.0},     # V6: 上路口向东
+            {'x': 400.0, 'y': 1542.0, 'dir': np.pi, 'v': 11.0},   # V7: 上路口向西
+            {'x': 700.0, 'y': 1545.0, 'dir': 0.0, 'v': 12.0},     # V8: 上路口向东
+            {'x': 150.0, 'y': 518.0, 'dir': 0.0, 'v': 10.5},      # V9: 下路口向东
+            {'x': 500.0, 'y': 512.0, 'dir': np.pi, 'v': 11.5},    # V10: 下路口向西
+            {'x': 850.0, 'y': 515.0, 'dir': 0.0, 'v': 9.0},       # V11: 下路口向东
+        ]
+        
         for i in range(self.num_vehicles):
-            # 随机分布在主干道和两个路口的横向道路上
-            road_choice = np.random.rand()
-            if road_choice < 0.5:  # 50%在主干道（纵向）
-                go_north = np.random.rand() < 0.5
-                x0 = self.road_center_x + np.random.uniform(-self.road_width/2, self.road_width/2)
-                y0 = np.random.uniform(515.0, 1545.0)  # 在两个路口之间
-                base_dir = -np.pi/2 if go_north else np.pi/2  # 北或南
-            else:  # 50%在横向道路
-                intersection_y = intersection_0_y if np.random.rand() < 0.5 else intersection_1_y
-                go_east = np.random.rand() < 0.6
-                x0 = np.random.uniform(50.0, 980.0)  # 横向道路范围
-                y0 = intersection_y + np.random.uniform(-self.road_width/2, self.road_width/2)
-                base_dir = 0.0 if go_east else np.pi  # 东或西
-                    
-            v0 = np.random.uniform(8.0, 15.0)  # 初始速度 8-15 m/s (~29-54 km/h，降低移动速度)
+            if self.deterministic_init and i < len(deterministic_vehicle_configs):
+                # 🔧 v20: 使用固定位置
+                cfg = deterministic_vehicle_configs[i]
+                x0 = cfg['x']
+                y0 = cfg['y']
+                base_dir = cfg['dir']
+                v0 = cfg['v']
+            else:
+                # 原有随机初始化逻辑
+                road_choice = np.random.rand()
+                if road_choice < 0.5:  # 50%在主干道（纵向）
+                    go_north = np.random.rand() < 0.5
+                    x0 = self.road_center_x + np.random.uniform(-self.road_width/2, self.road_width/2)
+                    y0 = np.random.uniform(515.0, 1545.0)  # 在两个路口之间
+                    base_dir = -np.pi/2 if go_north else np.pi/2  # 北或南
+                else:  # 50%在横向道路
+                    intersection_y = intersection_0_y if np.random.rand() < 0.5 else intersection_1_y
+                    go_east = np.random.rand() < 0.6
+                    x0 = np.random.uniform(50.0, 980.0)  # 横向道路范围
+                    y0 = intersection_y + np.random.uniform(-self.road_width/2, self.road_width/2)
+                    base_dir = 0.0 if go_east else np.pi  # 东或西
+                v0 = np.random.uniform(8.0, 15.0)  # 初始速度 8-15 m/s
             vehicle = {
                 'id': f'V_{i}',
                 'position': np.array([x0, y0], dtype=float),
@@ -430,7 +466,7 @@ class CompleteSystemSimulator:
                 'queue_length': 0,  # 🔧 新增：当前队列长度（用于状态编码）
             }
             self.vehicles.append(vehicle)
-        print(f"车辆初始化完成：主幹道双路口场景，场景范围X:[0,{self.scenario_width:.0f}] Y:[0,{self.scenario_height:.0f}]")
+        # print(f"车辆初始化完成：主幹道双路口场景，场景范围X:[0,{self.scenario_width:.0f}] Y:[0,{self.scenario_height:.0f}]")
         
         # RSU节点初始化
         # RSU node initialization
@@ -529,7 +565,7 @@ class CompleteSystemSimulator:
             }
             self.uavs.append(uav)
         
-        print(f"创建了 {self.num_vehicles} 车辆, {self.num_rsus} RSU, {self.num_uavs} UAV")
+        # print(f"创建了 {self.num_vehicles} 车辆, {self.num_rsus} RSU, {self.num_uavs} UAV")
         
         # 🏢 初始化中央RSU调度器(选择RSU_2作为中央调度中心)
         # Initialize central RSU scheduler for coordinated task management
@@ -537,7 +573,7 @@ class CompleteSystemSimulator:
             from utils.central_rsu_scheduler import create_central_scheduler
             central_rsu_id = f"RSU_{2 if self.num_rsus > 2 else 0}"
             self.central_scheduler = create_central_scheduler(central_rsu_id)
-            print(f"中央RSU调度器已启用: {central_rsu_id}")
+            # print(f"中央RSU调度器已启用: {central_rsu_id}")
         except (ImportError, AttributeError, RuntimeError) as e:
             logging.warning(f"中央调度器加载失败: {e}")
             self.central_scheduler = None
@@ -558,7 +594,7 @@ class CompleteSystemSimulator:
             self.adaptive_cache_controller = AdaptiveCacheController(
                 cache_capacity=1000.0  # Default RSU capacity
             )
-            print("自适应缓存控制器已启用")
+            # print("自适应缓存控制器已启用")
         except (ImportError, AttributeError, RuntimeError) as e:
             logging.warning(f"自适应缓存控制器加载失败: {e}")
             self.adaptive_cache_controller = None
@@ -572,7 +608,7 @@ class CompleteSystemSimulator:
                     f"[Topology] num_rsus={self.num_rsus}, num_uavs={self.num_uavs}, "
                     f"recommended {expected_rsus}/{expected_uavs} to match the paper setup."
                 )
-            print("[Topology] Central RSU configured as RSU_2 for coordination.")
+            # print("[Topology] Central RSU configured as RSU_2 for coordination.")
         except (ValueError, TypeError) as e:
             logging.warning(f"Topology consistency check failed: {e}")
 
@@ -678,7 +714,7 @@ class CompleteSystemSimulator:
 
         self.dynamic_bandwidth_enabled = True
         self.stats['dynamic_bandwidth_enabled'] = True
-        print("✅ 动态带宽分配器已启用：结合RL动作与实时队列/SINR需求自动调整带宽")
+        # print("✅ 动态带宽分配器已启用：结合RL动作与实时队列/SINR需求自动调整带宽")
 
     def _prepare_bandwidth_vector(self, raw_vector: Optional[np.ndarray]) -> np.ndarray:
         """归一化中央智能体输出的带宽向量，保证维度一致。"""
@@ -1016,7 +1052,7 @@ class CompleteSystemSimulator:
         self.initialize_components()
         self._reset_runtime_states()
         self._init_dynamic_bandwidth_support()
-        print("初始化了 6 个缓存管理器")
+        # print("初始化了 6 个缓存管理器")
 
     def _fresh_stats_dict(self) -> Dict[str, Any]:
         """
@@ -1401,17 +1437,36 @@ class CompleteSystemSimulator:
         # RSU: 50 × 2.0 = 100个任务, UAV: 30 × 2.0 = 60个任务
         overflow_margin = 2.0  # 允许队列长度达到名义容量的2倍
         max_queue = int(max(1, round(nominal_capacity * self.node_max_load_factor * overflow_margin)))
-        overflow = len(queue) - max_queue
-        if overflow <= 0:
-            return
+        
+        # 🔧 关键修复：增加基于字节的容量检查 (Byte-based Capacity Check)
+        # 之前的逻辑只检查任务数量，忽略了任务大小。对于Type 3/4大任务，这会导致严重的物理不一致。
+        # RSU: 200MB, UAV: 100MB
+        byte_capacity = getattr(self.queue_config, 'rsu_queue_capacity', 200e6) if node_type == 'RSU' else getattr(self.queue_config, 'uav_queue_capacity', 100e6)
+        current_bytes = sum(t.get('data_size_bytes', t.get('data_size', 0.0) * 1e6) for t in queue)
+        
+        # 优先检查字节溢出
+        byte_overflow = current_bytes - byte_capacity
         dropped = 0
+        
+        while byte_overflow > 0 and queue:
+            dropped_task = queue.pop()  # 丢弃最新的任务
+            task_bytes = dropped_task.get('data_size_bytes', dropped_task.get('data_size', 0.0) * 1e6)
+            
+            self._remove_task_from_lifetime_queues(node, dropped_task)
+            self._record_queue_drop(dropped_task, node_type)
+            dropped += 1
+            byte_overflow -= task_bytes
+            current_bytes -= task_bytes # 更新当前字节数
+            
+        # 然后检查数量溢出 (如果字节检查没丢完)
+        overflow = len(queue) - max_queue
         while overflow > 0 and queue:
-            dropped_task = queue.pop()  # 丢弃最新的任务，保护早到任务
-            # 🆕 Luo论文队列模型：队列溢出丢弃时从lifetime_queues同步移除
+            dropped_task = queue.pop()  # 丢弃最新的任务
             self._remove_task_from_lifetime_queues(node, dropped_task)
             self._record_queue_drop(dropped_task, node_type)
             dropped += 1
             overflow -= 1
+            
         if dropped:
             step_summary['dropped_tasks'] = step_summary.get('dropped_tasks', 0) + dropped
             step_summary['queue_overflow_drops'] = step_summary.get('queue_overflow_drops', 0) + dropped
@@ -2050,7 +2105,11 @@ class CompleteSystemSimulator:
         stats_cfg = getattr(self, 'stats_config', None)
         report_interval = stats_cfg.task_report_interval if stats_cfg is not None else self.config.get('task_report_interval', 100)
         report_interval = max(1, int(report_interval))
-        if gen_stats['total'] % report_interval == 0:
+        
+        # 🔧 v21: 通过环境变量控制输出频率以减少I/O开销
+        import os
+        silent_mode = os.environ.get('SILENT_MODE', '0').strip() in {'1', 'true', 'True'}
+        if not silent_mode and gen_stats['total'] % report_interval == 0:
             total_classified = sum(by_type.values()) or 1
             type1_pct = by_type.get(1, 0) / total_classified * 100
             type2_pct = by_type.get(2, 0) / total_classified * 100

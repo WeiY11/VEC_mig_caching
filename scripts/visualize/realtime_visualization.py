@@ -811,6 +811,20 @@ class RealtimeVisualizer:
             'metrics': metrics
         })
     
+    def emit_task_event(self, event_type: str, vehicle_id: int, target_id: int):
+        """发送任务事件"""
+        socketio.emit('task_event', {
+            'type': event_type,
+            'vehicle_id': vehicle_id,
+            'target_id': target_id
+        })
+
+    def emit_topology_update(self, vehicles: List[Dict]):
+        """发送拓扑更新"""
+        socketio.emit('topology_update', {
+            'vehicles': vehicles
+        })
+    
     def complete(self):
         """标记训练完成"""
         print("✅ 训练完成")

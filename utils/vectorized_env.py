@@ -5,7 +5,15 @@ from typing import List, Dict, Any, Optional, Union, Tuple
 import logging
 
 # Worker function to run in a separate process
-def worker(remote, parent_remote, env_fn_wrapper):
+def worker(remote, parent_remote, env_fn_wrapper, worker_id):
+    """并行环境工作进程
+    
+    Args:
+        worker_id: 工作进程ID，用于控制日志输出（只有worker_id=0的进程打印日志）
+    """
+    import os
+    os.environ['WORKER_ID'] = str(worker_id)  # 🔧 设置进程ID，控制日志输出
+    
     parent_remote.close()
     try:
         env = env_fn_wrapper.x()
@@ -66,13 +74,17 @@ class CloudpickleWrapper:
 class VectorizedSingleAgentEnvironment:
     """
     Vectorized environment that runs multiple SingleAgentTrainingEnvironment instances in parallel.
+    🔧 修复: 每个worker带有ID，仅worker_id=0打印日志
     """
     def __init__(self, env_fns: List[callable]):
         self.num_envs = len(env_fns)
         self.remotes, self.work_remotes = zip(*[mp.Pipe() for _ in range(self.num_envs)])
         self.ps = [
-            mp.Process(target=worker, args=(work_remote, remote, CloudpickleWrapper(env_fn)))
-            for (work_remote, remote, env_fn) in zip(self.work_remotes, self.remotes, env_fns)
+            mp.Process(
+                target=worker, 
+                args=(work_remote, remote, CloudpickleWrapper(env_fn), worker_id)  # 🔧 传递worker_id
+            )
+            for worker_id, (work_remote, remote, env_fn) in enumerate(zip(self.work_remotes, self.remotes, env_fns))
         ]
         for p in self.ps:
             p.daemon = True  # clean up if main process dies

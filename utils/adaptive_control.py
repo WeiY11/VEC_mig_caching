@@ -59,7 +59,7 @@ class AdaptiveCacheController:
             'migration_backoff': 0.2,   # 初始退避系数，逐步放开
         }
 
-        print(f"🤖 自适应缓存控制器初始化完成")
+        # print(f"🤖 自适应缓存控制器初始化完成")
 
     def update_agent_params(self, agent_actions: Dict[str, float]):
         """
@@ -355,7 +355,7 @@ class AdaptiveMigrationController:
         self.dynamic_threshold_scale = 1.0
         self.cache_feedback = {'hit_rate': 0.0, 'miss_rate': 0.0}
 
-        print(f"🤖 自适应迁移控制器初始化完成")
+        # print(f"🤖 自适应迁移控制器初始化完成")
 
     def update_agent_params(self, agent_actions: Dict[str, float]):
         """

@@ -67,6 +67,18 @@ class EnhancedTD3Agent:
         self.global_dim = global_dim
         self.central_state_dim = central_state_dim or 0
         
+        # ========== 🚀 性能优化: 混合精度训练(AMP) ==========
+        self.use_amp = getattr(config, 'use_amp', True) and torch.cuda.is_available()
+        if self.use_amp:
+            self.scaler = torch.amp.GradScaler('cuda')
+            print(f"[🚀 EnhancedTD3] 已启用混合精度训练(AMP) - GPU加速")
+        else:
+            self.scaler = None
+        
+        # 异步数据传输优化
+        self.use_async_transfer = getattr(config, 'use_async_transfer', True)
+        self.pin_memory = getattr(config, 'pin_memory', True)
+        
         # ========== 构建Actor网络 ==========
         if config.use_gat_router:
             # 使用GAT路由器
@@ -407,57 +419,61 @@ class EnhancedTD3Agent:
         
         self.update_count += 1
         
-        # 采样经验批次
-        batch = self.replay_buffer.sample(self.config.batch_size, self.beta)
-        states, actions, rewards, next_states, dones, indices, weights = batch
-        
-        # 移动到设备
-        states = states.to(self.device)
-        actions = actions.to(self.device)
-        rewards = rewards.to(self.device)
-        next_states = next_states.to(self.device)
-        dones = dones.to(self.device)
-        weights = weights.to(self.device)
-        
-        # 更新beta
-        self.beta = min(1.0, self.beta + self.beta_increment)
-        
-        # ========== 更新Critic ==========
-        critic_loss, td_errors = self._update_critic(
-            states, actions, rewards, next_states, dones, weights
-        )
-        
-        # 更新优先级
-        self.replay_buffer.update_priorities(indices, td_errors.detach().cpu().numpy())
-        
-        training_info = {'critic_loss': critic_loss}
-        
-        # ========== 延迟策略更新 ==========
-        if self.update_count % self.config.policy_delay == 0:
-            actor_loss, entropy_info = self._update_actor(states)
-            training_info['actor_loss'] = actor_loss
-            training_info.update(entropy_info)
+        # 🔧 v22: 多次梯度更新以提高GPU利用率
+        training_info = {}
+        for _ in range(self.config.gradient_steps):
+            # 采样经验批次
+            batch = self.replay_buffer.sample(self.config.batch_size, self.beta)
+            states, actions, rewards, next_states, dones, indices, weights = batch
             
-            # 软更新目标网络
-            self._soft_update(self.target_graph_encoder, self.graph_encoder, self.config.tau)
-            self._soft_update(self.target_actor, self.actor, self.config.tau)
-            self._soft_update(self.target_critic, self.critic, self.config.tau)
-        
-        # ========== 模型化队列预测 ==========
-        if self.use_model_based:
-            self.model_step_count += 1
+            # 🚀 优化: 异步数据传输到GPU (non_blocking=True)
+            non_blocking = self.use_async_transfer and self.device.type == 'cuda'
+            states = states.to(self.device, non_blocking=non_blocking)
+            actions = actions.to(self.device, non_blocking=non_blocking)
+            rewards = rewards.to(self.device, non_blocking=non_blocking)
+            next_states = next_states.to(self.device, non_blocking=non_blocking)
+            dones = dones.to(self.device, non_blocking=non_blocking)
+            weights = weights.to(self.device, non_blocking=non_blocking)
             
-            # 定期训练动态模型
-            if self.model_step_count % self.model_train_freq == 0:
-                model_stats = self.model_trainer.train(
-                    self.replay_buffer,
-                    min_buffer_size=self.config.min_model_buffer_size
-                )
-                training_info.update({f'model_{k}': v for k, v in model_stats.items()})
+            # 更新beta
+            self.beta = min(1.0, self.beta + self.beta_increment)
+            
+            # ========== 更新Critic ==========
+            critic_loss, td_errors = self._update_critic(
+                states, actions, rewards, next_states, dones, weights
+            )
+            
+            # 更新优先级
+            self.replay_buffer.update_priorities(indices, td_errors.detach().cpu().numpy())
+            
+            training_info.update({'critic_loss': critic_loss})
+            
+            # ========== 延迟策略更新 ==========
+            if self.update_count % self.config.policy_delay == 0:
+                actor_loss, entropy_info = self._update_actor(states)
+                training_info['actor_loss'] = actor_loss
+                training_info.update(entropy_info)
                 
-                # 生成合成transitions
-                if len(self.replay_buffer) >= self.config.min_model_buffer_size:
-                    self._generate_synthetic_data()
+                # 软更新目标网络
+                self._soft_update(self.target_graph_encoder, self.graph_encoder, self.config.tau)
+                self._soft_update(self.target_actor, self.actor, self.config.tau)
+                self._soft_update(self.target_critic, self.critic, self.config.tau)
+            
+            # ========== 模型化队列预测 ==========
+            if self.use_model_based:
+                self.model_step_count += 1
+                
+                # 定期训练动态模型
+                if self.model_step_count % self.model_train_freq == 0:
+                    model_stats = self.model_trainer.train(
+                        self.replay_buffer,
+                        min_buffer_size=self.config.min_model_buffer_size
+                    )
+                    training_info.update({f'model_{k}': v for k, v in model_stats.items()})
+                    
+                    # 生成合成transitions
+                    if len(self.replay_buffer) >= self.config.min_model_buffer_size:
+                        self._generate_synthetic_data()
         
         # 衰减噪声
         self.exploration_noise = max(
@@ -547,7 +563,7 @@ class EnhancedTD3Agent:
         dones: torch.Tensor,
         weights: torch.Tensor,
     ) -> Tuple[float, torch.Tensor]:
-        """更新标准Twin Critic"""
+        """更新标准Twin Critic - 🚀 支持AMP混合精度"""
         with torch.no_grad():
             next_encoded = self.target_graph_encoder(next_states)
             next_actions = self.target_actor(next_encoded)
@@ -560,77 +576,121 @@ class EnhancedTD3Agent:
             target_q = torch.min(target_q1, target_q2)
             target_q = rewards + (1 - dones) * self.config.gamma * target_q
         
-        current_q1, current_q2 = self.critic(states, actions)
-        td_errors_q1 = current_q1 - target_q
-        td_errors_q2 = current_q2 - target_q
-        
-        critic_loss = (weights * td_errors_q1.pow(2)).mean() + (weights * td_errors_q2.pow(2)).mean()
-        
-        self.critic_optimizer.zero_grad()
-        critic_loss.backward()
-        if self.config.use_gradient_clip:
-            torch.nn.utils.clip_grad_norm_(
-                self.critic.parameters(), self.config.gradient_clip_norm
-            )
-        self.critic_optimizer.step()
+        # 🚀 AMP混合精度计算
+        if self.use_amp:
+            with torch.cuda.amp.autocast():
+                current_q1, current_q2 = self.critic(states, actions)
+                td_errors_q1 = current_q1 - target_q
+                td_errors_q2 = current_q2 - target_q
+                critic_loss = (weights * td_errors_q1.pow(2)).mean() + (weights * td_errors_q2.pow(2)).mean()
+            
+            self.critic_optimizer.zero_grad()
+            self.scaler.scale(critic_loss).backward()
+            if self.config.use_gradient_clip:
+                self.scaler.unscale_(self.critic_optimizer)
+                torch.nn.utils.clip_grad_norm_(self.critic.parameters(), self.config.gradient_clip_norm)
+            self.scaler.step(self.critic_optimizer)
+            self.scaler.update()
+        else:
+            current_q1, current_q2 = self.critic(states, actions)
+            td_errors_q1 = current_q1 - target_q
+            td_errors_q2 = current_q2 - target_q
+            critic_loss = (weights * td_errors_q1.pow(2)).mean() + (weights * td_errors_q2.pow(2)).mean()
+            
+            self.critic_optimizer.zero_grad()
+            critic_loss.backward()
+            if self.config.use_gradient_clip:
+                torch.nn.utils.clip_grad_norm_(self.critic.parameters(), self.config.gradient_clip_norm)
+            self.critic_optimizer.step()
         
         self.critic_losses.append(critic_loss.item())
         td_errors = td_errors_q1.detach().abs().squeeze()
         return critic_loss.item(), td_errors
     
     def _update_actor(self, states: torch.Tensor) -> Tuple[float, Dict[str, float]]:
-        """更新Actor网络"""
+        """更新Actor网络 - 🚀 支持AMP混合精度"""
         # 直接编码状态，不需要手动添加中央状态
         # 🎯 修复: 状态向量已经包含中央资源状态（来自EnhancedTD3Wrapper）
-        encoded_states = self.graph_encoder(states)
-        
-        # 生成动作
-        actions = self.actor(encoded_states)
-        
-        # 计算Q值
-        if self.config.use_distributional_critic:
-            q_values = self.critic.q1(states, actions)
-        else:
-            q_values, _ = self.critic(states, actions)
-            q_values = q_values[:, :1]  # 只用Q1
-        
-        actor_loss = -q_values.mean()
         
         entropy_info = {}
         
-        # ========== 熵正则化 ==========
-        if self.use_entropy_reg:
-            # 简单估计：基于动作方差
-            action_std = actions.std(dim=0).mean()
-            entropy = torch.log(action_std + 1e-6)
-            
-            self.entropy_values.append(entropy.item())
-            entropy_info['entropy'] = entropy.item()
-            
-            # 添加熵bonus
-            actor_loss = actor_loss - self.alpha * entropy
-            
-            # 自动调节温度
-            if self.auto_tune_alpha:
-                alpha_loss = -(self.log_alpha * (entropy - self.target_entropy).detach()).mean()
+        # 🚀 AMP混合精度计算
+        if self.use_amp:
+            with torch.cuda.amp.autocast():
+                encoded_states = self.graph_encoder(states)
+                actions = self.actor(encoded_states)
                 
-                self.alpha_optimizer.zero_grad()
-                alpha_loss.backward()
-                self.alpha_optimizer.step()
+                if self.config.use_distributional_critic:
+                    q_values = self.critic.q1(states, actions)
+                else:
+                    q_values, _ = self.critic(states, actions)
+                    q_values = q_values[:, :1]
                 
-                self.alpha_values.append(self.alpha)
-                entropy_info['alpha'] = self.alpha
-                entropy_info['alpha_loss'] = alpha_loss.item()
+                actor_loss = -q_values.mean()
+                
+                # 熵正则化
+                if self.use_entropy_reg:
+                    action_std = actions.std(dim=0).mean()
+                    entropy = torch.log(action_std + 1e-6)
+                    self.entropy_values.append(entropy.item())
+                    entropy_info['entropy'] = entropy.item()
+                    actor_loss = actor_loss - self.alpha * entropy
+            
+            self.actor_optimizer.zero_grad()
+            self.scaler.scale(actor_loss).backward()
+            if self.config.use_gradient_clip:
+                self.scaler.unscale_(self.actor_optimizer)
+                torch.nn.utils.clip_grad_norm_(
+                    list(self.graph_encoder.parameters()) + list(self.actor.parameters()),
+                    self.config.gradient_clip_norm
+                )
+            self.scaler.step(self.actor_optimizer)
+            # 注意: scaler.update()只需调用一次（在critic更新后已调用）
+        else:
+            encoded_states = self.graph_encoder(states)
+            actions = self.actor(encoded_states)
+            
+            if self.config.use_distributional_critic:
+                q_values = self.critic.q1(states, actions)
+            else:
+                q_values, _ = self.critic(states, actions)
+                q_values = q_values[:, :1]
+            
+            actor_loss = -q_values.mean()
+            
+            # 熵正则化
+            if self.use_entropy_reg:
+                action_std = actions.std(dim=0).mean()
+                entropy = torch.log(action_std + 1e-6)
+                self.entropy_values.append(entropy.item())
+                entropy_info['entropy'] = entropy.item()
+                actor_loss = actor_loss - self.alpha * entropy
+            
+            self.actor_optimizer.zero_grad()
+            actor_loss.backward()
+            if self.config.use_gradient_clip:
+                torch.nn.utils.clip_grad_norm_(
+                    list(self.graph_encoder.parameters()) + list(self.actor.parameters()),
+                    self.config.gradient_clip_norm
+                )
+            self.actor_optimizer.step()
         
-        # 更新Actor
-        self.actor_optimizer.zero_grad()
-        actor_loss.backward()
-        if self.config.use_gradient_clip:
-            torch.nn.utils.clip_grad_norm_(
-                list(self.graph_encoder.parameters()) + list(self.actor.parameters()),
-                self.config.gradient_clip_norm
-            )
-        self.actor_optimizer.step()
+        # 自动调节温度（不用AMP，较简单的计算）
+        if self.use_entropy_reg and self.auto_tune_alpha:
+            with torch.no_grad():
+                encoded_for_alpha = self.graph_encoder(states)
+                actions_for_alpha = self.actor(encoded_for_alpha)
+                action_std_alpha = actions_for_alpha.std(dim=0).mean()
+                entropy_alpha = torch.log(action_std_alpha + 1e-6)
+            
+            alpha_loss = -(self.log_alpha * (entropy_alpha - self.target_entropy).detach()).mean()
+            self.alpha_optimizer.zero_grad()
+            alpha_loss.backward()
+            self.alpha_optimizer.step()
+            
+            self.alpha_values.append(self.alpha)
+            entropy_info['alpha'] = self.alpha
+            entropy_info['alpha_loss'] = alpha_loss.item()
         
         self.actor_losses.append(actor_loss.item())
         return actor_loss.item(), entropy_info

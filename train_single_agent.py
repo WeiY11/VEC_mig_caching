@@ -11,7 +11,7 @@ CAMTD3 = 基于中央资源分配的缓存感知任务迁移系统
 │   ├── 缓存决策（Cache-Aware）
 │   ├── 任务迁移（Migration）
 │   └── 任务调度
-python train_single_agent.py --algorithm OPTIMIZED_TD3 --episodes 1000 --num-vehicles 12 --seed 42
+python train_single_agent.py --algorithm OPTIMIZED_TD3 --episodes 1000 --num-vehicles 12 --seed 42 --num-envs 1
 
 Queue-aware Replay
 •训练效率提升35%
@@ -56,6 +56,32 @@ python generate_academic_charts.py results/single_agent/td3/training_results_202
 import os
 import sys
 import random
+
+# 🚀 性能优化: 自动配置 GPU/CPU 优化参数
+def _setup_performance_optimization():
+    """自动设置性能优化环境变量"""
+    # CPU多线程优化
+    cpu_count = os.cpu_count() or 4
+    thread_count = str(max(4, cpu_count // 2))
+    
+    if 'OMP_NUM_THREADS' not in os.environ:
+        os.environ['OMP_NUM_THREADS'] = thread_count
+    if 'MKL_NUM_THREADS' not in os.environ:
+        os.environ['MKL_NUM_THREADS'] = thread_count
+    
+    # 启用压缩动作空间（默认启用）
+    if 'COMPRESSED_ACTION' not in os.environ:
+        os.environ['COMPRESSED_ACTION'] = '1'
+    
+    # 启用聚合中央资源模式
+    if 'AGGREGATED_CENTRAL' not in os.environ:
+        os.environ['AGGREGATED_CENTRAL'] = '1'
+    
+    # 启用中央资源分配
+    if 'CENTRAL_RESOURCE' not in os.environ:
+        os.environ['CENTRAL_RESOURCE'] = '1'
+
+_setup_performance_optimization()
 
 # 🔧 修复Windows编码问题
 if sys.platform == 'win32':
@@ -135,6 +161,13 @@ except ImportError:
 # 尝试导入PyTorch以设置随机种子；如果不可用则跳过
 try:
     import torch
+    # 🚀 GPU优化: 启用cuDNN benchmark和混合精度
+    if torch.cuda.is_available():
+        torch.backends.cudnn.benchmark = True  # 自动调优卷积算法
+        print(f"🚀 GPU优化已启用: {torch.cuda.get_device_name(0)}")
+        print(f"   - cuDNN benchmark: 已启用")
+        print(f"   - 混合精度(AMP): 已启用")
+        print(f"   - batch_size: 1024, gradient_steps: 8")
 except ImportError:  # pragma: no cover - 容错处理
     torch = None
 
@@ -237,6 +270,9 @@ def _build_scenario_config() -> Dict[str, Any]:
         "rsu_load_divisor": float(_get_or_default(service_cfg, 'rsu_queue_boost_divisor', 4.0)),
         "uav_load_divisor": float(_get_or_default(service_cfg, 'uav_queue_boost_divisor', 2.0)),
         "enhanced_task_generation": True,
+        # 🔧 v20: 确定性初始化模式 - 减少episode间随机性
+        # 通过环境变量 DETERMINISTIC_INIT=1 或命令行参数启用
+        "deterministic_init": os.environ.get('DETERMINISTIC_INIT', '1').strip() in {'1', 'true', 'True'},
     }
 
     override_env = os.environ.get('TRAINING_SCENARIO_OVERRIDES')
@@ -349,13 +385,13 @@ class SingleAgentTrainingEnvironment:
 
         # ✅ 启用update_reward_targets，使用system_config.py中的优化目标值
         # 确保全局单例计算器使用正确的归一化目标
-        # 🔧 2024-12-02 修复：能耗目标对齐实际系统能耗(~1000J/episode)
-        # 问题原因：原200J目标导致norm_energy=35，奖励=-130（极端负值）
-        # 解决方案：目标值与实际能耗匹配，使norm_energy≈1，奖励在[-3,-1]合理范围
+        # 🔧 v16修复：能耗目标对齐实际系统能耗(~9750J/episode)
+        # 问题原因：原200J目标导致norm_energy=48，能耗主导奖励函数
+        # 解决方案：目标值10000J，使norm_energy≈0.975，奖励在合理范围
         try:
             update_reward_targets(
-                latency_target=float(getattr(rl, "latency_target", 0.30)),
-                energy_target=float(getattr(rl, "energy_target", 200.0)),  # 🔧 v15: 1000 → 200 (对齐Wrapper)
+                latency_target=float(getattr(rl, "latency_target", 0.1)),    # 🔧 v16: 0.1s
+                energy_target=float(getattr(rl, "energy_target", 10000.0)),  # 🔧 v16: 10000J
             )
         except Exception:
             pass
@@ -1061,11 +1097,15 @@ class SingleAgentTrainingEnvironment:
         
         # 车辆状态（与step保持一致的归一化方式）
         for i, vehicle in enumerate(self.simulator.vehicles):
+            # 🔧 修复：正确计算车辆队列长度 (task_queue_by_priority是字典)
+            queue_dict = vehicle.get('task_queue_by_priority', {})
+            queue_len = sum(len(q) for q in queue_dict.values()) if isinstance(queue_dict, dict) else 0
+            
             vehicle_state = np.array([
                 normalize_scalar(vehicle['position'][0], 'vehicle_position_range', 1000.0),
                 normalize_scalar(vehicle['position'][1], 'vehicle_position_range', 1000.0),
                 normalize_scalar(vehicle.get('velocity', 0.0), 'vehicle_speed_range', 50.0),
-                normalize_scalar(len(vehicle.get('tasks', [])), 'vehicle_queue_capacity', 20.0),
+                normalize_scalar(queue_len, 'vehicle_queue_capacity', 60.0),
                 normalize_scalar(vehicle.get('energy_consumed', 0.0), 'vehicle_energy_reference', 1000.0),
             ])
             node_states[f'vehicle_{i}'] = vehicle_state
@@ -1076,7 +1116,7 @@ class SingleAgentTrainingEnvironment:
                 normalize_scalar(rsu['position'][0], 'rsu_position_range', 1000.0),
                 normalize_scalar(rsu['position'][1], 'rsu_position_range', 1000.0),
                 self._calculate_correct_cache_utilization(rsu.get('cache', {}), rsu.get('cache_capacity', 1000.0)),
-                normalize_scalar(len(rsu.get('computation_queue', [])), 'rsu_queue_capacity', 20.0),
+                normalize_scalar(len(rsu.get('computation_queue', [])), 'rsu_queue_capacity', 100.0),
                 normalize_scalar(rsu.get('energy_consumed', 0.0), 'rsu_energy_reference', 1000.0),
             ])
             node_states[f'rsu_{i}'] = rsu_state
@@ -1198,44 +1238,44 @@ class SingleAgentTrainingEnvironment:
                     pass
         
         resource_state = self._collect_resource_state()
-
         
-        # 收集下一步状态
+        # 收集系统状态
         node_states = {}
         
-        # 车辆状态 (5维 - 统一归一化)
+        # 车辆状态（与step保持一致的归一化方式）
         for i, vehicle in enumerate(self.simulator.vehicles):
+            # 🔧 修复：正确计算车辆队列长度 (task_queue_by_priority是字典)
+            queue_dict = vehicle.get('task_queue_by_priority', {})
+            queue_len = sum(len(q) for q in queue_dict.values()) if isinstance(queue_dict, dict) else 0
+            
             vehicle_state = np.array([
-                normalize_scalar(vehicle['position'][0], 'vehicle_position_range', 1000.0),  # 位置x
-                normalize_scalar(vehicle['position'][1], 'vehicle_position_range', 1000.0),  # 位置y
-                normalize_scalar(vehicle.get('velocity', 0.0), 'vehicle_speed_range', 50.0),  # 速度
-                normalize_scalar(len(vehicle.get('tasks', [])), 'vehicle_queue_capacity', 20.0),  # 队列
-                normalize_scalar(vehicle.get('energy_consumed', 0.0), 'vehicle_energy_reference', 1000.0),  # 能耗
+                normalize_scalar(vehicle['position'][0], 'vehicle_position_range', 1000.0),
+                normalize_scalar(vehicle['position'][1], 'vehicle_position_range', 1000.0),
+                normalize_scalar(vehicle.get('velocity', 0.0), 'vehicle_speed_range', 50.0),
+                normalize_scalar(queue_len, 'vehicle_queue_capacity', 60.0),
+                normalize_scalar(vehicle.get('energy_consumed', 0.0), 'vehicle_energy_reference', 1000.0),
             ])
             node_states[f'vehicle_{i}'] = vehicle_state
 
-        # RSU状态 (5维 - 清理版，移除控制参数)
+        # RSU状态（统一归一化/裁剪）
         for i, rsu in enumerate(self.simulator.rsus):
-            # 标准化归一化：确保所有值在[0,1]范围
             rsu_state = np.array([
-                normalize_scalar(rsu['position'][0], 'rsu_position_range', 1000.0),  # 位置x
-                normalize_scalar(rsu['position'][1], 'rsu_position_range', 1000.0),  # 位置y
-                self._calculate_correct_cache_utilization(rsu.get('cache', {}), rsu.get('cache_capacity', 1000.0)),  # 缓存利用率
-                normalize_scalar(len(rsu.get('computation_queue', [])), 'rsu_queue_capacity', 20.0),  # 队列利用率
-                normalize_scalar(rsu.get('energy_consumed', 0.0), 'rsu_energy_reference', 1000.0),  # 能耗
+                normalize_scalar(rsu['position'][0], 'rsu_position_range', 1000.0),
+                normalize_scalar(rsu['position'][1], 'rsu_position_range', 1000.0),
+                self._calculate_correct_cache_utilization(rsu.get('cache', {}), rsu.get('cache_capacity', 1000.0)),
+                normalize_scalar(len(rsu.get('computation_queue', [])), 'rsu_queue_capacity', 100.0),
+                normalize_scalar(rsu.get('energy_consumed', 0.0), 'rsu_energy_reference', 1000.0),
             ])
             node_states[f'rsu_{i}'] = rsu_state
 
-        # UAV状态 (5维 - 清理版，移除控制参数)
+        # UAV状态（统一归一化/裁剪）
         for i, uav in enumerate(self.simulator.uavs):
-            # 标准化归一化：确保所有值在[0,1]范围
             uav_state = np.array([
-                normalize_scalar(uav['position'][0], 'uav_position_range', 1000.0),  # 位置x
-                normalize_scalar(uav['position'][1], 'uav_position_range', 1000.0),  # 位置y
-                # 🔧 修复：使用队列利用率代替高度（高度对决策影响小，队列负载关键）
-                normalize_scalar(len(uav.get('computation_queue', [])), 'uav_queue_capacity', 20.0),   # 队列利用率
-                self._calculate_correct_cache_utilization(uav.get('cache', {}), uav.get('cache_capacity', 200.0)),  # 缓存利用率
-                normalize_scalar(uav.get('energy_consumed', 0.0), 'uav_energy_reference', 1000.0),  # 能耗
+                normalize_scalar(uav['position'][0], 'uav_position_range', 1000.0),
+                normalize_scalar(uav['position'][1], 'uav_position_range', 1000.0),
+                normalize_scalar(uav['position'][2], 'uav_altitude_range', 200.0),
+                self._calculate_correct_cache_utilization(uav.get('cache', {}), uav.get('cache_capacity', 200.0)),
+                normalize_scalar(uav.get('energy_consumed', 0.0), 'uav_energy_reference', 1000.0),
             ])
             node_states[f'uav_{i}'] = uav_state
         
@@ -1800,6 +1840,10 @@ class SingleAgentTrainingEnvironment:
         # 🔧 重置episode步数跟踪，修复能耗计算
         self._current_episode_step = 0
         
+        # 🔧 修复：初始化episode奖励跟踪（用于日志显示）
+        self._episode_reward = 0.0
+        self._episode_steps = 0
+        
         episode_reward = 0.0
         episode_info = {}
         step = 0
@@ -1875,6 +1919,10 @@ class SingleAgentTrainingEnvironment:
             # 累积奖励并保存最新的训练信息
             episode_reward += reward
             episode_info = training_info
+            
+            # 🔧 修复：更新self属性以供日志使用
+            self._episode_reward = episode_reward
+            self._episode_steps = step + 1
 
             # 更新状态；如未来引入提前结束，这里兼容 done 标志
             state = next_state
@@ -3226,8 +3274,8 @@ def main():
                         help='从已有模型 (.pth 或目录前缀) 继续训练，复用已学策略')
     parser.add_argument('--resume-lr-scale', type=float, default=None,
                         help='Warm-start 后的学习率缩放系数 (默认0.5，设为1可保留原值)')
-    parser.add_argument('--num-envs', type=int, default=4,
-                        help='并行训练环境数量 (默认: 4)')
+    parser.add_argument('--num-envs', type=int, default=1,
+                        help='并行训练环境数量 (默认: 1, 推荐单环境以确保收敛)')
     
     # 🆕 通信模型优化参数（3GPP标准增强）
     parser.add_argument('--comm-enhancements', action='store_true',
@@ -3252,6 +3300,9 @@ def main():
     os.environ.setdefault('RL_SMOOTH_DELAY', '0.6')
     os.environ.setdefault('RL_SMOOTH_ENERGY', '0.6')
     os.environ.setdefault('RL_SMOOTH_ALPHA', '0.25')
+    
+    # 🔧 v21: 性能优化设置
+    os.environ.setdefault('SILENT_MODE', '1')  # 减少I/O开销
 
     # 快速基准测试模式
     if args.quick_test:
