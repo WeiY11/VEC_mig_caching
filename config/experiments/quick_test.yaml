@@ -1,0 +1,12 @@
+# =============================================================================
+# 快速测试配置
+#
+# 用法：python train_single_agent.py --config config/experiments/quick_test.yaml
+# =============================================================================
+
+# 减少训练时间
+experiment:
+  num_episodes: 50 # 只训练50轮
+  max_steps_per_episode: 50 # 每轮50步
+  eval_interval: 10
+  save_interval: 25

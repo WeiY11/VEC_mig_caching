@@ -334,30 +334,32 @@ class CompleteSystemSimulator:
         提供系统仿真的默认配置，包括网络拓扑、计算能力、
         带宽、功率等关键参数。
         
+        🔧 2024-12-04 修复：与 system_config.py 保持一致
+        
         Returns:
             包含所有默认配置参数的字典
         """
         return {
             'num_vehicles': 12,
-            'num_rsus': 6,
+            'num_rsus': 4,              # 🔧 修复: 6 → 4 (与system_config一致)
             'num_uavs': 2,
             'simulation_time': 1000,
-            'time_slot': 0.1,
-            'task_arrival_rate': 0.8,
+            'time_slot': 1.0,           # 🔧 修复: 0.1 → 1.0 (与表格2一致)
+            'task_arrival_rate': 3.5,   # 🔧 修复: 0.8 → 3.5 (高负载场景)
             'cache_capacity': 100,
             'computation_capacity': 1000,  # MIPS
-            'bandwidth': 20,  # MHz
+            'bandwidth': 40,            # 🔧 修复: 20 → 40 MHz (与表格2一致)
             'transmission_power': 0.1,  # W
             'computation_power': 1.0,  # W
-            'rsu_base_service': 4,
-            'rsu_max_service': 9,
-            'rsu_work_capacity': 2.5,
-            'uav_base_service': 3,
-            'uav_max_service': 6,
-            'uav_work_capacity': 1.7,
+            'rsu_base_service': 10,     # 🔧 修复: 4 → 10 (与ServiceConfig一致)
+            'rsu_max_service': 25,      # 🔧 修复: 9 → 25 (与ServiceConfig一致)
+            'rsu_work_capacity': 6.0,   # 🔧 修复: 2.5 → 6.0 (与ServiceConfig一致)
+            'uav_base_service': 8,      # 🔧 修复: 3 → 8 (与ServiceConfig一致)
+            'uav_max_service': 16,      # 🔧 修复: 6 → 16 (与ServiceConfig一致)
+            'uav_work_capacity': 4.5,   # 🔧 修复: 1.7 → 4.5 (与ServiceConfig一致)
             'drop_log_interval': 400,
             'task_report_interval': 100,
-            'task_compute_density': 400,
+            'task_compute_density': 2.5, # 🔧 修复: 400 → 2.5 (与表格2一致)
         }
     
     def initialize_components(self):
@@ -406,22 +408,21 @@ class CompleteSystemSimulator:
         self.vehicles = []
         
         # 🔧 v20: 预定义的固定车辆位置（用于确定性模式）
-        # 12辆车均匀分布：6辆在主干道(南北向)，6辆在横向道路(东西向)
+        # ✅ 新设计：所有车辆初始都从下往上（向北）移动，在路口时部分车辆会转向
         deterministic_vehicle_configs = [
-            # 主干道车辆 (V0-V5)
-            {'x': 515.0, 'y': 600.0, 'dir': np.pi/2, 'v': 10.0},   # V0: 向南
-            {'x': 520.0, 'y': 800.0, 'dir': -np.pi/2, 'v': 11.0}, # V1: 向北
-            {'x': 510.0, 'y': 1000.0, 'dir': np.pi/2, 'v': 12.0}, # V2: 向南
-            {'x': 518.0, 'y': 1200.0, 'dir': -np.pi/2, 'v': 10.5},# V3: 向北
-            {'x': 512.0, 'y': 1400.0, 'dir': np.pi/2, 'v': 11.5}, # V4: 向南
-            {'x': 522.0, 'y': 1500.0, 'dir': -np.pi/2, 'v': 9.5}, # V5: 向北
-            # 横向道路车辆 (V6-V11)
-            {'x': 200.0, 'y': 1548.0, 'dir': 0.0, 'v': 10.0},     # V6: 上路口向东
-            {'x': 400.0, 'y': 1542.0, 'dir': np.pi, 'v': 11.0},   # V7: 上路口向西
-            {'x': 700.0, 'y': 1545.0, 'dir': 0.0, 'v': 12.0},     # V8: 上路口向东
-            {'x': 150.0, 'y': 518.0, 'dir': 0.0, 'v': 10.5},      # V9: 下路口向东
-            {'x': 500.0, 'y': 512.0, 'dir': np.pi, 'v': 11.5},    # V10: 下路口向西
-            {'x': 850.0, 'y': 515.0, 'dir': 0.0, 'v': 9.0},       # V11: 下路口向东
+            # 所有车辆初始在主干道上向北移动，均匀分布在不同Y位置
+            {'x': 515.0, 'y': 400.0, 'dir': -np.pi/2, 'v': 10.0},   # V0: 向北
+            {'x': 520.0, 'y': 550.0, 'dir': -np.pi/2, 'v': 11.0},   # V1: 向北
+            {'x': 510.0, 'y': 700.0, 'dir': -np.pi/2, 'v': 12.0},   # V2: 向北
+            {'x': 518.0, 'y': 850.0, 'dir': -np.pi/2, 'v': 10.5},   # V3: 向北
+            {'x': 512.0, 'y': 1000.0, 'dir': -np.pi/2, 'v': 11.5},  # V4: 向北
+            {'x': 522.0, 'y': 1150.0, 'dir': -np.pi/2, 'v': 9.5},   # V5: 向北
+            {'x': 508.0, 'y': 1300.0, 'dir': -np.pi/2, 'v': 10.2},  # V6: 向北
+            {'x': 525.0, 'y': 1450.0, 'dir': -np.pi/2, 'v': 11.8},  # V7: 向北
+            {'x': 512.0, 'y': 1600.0, 'dir': -np.pi/2, 'v': 9.8},   # V8: 向北
+            {'x': 516.0, 'y': 600.0, 'dir': -np.pi/2, 'v': 10.5},   # V9: 向北
+            {'x': 519.0, 'y': 950.0, 'dir': -np.pi/2, 'v': 11.2},   # V10: 向北
+            {'x': 513.0, 'y': 1250.0, 'dir': -np.pi/2, 'v': 9.7},   # V11: 向北
         ]
         
         for i in range(self.num_vehicles):
@@ -433,19 +434,11 @@ class CompleteSystemSimulator:
                 base_dir = cfg['dir']
                 v0 = cfg['v']
             else:
-                # 原有随机初始化逻辑
-                road_choice = np.random.rand()
-                if road_choice < 0.5:  # 50%在主干道（纵向）
-                    go_north = np.random.rand() < 0.5
-                    x0 = self.road_center_x + np.random.uniform(-self.road_width/2, self.road_width/2)
-                    y0 = np.random.uniform(515.0, 1545.0)  # 在两个路口之间
-                    base_dir = -np.pi/2 if go_north else np.pi/2  # 北或南
-                else:  # 50%在横向道路
-                    intersection_y = intersection_0_y if np.random.rand() < 0.5 else intersection_1_y
-                    go_east = np.random.rand() < 0.6
-                    x0 = np.random.uniform(50.0, 980.0)  # 横向道路范围
-                    y0 = intersection_y + np.random.uniform(-self.road_width/2, self.road_width/2)
-                    base_dir = 0.0 if go_east else np.pi  # 东或西
+                # 随机初始化逻辑
+                # ✅ 新设计：所有车辆初始都从下往上（向北）移动
+                x0 = self.road_center_x + np.random.uniform(-self.road_width/2, self.road_width/2)
+                y0 = np.random.uniform(300.0, 1800.0)  # 在场景中随机Y位置
+                base_dir = -np.pi/2  # 所有车辆初始向北
                 v0 = np.random.uniform(8.0, 15.0)  # 初始速度 8-15 m/s
             vehicle = {
                 'id': f'V_{i}',
@@ -3160,12 +3153,16 @@ class CompleteSystemSimulator:
         实现了逼真的车辆移动模型，包括：
         - 速度的加减速变化
         - 路口减速行为（根据车辆行驶方向智能判断）
+        - 🚗 路口转向逻辑（部分车辆在路口左转/右转）
+        - ✅ 道路约束（确保车辆始终在道路上）
+        - 🔄 车辆流动（出界车辆移除，底部生成新车）
         - 车道切换和横向漂移
-        - 周期性边界条件（环形道路）
         
         Simple vehicle position update with realistic movement simulation.
         """
-        for vehicle in self.vehicles:
+        vehicles_to_respawn = []  # 记录需要重生的车辆索引
+        
+        for idx, vehicle in enumerate(self.vehicles):
             position = vehicle.get('position')
             if position is None or len(position) < 2:
                 continue
@@ -3204,6 +3201,90 @@ class CompleteSystemSimulator:
             direction = (direction + heading_jitter) % (2 * np.pi)
             vehicle['direction'] = direction
             vehicle['heading_jitter'] = heading_jitter
+            
+            # === 🚗 新增：路口转向逻辑 ===
+            # 检查车辆是否接近路口，并决定是否转向
+            turning_state = vehicle.setdefault('turning_state', 'none')  # none/preparing/turning/completing
+            turn_direction = vehicle.setdefault('turn_direction', None)  # 'left'/'right'/None
+            turn_progress = vehicle.setdefault('turn_progress', 0.0)
+            turn_intersection_y = vehicle.setdefault('turn_intersection_y', None)  # 转向路口的Y坐标
+            
+            # 如果车辆正在转向过程中
+            if turning_state in ['preparing', 'turning', 'completing']:
+                if turning_state == 'preparing':
+                    # 准备转向：减速并调整车道
+                    turn_progress += 0.05
+                    if turn_progress >= 1.0:
+                        vehicle['turning_state'] = 'turning'
+                        vehicle['turn_progress'] = 0.0
+                        
+                elif turning_state == 'turning':
+                    # 执行转向：平滑旋转方向
+                    turn_progress += 0.15  # 转向速度
+                    if turn_progress >= 1.0:
+                        # 转向完成，设置新方向
+                        if turn_direction == 'left':
+                            direction = (direction - np.pi/2) % (2 * np.pi)
+                        elif turn_direction == 'right':
+                            direction = (direction + np.pi/2) % (2 * np.pi)
+                        vehicle['direction'] = direction
+                        vehicle['turning_state'] = 'completing'
+                        vehicle['turn_progress'] = 0.0
+                        
+                        # ✅ 关键修复：转向完成后，将车辆精确移动到横向道路上
+                        if turn_intersection_y is not None:
+                            # 将Y坐标调整到路口中心线附近
+                            vehicle['position'][1] = turn_intersection_y + np.random.uniform(-5.0, 5.0)
+                    else:
+                        # 转向进行中，逐渐改变方向
+                        angle_delta = (np.pi/2) * turn_progress * 0.15
+                        if turn_direction == 'left':
+                            direction = (direction - angle_delta) % (2 * np.pi)
+                        elif turn_direction == 'right':
+                            direction = (direction + angle_delta) % (2 * np.pi)
+                        vehicle['direction'] = direction
+                    vehicle['turn_progress'] = turn_progress
+                    
+                elif turning_state == 'completing':
+                    # 转向完成，加速恢复
+                    turn_progress += 0.1
+                    if turn_progress >= 1.0:
+                        vehicle['turning_state'] = 'none'
+                        vehicle['turn_direction'] = None
+                        vehicle['turn_progress'] = 0.0
+                        vehicle['turn_intersection_y'] = None
+                    vehicle['turn_progress'] = turn_progress
+            
+            else:
+                # 检查是否需要开始转向决策
+                for intersection_name, intersection in self.intersections.items():
+                    is_horizontal = abs(np.cos(direction)) > abs(np.sin(direction))
+                    
+                    # 计算到路口的距离
+                    if is_horizontal:
+                        dist_to_intersection = abs(position[1] - intersection['y'])
+                    else:
+                        dist_to_intersection = abs(position[0] - intersection['x'])
+                    
+                    # 如果接近路口（距离<50m）且尚未决定转向
+                    if dist_to_intersection < 50.0 and turning_state == 'none':
+                        # 30%概率转向（15%左转，15%右转），70%直行
+                        turn_choice = np.random.rand()
+                        if turn_choice < 0.15:  # 15% 左转
+                            vehicle['turning_state'] = 'preparing'
+                            vehicle['turn_direction'] = 'left'
+                            vehicle['turn_progress'] = 0.0
+                            vehicle['turn_intersection_y'] = intersection['y']  # 记录路口Y坐标
+                            break
+                        elif turn_choice < 0.30:  # 15% 右转
+                            vehicle['turning_state'] = 'preparing'
+                            vehicle['turn_direction'] = 'right'
+                            vehicle['turn_progress'] = 0.0
+                            vehicle['turn_intersection_y'] = intersection['y']  # 记录路口Y坐标
+                            break
+                        else:
+                            # 70% 直行，标记为已通过该路口（避免重复决策）
+                            vehicle['turning_state'] = 'none'
 
             dx = np.cos(direction) * new_speed * self.time_slot
             dy = np.sin(direction) * new_speed * self.time_slot
@@ -3226,7 +3307,6 @@ class CompleteSystemSimulator:
             vehicle['lateral_state'] = np.clip(lateral_state, -2.0, 2.0)
 
             # === 4) 应用位置更新 ===
-            # 🔧 修复：使用正确的场景尺寸边界 (1030 x 2060)
             new_x = position[0] + dx
             new_y = position[1] + dy
             
@@ -3235,16 +3315,85 @@ class CompleteSystemSimulator:
             if is_horizontal:
                 # 横向行驶（东西向）：车道偏移应用到Y方向（垂直于前进方向）
                 new_y += lane_bias + lateral_state
+                
+                # ✅ 道路约束：确保车辆在横向道路上（Y坐标接近路口）
+                # 找到最近的路口
+                closest_intersection_y = None
+                min_dist = float('inf')
+                for intersection in self.intersections.values():
+                    dist = abs(new_y - intersection['y'])
+                    if dist < min_dist:
+                        min_dist = dist
+                        closest_intersection_y = intersection['y']
+                
+                # 如果距离路口太远，拉回到路口附近
+                if closest_intersection_y is not None and min_dist > 40.0:
+                    new_y = closest_intersection_y + np.clip(new_y - closest_intersection_y, -30.0, 30.0)
             else:
                 # 纵向行驶（南北向）：车道偏移应用到X方向（垂直于前进方向）
                 new_x += lane_bias + lateral_state
+                
+                # ✅ 道路约束：确保车辆在纵向主干道上（X坐标接近515）
+                if abs(new_x - self.road_center_x) > 40.0:
+                    new_x = self.road_center_x + np.clip(new_x - self.road_center_x, -30.0, 30.0)
             
-            # 🔧 修复：周期性边界条件（匹配场景实际尺寸）
-            new_x = new_x % self.scenario_width   # 0 ~ 1030m
-            new_y = new_y % self.scenario_height  # 0 ~ 2060m
+            # === 🔄 新增：边界检测和车辆重生 ===
+            # 检查车辆是否离开场景边界
+            out_of_bounds = False
+            
+            if new_y > 2000:  # 到达顶部
+                out_of_bounds = True
+            elif new_x < 50 or new_x > 980:  # 离开左右边界
+                out_of_bounds = True
+            
+            if out_of_bounds:
+                # 标记需要重生
+                vehicles_to_respawn.append(idx)
+                # 暂时不更新位置，后面会重置
+            else:
+                # 正常更新位置
+                vehicle['position'][0] = new_x
+                vehicle['position'][1] = new_y
 
-            vehicle['position'][0] = new_x
-            vehicle['position'][1] = new_y
+        # === 🔄 重生出界的车辆 ===
+        for idx in vehicles_to_respawn:
+            vehicle = self.vehicles[idx]
+            vehicle_id = vehicle.get('id', f'V_{idx}')
+            
+            # 重置车辆到底部，向北行驶
+            new_x = self.road_center_x + np.random.uniform(-30.0, 30.0)
+            new_y = np.random.uniform(300.0, 500.0)
+            new_velocity = np.random.uniform(8.0, 15.0)
+            
+            # 完全重置车辆状态
+            vehicle.clear()
+            vehicle.update({
+                'id': vehicle_id,
+                'position': np.array([new_x, new_y], dtype=float),
+                'velocity': new_velocity,
+                'direction': -np.pi/2,  # 向北
+                'lane_bias': 0.0,
+                'tasks': [],
+                'energy_consumed': 0.0,
+                'device_cache': {},
+                'device_cache_capacity': 100.0,
+                'cpu_freq': self.vehicle_cpu_freq,
+                'cpu_frequency': self.vehicle_cpu_freq,
+                'allocated_bandwidth': 0.0,
+                'task_queue_by_priority': {1: [], 2: [], 3: [], 4: []},
+                'compute_usage': 0.0,
+                'queue_length': 0,
+                # 转向状态
+                'turning_state': 'none',
+                'turn_direction': None,
+                'turn_progress': 0.0,
+                'turn_intersection_y': None,
+                # 运动状态
+                'speed_accel': 0.0,
+                'heading_jitter': 0.0,
+                'lateral_state': 0.0,
+                'lane_switch_timer': np.random.randint(80, 160),
+            })
 
         self._refresh_spatial_index(update_static=False, update_vehicle=True)
         
@@ -3316,6 +3465,11 @@ class CompleteSystemSimulator:
         # 应用队列感知调整
         probs = base_probs * adjusted_factors
         probs = np.nan_to_num(probs, nan=0.0, posinf=0.0, neginf=0.0)
+
+        # 应用队列感知调整
+        probs = base_probs * adjusted_factors
+        probs = np.nan_to_num(probs, nan=0.0, posinf=0.0, neginf=0.0)
+
 
         # 🔧 禁用guidance干扰：对比实验时不应用guidance修正，保持智能体原始决策
         apply_guidance = os.environ.get('APPLY_RL_GUIDANCE', '0') == '1'
@@ -3663,6 +3817,9 @@ class CompleteSystemSimulator:
 
         # 车辆端不再维护本地缓存，直接根据策略决定卸载或本地计算
         forced_mode = getattr(self, 'forced_offload_mode', '')
+        # DEBUG: Trace dispatch logic
+        # print(f"DEBUG_DISPATCH: Task {task.get('id')} Mode={forced_mode} RSU={len(self.rsus)>0} UAV={len(self.uavs)>0}")
+        
         if forced_mode != 'remote_only':
             if self._try_serve_from_vehicle_cache(vehicle, task, step_summary, cache_controller):
                 return
@@ -4177,6 +4334,8 @@ class CompleteSystemSimulator:
         task_data_mb = float(task.get('data_size', 0.0))
         if node_type == 'RSU':
             step_summary['rsu_tasks'] = step_summary.get('rsu_tasks', 0) + 1
+            with open('offload_debug.log', 'a') as f:
+                f.write(f"DEBUG_RSU_TASK: Task {task.get('id')} assigned to RSU {node_idx}\n")
             step_summary['rsu_data_mb'] = step_summary.get('rsu_data_mb', 0.0) + task_data_mb
         elif node_type == 'UAV':
             step_summary['uav_tasks'] = step_summary.get('uav_tasks', 0) + 1

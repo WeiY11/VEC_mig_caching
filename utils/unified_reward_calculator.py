@@ -223,10 +223,10 @@ class UnifiedRewardCalculator:
             self.delay_bonus_scale = max(1e-6, self.latency_target)
             self.energy_bonus_scale = max(1e-6, self.energy_target)
 
-        # 🔧 v12修复：扩大裁剪范围配合更大的权重
-        # 用更大的权重(5.0, 3.0)和更低的目标(0.3s, 200J)
-        # 奖励会在更大的范围波动，需要扩大裁剪范围
-        self.reward_clip_range = (-50.0, 0.0)  # 🔧 v12: -10 → -50 (扩大5倍)
+        # 🔧 v29修复：收紧裁剪范围，避免奖励信号过于分散
+        # 原来-50到0范围太宽，不同策略的差异被稀释
+        # 收紧到-10到0，放大策略改进的反馈信号
+        self.reward_clip_range = (-10.0, 0.0)  # 🔧 v29: -50 → -10 (收紧5倍)
 
         print(f"[OK] Unified reward calculator ({self.algorithm})")
         print(
@@ -387,18 +387,31 @@ class UnifiedRewardCalculator:
         norm_energy = (energy_val - self.energy_min) / self.energy_range
         norm_energy = max(0.0, norm_energy)  # 不允许负值
         
-        # 加权和（等权重0.5+0.5=1.0）
+        # 🔧 v29优化：纯成本最小化，不混入bonus
+        # 加权和（使用配置的权重）
         delay_penalty = self.weight_delay * norm_delay
         energy_penalty = self.weight_energy * norm_energy
         core_cost = delay_penalty + energy_penalty
 
-        # --- 简化丢弃惩罚 ---
+        # --- 🔧 v29优化：简化惩罚项，保持清晰语义 ---
+        # 1. 丢弃惩罚 - 每丢一个任务扣分
         drop_penalty = self.penalty_dropped * m.dropped_tasks
         
-        # --- 其他惩罚项 ---
+        # 2. 完成率惩罚 - 只在低于目标时才惩罚，使用平方项放大差距
+        # 🔧 v29: 使用soft惩罚，避免过度保守
         completion_gap = max(0.0, self.completion_target - m.completion_rate)
-        completion_gap_penalty = self.weight_completion_gap * completion_gap
+        completion_gap_penalty = self.weight_completion_gap * (completion_gap ** 1.5)  # 平方根放大
+        
+        # 3. 数据丢失惩罚 - 直接使用丢失比例
         data_loss_penalty = self.weight_loss_ratio * m.data_loss_ratio
+        
+        # 🔧 v29：移除offload_bonus，避免bonus/cost语义混淆
+        # 原来的offload_bonus会让智能体困惑：到底是最小化cost还是最大化bonus？
+        # 现在纯粹做成本最小化，语义更清晰
+        offload_bonus = 0.0
+        delay_improvement_bonus = 0.0
+        
+        # 其他惩罚项（保持为0，需要时再启用）
         cache_pressure_penalty = 0.0
         queue_penalty = 0.0
         remote_reject_penalty = 0.0
@@ -408,30 +421,10 @@ class UnifiedRewardCalculator:
         cache_bonus = 0.0
         joint_bonus = 0.0
         joint_coupling_penalty = 0.0
-        
-        # 🆕 v19: 卸载效率奖励（放大决策差异信号）
-        # remote_ratio = RSU卸载 + UAV卸载 的比例
-        remote_ratio = m.rsu_offload_ratio + m.uav_offload_ratio
-        
-        # 🎯 卸载效率奖励设计：
-        # - 边缘处理(RSU/UAV)通常比本地处理更高效
-        # - remote_ratio ∈ [0, 1]，越高越好
-        # - 奖励 = weight × remote_ratio
-        # - 这提供了一个智能体动作可直接影响的信号
-        # 🔧 v20: 从配置读取卸载效率权重，默认1.5（增强卸载激励）
-        offload_efficiency_weight = float(getattr(config.rl, 'reward_weight_offload_efficiency', 1.5))
-        offload_bonus = offload_efficiency_weight * remote_ratio
-        
-        # 🆕 v19: 延迟改善放大器
-        # 当延迟低于目标时给予额外奖励
-        delay_improvement_bonus = 0.0
-        if norm_delay < 1.0:  # 延迟低于目标
-            delay_improvement_bonus = (1.0 - norm_delay) * 0.5  # 最高0.5的奖励
 
+        # 🔧 v29：简化总成本计算
         total_cost = core_cost + drop_penalty + completion_gap_penalty + data_loss_penalty
-        # 减去奖励项（奖励是负成本）
-        total_cost = total_cost - offload_bonus - delay_improvement_bonus
-        total_cost = float(np.clip(total_cost, -self.total_cost_clip, self.total_cost_clip))
+        total_cost = float(np.clip(total_cost, 0.0, self.total_cost_clip))
 
         return RewardComponents(
             norm_delay=norm_delay,

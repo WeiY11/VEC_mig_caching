@@ -71,8 +71,8 @@ def create_optimized_config() -> EnhancedTD3Config:
         # 🚀 v25 轻量化网络
         hidden_dim=hidden_dim,    # 🔧 1024→256 网络小4倍
         batch_size=batch_size,    # 🔧 512→256
-        buffer_size=100000,       # 🔧 500000→100000
-        warmup_steps=200,         # 🔧 300→200
+        buffer_size=200000,       # 🔧 v29: 100000→200000 增加Buffer容量
+        warmup_steps=5000,        # 🔧 v29: 200→5000 大幅增加预热，确保Buffer多样性
         gradient_steps=gradient_steps,
         
         # 性能优化
@@ -84,12 +84,12 @@ def create_optimized_config() -> EnhancedTD3Config:
         actor_lr=3e-4,
         critic_lr=3e-4,
 
-        # 探索噪声
-        exploration_noise=0.25,   # 🔧 0.4→0.25 适中噪声
-        noise_decay=0.998,        # 🔧 正常衰减
-        min_noise=0.08,           # 🔧 0.12→0.08
+        # 🔧 v29: 增强探索参数，避免早期陷入局部最优
+        exploration_noise=0.45,   # 🔧 v29: 0.25→0.45 高初始噪声
+        noise_decay=0.9995,       # 🔧 v29: 0.998→0.9995 更慢衰减
+        min_noise=0.15,           # 🔧 v29: 0.08→0.15 较高最小噪声
         target_noise=0.15,
-        noise_clip=0.3,
+        noise_clip=0.4,           # 🔧 v29: 0.3→0.4 允许更大探索
 
         # 奖励归一化
         reward_norm_beta=0.995,
@@ -220,6 +220,9 @@ class OptimizedTD3Wrapper:
             'migration_congestion': 0.0,
         }
         self._queue_pressure_ema: Optional[float] = None
+        
+        # 🔧 状态优化：记录上一步能耗以计算增量
+        self.last_node_energies: Dict[str, float] = {}
     
     def select_action(self, state: np.ndarray, training: bool = True) -> np.ndarray:
         if self.agent is None:
@@ -328,7 +331,75 @@ class OptimizedTD3Wrapper:
         system_metrics: Dict,
         resource_state: Optional[Dict] = None,
     ) -> np.ndarray:
-        """构建状态向量"""
+        """构建状态向量 - 支持MDP优化版"""
+        # 检查是否包含丰富信息（由train_single_agent.py注入）
+        has_rich_info = any(k.endswith('_info') for k in node_states.keys())
+        
+        if has_rich_info:
+            # 🚀 使用MDP优化版状态构建
+            state_components = []
+            
+            # 1. 节点状态 (使用build_optimized_node_state)
+            # 车辆
+            for i in range(self.num_vehicles):
+                info = node_states.get(f'vehicle_{i}_info', {})
+                # 获取并更新上一步能耗
+                last_energy = self.last_node_energies.get(f'vehicle_{i}', 0.0)
+                curr_energy = float(info.get('energy_consumed', 0.0) if isinstance(info, dict) else 0.0)
+                self.last_node_energies[f'vehicle_{i}'] = curr_energy
+                
+                node_vec = UnifiedStateActionSpace.build_optimized_node_state('vehicle', info, last_energy)
+                # 补齐到5维 (保持兼容性)
+                if len(node_vec) < 5:
+                    node_vec = np.pad(node_vec, (0, 5 - len(node_vec)), constant_values=0.0)
+                state_components.extend(node_vec)
+            
+            # RSU
+            for i in range(self.num_rsus):
+                info = node_states.get(f'rsu_{i}_info', {})
+                node_vec = UnifiedStateActionSpace.build_optimized_node_state('rsu', info)
+                if len(node_vec) < 5:
+                    node_vec = np.pad(node_vec, (0, 5 - len(node_vec)), constant_values=0.0)
+                state_components.extend(node_vec)
+                
+            # UAV
+            for i in range(self.num_uavs):
+                info = node_states.get(f'uav_{i}_info', {})
+                node_vec = UnifiedStateActionSpace.build_optimized_node_state('uav', info)
+                if len(node_vec) < 5:
+                    node_vec = np.pad(node_vec, (0, 5 - len(node_vec)), constant_values=0.0)
+                state_components.extend(node_vec)
+                
+            # 2. 全局状态 (使用build_optimized_global_state)
+            # system_metrics现在包含了step_metrics
+            global_vec = UnifiedStateActionSpace.build_optimized_global_state(
+                node_states, system_metrics, self.num_vehicles, self.num_rsus, step_metrics=system_metrics
+            )
+            # 补齐到20维 (目前是18维)
+            if len(global_vec) < 20:
+                global_vec = np.pad(global_vec, (0, 20 - len(global_vec)), constant_values=0.0)
+            state_components.extend(global_vec)
+            
+            # 3. 中央资源状态
+            if self.central_state_dim > 0 and resource_state is not None:
+                central_state_vector = self._extract_central_state(resource_state)
+                state_components.extend(central_state_vector)
+                
+            state_vector = np.array(state_components, dtype=np.float32)
+            
+            # 最终检查
+            if np.any(np.isnan(state_vector)) or np.any(np.isinf(state_vector)):
+                state_vector = np.nan_to_num(state_vector, nan=0.5, posinf=1.0, neginf=0.0)
+            
+            if state_vector.size < self.state_dim:
+                padding_needed = self.state_dim - state_vector.size
+                state_vector = np.pad(state_vector, (0, padding_needed), mode='constant', constant_values=0.5)
+            elif state_vector.size > self.state_dim:
+                state_vector = state_vector[:self.state_dim]
+                
+            return state_vector
+
+        # ================== 旧版逻辑回退 ==================
         state_components = []
         
         # 节点状态
@@ -597,14 +668,14 @@ class OptimizedTD3Wrapper:
         # 将边缘偏好拆分为RSU(60%)和UAV(40%)，但保持总权重与本地相当
         edge_scale = max(0.01, abs(edge_pref) + abs(local_pref))  # 防止除零
         offload_raw = np.array([
-            local_pref * 0.8,              # 本地偏好 (略微削弱，鼓励卸载探索)
+            local_pref * 1.0,              # 🔧 v29: 0.8→1.0 恢复对称权重
             edge_pref * 0.6,               # RSU偏好 (边缘的主要部分)
             edge_pref * 0.4                # UAV偏好 (边缘的辅助部分)
         ], dtype=np.float32)
         
-        # 🔧 添加卸载倾向偏移：默认略微偏向边缘处理
-        offload_bias = np.array([-0.3, 0.2, 0.1], dtype=np.float32)  # 降低本地基线
-        offload_raw = offload_raw + offload_bias
+        # 🔧 v29: 移除固定偏移，让智能体自主学习最优策略
+        # 原来的偏移会导致智能体从一开始就偏向边缘卸载，失去学习机会
+        # offload_bias = np.array([-0.3, 0.2, 0.1], dtype=np.float32)  # 已移除
         offload_preference = softmax(offload_raw)
         
         # [2] RSU偏好 → 广播到所有RSU (加入位置偏移创造差异)

@@ -1,0 +1,73 @@
+{
+  "timestamp": "2025-12-04T12:29:54.150037",
+  "system_parameters": {
+    "num_vehicles": 12,
+    "task_arrival_rate": 3.5,
+    "avg_data_size_mb": 7.5,
+    "tx_power_w": 0.15,
+    "rsu_cpu_freq_ghz": 17.5,
+    "episode_duration_s": 20.0
+  },
+  "results": [
+    {
+      "bandwidth_mhz": 30.0,
+      "avg_delay": 0.5108603862476824,
+      "total_energy": 254.002722907208,
+      "completion_rate": 1.0,
+      "data_loss_rate": 1.0,
+      "single_task_trans_delay": 0.25093629598098405,
+      "single_task_trans_energy": 0.03764044439714761,
+      "single_task_proc_delay": 0.008987794285714286,
+      "shannon_capacity_mbps": 250.71925029437617,
+      "snr_db": 25.144741789192334
+    },
+    {
+      "bandwidth_mhz": 40.0,
+      "avg_delay": 0.4049888449116102,
+      "total_energy": 240.6629086988629,
+      "completion_rate": 1.0,
+      "data_loss_rate": 1.0,
+      "single_task_trans_delay": 0.19800052531294796,
+      "single_task_trans_energy": 0.02970007879694219,
+      "single_task_proc_delay": 0.008987794285714286,
+      "shannon_capacity_mbps": 317.74946001057805,
+      "snr_db": 23.895354423109335
+    },
+    {
+      "bandwidth_mhz": 50.0,
+      "avg_delay": 0.33910617526598685,
+      "total_energy": 232.36169232351435,
+      "completion_rate": 1.0,
+      "data_loss_rate": 1.0,
+      "single_task_trans_delay": 0.1650591904901363,
+      "single_task_trans_energy": 0.02475887857352044,
+      "single_task_proc_delay": 0.008987794285714286,
+      "shannon_capacity_mbps": 381.1636287151165,
+      "snr_db": 22.92625429302877
+    },
+    {
+      "bandwidth_mhz": 60.0,
+      "avg_delay": 0.2938610921681064,
+      "total_energy": 226.6608118531814,
+      "completion_rate": 1.0,
+      "data_loss_rate": 1.0,
+      "single_task_trans_delay": 0.14243664894119606,
+      "single_task_trans_energy": 0.02136549734117941,
+      "single_task_proc_delay": 0.008987794285714286,
+      "shannon_capacity_mbps": 441.70205117626585,
+      "snr_db": 22.134441832552522
+    },
+    {
+      "bandwidth_mhz": 70.0,
+      "avg_delay": 0.2607196031971119,
+      "total_energy": 222.4849842428361,
+      "completion_rate": 1.0,
+      "data_loss_rate": 1.0,
+      "single_task_trans_delay": 0.1258659044556988,
+      "single_task_trans_energy": 0.018879885668354822,
+      "single_task_proc_delay": 0.008987794285714286,
+      "shannon_capacity_mbps": 499.85387442350697,
+      "snr_db": 21.46497393624639
+    }
+  ]
+}

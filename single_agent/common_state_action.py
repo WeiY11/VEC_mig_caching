@@ -98,7 +98,7 @@ CENTRAL_UAV_AGGREGATE = 1        # UAV聚合维度
 STATE_DIM_PER_VEHICLE = 5        # [pos_x, pos_y, velocity, queue_util, energy]
 STATE_DIM_PER_RSU = 5            # [pos_x, pos_y, cache_util, queue_util, energy]
 STATE_DIM_PER_UAV = 5            # [pos_x, pos_y, queue_util, cache_util, energy]
-STATE_DIM_GLOBAL = 16            # 基础8维 + 任务类型8维
+STATE_DIM_GLOBAL = 20            # 基础12维 + 任务类型8维
 STATE_DIM_TASK_FEATURES = 8      # MDP优化: 任务级特征
 STATE_DIM_HISTORY = 16           # MDP优化: 历史趋势特征
 STATE_DIM_CENTRAL = 16           # 中央资源状态维度
@@ -121,7 +121,7 @@ class UnifiedStateActionSpace:
         返回:
             (local_state_dim, global_state_dim, total_state_dim)
         """
-        base_global_dim = 8
+        base_global_dim = 12
         task_type_feature_dim = 8  # 4个任务类型队列占比 + 4个归一化截止期裕度
         local_state_dim = num_vehicles * 5 + num_rsus * 5 + num_uavs * 5
         global_state_dim = base_global_dim + task_type_feature_dim
@@ -160,7 +160,7 @@ class UnifiedStateActionSpace:
     def build_global_state(node_states: Dict, system_metrics: Dict, 
                           num_vehicles: int, num_rsus: int) -> np.ndarray:
         """
-        构建全局系统状态（16维：基础8维 + 任务类型8维）
+        构建全局系统状态（20维：基础12维 + 任务类型8维）
         
         参数:
             node_states: 节点状态字典
@@ -169,7 +169,7 @@ class UnifiedStateActionSpace:
             num_rsus: RSU数量
             
         返回:
-            global_state: 8维全局状态向量
+            global_state: 20维全局状态向量
         """
         # 收集所有节点的队列信息
         all_queues = []
@@ -191,16 +191,27 @@ class UnifiedStateActionSpace:
         avg_energy = system_metrics.get('total_energy_consumption', 0.0) / max(1, num_vehicles + num_rsus + 2)
         cache_hit_rate = system_metrics.get('cache_hit_rate', 0.0)
         
-        # 构建全局状态基础向量
+        normalized_energy = np.clip(system_metrics.get('normalized_energy_for_state', avg_energy / 1000.0), 0.0, 2.0)
+        episode_progress = np.clip(system_metrics.get('episode_progress', 0.0), 0.0, 1.0)
+        data_loss_ratio = np.clip(system_metrics.get('data_loss_ratio_bytes', 0.0), 0.0, 1.0)
+        remote_reject_rate = np.clip(system_metrics.get('remote_rejection_rate', 0.0), 0.0, 1.0)
+        queue_overload_flag = np.clip(system_metrics.get('queue_overload_flag', 0.0), 0.0, 1.0)
+        drop_presence = np.clip(system_metrics.get('dropped_tasks', 0.0), 0.0, 1.0)
+
+        # 构建全局状态基础向量（12维）
         base_features = [
             np.clip(avg_queue, 0.0, 1.0),           # 平均队列占用率
             np.clip(congestion_ratio, 0.0, 1.0),    # 拥塞节点比例
             np.clip(completion_rate, 0.0, 1.0),     # 任务完成率
-            np.clip(avg_energy / 1000.0, 0.0, 1.0), # 平均能耗
+            normalized_energy,                      # 能耗归一化（与奖励同尺度）
             np.clip(cache_hit_rate, 0.0, 1.0),      # 缓存命中率
-            0.0,  # episode进度（保留位）
+            episode_progress,                       # episode进度（0-1）
             np.clip(len([q for q in all_queues if q > 0]) / max(1, len(all_queues)), 0.0, 1.0),  # 活跃节点比例
-            np.clip(sum(all_queues) / max(1, len(all_queues)), 0.0, 1.0)  # 网络总负载
+            np.clip(sum(all_queues) / max(1, len(all_queues)), 0.0, 1.0),  # 网络总负载
+            data_loss_ratio,                        # 数据丢失比例
+            remote_reject_rate,                     # 远端拒绝率
+            queue_overload_flag,                    # 队列过载标志
+            drop_presence,                          # 任务丢弃存在性
         ]
         
         def _to_fixed_length(values, length=4):

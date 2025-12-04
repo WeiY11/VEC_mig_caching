@@ -38,8 +38,8 @@ class EnhancedTD3Config:
     noise_clip: float = 0.2
     
     # 探索参数 - 🔧 v10优化
-    exploration_noise: float = 0.35  # 🔧 v10: 0.30 → 0.35 (更高初始噪声)
-    noise_decay: float = 0.9998      # 🔧 v10: 0.9995 → 0.9998 (慢衰减)
+    exploration_noise: float = 0.40  # 🔧 v28: 0.35 → 0.40 (进一步增加初始噪声)
+    noise_decay: float = 0.9995      # 🔧 v28: 0.9998 → 0.9995 (稍微加快衰减，因为初始值更大了)
     min_noise: float = 0.10          # 🔧 v10: 0.08 → 0.10 (更高最小噪声)
     
     # 梯度裁剪
@@ -104,13 +104,19 @@ class EnhancedTD3Config:
     edge_feature_dim: int = 8  # 边特征维度
     gat_dropout: float = 0.1  # GAT Dropout率
     
+    # 🔧 v29新增: GNN邻接掩码阈值 (原硬编码值，现可配置)
+    gat_vehicle_rsu_dist_threshold: float = 0.8  # 车辆-RSU连接距离阈值
+    gat_rsu_rsu_dist_threshold: float = 1.2      # RSU-RSU协作距离阈值
+    gat_vehicle_uav_dist_threshold: float = 0.9  # 车辆-UAV连接距离阈值
+    
     # ========== 优先级回放参数（通用） ==========
     alpha: float = 0.6  # PER的alpha参数
     beta_start: float = 0.4  # PER的beta初始值
     beta_increment: float = 5e-6  # beta增长率
     
     # ========== 其他 ==========
-    warmup_steps: int = 200  # 🔧 v9: 500 → 200 (更快开始学习)
+    # ========== 其他 ==========
+    warmup_steps: int = 2000  # 🔧 v28: 200 → 2000 (大幅增加预热步数，确保初始Buffer多样性)
     update_freq: int = 1     # 🔧 v9: 2 → 1 (每步都更新)
     gradient_steps: int = 8  # 🔧 v22: 4 → 8 每步多次梯度更新 (大幅提高GPU利用率)
     device: str = 'cuda'  # 设备

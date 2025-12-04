@@ -481,51 +481,68 @@ HTML_TEMPLATE = """
         });
 
         function drawRoads() {
-            ctx.fillStyle = 'rgba(255, 255, 255, 0.1)';
+            // ✅ 大幅增加道路颜色，让道路非常明显
+            ctx.fillStyle = 'rgba(100, 100, 100, 0.5)';  // 改为灰色，透明度0.5
             
-            // Main Road (Vertical at X=515, Width=30)
-            const mainX = toCanvasX(515 - 15);
-            const mainW = toCanvasX(515 + 15) - mainX;
+            // ========== 主干道绘制 ==========
+            // 双十字路口场景：一条南北向主干道 + 两条东西向主干道
+            
+            // 道路宽度增加到60m (原30m)
+            const roadWidth = 60;
+            
+            // 1️⃣ 南北向主干道 (Vertical Main Road at X=515, Width=60)
+            // 贯穿整个场景高度，允许车辆南北向行驶
+            const mainX = toCanvasX(515 - roadWidth/2);
+            const mainW = toCanvasX(515 + roadWidth/2) - mainX;
             ctx.fillRect(mainX, 0, mainW, canvas.height);
             
-            // Upper Intersection (Horizontal at Y=1545, Width=30)
-            const upperY = toCanvasY(1545 + 15); // Top edge in canvas
-            const upperH = toCanvasY(1545 - 15) - upperY;
-            ctx.fillRect(0, upperY, canvas.width, upperH);
+            // 2️⃣ 东西向主干道 1 - 上方十字路口 (Horizontal Main Road at Y=1545, Width=60)
+            // 只在路口附近绘制，不贯穿整个画面
+            const intersection1_x = 515;
+            const intersection1_y = 1545;
+            const roadExtend = 200;  // 路口左右延伸200m
             
-            // Lower Intersection (Horizontal at Y=515, Width=30)
-            const lowerY = toCanvasY(515 + 15);
-            const lowerH = toCanvasY(515 - 15) - lowerY;
-            ctx.fillRect(0, lowerY, canvas.width, lowerH);
+            const upperY = toCanvasY(intersection1_y + roadWidth/2);
+            const upperH = toCanvasY(intersection1_y - roadWidth/2) - upperY;
+            const upperX = toCanvasX(intersection1_x - roadExtend);
+            const upperW = toCanvasX(intersection1_x + roadExtend) - upperX;
+            ctx.fillRect(upperX, upperY, upperW, upperH);
             
-            // Dashed Lines
-            ctx.strokeStyle = 'rgba(255, 255, 255, 0.3)';
-            ctx.setLineDash([5, 5]);
-            ctx.lineWidth = 1;
+            // 3️⃣ 东西向主干道 2 - 下方十字路口 (Horizontal Main Road at Y=515, Width=60)
+            // 只在路口附近绘制，不贯穿整个画面
+            const intersection2_x = 515;
+            const intersection2_y = 515;
             
-            // Main Center
+            const lowerY = toCanvasY(intersection2_y + roadWidth/2);
+            const lowerH = toCanvasY(intersection2_y - roadWidth/2) - lowerY;
+            const lowerX = toCanvasX(intersection2_x - roadExtend);
+            const lowerW = toCanvasX(intersection2_x + roadExtend) - lowerX;
+            ctx.fillRect(lowerX, lowerY, lowerW, lowerH);
+            
+            // ========== 车道中心线 ==========
+            // 改为实线，更明显
+            ctx.strokeStyle = 'rgba(255, 255, 0, 0.8)';  // 黄色实线
+            ctx.setLineDash([]);  // 实线，不是虚线
+            ctx.lineWidth = 2;  // 加粗
+            
+            // 南北向主干道中心线
             ctx.beginPath();
             ctx.moveTo(toCanvasX(515), 0);
             ctx.lineTo(toCanvasX(515), canvas.height);
             ctx.stroke();
             
-            // Upper Center
+            // 东西向主干道 1 中心线（只绘制路口部分）
             ctx.beginPath();
-            ctx.moveTo(0, toCanvasY(1545));
-            ctx.lineTo(canvas.width, toCanvasY(1545));
+            ctx.moveTo(toCanvasX(intersection1_x - roadExtend), toCanvasY(intersection1_y));
+            ctx.lineTo(toCanvasX(intersection1_x + roadExtend), toCanvasY(intersection1_y));
             ctx.stroke();
             
-            // Lower Center
+            // 东西向主干道 2 中心线（只绘制路口部分）
             ctx.beginPath();
-            ctx.moveTo(0, toCanvasY(515));
-            ctx.lineTo(canvas.width, toCanvasY(515));
+            ctx.moveTo(toCanvasX(intersection2_x - roadExtend), toCanvasY(intersection2_y));
+            ctx.lineTo(toCanvasX(intersection2_x + roadExtend), toCanvasY(intersection2_y));
             ctx.stroke();
-            
-            ctx.setLineDash([]);
         }
-
-        // Animation Loop
-        function animate() {
             ctx.clearRect(0, 0, canvas.width, canvas.height);
             const w = canvas.width;
             const h = canvas.height;

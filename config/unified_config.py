@@ -168,6 +168,52 @@ class CacheConfig:
 
 
 @dataclass
+class ServiceConfig:
+    """RSU/UAV服务能力配置"""
+    # RSU服务能力
+    rsu_base_service: int = 10
+    rsu_max_service: int = 25
+    rsu_work_capacity: float = 6.0
+    rsu_queue_boost_divisor: float = 4.0
+    
+    # UAV服务能力
+    uav_base_service: int = 8
+    uav_max_service: int = 16
+    uav_work_capacity: float = 4.5
+    uav_queue_boost_divisor: float = 2.0
+
+
+@dataclass
+class NormalizationConfig:
+    """归一化配置"""
+    # 数值稳定
+    metric_epsilon: float = 1e-6
+    
+    # 位置/速度尺度
+    vehicle_position_range: float = 2060.0
+    rsu_position_range: float = 2060.0
+    uav_position_range: float = 2060.0
+    uav_altitude_range: float = 200.0
+    vehicle_speed_range: float = 50.0
+    
+    # 队列容量
+    vehicle_queue_capacity: float = 20.0
+    rsu_queue_capacity: float = 20.0
+    uav_queue_capacity: float = 20.0
+    
+    # 能耗参考
+    vehicle_energy_reference: float = 1000.0
+    rsu_energy_reference: float = 1000.0
+    uav_energy_reference: float = 1000.0
+    
+    # 全局性能参考
+    delay_reference: float = 4.0
+    delay_upper_reference: float = 6.5
+    energy_reference: float = 500.0
+    energy_upper_reference: float = 800.0
+
+
+@dataclass
 class TD3Config:
     """TD3算法配置（统一版本）"""
     # 网络结构
@@ -270,6 +316,8 @@ class UnifiedConfig:
     queue: QueueConfig = field(default_factory=QueueConfig)
     migration: MigrationConfig = field(default_factory=MigrationConfig)
     cache: CacheConfig = field(default_factory=CacheConfig)
+    service: ServiceConfig = field(default_factory=ServiceConfig)  # 🆕 服务能力配置
+    normalization: NormalizationConfig = field(default_factory=NormalizationConfig)  # 🆕 归一化配置
     td3: TD3Config = field(default_factory=TD3Config)
     reward: RewardConfig = field(default_factory=RewardConfig)
     experiment: ExperimentConfig = field(default_factory=ExperimentConfig)
@@ -428,6 +476,8 @@ def _dict_to_config(config_dict: Dict[str, Any]) -> UnifiedConfig:
         queue=_create_dataclass(QueueConfig, config_dict.get('queue')),
         migration=_create_dataclass(MigrationConfig, config_dict.get('migration')),
         cache=_create_dataclass(CacheConfig, config_dict.get('cache')),
+        service=_create_dataclass(ServiceConfig, config_dict.get('service')),  # 🆕
+        normalization=_create_dataclass(NormalizationConfig, config_dict.get('normalization')),  # 🆕
         td3=_create_dataclass(TD3Config, config_dict.get('td3')),
         reward=_create_dataclass(RewardConfig, config_dict.get('reward')),
         experiment=_create_dataclass(ExperimentConfig, config_dict.get('experiment')),
@@ -764,6 +814,12 @@ def create_legacy_compatible_config(cfg: UnifiedConfig):
     
     # cache子配置
     legacy.cache = SimpleNamespace(**asdict(cfg.cache))
+    
+    # 🆕 service子配置（RSU/UAV服务能力）
+    legacy.service = SimpleNamespace(**asdict(cfg.service))
+    
+    # 🆕 normalization子配置
+    legacy.normalization = SimpleNamespace(**asdict(cfg.normalization))
     
     # rl子配置（兼容RLConfig）
     legacy.rl = SimpleNamespace()

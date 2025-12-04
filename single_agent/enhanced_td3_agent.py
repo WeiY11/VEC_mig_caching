@@ -29,7 +29,7 @@ from .enhanced_td3_config import EnhancedTD3Config
 from .quantile_critic import DistributionalCritic
 from .queue_aware_replay import QueueAwareReplayBuffer
 from .queue_dynamics_model import QueueDynamicsModel, ModelBasedRollout, ModelTrainer
-from .gat_router import GATRouterActor
+from .gat_router import GATRouterActor, GATEnhancedCritic
 
 
 class EnhancedTD3Agent:
@@ -91,7 +91,11 @@ class EnhancedTD3Agent:
                 hidden_dim=config.gat_hidden_dim,
                 num_heads=config.num_attention_heads,
                 edge_feature_dim=config.edge_feature_dim,
-                central_state_dim=self.central_state_dim,  # 添加中央状态维度
+                central_state_dim=self.central_state_dim,
+                # 🔧 v29: 传递邻接掩码阈值配置
+                vehicle_rsu_dist_threshold=getattr(config, 'gat_vehicle_rsu_dist_threshold', 0.8),
+                rsu_rsu_dist_threshold=getattr(config, 'gat_rsu_rsu_dist_threshold', 1.2),
+                vehicle_uav_dist_threshold=getattr(config, 'gat_vehicle_uav_dist_threshold', 0.9),
             ).to(self.device)
             actor_input_dim = config.gat_hidden_dim
         else:
@@ -133,7 +137,26 @@ class EnhancedTD3Agent:
         self.target_actor = self._clone_network(self.actor)
         
         # ========== 构建Critic网络 ==========
-        if config.use_distributional_critic:
+        # 🔧 v29: 当启用GAT路由器时，Critic也使用GNN编码
+        if config.use_gat_router and not config.use_distributional_critic:
+            # 使用GNN增强的Critic (与Actor共享编码器)
+            print(f"[EnhancedTD3] 🔧 v29: 使用GATEnhancedCritic (与Actor共享GNN编码)")
+            self.critic = GATEnhancedCritic(
+                gat_encoder=self.graph_encoder,  # 共享GAT编码器
+                action_dim=action_dim,
+                hidden_dim=config.hidden_dim,
+            ).to(self.device)
+            # Target Critic使用独立的编码器副本
+            self.target_critic = GATEnhancedCritic(
+                gat_encoder=self.target_graph_encoder,
+                action_dim=action_dim,
+                hidden_dim=config.hidden_dim,
+            ).to(self.device)
+            # 同步权重
+            self.target_critic.q1_network.load_state_dict(self.critic.q1_network.state_dict())
+            self.target_critic.q2_network.load_state_dict(self.critic.q2_network.state_dict())
+            self.use_gat_critic = True
+        elif config.use_distributional_critic:
             # 使用分布式Critic
             print(f"[EnhancedTD3] 使用分布式Critic (n_quantiles={config.n_quantiles})")
             self.critic = DistributionalCritic(
@@ -145,6 +168,7 @@ class EnhancedTD3Agent:
                 kappa=config.quantile_kappa,
             ).to(self.device)
             self.target_critic = self._clone_network(self.critic)
+            self.use_gat_critic = False
         else:
             # 使用标准Twin Critic
             self.critic = TD3Critic(
@@ -153,6 +177,7 @@ class EnhancedTD3Agent:
                 hidden_dim=config.hidden_dim,
             ).to(self.device)
             self.target_critic = self._clone_network(self.critic)
+            self.use_gat_critic = False
         
         # ========== 优化器 ==========
         self.actor_optimizer = optim.Adam(

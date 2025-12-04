@@ -1,0 +1,17 @@
+# =============================================================================
+# 高负载实验配置
+#
+# 用法：python train_single_agent.py --config config/experiments/high_vehicle_load.yaml
+# =============================================================================
+
+# 覆盖默认配置
+network:
+  num_vehicles: 20 # 增加车辆数量
+
+task:
+  arrival_rate: 5.0 # 提高任务到达率
+
+# 可选：调整TD3参数以适应高负载
+td3:
+  batch_size: 512 # 更大批次
+  buffer_size: 200000 # 更大缓冲区

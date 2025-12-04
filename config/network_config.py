@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """
 网络配置
+🔧 2024-12-04 修复：与 system_config.py 保持一致
 """
 
 from typing import Dict, Any
@@ -12,20 +13,21 @@ class NetworkConfig:
         # 车辆配置
         self.vehicle_config = {
             'num_vehicles': 12,
-            'velocity_range': (30, 60),  # m/s (108-216 km/h 高速公路场景)
+            'velocity_range': (8, 15),   # 🔧 修复: m/s (与仿真器一致)
             'transmission_power': 0.1,   # W
             'computation_capacity': 100, # MIPS
             'battery_capacity': 1000     # J
         }
         
         # RSU配置
+        # 🔧 2024-12-04 修复：与 system_config.py 保持一致
         self.rsu_config = {
-            'num_rsus': 4,
-            'coverage_radius': 200,      # m
+            'num_rsus': 4,               # 🔧 修复: 与system_config一致
+            'coverage_radius': 300,      # 🔧 修复: 200 → 300m
             'transmission_power': 1.0,   # W
             'computation_capacity': 1000, # MIPS
-            'cache_capacity': 100,       # MB
-            'bandwidth': 20              # MHz
+            'cache_capacity': 200,       # 🔧 修复: 100 → 200 MB
+            'bandwidth': 40              # 🔧 修复: 20 → 40 MHz (与表格2一致)
         }
         
         # UAV配置
@@ -35,35 +37,33 @@ class NetworkConfig:
             'velocity_range': (20, 50),  # m/s
             'transmission_power': 0.5,   # W
             'computation_capacity': 500, # MIPS
-            'cache_capacity': 50,        # MB
+            'cache_capacity': 150,       # 🔧 修复: 50 → 150 MB (与CacheConfig一致)
             'battery_capacity': 5000     # J
         }
         
         # 3GPP标准通信配置
-        # 🔧 修复问题2：使用models.py中的参数（统一配置源）
         self.communication_config = {
             'carrier_frequency': 3.5e9,  # 3.5 GHz - 3GPP NR n78频段
-            'bandwidth': 20e6,           # 20 MHz
-            'thermal_noise_density': -174.0,  # dBm/Hz - 3GPP标准
+            'bandwidth': 40e6,           # 🔧 修复: 20e6 → 40e6 (与表格2一致)
+            'thermal_noise_density': -100.0,  # 🔧 修复: -174 → -100 dBm (与表格2一致)
             'los_threshold': 50.0,       # m - 3GPP TS 38.901
             'los_decay_factor': 100.0,   # m - 3GPP标准
-            # 🔧 修复问题7：调整为3GPP TR 38.901标准值（UMi-Street Canyon场景）
             'shadowing_std_los': 4.0,    # dB - 3GPP标准（LoS）
             'shadowing_std_nlos': 7.82,  # dB - 3GPP标准（NLoS）
             'antenna_gain_rsu': 15.0,    # dBi
             'antenna_gain_uav': 5.0,     # dBi
             'antenna_gain_vehicle': 3.0, # dBi
-            'max_tx_power_rsu': 46.0,    # dBm (40W)
-            'max_tx_power_uav': 30.0,    # dBm (1W)
-            'max_tx_power_vehicle': 23.0 # dBm (200mW)
+            'max_tx_power_rsu': 40.0,    # 🔧 修复: 46 → 40 dBm (10W，与表格2一致)
+            'max_tx_power_uav': 23.0,    # 🔧 修复: 30 → 23 dBm (0.2W)
+            'max_tx_power_vehicle': 30.0 # 🔧 修复: 23 → 30 dBm (1W，与表格2一致)
         }
         
         # 任务配置
         self.task_config = {
-            'arrival_rate': 0.8,         # tasks/second
-            'data_size_mean': 1.0,       # MB
+            'arrival_rate': 3.5,         # 🔧 修复: 0.8 → 3.5 tasks/second (高负载)
+            'data_size_mean': 7.5,       # 🔧 修复: 1.0 → 7.5 MB (5-10MB范围中点)
             'computation_mean': 100,     # MIPS
-            'deadline_mean': 1.0,        # seconds
+            'deadline_mean': 3.5,        # 🔧 修复: 1.0 → 3.5 seconds (1-6s范围中点)
             'num_content_types': 100
         }
     

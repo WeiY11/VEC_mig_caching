@@ -428,6 +428,19 @@ class SingleAgentTrainingEnvironment:
         self.algorithm = alias_map.get(normalized_algorithm, alias_map.get(alias_key, normalized_algorithm))
         self._apply_optimized_td3_defaults()
         scenario_config = _build_scenario_config()
+        
+        # 🔧 修复：确保环境变量中的带宽配置应用到全局config
+        # 即使没有override_scenario参数，也需要从scenario_config同步
+        # 解决带宽扫描实验中不同带宽产生相同结果的问题
+        if 'bandwidth' in scenario_config:
+            bw_value = float(scenario_config['bandwidth'])
+            config.communication.total_bandwidth = bw_value
+            network_cfg = getattr(config, "network", None)
+            network_comm_cfg = getattr(network_cfg, "communication_config", None) if network_cfg else None
+            if isinstance(network_comm_cfg, dict):
+                network_comm_cfg['bandwidth'] = bw_value
+            print(f"🔧 [环境变量] 应用带宽配置: {bw_value/1e6:.1f} MHz = {bw_value:.0f} Hz")
+        
         # 应用外部覆盖
         central_env_value = os.environ.get('CENTRAL_RESOURCE', '')
         self.central_resource_enabled = central_env_value.strip() in {'1', 'true', 'True'}
@@ -1120,6 +1133,7 @@ class SingleAgentTrainingEnvironment:
                 normalize_scalar(vehicle.get('energy_consumed', 0.0), 'vehicle_energy_reference', 1000.0),
             ])
             node_states[f'vehicle_{i}'] = vehicle_state
+            node_states[f'vehicle_{i}_info'] = vehicle  # 🔧 暴露原始数据供优化状态使用
 
         # RSU状态（统一归一化/裁剪）
         for i, rsu in enumerate(self.simulator.rsus):
@@ -1131,6 +1145,7 @@ class SingleAgentTrainingEnvironment:
                 normalize_scalar(rsu.get('energy_consumed', 0.0), 'rsu_energy_reference', 1000.0),
             ])
             node_states[f'rsu_{i}'] = rsu_state
+            node_states[f'rsu_{i}_info'] = rsu  # 🔧 暴露原始数据供优化状态使用
 
         # UAV状态（统一归一化/裁剪）
         for i, uav in enumerate(self.simulator.uavs):
@@ -1142,6 +1157,7 @@ class SingleAgentTrainingEnvironment:
                 normalize_scalar(uav.get('energy_consumed', 0.0), 'uav_energy_reference', 1000.0),
             ])
             node_states[f'uav_{i}'] = uav_state
+            node_states[f'uav_{i}_info'] = uav  # 🔧 暴露原始数据供优化状态使用
         
         # 初始系统指标
         system_metrics = {
@@ -1150,7 +1166,11 @@ class SingleAgentTrainingEnvironment:
             'data_loss_bytes': 0.0,
             'data_loss_ratio_bytes': 0.0,
             'cache_hit_rate': 0.0,
-            'migration_success_rate': 0.0
+            'migration_success_rate': 0.0,
+            'episode_progress': 0.0,
+            'local_offload_ratio': 0.0,
+            'rsu_offload_ratio': 0.0,
+            'uav_offload_ratio': 0.0,
         }
         
         # 🔧 修复：重置能耗追踪器，避免跨episode累积
@@ -1294,6 +1314,7 @@ class SingleAgentTrainingEnvironment:
                 normalize_scalar(vehicle.get('energy_consumed', 0.0), 'vehicle_energy_reference', 1000.0),
             ])
             node_states[f'vehicle_{i}'] = vehicle_state
+            node_states[f'vehicle_{i}_info'] = vehicle  # 🔧 暴露原始数据供优化状态使用
 
         # RSU状态（统一归一化/裁剪）
         for i, rsu in enumerate(self.simulator.rsus):
@@ -1305,6 +1326,7 @@ class SingleAgentTrainingEnvironment:
                 normalize_scalar(rsu.get('energy_consumed', 0.0), 'rsu_energy_reference', 1000.0),
             ])
             node_states[f'rsu_{i}'] = rsu_state
+            node_states[f'rsu_{i}_info'] = rsu  # 🔧 暴露原始数据供优化状态使用
 
         # UAV状态（统一归一化/裁剪）
         for i, uav in enumerate(self.simulator.uavs):
@@ -1316,6 +1338,7 @@ class SingleAgentTrainingEnvironment:
                 normalize_scalar(uav.get('energy_consumed', 0.0), 'uav_energy_reference', 1000.0),
             ])
             node_states[f'uav_{i}'] = uav_state
+            node_states[f'uav_{i}_info'] = uav  # 🔧 暴露原始数据供优化状态使用
         
         # 计算系统指标
         system_metrics = self._calculate_system_metrics(step_stats)
@@ -1361,6 +1384,7 @@ class SingleAgentTrainingEnvironment:
         # 将奖励组件添加到step_stats供调试使用
         step_stats['reward_components'] = reward_components
         
+
         try:
             system_metrics['normalized_reward'] = self._normalize_reward_value(reward)
         except Exception:
@@ -1385,7 +1409,12 @@ class SingleAgentTrainingEnvironment:
         self.episode_metrics['mm1_delay_error'].append(float(system_metrics.get('mm1_delay_error', 0.0)))
         
         # 判断是否结束
-        done = False  # 单智能体环境通常不会提前结束
+        max_steps = getattr(self, '_episode_max_steps', None)
+        if max_steps is None:
+            max_steps = getattr(config.experiment, 'max_steps_per_episode', None)
+        done = False
+        if max_steps is not None and getattr(self, '_current_episode_step', 0) >= int(max_steps):
+            done = True  # 达到最大步数，触发终止标志
         
         # 🔧 增强状态转移透明度：提取任务执行详情
         task_execution_details = step_stats.get('task_execution_details', [])
@@ -1485,6 +1514,19 @@ class SingleAgentTrainingEnvironment:
         
         # 🔧 修复能耗计算：使用真实累积能耗并转换为本episode增量
         current_total_energy = safe_get('total_energy', 0.0)
+        
+        # 🔧 补充：传递Step级指标供OptimizedTD3使用
+        system_metrics_extras = {
+            'step_completion_rate': float(step_stats.get('step_completion_rate', completion_rate)),
+            'step_energy': float(step_stats.get('step_energy', 0.0)),
+            'step_throughput': float(step_stats.get('step_throughput', 0.0)),
+            'offload_success_rate': float(step_stats.get('offload_success_rate', 0.0)),
+            'migration_success_rate': float(step_stats.get('migration_success_rate', 0.0)),
+            'urgent_task_ratio': float(step_stats.get('urgent_task_ratio', 0.0)),
+            'avg_deadline_margin': float(step_stats.get('avg_deadline_margin', 0.5)),
+            'high_priority_ratio': float(step_stats.get('high_priority_ratio', 0.25)),
+            'avg_task_size_norm': float(step_stats.get('avg_task_size_norm', 0.5)),
+        }
 
         if not getattr(self, '_episode_counters_initialized', False):
             self._initialize_episode_counters(step_stats)
@@ -1711,6 +1753,20 @@ class SingleAgentTrainingEnvironment:
         latency_target = max(1e-6, getattr(config.rl, 'latency_target', 0.4))
         energy_target = max(1e-6, getattr(config.rl, 'energy_target', 1200.0))
 
+        # 🔧 补齐状态用能耗归一化（与奖励同尺度）
+        normalized_energy_for_state = total_energy / energy_target
+        normalized_energy_for_state = float(np.clip(normalized_energy_for_state, 0.0, 2.0))
+
+        # 🔧 补齐卸载比例信号（奖励直接使用）
+        local_offload_ratio = float(step_stats.get('local_offload_ratio', 0.0) or 0.0)
+        rsu_offload_ratio = float(step_stats.get('rsu_offload_ratio', 0.0) or 0.0)
+        uav_offload_ratio = float(step_stats.get('uav_offload_ratio', 0.0) or 0.0)
+
+        # 🔧 补齐时间特征：episode 进度
+        max_steps = getattr(self, '_episode_max_steps', getattr(config.experiment, 'max_steps_per_episode', 1))
+        episode_progress = float(self._current_episode_step) / max(1, max_steps)
+        episode_progress = float(np.clip(episode_progress, 0.0, 1.0))
+
         reward_snapshot = self._build_reward_snapshot(step_stats)
 
         return {
@@ -1774,6 +1830,11 @@ class SingleAgentTrainingEnvironment:
             'normalized_delay': avg_delay / latency_target,
             'normalized_energy': total_energy / energy_target,
             'reward_snapshot': reward_snapshot,
+            'normalized_energy_for_state': normalized_energy_for_state,
+            'local_offload_ratio': local_offload_ratio,
+            'rsu_offload_ratio': rsu_offload_ratio,
+            'uav_offload_ratio': uav_offload_ratio,
+            'episode_progress': episode_progress,
         }
 
     def _normalize_reward_value(self, reward: float) -> float:
@@ -1872,6 +1933,7 @@ class SingleAgentTrainingEnvironment:
         # 使用配置中的最大步数
         if max_steps is None:
             max_steps = config.experiment.max_steps_per_episode
+        self._episode_max_steps = int(max_steps)
         
         # 重置环境
         self._episode_counters_initialized = False
@@ -2012,6 +2074,8 @@ class SingleAgentTrainingEnvironment:
         """运行PPO专用episode"""
         state = self.reset_environment()
         self.visualizer = visualizer
+        self._episode_max_steps = int(max_steps)
+        self._current_episode_step = 0
         episode_reward = 0.0
         
         # 初始化变量
@@ -2034,6 +2098,9 @@ class SingleAgentTrainingEnvironment:
                 actions_dict = {}
                 log_prob = 0.0
                 value = 0.0
+            
+            # 计步并用于done判定
+            self._current_episode_step += 1
                 
             action = self._encode_continuous_action(actions_dict)
             

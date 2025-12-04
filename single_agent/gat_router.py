@@ -272,6 +272,53 @@ class VehicleRSUAttention(nn.Module):
         return vehicle_representations
 
 
+class VehicleUAVAttention(nn.Module):
+    """
+    车辆-UAV注意力模块
+    
+    建模车辆到UAV的卸载决策，考虑距离/高度/负载等因素
+    """
+    def __init__(
+        self,
+        vehicle_feature_dim: int = 5,
+        uav_feature_dim: int = 5,
+        hidden_dim: int = 128,
+        num_heads: int = 4,
+        edge_feature_dim: int = 8,
+    ):
+        super(VehicleUAVAttention, self).__init__()
+        self.vehicle_proj = nn.Linear(vehicle_feature_dim, hidden_dim)
+        self.uav_proj = nn.Linear(uav_feature_dim, hidden_dim)
+        self.gat_layer = GATLayer(
+            in_features=hidden_dim,
+            out_features=hidden_dim // num_heads,
+            num_heads=num_heads,
+            edge_feature_dim=edge_feature_dim,
+            concat=True,
+        )
+        self.output_proj = nn.Linear(hidden_dim, hidden_dim)
+
+    def forward(
+        self,
+        vehicle_features: torch.Tensor,
+        uav_features: torch.Tensor,
+        edge_features: Optional[torch.Tensor] = None,
+        adjacency_mask: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
+        h_vehicles = F.relu(self.vehicle_proj(vehicle_features))
+        h_uavs = F.relu(self.uav_proj(uav_features))
+        if edge_features is not None:
+            edge_features_t = edge_features.permute(0, 2, 1, 3)
+        else:
+            edge_features_t = None
+        if adjacency_mask is not None:
+            adjacency_mask_t = adjacency_mask.permute(0, 2, 1)
+        else:
+            adjacency_mask_t = None
+        h_out = self.gat_layer(h_uavs, h_vehicles, edge_features_t, adjacency_mask_t)
+        return self.output_proj(h_out)
+
+
 class RSURSUCollaborativeAttention(nn.Module):
     """
     RSU-RSU协同缓存注意力模块
@@ -381,6 +428,10 @@ class GATRouterActor(nn.Module):
         num_heads: int = 4,
         edge_feature_dim: int = 8,
         central_state_dim: int = 0,
+        # 🔧 v29新增: 邻接掩码阈值参数 (原硬编码值)
+        vehicle_rsu_dist_threshold: float = 0.8,
+        rsu_rsu_dist_threshold: float = 1.2,
+        vehicle_uav_dist_threshold: float = 0.9,
     ):
         super(GATRouterActor, self).__init__()
         self.num_vehicles = num_vehicles
@@ -392,9 +443,19 @@ class GATRouterActor(nn.Module):
         # 全局特征维度 = 基础全局特征 + 中央状态特征
         self.actual_global_dim = global_feature_dim + central_state_dim
         
+        # 🔧 v29: 保存邻接阈值参数
+        self.vehicle_rsu_dist_threshold = vehicle_rsu_dist_threshold
+        self.rsu_rsu_dist_threshold = rsu_rsu_dist_threshold
+        self.vehicle_uav_dist_threshold = vehicle_uav_dist_threshold
+        
         # 车辆-RSU注意力
         self.vehicle_rsu_attention = VehicleRSUAttention(
             vehicle_feature_dim, rsu_feature_dim, hidden_dim, num_heads, edge_feature_dim
+        )
+
+        # 车辆-UAV注意力
+        self.vehicle_uav_attention = VehicleUAVAttention(
+            vehicle_feature_dim, uav_feature_dim, hidden_dim, num_heads, edge_feature_dim
         )
         
         # RSU-RSU协同缓存注意力
@@ -417,7 +478,7 @@ class GATRouterActor(nn.Module):
         
         # 最终融合层
         self.final_fusion = nn.Sequential(
-            nn.Linear(hidden_dim * 4, hidden_dim * 2),  # vehicle + rsu + uav + global
+            nn.Linear(hidden_dim * 5, hidden_dim * 2),  # vehicle-RSU + vehicle-UAV + rsu + uav + global
             nn.ReLU(),
             nn.Linear(hidden_dim * 2, hidden_dim),
         )
@@ -470,6 +531,15 @@ class GATRouterActor(nn.Module):
             adjacency_mask=adjacency_info.get('vehicle_rsu_mask'),
         )
         vehicle_repr_pooled = vehicle_repr.mean(dim=1)  # [batch, hidden_dim]
+
+        # 车辆-UAV注意力
+        vehicle_uav_repr = self.vehicle_uav_attention(
+            vehicle_features,
+            uav_features,
+            edge_features=adjacency_info.get('vehicle_uav_edge_features'),
+            adjacency_mask=adjacency_info.get('vehicle_uav_mask'),
+        )
+        vehicle_uav_repr_pooled = vehicle_uav_repr.mean(dim=1)  # [batch, hidden_dim]
         
         # RSU-RSU协同缓存注意力
         rsu_repr, collab_cache_probs = self.rsu_rsu_attention(
@@ -489,7 +559,7 @@ class GATRouterActor(nn.Module):
         
         # 融合所有表示
         fused_repr = self.final_fusion(torch.cat([
-            vehicle_repr_pooled, rsu_repr_pooled, uav_repr, global_repr
+            vehicle_repr_pooled, vehicle_uav_repr_pooled, rsu_repr_pooled, uav_repr, global_repr
         ], dim=-1))
         
         return fused_repr
@@ -510,7 +580,7 @@ class GATRouterActor(nn.Module):
         batch_size = state.size(0)
         device = state.device
         
-        # 解析位置和负载信息
+        # 解析位置和负载信息（状态已归一化到[0,1]）
         idx = 0
         vehicle_features = state[:, idx:idx + self.num_vehicles * self.vehicle_feature_dim].view(batch_size, self.num_vehicles, self.vehicle_feature_dim)
         idx += self.num_vehicles * self.vehicle_feature_dim
@@ -521,78 +591,73 @@ class GATRouterActor(nn.Module):
         
         uav_features = state[:, idx:idx + self.num_uavs * self.uav_feature_dim].view(batch_size, self.num_uavs, self.uav_feature_dim)
         
-        # 提取位置信息 (前2维是位置)
+        # 提取位置信息 (前2维是位置；UAV包含高度)
         vehicle_pos = vehicle_features[:, :, :2]  # [batch, num_vehicles, 2]
         rsu_pos = rsu_features[:, :, :2]  # [batch, num_rsus, 2]
+        uav_pos = uav_features[:, :, :2]  # [batch, num_uavs, 2]
+        uav_alt = uav_features[:, :, 2:3]  # [batch, num_uavs, 1]
         
-        # 计算车辆-RSU距离矩阵
+        # 计算车辆-RSU距离矩阵（基于归一化坐标，范围≈[0,1.5]）
         # vehicle_pos: [batch, num_vehicles, 2] -> [batch, num_vehicles, 1, 2]
         # rsu_pos: [batch, num_rsus, 2] -> [batch, 1, num_rsus, 2]
         v_expanded = vehicle_pos.unsqueeze(2)  # [batch, num_vehicles, 1, 2]
         r_expanded = rsu_pos.unsqueeze(1)  # [batch, 1, num_rsus, 2]
         
-        # 欧氏距离
+        # 欧氏距离（归一化）
         vehicle_rsu_dist = torch.sqrt(torch.sum((v_expanded - r_expanded) ** 2, dim=-1) + 1e-8)  # [batch, num_vehicles, num_rsus]
         
         # 计算RSU-RSU距离矩阵
         r_expanded_i = rsu_pos.unsqueeze(2)  # [batch, num_rsus, 1, 2]
         r_expanded_j = rsu_pos.unsqueeze(1)  # [batch, 1, num_rsus, 2]
         rsu_rsu_dist = torch.sqrt(torch.sum((r_expanded_i - r_expanded_j) ** 2, dim=-1) + 1e-8)  # [batch, num_rsus, num_rsus]
+
+        # 计算车辆-UAV距离/高度
+        u_expanded = uav_pos.unsqueeze(1)  # [batch, 1, num_uavs, 2]
+        vehicle_uav_dist = torch.sqrt(torch.sum((v_expanded - u_expanded) ** 2, dim=-1) + 1e-8)  # [batch, num_vehicles, num_uavs]
+        vehicle_uav_alt = uav_alt.unsqueeze(1).expand(-1, self.num_vehicles, -1, -1).squeeze(-1)  # [batch, num_vehicles, num_uavs]
         
-        # 构建邻接掩码（基于距离阈值）
-        # ✨ 优化：根据信号强度动态调整覆盖范围
-        vehicle_rsu_coverage = 500.0  # RSU基础覆盖范围500m
-        rsu_rsu_collaboration_range = 1500.0  # RSU协作范围1500m
-        
-        # ✨ 动态覆盖：基于信号质量的软掩码
-        # 计算信号强度权重
-        signal_strength = 1.0 / (1.0 + vehicle_rsu_dist / 100.0)
-        # 软掩码：信号强度 > 0.3
-        vehicle_rsu_mask = signal_strength > 0.3  # [batch, num_vehicles, num_rsus]
-        rsu_rsu_mask = rsu_rsu_dist <= rsu_rsu_collaboration_range  # [batch, num_rsus, num_rsus]
+        # 构建邻接掩码（归一化距离）
+        # 🔧 v29: 使用配置参数替代硬编码值
+        vehicle_rsu_mask = vehicle_rsu_dist <= self.vehicle_rsu_dist_threshold
+        rsu_rsu_mask = rsu_rsu_dist <= self.rsu_rsu_dist_threshold
+        vehicle_uav_mask = vehicle_uav_dist <= self.vehicle_uav_dist_threshold
         
         # 构建车辆-RSU边特征 [batch, num_vehicles, num_rsus, edge_dim=8]
         # 特征包括：距离(归一化), 信号强度, RSU负载, 缓存利用率, 队列长度等
         vehicle_rsu_edge_features = torch.zeros(batch_size, self.num_vehicles, self.num_rsus, 8, device=device)
-        
-        # 距离归一化 (0-1)
-        vehicle_rsu_edge_features[:, :, :, 0] = torch.clamp(vehicle_rsu_dist / 1000.0, 0.0, 1.0)
-        
-        # 信号强度估计（基于距离，简化的路径损耗模型）
-        # SINR = -32.4 - 20*log10(d_km) - 20*log10(f_GHz) + tx_power + antenna_gain
-        # 简化为: signal_strength = 1 / (1 + distance/100)
-        vehicle_rsu_edge_features[:, :, :, 1] = 1.0 / (1.0 + vehicle_rsu_dist / 100.0)
-        
-        # 带宽估计（基于负载，假设均分）
-        # rsu_features[:, :, 3] 是队列长度/负载
-        rsu_load = rsu_features[:, :, 3].unsqueeze(1).expand(-1, self.num_vehicles, -1)  # [batch, num_vehicles, num_rsus]
-        vehicle_rsu_edge_features[:, :, :, 2] = torch.clamp(1.0 - rsu_load, 0.1, 1.0)  # 可用带宽
-        
-        # RSU缓存利用率 (rsu_features[:, :, 2])
+        vehicle_rsu_edge_features[:, :, :, 0] = torch.clamp(vehicle_rsu_dist, 0.0, 1.5) / 1.5  # 归一化距离
+        vehicle_rsu_edge_features[:, :, :, 1] = 1.0 / (1.0 + vehicle_rsu_dist * 3.0)           # 信号强度（归一化距离）
+        rsu_load = rsu_features[:, :, 3].unsqueeze(1).expand(-1, self.num_vehicles, -1)
+        vehicle_rsu_edge_features[:, :, :, 2] = torch.clamp(1.0 - rsu_load, 0.1, 1.0)          # 负载反比视作可用带宽
         rsu_cache = rsu_features[:, :, 2].unsqueeze(1).expand(-1, self.num_vehicles, -1)
         vehicle_rsu_edge_features[:, :, :, 3] = rsu_cache
-        
-        # RSU能耗状态 (rsu_features[:, :, 4])
         rsu_energy = rsu_features[:, :, 4].unsqueeze(1).expand(-1, self.num_vehicles, -1)
         vehicle_rsu_edge_features[:, :, :, 4] = rsu_energy
-        
-        # 传输延迟估计（基于距离和带宽）
-        # delay = distance / speed_of_light + data_size / bandwidth
-        propagation_delay = vehicle_rsu_dist / 300.0  # 归一化到ms级别
-        vehicle_rsu_edge_features[:, :, :, 5] = torch.clamp(propagation_delay / 10.0, 0.0, 1.0)
-        
-        # 链路质量（综合指标）
-        link_quality = vehicle_rsu_edge_features[:, :, :, 1] * vehicle_rsu_edge_features[:, :, :, 2]  # 信号*带宽
+        propagation_delay = vehicle_rsu_dist  # 归一化距离直接作为时延近似
+        vehicle_rsu_edge_features[:, :, :, 5] = torch.clamp(propagation_delay / 1.5, 0.0, 1.0)
+        link_quality = vehicle_rsu_edge_features[:, :, :, 1] * vehicle_rsu_edge_features[:, :, :, 2]
         vehicle_rsu_edge_features[:, :, :, 6] = link_quality
-        
-        # 是否在覆盖范围内（二值特征）
         vehicle_rsu_edge_features[:, :, :, 7] = vehicle_rsu_mask.float()
+
+        # 车辆-UAV边特征 [batch, num_vehicles, num_uavs, 8]
+        vehicle_uav_edge_features = torch.zeros(batch_size, self.num_vehicles, self.num_uavs, 8, device=device)
+        vehicle_uav_edge_features[:, :, :, 0] = torch.clamp(vehicle_uav_dist, 0.0, 1.5) / 1.5
+        vehicle_uav_edge_features[:, :, :, 1] = 1.0 / (1.0 + (vehicle_uav_dist + vehicle_uav_alt.squeeze(-1)) * 2.0)
+        uav_cache = uav_features[:, :, 3].unsqueeze(1).expand(-1, self.num_vehicles, -1)
+        vehicle_uav_edge_features[:, :, :, 2] = uav_cache
+        uav_energy = uav_features[:, :, 4].unsqueeze(1).expand(-1, self.num_vehicles, -1)
+        vehicle_uav_edge_features[:, :, :, 3] = uav_energy
+        # 结合距离与高度估计传播延迟
+        vehicle_uav_edge_features[:, :, :, 4] = torch.clamp((vehicle_uav_dist + vehicle_uav_alt.squeeze(-1)) / 2.0, 0.0, 1.0)
+        vehicle_uav_edge_features[:, :, :, 5] = vehicle_uav_edge_features[:, :, :, 1] * torch.clamp(1.0 - vehicle_uav_edge_features[:, :, :, 4], 0.0, 1.0)
+        vehicle_uav_edge_features[:, :, :, 6] = vehicle_uav_mask.float()
+        vehicle_uav_edge_features[:, :, :, 7] = 0.0
         
         # 构建RSU-RSU边特征 [batch, num_rsus, num_rsus, edge_dim=8]
         rsu_rsu_edge_features = torch.zeros(batch_size, self.num_rsus, self.num_rsus, 8, device=device)
         
         # 距离归一化
-        rsu_rsu_edge_features[:, :, :, 0] = torch.clamp(rsu_rsu_dist / 2000.0, 0.0, 1.0)
+        rsu_rsu_edge_features[:, :, :, 0] = torch.clamp(rsu_rsu_dist, 0.0, 1.5) / 1.5
         
         # 回传带宽（假设有线回传，带宽固定）
         rsu_rsu_edge_features[:, :, :, 1] = 0.9  # 高带宽有线回传
@@ -609,9 +674,9 @@ class GATRouterActor(nn.Module):
         cache_similarity = 1.0 - torch.abs(rsu_cache_i - rsu_cache_j)
         rsu_rsu_edge_features[:, :, :, 3] = cache_similarity
         
-        # 回传延迟（基于距离）
-        backhaul_delay = rsu_rsu_dist / 200000.0  # 光纤速度约2e5 km/s
-        rsu_rsu_edge_features[:, :, :, 4] = torch.clamp(backhaul_delay / 5.0, 0.0, 1.0)
+        # 回传延迟（基于归一化距离的粗略近似）
+        backhaul_delay = rsu_rsu_dist
+        rsu_rsu_edge_features[:, :, :, 4] = torch.clamp(backhaul_delay / 1.5, 0.0, 1.0)
         
         # 是否物理相邻
         rsu_rsu_edge_features[:, :, :, 5] = rsu_rsu_mask.float()
@@ -626,7 +691,95 @@ class GATRouterActor(nn.Module):
         return {
             'vehicle_rsu_mask': vehicle_rsu_mask,
             'vehicle_rsu_edge_features': vehicle_rsu_edge_features,
+            'vehicle_uav_mask': vehicle_uav_mask,
+            'vehicle_uav_edge_features': vehicle_uav_edge_features,
             'rsu_rsu_mask': rsu_rsu_mask,
             'rsu_rsu_edge_features': rsu_rsu_edge_features,
             'cache_similarity': cache_similarity,  # 用于内容相似度注意力
         }
+
+class GATEnhancedCritic(nn.Module):
+    """
+    v29新增: GNN增强的Critic网络
+    
+    解决问题: 原版Critic使用原始状态，而Actor使用GNN编码后的状态，
+    导致两者看到的世界不一致，影响value估计准确性。
+    """
+    
+    def __init__(
+        self,
+        gat_encoder: GATRouterActor,
+        action_dim: int,
+        hidden_dim: int = 256,
+    ):
+        super(GATEnhancedCritic, self).__init__()
+        self.gat_encoder = gat_encoder
+        self.action_dim = action_dim
+        
+        # 🔧 v29修复：从gat_encoder获取实际输出维度
+        # gat_encoder.final_fusion最后一层输出维度就是GNN编码后的状态维度
+        # 通过检查final_fusion最后一个Linear层的out_features获取
+        gat_output_dim = None
+        for layer in reversed(list(gat_encoder.final_fusion)):
+            if isinstance(layer, nn.Linear):
+                gat_output_dim = layer.out_features
+                break
+        if gat_output_dim is None:
+            # 回退到默认值
+            gat_output_dim = hidden_dim
+            print(f"[警告] 无法从gat_encoder获取输出维度，使用默认值: {hidden_dim}")
+        
+        self.gat_output_dim = gat_output_dim
+        critic_input_dim = gat_output_dim + action_dim
+        
+        self.q1_network = nn.Sequential(
+            nn.Linear(critic_input_dim, hidden_dim),
+            nn.LayerNorm(hidden_dim),
+            nn.GELU(),
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.LayerNorm(hidden_dim),
+            nn.GELU(),
+            nn.Linear(hidden_dim, 1)
+        )
+        
+        self.q2_network = nn.Sequential(
+            nn.Linear(critic_input_dim, hidden_dim),
+            nn.LayerNorm(hidden_dim),
+            nn.GELU(),
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.LayerNorm(hidden_dim),
+            nn.GELU(),
+            nn.Linear(hidden_dim, 1)
+        )
+        self._init_weights()
+    
+    def _init_weights(self):
+        for network in [self.q1_network, self.q2_network]:
+            for layer in network:
+                if isinstance(layer, nn.Linear):
+                    nn.init.xavier_uniform_(layer.weight, gain=1.0)
+                    nn.init.constant_(layer.bias, 0.0)
+            nn.init.uniform_(network[-1].weight, -3e-3, 3e-3)
+            nn.init.uniform_(network[-1].bias, -3e-3, 3e-3)
+    
+    def forward(
+        self,
+        state: torch.Tensor,
+        action: torch.Tensor,
+        adjacency_info: Optional[Dict[str, torch.Tensor]] = None,
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        encoded_state = self.gat_encoder(state, adjacency_info)
+        sa = torch.cat([encoded_state, action], dim=-1)
+        q1 = self.q1_network(sa)
+        q2 = self.q2_network(sa)
+        return q1, q2
+    
+    def q1(
+        self,
+        state: torch.Tensor,
+        action: torch.Tensor,
+        adjacency_info: Optional[Dict[str, torch.Tensor]] = None,
+    ) -> torch.Tensor:
+        encoded_state = self.gat_encoder(state, adjacency_info)
+        sa = torch.cat([encoded_state, action], dim=-1)
+        return self.q1_network(sa)
