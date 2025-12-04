@@ -5,7 +5,7 @@
 ## 算法实现
 
 - `lillicrap_ddpg_vanilla.py`：原始 DDPG（400/300 MLP、tanh 输出、OU 噪声、软更新）。
-- `cam_td3_uav_mec.py`：TD3 变体（双 Q、延迟策略更新、结构化动作）。
+- `wang_ippo_uav_mec.py`：IPPO（Independent PPO）用于 UAV-MEC 联合任务卸载和迁移优化（Wang et al. 2025）。
 - `zhang_robust_sac.py`：鲁棒 SAC（对抗扰动 + QoS 惩罚，可选自动温度）。
 - `liu_online_sa.py`：在线模拟退火基线（温度衰减 0.9，最小 1e-3，默认 800 次）。
 - `nath_dynamic_offload_heuristic.py`：动态卸载启发式。
@@ -16,7 +16,7 @@
 ## 运行脚本（每个实验 5 组对比）
 
 - 带宽对比（MHz）  
-  `python Benchmarks/run_benchmarks_vs_optimized_td3.py --alg td3 ddpg sac local heuristic sa --groups 5 --run-ref --episodes 200 --bandwidths 12 18 24`
+  `python Benchmarks/run_benchmarks_vs_optimized_td3.py --alg ippo ddpg sac local heuristic sa --groups 5 --run-ref --episodes 200 --bandwidths 12 18 24`
 - 边缘总计算资源对比（Hz，总量按 5:1 分配 RSU:UAV）  
   `python Benchmarks/run_benchmarks_vs_optimized_td3.py --alg td3 ddpg sac local heuristic sa --groups 5 --run-ref --episodes 200 --edge-compute 3e10 6e10`
 - 车辆数对比  
@@ -48,7 +48,7 @@ python Benchmarks/run_benchmarks_vs_optimized_td3.py --alg sac --episodes 500 --
 
 支持的算法代码（`--alg` 参数）：
 
-- `td3`: Cache-aware TD3 (`cam_td3_uav_mec.py`)
+- `ippo`: Independent PPO for UAV-MEC (`wang_ippo_uav_mec.py`)
 - `ddpg`: Vanilla DDPG (`lillicrap_ddpg_vanilla.py`)
 - `sac`: Robust SAC (`zhang_robust_sac.py`)
 - `local`: Local Only Policy (`local_only_policy.py`)

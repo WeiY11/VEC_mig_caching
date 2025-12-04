@@ -5,10 +5,10 @@ with the same action/state conventions as train_single_agent.py (OPTIMIZED_TD3).
 
 Usage sketch:
     from Benchmarks.vec_env_adapter import VecEnvWrapper
-    from Benchmarks.cam_td3_uav_mec import CAMTD3Config, train_cam_td3
+    from Benchmarks.wang_ippo_uav_mec import IPPOConfig, train_ippo
     env = VecEnvWrapper()
-    cfg = CAMTD3Config()
-    train_cam_td3(env, cfg, max_steps=..., seed=42)
+    cfg = IPPOConfig()
+    train_ippo(env, cfg, max_steps=..., seed=42)
 """
 from __future__ import annotations
 

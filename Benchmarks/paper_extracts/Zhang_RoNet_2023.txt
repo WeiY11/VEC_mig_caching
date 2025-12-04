@@ -1,0 +1,615 @@
+--- Page 1 ---
+2023 IEEE International Conference on Communications (ICC): Cognitive Radio and AI-Enabled Networks
+RoNet: Toward Robust Neural Assisted Mobile
+Network Configuration
+Yuru Zhang, Yongjie Xue, Qiang Liu Nakjung Choi Tao Han
+University of Nebraska-Lincoln Nokia Bell Labs New Jersey Institute of Technology
+qiang.liu@unl.edu nakjung.choi@nokia-bell-labs.com tao.han@njit.edu
+Abstract—Automatingconfigurationisthekeypathtoachiev- of mobile networks and fail in real-world deployment [9],
+ingzero-touchnetworkmanagementinever-complicatingmobile [10].Recent,deeplearningtechniqueshavebeenincreasingly
+networks. Deep learning techniques show great potential to
+explored and adopted for high-dim network configuration in
+automatically learn and tackle high-dimensional networking
+mobile networks. For example, a deep neural network (DNN)
+problems. The vulnerability of deep learning to deviated input
+space, however, raises increasing deployment concerns under canbeinstantiatedandtrainedtoapproximatethecorrelations
+unpredictable variabilities and simulation-to-reality discrepancy among observed network state, configuration parameters, and
+in real-world networks. In this paper, we propose a novel resulted network performances [2]. With the continual learn-
+RoNet framework to improve the robustness of neural-assisted
+ingofMLmodelsovercontinuouslycollectedtransitions,the
+configuration policies. We formulate the network configura-
+ML-based approaches shed the light to achieve zero-touch
+tion problem to maximize performance efficiency when serving
+diverse user applications. We design three integrated stages management for next-generation mobile networks.
+with novel normal training, learn-to-attack, and robust defense Inreal-worldmobilenetworks,theobservationofhigh-dim
+methodforbalancingtherobustnessandperformanceofpolicies. network state can be deviated by unpredictable variabilities,
+We evaluate RoNet via the NS-3 simulator extensively and the
+e.g., inaccurate state collection, traffic fluctuations, link fail-
+simulationresultsshowthatRoNetoutperformsexistingsolutions
+ure, and simulation-to-reality discrepancy (the difference be-
+in terms of robustness, adaptability, and scalability.
+IndexTerms—NetworkConfiguration,PolicyRobustness,Ma- tweenofflinesimulatorandreal-worldnetworks[9],[2]).The
+chine Learning deviated observations may not be seen in the training dataset
+ofDNNmodelspreviously,whichusuallyresultsinthedegra-
+I. INTRODUCTION
+dation of prediction accuracy [11], uncertain configuration
+Emergingapplicationsandservices,e.g.,augmentedreality
+actions, and compromised network performances. Besides,
+and autonomous driving, generate diversified and surging
+potentialadverseattackersmayattackandmanipulatethestate
+networking demands, e.g., latency and throughput, and re-
+observation [11], where the changes on state are not revealed
+liability. To meet the ever increasing traffic demands, next-
+to configuration policies. As a result, configuration policies
+generation mobile networks evolve toward open, ultra-dense
+determine configuration actions based on pre-attack state,
+and disaggregated [1], e.g., radio unit (RU), centralized unit
+whichmaysubstantiallydegradesandevencollapsesnetwork
+(CU)anddistributedunit(DU).Thecomplexmobilenetwork
+performances, e.g., long user latency and flow congestion.
+requires intelligent and automated configuration policies to
+Hence, it is imperative to investigate effective approaches to
+efficiently serve different users and groups.
+improve the robustness of ML-based configuration policies
+Networkconfigurationisthekeymechanismtodynamically
+under diversified network uncertainties.
+configure diverse network parameters [2], e.g., bandwidth,
+Inthispaper,weproposeRoNet,anewrobustnetworkcon-
+spectrum and transmission mode, on various physical infras-
+figurationframeworkinmobilenetworkswiththreeintegrated
+tructuressuchasbasestationsandcoreservers.Differentfrom
+stages. We formulate the network configuration problem to
+fine-grained resource management, e.g., power and resource
+maximize the performance efficiency (PE) under varying
+allocation, network configurations are enforced with larger
+networkstates.First,wedesignanewneural-assistednetwork
+time intervals, e.g., 30 minutes [3] and hours, as they may
+configuration policy to effectively address the problem. Sec-
+involvesophisticatedinfrastructuraloperations.Thelargecon-
+ond,wedesignanovellearn-to-attackmethodtoautomatically
+figuration intervals weaken the temporal inter-dependencies
+attack state observation without the need for prior knowledge
+between consecutive configuration actions, in other words,
+about the policy. Third, we design a novel robust defense
+network configuration generally does not hold Markov prop-
+method to recover network performances of the policy.
+erty and can be recognized as multiple independent one-shot
+To the best of our knowledge, we are the first work
+configuration problems [4], [5].
+for assuring the robustness of neural-assisted configuration
+Existing approaches [6], [7], [8], [5] rely on approximated
+policies in mobile networks. The specific contributions are
+mathematical models to represent the mobile network and
+summarized as follows:
+use optimization based methods (e.g., linear and convex
+optimization) to optimize different performance metrics, e.g., • We formulate the network configuration problems to
+throughput and energy consumption. As configuration param- maximizetheperformanceefficiencyinmobilenetworks.
+eters expand to be high dimensional, e.g., hundreds if not • We design a new RoNet framework to improve the
+more,theseapproachesfailtoachieveaccuraterepresentation robustness of neural-assisted configuration policies.
+978-1-5386-7462-8/23/$31.00 ©2023 IEEE 3878
+41497201.3202.14054CCI/9011.01
+:IOD
+|
+EEEI
+3202©
+00.13$/32/8-2647-6835-1-879
+|
+snoitacinummoC
+no
+ecnerefnoC
+lanoitanretnI
+EEEI
+-
+3202
+CCI
+Authorized licensed use limited to: SOUTHWEST JIAOTONG UNIVERSITY. Downloaded on November 27,2025 at 04:57:45 UTC from IEEE Xplore. Restrictions apply.
+
+--- Page 2 ---
+2023 IEEE International Conference on Communications (ICC): Cognitive Radio and AI-Enabled Networks
+States Meaning
+at the end of individual configuration intervals, e.g., the
+ul avg size averageuplinkdatasizeofuserapplications
+dl avg size averagedownlinkdatasizeofuserapplications collection of end-to-end latency. Due to the complicated and
+mcs max ul maximumuplinkmodulationandcodingscheme underlying correlations in mobile networks [2], [13], the
+mcs max dl maximumdownlinkmodulationandcodingscheme
+performancefunctioniscommonlyconsideredtobeunknown.
+avg distance averagedistancebetweenusersandbasestation
+We denote the performance function as f(s ,a ), which is
+TABLE I: The state space t t
+relatedtothenetworkstates andconfigurationactiona .Due
+t t
+Actions Meaning Range to the heterogeneity of user applications, their performance
+bandwidth ul maximumuplinkphysicalresourceblocks [0,50]
+metrics can be extremely diversified, e.g., delay, throughput,
+bandwidth dl maximumdownlinkphysicalresourceblocks [0,50]
+cpu ratio CPUshareratioofedgeserver [0,1] and reliability. Thus, we define a unified metric, i.e., PE, to
+TABLE II: The configuration action space evaluate how the mobile network satisfies the user needs
+Q(s ,a )=Prob(f(s ,a )<H)/|a |, (1)
+• Wedesignthreeintegratedstageswithnewnetworkcon- t t t t t
+figuration, learn-to-attack and robust defense methods. where Prob(f(s t ,a t ) < H) represents the percentile perfor-
+• We evaluate RoNet via NS-3 simulator extensively and mance and H is the threshold [5]. For example, if the user
+results justify the superiority of RoNet in terms of ro- application is latency-oriented, e.g., augmented reality, the
+bustness, adaptability and scalability. percentileperformancemeanshowmanypercentlatenciesare
+lower than the given threshold. The |a | represents resource
+t
+II. SYSTEMMODEL
+usage of users in multiple technical domains, which is de-
+We consider a mobile network with multiple base stations termined by the configuration action a t . To cost-efficiently
+inradioaccessnetworks(RAN),networkswitchesintransport serve diverse user applications, the network operator aims
+networks (TN), the core network (CN), and servers in edge to strike the balance between percentile performance and
+networks (EN). The mobile network is considered to be resource usage.
+time slotted [3], where configuration actions can only be Problem. Given a time period T, the objective is to derive
+made in discrete time slots, e.g., every hour. Without loss the optimal policy (π) that maximizes the cumulative PE.
+of generality, we consider that network configurations may Thus, we formulate the problem P 0 as
+be applied to individual mobile users, user groups (e.g., T
+networkslices[12]),orparticularinfrastructures(e.g.,specific P 0 :m π ax E π t=0 Q(s t ,a t ) (2)
+(cid:20) (cid:21)
+gNBs). For the sake of simplicity, we refer to user groups in s.t. 0≤ X a ≤M, (3)
+t
+the following descriptions. At each configuration time slot,
+where M are the maximum configuration actions, e.g., total
+the operator can observe the network state by gathering a
+downlink wireless bandwidth in Table II. Note that network
+collection of statistical metrics, e.g., user traffic and transport
+states s may change at different configuration intervals
+network delay. As the configuration action is enforced, the t
+during the time period T. The main challenge of resolving
+operator can obtain the performance of users, e.g., statistics
+the problem lies in the complex and unknown performance
+of users, before the next configuration interval.
+function. On the one hand, existing model-based convex
+State Space. The network state s represents the current
+t optimization methods [14], e.g., gradient descent, cannot be
+status of mobile networks in multiple aspects, and has the
+directlyapplied.Ontheotherhand,thehigh-dimensionalstate
+impact on the performance of mobile users. We define the
+and action space prohibit existing searching methods, e.g.,
+state space s in the Table I. The parameters ul avg size
+t exhaustive and grid searching.
+and dl avg size are the average uplink and downlink data
+size of user applications. The parameters mcs max ul and III. NEURAL-ASSISTEDNETWORKCONFIGURATION
+mcs max dl are the maximum uplink and downlink mod- In the normal training stage, we propose a new neural
+ulation and coding scheme (MCS) of users. The parame- assisted network configuration (NANO) method to effectively
+ter avg distance represents the average geographic distance resolve the problem P 0 in two steps. First, we create a deep
+between users and base stations. Here, the design of state neural network (DNN) and train it to predict performance
+space can be easily extended to support more parameters if of users under both the state and action space. Second, we
+applicable, e.g., scheduler algorithm and transmission power. develop a searching scheme to randomly sample actions from
+Action Space. The configuration action a allows a variety the action space and select the optimal configuration action
+t
+of network configuration in multiple technical domains to be that has the maximum predicted PE.
+enforced in mobile networks. We define the action space in Neural-Assisted Prediction. Deep neural networks have
+the Table II. The parameter bandwidth ul and bandwidth dl beendemonstratedverypromisingaccuracyoncomplexfunc-
+are the uplink and downlink wireless bandwidth of users, re- tionregressionandprediction,e.g.,computervisionandnatu-
+spectively. The parameter cpu ratio is the CPU share ratio of ral language processing. We resort to DNN-based approaches
+edgeserversforservinguserapplications.Here,thedesignof to predict the performance of users, because conventional
+actionspacecanincorporatemoreconfigurationparametersif approaches, e.g., decision tree, fail to tackle high-dim state
+available,e.g.,thebandwidthallocationintransportnetworks. and action space with high prediction accuracy. In particular,
+Performance Efficiency. Given the network state and con- we create a DNN (denoted as π ) with weights θ, whose
+θ
+figuration action, the performance of users can be retrieved output is 1-dim to predict the PE of users. Its input includes
+3879
+Authorized licensed use limited to: SOUTHWEST JIAOTONG UNIVERSITY. Downloaded on November 27,2025 at 04:57:45 UTC from IEEE Xplore. Restrictions apply.
+
+--- Page 3 ---
+both the state space s and action space a to be aware of t t
+current network state and configuration action. To construct Normal Training Stage
+the training dataset, we collect the observed network states
+and sample the action space with grid searching from either
+networksimulatorsorreal-worldnetworks.Weadoptstochas- Learn-to-Attack Stage
+ticgradientdescentmethodstotraintheDNNbyadoptingthe
+mean squared error (MSE) loss function.
+Randomized Action Searching. With the trained DNN Robust Defense Stage
+for PE prediction, we develop a randomized action searching
+scheme to determine the optimal configuration action under
+differentnetworkstates.First,werandomlysamplethousands
+of actions from the action space (3-dim in Table II), where
+more samples may be needed when the dimension of action
+space increases. Second, we concatenate the current network
+state and these sampled actions, feed them into the DNN
+model, and obtain the predicted PEs. Third, we select the
+optimal configuration action that has the maximum predicted
+PE as follows
+∗
+a =argmax π (s ,a ). (4)
+t θ t t
+at
+IV. THERONETFRAMEWORK
+Inthissection,weintroducetheRoNetframeworkinFig.1
+to improve the robustness of configuration policies. First, we
+design a new learn-to-attack method to automatically learn
+and attack the neural-assisted configuration policy, without
+the need for prior knowledge, e.g., gradients. Second, we
+designanewrobustdefensemethodtodefendandrecoverthe
+performance of the policy while it is under attack. The above
+procedures may be repeated to adaptively strike the balance
+between the robustness and performance of the policy.
+A. Learn-to-Attack Stage
+Existing adversarial attack approaches commonly assume
+that the information of the model is known by the attacker,
+whichallowsadversarialgradient-basedattacks.However,the
+configuration policy is composed of not only the DNN model
+but also the action searching. Existing approaches, that attack
+the accuracy of the DNN model, may not effectively degrade
+the overall performance of the configuration policy. Thus,
+we design the attacks to the configuration policy without the
+assumption of known DNN model.
+Attacker Problem. The objective of the attacker (denoted
+as π ) is to minimize the performance of the policy under
+v
+the given scale of attacks. Thus, we formulate the attacker
+problem as
+T
+P 1 :min E Q(s t +π v (s t ),a t ) (5)
+πv πv t=0
+(cid:20) (cid:21) s.t. |π
+v
+( X s
+t
+)|∞ ≤ϵ, (6)
+wheretheπ (s )generatestheattackbyobservingthecurrent
+v t
+state s . The attack space is defined by the maximum scale
+t
+(ϵ) with the regulation of the l∞-norm.
+Bayesian Learning. Bayesian learning is a state-of-the-art
+approach to automatically learn and tackle complex unknown
+problems [13]. It relies on a surrogate model to approximate
+the observable performance and an acquisition function to
+krowemarFteNoR
+ehT
+2023 IEEE International Conference on Communications (ICC): Cognitive Radio and AI-Enabled Networks
+Fig. 1: RoNet Overview
+determine the next attack on the state (sˆ) to query. In
+t
+each iteration, the surrogate model will be trained with all
+collectedtransitionsofattacksanddegradedPEperformance,
+and the acquisition function will be recalculated according
+to the updated surrogate model. The maximization of the
+acquisition function will generate the next attack, which will
+bequeried,e.g.,simulatororreal-worldtestbeds,toobtainthe
+corresponding PE performance.
+Gaussian Process. Gaussian Process [15] has been ex-
+tensively adopted as the surrogate model and shown great
+successes in a variety of practical problems. For the sake
+of simplicity, we denote the observed dataset as D1:t =
+{V1:t,y1:t}, where V1:t and y1:t are the set of attacks and
+the corresponding negative PEs until the iteration t, respec-
+tively. The posterior distribution is expressed as P(y|D1:t)∝
+P(D1:t|y)P(y). By using Gaussian Process GP [15] as the
+prior, y can be represented as y ∼ GP(µ,k). µ(v) is the
+meanfunctionandk(v,v′)=exp(−l||v−v′||2)iscovariance
+2
+function under the given attack v. Here, we use the most
+commonkernelfunction,i.e.,radialbasisfunction(RBF)with
+the lengthscale l is set as 1.0. Given an arbitrary attack v˜, the
+posterior distribution can be derived as
+P(y(v˜)|D 1:t,v˜)∼N(µ(v˜),σ 2 (v˜)), (7)
+where µ(v˜) = kT[K + δ2I]−1y1:t, and
+σ2(v˜) = k(v˜,v˜) − kT[K + δ2 I]−1k, where
+i noise k = [k(v˜,v1),k(v˜,v2),··· ,k(v˜,vt)] and K =
+[k(vi,vj)] t×t ,∀i,j = 1,2,...,t. The I denotes the identity
+matrix with the same dimensions as K.
+AcquisitionFunction.Therearevariouscandidateacquisi-
+tionfunctions,e.g.,EI,PIandUCB,canbeusedtoselectthe
+nextattack,accordingtotheupdatedsurrogatemodel.Without
+loss of generality, we adopt the Gaussian process upper
+confidence bound (GP-UCB), which has been extensively
+evaluated to be robust in tackling diversified scenarios [16].
+Given the generated mean µ and variance σ2 function, GP-
+UCB selects the next action as follows
+v =argmax µ(v )+ β ·σ(v ), (8) next t t t
+vt
+where β is a non-negative hyperparpameter to balance the
+t
+explorationandexploitation.Intuitively,thehigherβ encour-
+t
+agesmoreexploration,whilethelowerβ focusesonexploita-
+t
+tion.Withthededicatedselectionofβ inindividualiterations,
+the application of GP-UCB acquisition function has a solid
+theoretical guarantee on converging to global optima [16]. In
+particular, under the selective kernel functions [16], the sub-
+3880
+Authorized licensed use limited to: SOUTHWEST JIAOTONG UNIVERSITY. Downloaded on November 27,2025 at 04:57:45 UTC from IEEE Xplore. Restrictions apply.
+
+--- Page 4 ---
+2023 IEEE International Conference on Communications (ICC): Cognitive Radio and AI-Enabled Networks
+linear regret is achieved with the probability of 1−δ, if be repeated to strike the balance between the robustness and
+t2π2
+2
+4dη1 the performance of the policy.
+β
+t
+=2log
+3δ
++2dlog t dη2r log(
+δ
+) , (9)
+V. PERFORMANCEEVALUATION
+(cid:18) (cid:19) r !
+In this section, we conduct extensive network simulations
+where δ is the hyperparameter between 0 and 1, and η1 >
+to evaluate the RoNet framework in terms of efficacy, adapt-
+0,η2 >0,r >0 are constants, and d is the attack dimension.
+ability, and scalability.
+Remark. In this stage, the configuration policy is attacked
+Network Simulator. We use the widely adopted Network
+by the learn-to-attack method by perturbing its observable
+Simulator3(NS-3)[17]tosimulatetheperformanceofmobile
+state space. As the attack completes, we can obtain the
+networks. In particular, we develop an end-to-end network
+collection of network states, attack on states, configuration
+topology, including RAN, TN, Core, and Edge networks.
+actions, and the attacked PE performance.
+The RAN and Core are based on 4G LTE from the LENA
+B. Robust Defense Stage project, where the channel model is LogDistancePropaga-
+tionLossModel and the total wireless bandwidth is 10MHz.
+To counter the attack and recover the performance, we
+The avg distance is randomized from 100 to 200 meters, and
+design a new robust defense method that is composed of
+mcs max ul and mcs max dl are sampled from [4, 20] and
+modelretrainingandprobabilisticactionselection.Themodel
+[4, 28], respectively. The TN is based on a p2p link with
+retraining aims to recover the accuracy of the DNN model
+1Gbps bandwidth and a 2 ms delay. Specifically, we create a
+π in terms of predicting the attacked PE performance. The
+θ video analytics application for mobile users. As simulations
+probabilistic action selection further improves the robustness
+start,mobileuserssenduplinkpacketsviatheHTTPprotocol
+by randomly choosing selective configuration actions.
+with randomized ul avg size between 10K and 20K Bytes.
+ModelRe-Training.Astheconfigurationpolicyisunaware
+We develop a new module to achieve queue-based edge com-
+of the existence of the adverse attacker, its DNN model
+puting simulations for processing the received packets. The
+observes the pre-attack states (instead of attacked states)
+computationdelayunder1.0cpu ratioissettobe81msmean
+and generates predicted PE performance. We observe that
+and 35 ms std, according to experimental measurements [9].
+this deviation between pre-attack and attacked states partially
+Without loss of generality, the downlink packet size is also
+constitutes the performance degradation of the policy. We
+randomly generated between 10K and 20K Bytes. We design
+retrain theDNN modelbased on theattacked dataset,i.e., the
+the simulation time to be 30 seconds to collect sufficient
+collectionofpre-attackstatesandtheircorrespondingattacked
+measurements of round-trip latency, which corresponds to
+PE performance. In particular, we design the loss function of
+average 21 seconds real-world time. We empirically select
+π retraining as
+θ the latency threshold as H=200 ms according to the capacity
+Loss πθ =|π θ (s t ,a t )−U(s t +π v (s t ),a t )|2, (10) of the simulated network. Note that RoNet does not make
+whereU(s +π (s ),a )istheattackedPEperformanceunder assumptionsforthenetworkandcanseamlesslyadapttoother
+t v t t
+the network state s and the attacker π . The attack π (s ) is network settings and topologies.
+t v v t
+not revealed to the DNN model π . As the model retraining Parameters.Wecollectthedatasetfromthesimulatorwith
+θ
+completes, the DNN model π will recover its prediction gridsearchonboth108uniqueactionsand243uniquestates,
+θ
+accuracy in terms of the attacked PE performance. where the total number of state-action-latency transitions is
+Probabilistic Selection. In the normal training stage, the 26244. The data collection consumes more than 150 effective
+policyselectstheconfigurationactionbymaximizingthepre- hours. The dataset is used to estimate the PE under different
+dictedPE,whichcommonlyresultsinnon-robustperformance states and actions during the simulation. The architecture of
+in practice. On one hand, the DNN model π may not be theDNNmodelis[128]x[256]x[128]full-connectedlayerand
+θ
+very accurate on PE prediction under any states and actions. ReLU activation function in PyTorch 1.10. The PE in the
+On the other hand, the deterministic action selection under evaluation is calculated by averaging the achieved PE under
+the given DNN model can be easily attacked by targeting all states. The default value of parameters are κ=0.99, ϵ=0.2,
+the particular maximum. Hence, we design the probabilistic and the number of training epochs is 50.
+selection scheme as follows. First, we sample the action Comparison.Weimplementthefollowingmethodsforfair
+space extensively with thousands of samples. Second, we comparison with the RoNet framework:
+concatenate the current state and these sampled actions, and • L-REG: The L-REG uses the linear regression model
+feed them into the retrained DNN model. Third, we rank to approximate the PE performance in Eq. 1, samples
+all the predictions of PE performance and truncate the first actions and selects the one with the maximum predicted
+κth percentile. Fourth, the configuration action is randomly PE under individual states.
+selected from the truncated set. In this way, the probabilistic • R-REG: The R-REG uses the Gaussian Process regres-
+action selection not only mitigates the effect of inaccurate PE sion(GPR)model(implementedwithscikit-learntoolkit)
+prediction but also counters the potential attacks implicitly. to learn the PE performance, where the action selection
+Remark.Inthisstage,theperformanceoftheconfiguration is the same as that of L-REG.
+policyisrecoveredbyusingmodelretrainingandprobabilistic • Optimal: The Optimal is achieved by assuming that the
+selection. The learn-to-attack and robust defense stages may attackisknown,i.e.,theattackedstatescanbeobserved.
+3881
+Authorized licensed use limited to: SOUTHWEST JIAOTONG UNIVERSITY. Downloaded on November 27,2025 at 04:57:45 UTC from IEEE Xplore. Restrictions apply.
+
+--- Page 5 ---
+0.975
+0.950
+0.925
+0.900
+0.875
+2 4 6 8 10
+Number of training epochs
+EP
+1.0
+0.9
+0.8
+Ours
+Optimal 0.7
+G-REG
+L-REG 0.6
+0 20 40
+Number of attack epochs
+Fig. 2: Performance under normal
+training
+EP
+Ours
+0.62
+RN
+0.60
+0.58
+0.56
+20 40 60 80 100
+Percentage of robust training (%)
+Fig. 3: Performance under attacks
+EP
+Ours
+Optimal
+Fig. 4: Performance under robust
+defense
+0.8
+0.6
+0.4
+0.2
+5 10 20 30
+Attack Scale (%)
+EP
+0.6
+Attack Stage 0.5
+Robust Stage
+Optimal
+0.4
+0.8 0.9 0.95 0.99 1.0
+k
+Fig. 5: Performance of RoNet under
+different scales
+EP
+0.8
+0.6
+Attack Stage 0.4
+Robust Stage
+Optimal 0.2
+150 175 200 225 250
+Latency Requirement (ms)
+Fig. 6: Performance of RoNet under
+different κ
+EP
+2023 IEEE International Conference on Communications (ICC): Cognitive Radio and AI-Enabled Networks
+Attack Stage
+Robust Stage
+Optimal
+Fig. 7: Performance of RoNet under
+different requirements
+NormalPerformance FinalAttackedPerformance
+Then, the optimal action is obtained by extensive sam-
+Optimal 0.985 0.629
+pling the action space with the ground-truth dataset. Ours 0.982 0.623
+• RN: The RN is the baseline of attacks, which randomly G-REG 0.958 0.543
+L-REG 0.873 0.501
+samples attacks from the attack space and selects the
+attack with the lowest predicted PE. TABLE III: The performance of methods
+PerformanceofNormalTraining.Fig.2showstheperfor- retrain the DNN to approximate the attacked PE performance
+mance of different methods during the normal training stage. on different subgroups. As more state subgroups are applied
+As more training epochs are completed, the performance of for retraining, the PE performance of RoNet recovers 13.9%
+RoNetconvergeswiththecloseapproximationtotheOptimal. PE performance (from 0.547 to 0.623) and approaches the
+As compared to L-REG, R-REG can obtain higher PE, which Optimal (0.629) gradually. The performance of the Optimal
+is mainly attributed to the better approximation performance is much lower than that in the normal training stage, because
+of Gaussian process regression (GPR). The RoNet achieves attacks are enforced on states. We observe the attacked states
+nearly 12.5% PE improvement than that of L-REG, which are with lower MCS and higher uplink and downlink data
+suggests the high efficacy of the deep neural network (DNN) sizes, where the performance cannot be fully recovered as
+basedapproximation.Thisperformancedifferenceisexpected more data to transmit and less MCS can be used. As shown
+to enlarge under higher dimensions of state and action space. in Table III, when the robust defense stage completes, RoNet
+Performance of Learn-to-Attack. Fig. 3 depicts the per- achieves0.623PEwhichisveryclosetotheOptimal(0.629).
+formance of different attack methods during the learn-to- As compared to L-REG, RoNet can obtain more than 24.3%
+attack stage. We observe that the PE can be dramatically improvement in the PE performance.
+decreasedbyattackingthestatespace,whichindicatesthevul- Performance under Variabilities. Fig. 5 shows the RoNet
+nerability of the DNN-based configuration policy. The mean performance under different attack scales. In general, the
+and std of attack are avg distance = 0.06/0.13, dl avg size = higher attack scale allows larger attacks on the state space,
+0.16/0.06,mcs max dl=-0.1/0.15,mcs max ul=-0.09/0.16, andresultsinlargerperformancedegradation.Whentheattack
+and ul avg size = 0.01/0.17. The high std indicates that scaleis0.05and0.1,theoriginalPEperformance(0.985)can
+attacks are contextual and individualized to different states, be degraded to 0.90 (8.1%) and 0.81 (17.8%), respectively.
+instead of static values. As compared to RN, the learn-to- This disproportional performance degradation emphasizes the
+attack in RoNet can achieve higher performance degradation necessity of investigating the robustness of DNN-based con-
+(8.5%), which justifies its effectiveness. figuration policy. Fig. 6 shows the final attacked performance
+Performance of Robust Defense. Fig. 4 shows the perfor- of RoNet under different probabilistic action selection factor
+manceofRoNetduringtherobustdefensestage.Here,wesep- κ. When κ is 1, the action will always be selected if it has
+arate all the states into multiple subgroups, and continuously the maximum predicted PE among all sampled actions. As
+3882
+Authorized licensed use limited to: SOUTHWEST JIAOTONG UNIVERSITY. Downloaded on November 27,2025 at 04:57:45 UTC from IEEE Xplore. Restrictions apply.
+
+--- Page 6 ---
+2023 IEEE International Conference on Communications (ICC): Cognitive Radio and AI-Enabled Networks
+we decrease κ, the set of action candidates expands, which anddegradetheperformanceofthepolicy.Third,wedesigned
+generally improves the robustness because the attacker has a robust defense method to recover the under-attack perfor-
+to target more actions. Consequently, the PE performance mance of the policy. The performance evaluation shows that
+is decreased because of the random selection on the set RoNet outperforms existing solutions in terms of robustness,
+of suboptimal action candidates. Fig. 7 shows the impact adaptability, and scalability.
+of latency threshold H on the PE performance in RoNet.
+ACKNOWLEDGEMENT
+With the more stringent latency threshold, the PE decreases
+ThisworkispartiallysupportedbytheUSNationalScience
+significantly under the fixed transmission and computation
+Foundation under Grant No. 2212050.
+resources in the simulated network.
+In the default parameters, the mean and std of actions are
+REFERENCES
+bandwidth ul = 0.56/0.1, bandwidth dl = 0.66/0.18, and [1] M.Poleseetal.,“Colo-ran:Developingmachinelearning-basedxapps
+for open ran closed-loop control on programmable experimental plat-
+cpu ratio = 0.98/0.03. To counter the unknown attacks on
+forms,”IEEETransactionsonMobileComputing,2022.
+the state space, the mean final actions are bandwidth ul [2] J. Shi, M. Sha, and X. Peng, “Adapting wireless mesh network con-
+= 0.7/0.17, bandwidth dl = 0.79/0.2, and cpu ratio = figuration from simulation to reality via deep learning based domain
+adaptation,”inNSDI,2021,pp.887–901.
+0.99/0.01. It is worth noting that RoNet can always approach
+[3] C. Marquez et al., “How should i slice my network? a multi-service
+the Optimal under different variabilities, which justifies its empiricalevaluationofresourcesharingefficiency,”inProceedingsof
+strong adaptability and generalization. the 24th Annual International Conference on Mobile Computing and
+Networking,2018,pp.191–206.
+VI. RELATEDWORK
+[4] Q.LiuandT.Han,“Virtualedge:Multi-domainresourceorchestration
+Network configuration has been extensively studied in and virtualization in cellular edge computing,” in 2019 IEEE 39th
+InternationalConferenceonDistributedComputingSystems(ICDCS).
+mobile networks to optimize a variety of networking ob-
+IEEE,2019,pp.1051–1060.
+jectives. Liu et. al. [18] formulated an approximated math [5] J. X. Salvat et al., “Overbooking network slices through yield-driven
+model to describe the problem of radio and computation end-to-endorchestration,”inACMCoNEXT. ACM,2018,pp.353–365.
+[6] X. Ran et al., “Deepdecision: A mobile deep learning framework for
+resource management, and designed an iterative algorithm to
+edge video analytics,” in IEEE INFOCOM 2018-IEEE Conference on
+search for the optimal solution for minimizing the latency of ComputerCommunications. IEEE,2018,pp.1421–1429.
+mobile users. There are other works [6], [7], [5], [8] build [7] S. D’Oro, L. Bonati et al., “Sl-EDGE: Network slicing at the edge,”
+arXivpreprintarXiv:2005.00886,2020.
+their analytic model based on experimental measurements for
+[8] S.D’Oroetal.,“Orchestran:Networkautomationthroughorchestrated
+differentapplications,e.g.,augmentedreality[6]andnetwork intelligence in the open ran,” in IEEE INFOCOM 2022-IEEE Confer-
+slicing [5]. Recent works [19], [2], [9] focus on machine enceonComputerCommunications. IEEE,2022,pp.270–279.
+[9] Q. Liu, N. Choi, and T. Han, “Onslicing: online end-to-end net-
+learning approaches to learn and automate network config-
+work slicing with reinforcement learning,” in Proceedings of the 17th
+uration. Shi et. al. [2] exploited deep learning to learn and International Conference on emerging Networking EXperiments and
+configurewirelessmeshnetworksanduseddomainadaptation Technologies,2021,pp.141–153.
+[10] D. Bega, M. Gramaglia, M. Fiore, A. Banchs, and X. Costa-Perez,
+techniques to bridge the discrepancy between simulators and
+“Deepcog: Optimizing resource provisioning in network slicing with
+real-world networks. However, these ML-based solutions fail ai-based capacity forecasting,” IEEE Journal on Selected Areas in
+to effectively counter real-world variabilities and potential Communications,vol.38,no.2,pp.361–376,2019.
+[11] A.Madry,A.Makelov,L.Schmidt,D.Tsipras,andA.Vladu,“Towards
+attacks in mobile networks.
+deep learning models resistant to adversarial attacks,” arXiv preprint
+AI robustness has received increasing research attention, arXiv:1706.06083,2017.
+especiallyforDNN-basedpoliciesinreal-worlddeployments. [12] X. Foukas et al., “Orion: Ran slicing for a flexible and cost-effective
+multi-servicemobilenetworkarchitecture,”inProceedingsofthe23rd
+In the pioneer AI robustness work [11], the vulnerability
+annualinternationalconferenceonmobilecomputingandnetworking,
+of DNN under adversarial attacks is revealed with extensive 2017,pp.127–140.
+experiments, where the authors proposed a first-order adver- [13] J.A.Ayala-Romeroetal.,“Bayesianonlinelearningforenergy-aware
+resource orchestration in virtualized rans,” in IEEE Conference on
+sary method to achieve robust training. Multiple derivative
+ComputerCommunications. IEEE,2021,pp.1–10.
+works aim to improve the robustness of DNN and deep [14] S. Boyd, S. P. Boyd, and L. Vandenberghe, Convex optimization.
+reinforcementlearning(DRL)byusingdiversifiedtechniques, Cambridgeuniversitypress,2004.
+[15] C.E.Rasmussen,“Gaussianprocessesinmachinelearning,”inSummer
+e.g., data augmentation [20], sparsity architecture [21], and
+schoolonmachinelearning. Springer,2003,pp.63–71.
+local linearization [22]. However, these works focused on [16] N.Srinivasetal.,“Gaussianprocessoptimizationinthebanditsetting:
+individual DNN model with the strong assumption of known Noregretandexperimentaldesign,”arXiv:0912.3995,2009.
+[17] A.discreteeventnetworksimulatorforinternetsystems,“NS-3,”May
+gradients during the DNN training. In this work, we aim to
+2022[Online].
+derive a robust configuration policy, including robust DNN- [18] Q.Liu,T.Han,andN.Ansari,“Jointradioandcomputationresource
+based approximation and action selections. managementforlowlatencymobileedgecomputing,”inIEEEGlobal
+CommunicationsConference(GLOBECOM). IEEE,2018,pp.1–7.
+VII. CONCLUSION
+[19] H.Zhangetal.,“OnRL:improvingmobilevideotelephonyviaonline
+In this work, we presented a new RoNet framework with reinforcementlearning,”inProceedingsofthe26thAnnualInternational
+ConferenceonMobileComputingandNetworking,2020,pp.1–14.
+three stages in mobile networks to improve the robustness
+[20] S.-A.Rebuffietal.,“Fixingdataaugmentationtoimproveadversarial
+of configuration policies. First, we designed a neural-assisted robustness,”arXivpreprintarXiv:2103.01946,2021.
+network configuration policy that maximizes the performance [21] Y. Guo et al., “Sparse DNNs with improved adversarial robustness,”
+Advancesinneuralinformationprocessingsystems,vol.31,2018.
+efficiency of mobile users. Second, we designed a learn-to-
+[22] C. Qin et al., “Adversarial robustness through local linearization,”
+attack method to automatically attack the state observation AdvancesinNeuralInformationProcessingSystems,vol.32,2019.
+3883
+Authorized licensed use limited to: SOUTHWEST JIAOTONG UNIVERSITY. Downloaded on November 27,2025 at 04:57:45 UTC from IEEE Xplore. Restrictions apply.

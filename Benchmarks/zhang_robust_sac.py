@@ -285,12 +285,12 @@ def train_robust_sac(
         cur_ep_dropped += metrics.get("dropped_tasks", 0)
         cur_ep_cache_hits.append(metrics.get("cache_hit_rate", 0.0))
 
-        # QoS penalty removed to unify reward with other benchmarks
-        # delay = float(metrics.get("avg_task_delay", 0.0))
-        # energy = float(metrics.get("total_energy_consumption", 0.0))
-        # penalty = cfg.qos_penalty_weight * max(0.0, delay - cfg.latency_target)
-        # penalty += cfg.qos_penalty_weight * 1e-4 * max(0.0, energy - cfg.energy_target)
-        # r = r - penalty
+        # QoS penalty to align with RoNet's robust configuration emphasis
+        delay = float(metrics.get("avg_task_delay", 0.0))
+        energy = float(metrics.get("total_energy_consumption", 0.0))
+        penalty = cfg.qos_penalty_weight * max(0.0, delay - cfg.latency_target)
+        penalty += cfg.qos_penalty_weight * 1e-4 * max(0.0, energy - cfg.energy_target)
+        r = r - penalty
         agent.store((s, a, [r], s2, [float(done)]))
         s = s2
         ep_r += r

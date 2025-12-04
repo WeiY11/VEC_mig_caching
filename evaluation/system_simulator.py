@@ -162,15 +162,37 @@ class CentralResourcePool:
         }
     
     @staticmethod
-    def _normalize(arr: np.ndarray) -> np.ndarray:
-        """归一化分配向量，确保总和为1"""
+    def _normalize(arr: np.ndarray, min_allocation: float = 0.01) -> np.ndarray:
+        """
+        归一化分配向量，确保总和为1
+        
+        🔧 修复v2: 需求感知归一化 + 最小保障
+        
+        Args:
+            arr: 原始分配向量
+            min_allocation: 最小分配比例（避免完全饥饿），默认1%
+        
+        Returns:
+            归一化后的分配向量
+        """
         arr = np.clip(arr, 0, 1)  # 确保非负且<=1
+        n = len(arr)
+        if n == 0:
+            return arr
+        
+        # 🔧 修复: 应用最小保障，避免任何节点完全饥饿
+        arr = np.maximum(arr, min_allocation)
+        
         total = np.sum(arr)
         if total > 1e-6:
-            return arr / total
+            normalized = arr / total
+            # 二次验证最小保障
+            normalized = np.maximum(normalized, min_allocation / n)
+            # 重新归一化
+            return normalized / np.sum(normalized)
         else:
             # 如果全为0，返回均匀分配
-            return np.ones_like(arr) / len(arr)
+            return np.ones_like(arr) / n
 
 
 class CompleteSystemSimulator:
@@ -289,6 +311,12 @@ class CompleteSystemSimulator:
         self._two_stage_planner: TwoStagePlanner | None = None
         self.spatial_index: Optional[SpatialIndex] = SpatialIndex()
         self._central_resource_enabled = os.environ.get('CENTRAL_RESOURCE', '').strip() in {'1', 'true', 'True'}
+        
+        # 🔧 修复v2: Pending资源分配机制（问题1/2修复）
+        # 存储待应用的资源分配，在时隙开始时统一执行
+        self._pending_resource_allocation: Optional[Dict[str, np.ndarray]] = None
+        self._last_applied_allocation: Optional[Dict[str, np.ndarray]] = None
+        self._allocation_applied_this_step: bool = False
         
         # 🎯 中央资源池初始化（Phase 1核心组件）
         # Central resource pool initialization (Phase 1 core component)
@@ -647,16 +675,89 @@ class CompleteSystemSimulator:
         
         for i, uav in enumerate(self.uavs):
             uav['allocated_compute'] = self.resource_pool.get_uav_compute(i)
+        
+        # 🔧 记录已应用的分配
+        self._last_applied_allocation = alloc_dict.copy()
+        self._allocation_applied_this_step = True
+    
+    def set_pending_resource_allocation(self, allocation_dict: Dict[str, np.ndarray]) -> None:
+        """
+        设置待应用的资源分配（供Wrapper使用）
+        
+        🔧 修复v2: 支持延迟应用，在时隙开始时统一执行
+        
+        Args:
+            allocation_dict: 中央智能体生成的资源分配字典
+        """
+        self._pending_resource_allocation = dict(allocation_dict)
+        self._allocation_applied_this_step = False
+    
+    def _apply_pending_allocation(self) -> bool:
+        """
+        应用待处理的资源分配（在时隙开始时调用）
+        
+        🔧 修复v2: 确保资源分配在仿真步进开始时执行
+        
+        Returns:
+            是否成功应用了分配
+        """
+        if self._pending_resource_allocation is None:
+            return False
+        
+        if self._allocation_applied_this_step:
+            return False  # 本时隙已应用过
+        
+        self.apply_resource_allocation(self._pending_resource_allocation)
+        self._pending_resource_allocation = None
+        return True
+    
+    def _update_realtime_usage_stats(self) -> None:
+        """
+        更新实时资源使用率统计
+        
+        🔧 修复问题4: 在时隙开始时更新上一时隙的使用率
+        避免观测到过时的资源使用情况
+        """
+        # 更新车辆使用率
+        vehicle_usage = np.array([
+            v.get('compute_usage', 0.0) for v in self.vehicles
+        ])
+        
+        # 更新RSU使用率
+        rsu_usage = np.array([
+            r.get('compute_usage', 0.0) for r in self.rsus
+        ])
+        
+        # 更新UAV使用率
+        uav_usage = np.array([
+            u.get('compute_usage', 0.0) for u in self.uavs
+        ])
+        
+        # 同步到资源池
+        self.resource_pool.update_usage_stats(vehicle_usage, rsu_usage, uav_usage)
 
     def _init_dynamic_bandwidth_support(self) -> None:
         """配置并初始化动态带宽分配功能。"""
         self.dynamic_bandwidth_enabled = False
         self.bandwidth_allocator = None
         self._bandwidth_allocator_mode = 'hybrid'
-        self._bandwidth_allocation_blend = 0.6
+        # 🔧 修复问题5: 提高RL决策权重从40%到80%
+        # 原来 blend=0.6 表示动态分配器权重60%，RL权重40%
+        # 现在 blend=0.2 表示动态分配器权重20%，RL权重80%
+        self._bandwidth_allocation_blend = 0.2
         self._bandwidth_demand_floor_bits = 0.5e6 * 8.0
         self._bandwidth_idle_demand_bits = 0.1e6 * 8.0
         self._last_dynamic_bandwidth = np.ones(max(1, self.num_vehicles), dtype=float) / max(1, self.num_vehicles)
+        
+        # 🔧 支持环境变量控制RL权重
+        rl_weight_env = os.environ.get('RL_BANDWIDTH_WEIGHT')
+        if rl_weight_env:
+            try:
+                rl_weight = float(rl_weight_env)
+                # blend = 1 - rl_weight (因为 blended = blend*dyn + (1-blend)*rl)
+                self._bandwidth_allocation_blend = float(np.clip(1.0 - rl_weight, 0.0, 1.0))
+            except ValueError:
+                pass
 
         env_blend = os.environ.get('BANDWIDTH_ALLOCATOR_BLEND')
         if env_blend:
@@ -1008,11 +1109,22 @@ class CompleteSystemSimulator:
         执行Phase 2的所有本地调度逻辑
         
         【流程】
-        1. 车辆端：优先级调度
-        2. RSU端：动态资源分配
-        3. UAV端：动态资源分配
-        4. 更新资源使用统计
+        🔧 修复v2: 在调度前应用pending资源分配和更新使用率统计
+        1. 应用待处理的资源分配（如果有）
+        2. 更新上一时隙的使用率统计
+        3. 车辆端：优先级调度
+        4. RSU端：动态资源分配
+        5. UAV端：动态资源分配
+        6. 更新资源使用统计
         """
+        # 🔧 修复问题2: 在调度开始时应用pending资源分配
+        if hasattr(self, '_pending_resource_allocation') and self._pending_resource_allocation is not None:
+            self._apply_pending_allocation()
+        
+        # 🔧 修复问题4: 先更新上一时隙的使用率，确保观测及时
+        if hasattr(self, '_update_realtime_usage_stats'):
+            self._update_realtime_usage_stats()
+        
         # 车辆端调度
         for vehicle in self.vehicles:
             self.vehicle_priority_scheduling(vehicle)
@@ -1030,6 +1142,10 @@ class CompleteSystemSimulator:
         rsu_usage = np.array([r['compute_usage'] for r in self.rsus])
         uav_usage = np.array([u['compute_usage'] for u in self.uavs])
         self.resource_pool.update_usage_stats(vehicle_usage, rsu_usage, uav_usage)
+        
+        # 🔧 重置时隙标记
+        if hasattr(self, '_allocation_applied_this_step'):
+            self._allocation_applied_this_step = False
     
     # ========== Phase 2结束 ==========
     

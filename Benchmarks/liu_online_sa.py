@@ -67,5 +67,64 @@ class OnlineSimulatedAnnealing:
             temp = max(self.cfg.min_temp, temp * self.cfg.cooling)
         return {"best_params": best, "best_score": best_score, "history": history}
 
+    def select_action(self, state: np.ndarray = None) -> np.ndarray:
+        """
+        Online action selection interface for RL environment compatibility.
+        
+        This returns the current best parameters as an action vector.
+        For true online adaptation, call `step()` periodically with reward feedback.
+        
+        Args:
+            state: Current environment state (not used in basic SA, but kept for interface compatibility)
+        
+        Returns:
+            Current action/parameter vector
+        """
+        return self.current.copy()
+    
+    def step(self, reward: float) -> np.ndarray:
+        """
+        Online adaptation step: perturb current solution and decide whether to accept.
+        
+        This enables true online SA where each call adapts based on the latest reward.
+        
+        Args:
+            reward: Reward from the last action (higher is better)
+            
+        Returns:
+            New action vector after one SA step
+        """
+        if self.current_score is None:
+            self.current_score = reward
+            return self.current.copy()
+        
+        # Generate candidate
+        cand = self._perturb(self.current)
+        
+        # Acceptance decision (using reward as score)
+        delta = reward - self.current_score
+        temp = getattr(self, '_online_temp', self.cfg.init_temp)
+        accept = delta > 0 or math.exp(delta / max(temp, 1e-6)) > random.random()
+        
+        if accept:
+            self.current = cand
+            self.current_score = reward
+        
+        # Cool down temperature
+        self._online_temp = max(self.cfg.min_temp, temp * self.cfg.cooling)
+        
+        return self.current.copy()
+    
+    def select_action_with_dim(self, state: np.ndarray, action_dim: int) -> np.ndarray:
+        """Wrapper to ensure action dimension matches environment."""
+        action = self.select_action(state)
+        if len(action) < action_dim:
+            padding = np.zeros(action_dim - len(action), dtype=np.float32)
+            action = np.concatenate([action, padding])
+        elif len(action) > action_dim:
+            action = action[:action_dim]
+        return action
+
 
 __all__ = ["SAConfig", "OnlineSimulatedAnnealing"]
+

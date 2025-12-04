@@ -44,10 +44,10 @@ class TaskMigrationManager:
     
     def __init__(self):
         self.logger = logging.getLogger(__name__)
-        # 瑙﹀彂闃堝€?
-        self.rsu_overload_threshold = config.migration.rsu_overload_threshold
-        self.uav_overload_threshold = config.migration.uav_overload_threshold
-        self.uav_min_battery = config.migration.uav_min_battery
+        # 触发阈值 - 🔧 修复：使用 getattr 安全访问
+        self.rsu_overload_threshold = getattr(config.migration, 'rsu_overload_threshold', 0.70)
+        self.uav_overload_threshold = getattr(config.migration, 'uav_overload_threshold', 0.70)
+        self.uav_min_battery = getattr(config.migration, 'uav_min_battery', 0.15)
         
         # 🆕 创新:自适应阈值调整机制
         self.adaptive_threshold_enabled = True
@@ -61,12 +61,12 @@ class TaskMigrationManager:
         self.threshold_adjustment_interval = 50  # 每50次迁移调整一次
         self.migration_counter = 0
         
-        # 鎴愭湰鍙傛暟
-        self.alpha_comp = config.migration.migration_alpha_comp
-        self.alpha_tx = config.migration.migration_alpha_tx
-        self.alpha_lat = config.migration.migration_alpha_lat
+        # 成本参数 - 🔧 修复：使用 getattr 安全访问
+        self.alpha_comp = getattr(config.migration, 'migration_alpha_comp', 0.4)
+        self.alpha_tx = getattr(config.migration, 'migration_alpha_tx', 0.3)
+        self.alpha_lat = getattr(config.migration, 'migration_alpha_lat', 0.3)
         
-        # 缁熻淇℃伅
+        # 统计信息
         self.migration_stats = {
             'total_attempts': 0,
             'successful_migrations': 0,
@@ -75,9 +75,9 @@ class TaskMigrationManager:
             'total_tasks_migrated': 0
         }
         
-        # 鍐峰嵈绠＄悊
+        # 冷却管理 - 🔧 修复：使用 getattr 安全访问
         self.node_last_migration: Dict[str, float] = {}
-        self.cooldown_period = config.migration.cooldown_period
+        self.cooldown_period = getattr(config.migration, 'cooldown_period', 0.5)
         # Retry/backoff configuration
         self.retry_backoff_base = float(getattr(config.migration, 'retry_backoff_base', 0.5))
         self.retry_backoff_max = float(getattr(config.migration, 'retry_backoff_max', 6.0))
@@ -106,8 +106,8 @@ class TaskMigrationManager:
                     node_id, state, node_states
                 )
                 # 🔧 修复：提高迁移触发阈值，减少频繁迁移
-                if should_migrate and urgency_score > 0.3:  # 修复：从1.2降为0.3（urgency最大为1.0）
-                    # 瀵绘壘杩佺Щ鐩爣
+                if should_migrate and urgency_score > 0.45:  #  优化：提高阈值减少频繁迁移  # 修复：从1.2降为0.3（urgency最大为1.0）
+                    # 寻找迁移目标
                     target_node = self._find_best_target(node_id, "rsu", node_states, node_positions)
                     if target_node:
                         plan = self._create_migration_plan(node_id, target_node, node_states, node_positions)
@@ -148,19 +148,19 @@ class TaskMigrationManager:
             # 馃敡 淇锛氭斁瀹借縼绉荤洰鏍囬€夋嫨鏉′欢锛屽鍔犺縼绉绘満浼?
             for node_id, state in node_states.items():
                 if node_id.startswith("rsu_") and node_id != source_node_id:
-                    if state.load_factor < self.rsu_overload_threshold * 0.9:  # 浠?.8鎻愰珮鍒?.9
+                    if state.load_factor < self.rsu_overload_threshold * 0.9:  # 使用0.9倍阈值
                         candidates.append(node_id)
                 elif node_id.startswith("uav_"):
                     battery_level = getattr(state, 'battery_level', 1.0)
-                    if (battery_level > self.uav_min_battery * 1.2 and   # 浠?.5闄嶈嚦1.2
-                        state.load_factor < self.uav_overload_threshold * 0.9):  # 浠?.8鎻愰珮鍒?.9
+                    if (battery_level > self.uav_min_battery * 1.2 and   # 使用1.2倍电量
+                        state.load_factor < self.uav_overload_threshold * 0.9):  # 使用0.9倍阈值
                         candidates.append(node_id)
         
         elif source_type == "uav":
             # 馃敡 淇锛歎AV杩佺Щ鏉′欢涔熼€傚害鏀惧
             for node_id, state in node_states.items():
                 if node_id.startswith("rsu_"):
-                    if state.load_factor < self.rsu_overload_threshold * 0.9:  # 浠?.8鎻愰珮鍒?.9
+                    if state.load_factor < self.rsu_overload_threshold * 0.9:  # 使用0.9倍阈值
                         candidates.append(node_id)
         
         # 閫夋嫨璺濈鏈€杩戠殑鍊欓€?

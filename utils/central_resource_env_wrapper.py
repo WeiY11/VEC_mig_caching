@@ -160,37 +160,42 @@ class CentralResourceEnvWrapper:
         """
         执行一步仿真（Phase 1 + Phase 2）
         
+        🔧 修复v2: 将资源分配设为pending状态，由主仿真循环统一执行调度
+        避免在base_env.step()之前执行Phase 2导致状态不一致
+        
         Args:
             action: 中央智能体的动作向量
         
         Returns:
             (next_state, reward, done, info)
         """
-        # ========== Phase 1: 解析并应用资源分配 ==========
+        # ========== Phase 1: 解析资源分配（设为pending，不立即执行Phase 2） ==========
         allocation_dict = self.parse_action(action)
         
         if self.simulator:
-            self.simulator.apply_resource_allocation(allocation_dict)
+            # 🔧 修复: 设置pending分配，让主仿真循环在时隙开始时统一应用
+            self.simulator.set_pending_resource_allocation(allocation_dict)
         
-        # ========== Phase 2: 执行本地调度 ==========
-        if self.simulator:
-            self.simulator.execute_phase2_scheduling()
-        
-        # ========== 执行基础环境的step ==========
-        _, base_reward, done, info = self.base_env.step(action[:self.base_env.action_space.shape[0]])
+        # ========== 执行基础环境的step（内部会应用pending分配并执行Phase 2） ==========
+        base_action_dim = getattr(self.base_env, 'action_dim', 
+                                  getattr(getattr(self.base_env, 'action_space', None), 'shape', [action.size])[0])
+        _, base_reward, done, info = self.base_env.step(action[:base_action_dim])
         
         # ========== 获取扩展状态 ==========
         next_state = self.get_extended_state()
         
-        # ========== 计算增强奖励 ==========
+        # ========== 计算增强奖励（包含资源利用率和公平性） ==========
         enhanced_reward = self._calculate_enhanced_reward(base_reward, allocation_dict, info)
         
-        # ========== 更新info ==========
+        # ========== 更新info，添加增强奖励分解 ==========
         if self.simulator and hasattr(self.simulator, 'resource_pool'):
-            info['resource_state'] = self.simulator.resource_pool.get_resource_state()
-            info['vehicle_utilization'] = np.mean([v['compute_usage'] for v in self.simulator.vehicles])
-            info['rsu_utilization'] = np.mean([r['compute_usage'] for r in self.simulator.rsus])
-            info['uav_utilization'] = np.mean([u['compute_usage'] for u in self.simulator.uavs])
+            resource_state = self.simulator.resource_pool.get_resource_state()
+            info['resource_state'] = resource_state
+            info['vehicle_utilization'] = resource_state.get('vehicle_utilization', 0.0)
+            info['rsu_utilization'] = resource_state.get('rsu_utilization', 0.0)
+            info['uav_utilization'] = resource_state.get('uav_utilization', 0.0)
+            # 🔧 新增: 记录增强奖励分量供分析
+            info['enhanced_reward_delta'] = enhanced_reward - base_reward
         
         return next_state, enhanced_reward, done, info
     

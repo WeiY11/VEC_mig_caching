@@ -29,7 +29,13 @@ import torch.optim as optim
 
 
 def fanin_init(layer: nn.Linear, scale: float = 1.0) -> None:
-    bound = scale / (layer.weight.size(0) ** 0.5)
+    """Fan-in initialization as per Lillicrap et al. (2015).
+    
+    Uses 1/sqrt(fan_in) bound where fan_in = input dimension = weight.size(1).
+    Note: weight shape is (out_features, in_features), so size(1) is fan_in.
+    """
+    fan_in = layer.weight.size(1)  # input dimension, not size(0) which is output
+    bound = scale / (fan_in ** 0.5)
     nn.init.uniform_(layer.weight, -bound, bound)
     nn.init.uniform_(layer.bias, -bound, bound)
 

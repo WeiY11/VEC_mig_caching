@@ -334,8 +334,10 @@ class EnhancedTD3Agent:
     def select_action(self, state: np.ndarray, training: bool = True) -> np.ndarray:
         """选择动作
         
-        🎯 修复: 状态向量已经包含中央资源状态（来自EnhancedTD3Wrapper）
-        不再需要手动添加全零中央状态
+        🔧 v29修复: 渐进式探索策略
+        
+        原问题: warmup期间使用完全随机动作，导致warmup结束后奖励突然跳升
+        修复方案: 使用渐进式探索，warmup期间混合随机+网络输出，逐渐过渡
         
         Args:
             state: 状态向量（已包含中央资源状态）
@@ -344,11 +346,35 @@ class EnhancedTD3Agent:
         Returns：
             action: 动作向量
         """
-        # 🧊 预热阶段：使用完全随机动作，确保早期探索充分
+        # 🔧 v29: 渐进式探索策略
+        # warmup期间也利用网络，但混合更多随机噪声
+        # 随着步数增加，逐渐减少随机比例，增加策略比例
+        
         if training and self.step_count < self.config.warmup_steps:
-            return np.random.uniform(-1.0, 1.0, size=self.action_dim).astype(np.float32)
+            # 计算探索比例：从90%随机逐渐降到0%
+            warmup_progress = self.step_count / self.config.warmup_steps  # 0 -> 1
+            random_ratio = 0.9 * (1.0 - warmup_progress)  # 0.9 -> 0
+            
+            # 获取网络输出的动作
+            if state.ndim == 1:
+                state_tensor = torch.FloatTensor(state).unsqueeze(0).to(self.device)
+            else:
+                state_tensor = torch.FloatTensor(state).to(self.device)
+            
+            with torch.no_grad():
+                encoded_state = self.graph_encoder(state_tensor)
+                policy_action = self.actor(encoded_state).cpu().numpy()
+                if state.ndim == 1:
+                    policy_action = policy_action[0]
+            
+            # 混合策略动作和随机动作
+            random_action = np.random.uniform(-1.0, 1.0, size=self.action_dim).astype(np.float32)
+            # 添加更大的噪声
+            noise = np.random.normal(0, self.exploration_noise * 1.5, size=self.action_dim)
+            mixed_action = (1 - random_ratio) * (policy_action + noise) + random_ratio * random_action
+            return np.clip(mixed_action, -1.0, 1.0).astype(np.float32)
 
-        # 检查是否为批量输入
+        # 正常训练阶段
         if state.ndim == 1:
             state_tensor = torch.FloatTensor(state).unsqueeze(0).to(self.device)
             is_batch = False

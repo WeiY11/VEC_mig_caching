@@ -1,130 +1,120 @@
+#!/usr/bin/env python3
+"""
+Dynamic offloading heuristic based on Nath & Wu 2020.
+
+Decisions are made by:
+1. Parsing the flat state vector into (Vehicles, RSUs, UAVs, Global).
+2. For each vehicle, deciding offloading based on:
+   - Local queue length vs. RSU/UAV queue length
+   - Channel quality (distance proxy)
+   - Energy levels
+3. Outputting a continuous action vector compatible with OptimizedTD3.
+
+Note: This implementation uses *global* average decisions for the centralized
+agent setting. The original Nath & Wu paper is per-vehicle, which would 
+require a different environment interface.
+"""
 import numpy as np
+
+# 导入统一状态维度常量，确保与环境一致
+try:
+    from single_agent.common_state_action import (
+        STATE_DIM_PER_VEHICLE,  # 5
+        STATE_DIM_PER_RSU,      # 5
+        STATE_DIM_PER_UAV,      # 5
+        STATE_DIM_GLOBAL,       # 20
+        STATE_DIM_CENTRAL,      # 16
+    )
+except ImportError:
+    # Fallback defaults (should match common_state_action)
+    STATE_DIM_PER_VEHICLE = 5
+    STATE_DIM_PER_RSU = 5
+    STATE_DIM_PER_UAV = 5
+    STATE_DIM_GLOBAL = 20
+    STATE_DIM_CENTRAL = 16
+
 
 class DynamicOffloadHeuristic:
     """
-    A heuristic policy that:
-    1. Parses the flat state vector into (Vehicles, RSUs, UAVs).
-    2. For each vehicle, decides offloading based on:
-       - Local queue length vs. RSU/UAV queue length
-       - Channel quality (distance)
-       - Energy levels
-    3. Outputs a continuous action vector (or discrete, depending on usage).
-       Here we output continuous actions compatible with the TD3 agent's action space.
+    Dynamic offloading heuristic based on Nath & Wu 2020.
     """
-    def __init__(self, num_rsus: int, num_uavs: int):
+    def __init__(self, num_rsus: int, num_uavs: int, num_vehicles: int = 12, 
+                 use_central_resource: bool = True):
         self.num_rsus = num_rsus
         self.num_uavs = num_uavs
+        self.num_vehicles = num_vehicles
+        self.use_central_resource = use_central_resource
         
-        # Heuristic weights
-        self.queue_weight = 0.6
-        self.energy_weight = 0.2
-        self.channel_weight = 0.2
+        # State dimensions from unified constants
+        self.veh_dim = STATE_DIM_PER_VEHICLE  # 5: [x, y, vel, queue, energy]
+        self.rsu_dim = STATE_DIM_PER_RSU      # 5: [x, y, cache, queue, energy]
+        self.uav_dim = STATE_DIM_PER_UAV      # 5: [x, y, queue, cache, energy]
+        self.global_dim = STATE_DIM_GLOBAL    # 20
+        self.central_dim = STATE_DIM_CENTRAL if use_central_resource else 0  # 16 or 0
         
-        # Thresholds
+        # Calculate expected lengths
+        self.veh_total = num_vehicles * self.veh_dim
+        self.rsu_total = num_rsus * self.rsu_dim
+        self.uav_total = num_uavs * self.uav_dim
+        self.suffix_len = self.global_dim + self.central_dim
+        
+        # Heuristic thresholds
         self.queue_threshold = 0.6  # If queue > 60%, try to offload
-        self.dist_threshold = 0.8   # If distance > 80% (far), avoid
         
         # Weights for scoring
         self.delay_weight = 0.5
         self.energy_weight = 0.5
 
-    def _score_node(self, vehicle, node, dist_norm):
-        """Score a target node (RSU/UAV) for offloading. Higher is better."""
-        # Simple utility: - (w1 * delay + w2 * energy)
-        # Delay proxy: node queue length + transmission delay (dist)
-        # Energy proxy: transmission energy (dist^2)
-        
-        weight_queue = 1.0
-        weight_channel = 1.0
-        
-        # Channel quality is inverse of distance
-        ch = 1.0 - dist_norm
-        
-        # Node load
-        load_penalty = node.queue
-        
-        queue_penalty = weight_queue * node.queue
-        return weight_channel * ch - (self.delay_weight * queue_penalty + self.energy_weight * load_penalty)
-
     def _parse_state(self, state: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         """
-        Robustly split flat state: vehicles(?*5) + rsu(num_rsus*5) + uav(num_uavs*5) + global(8).
+        Parse flat state vector using unified dimension constants.
         
-        State dimensions (unified 5-dim per node):
-        - Vehicle: [pos_x, pos_y, velocity, queue, energy]
-        - RSU: [pos_x, pos_y, cache_util, queue, energy]
-        - UAV: [pos_x, pos_y, queue, cache_util, energy]
+        State layout:
+            vehicles (num_vehicles * 5) + 
+            rsu (num_rsus * 5) + 
+            uav (num_uavs * 5) + 
+            global (20) + 
+            central (16, if enabled)
+        
+        Vehicle state (5D): [pos_x, pos_y, velocity, queue, energy]
+        RSU state (5D): [pos_x, pos_y, cache_util, queue, energy]
+        UAV state (5D): [pos_x, pos_y, queue, cache_util, energy]
         """
         flat = np.array(state, dtype=np.float32).reshape(-1)
         
-        # Try different suffix lengths to find one that makes veh_len divisible by 5.
-        # train_single_agent builds state as:
-        #   vehicles(5*num_vehicles) + rsu(5*num_rsus) + uav(5*num_uavs) + global(16)
-        #   plus optional central resource state (16)
-        # That means realistic suffix candidates are: 16 (global), 32 (global+central),
-        # and for backward compatibility, a minimal 8.
-        possible_suffixes = sorted({16, 32, 8, 24}, reverse=True)
+        # 直接使用已知维度进行切分，无需猜测
+        expected_len = self.veh_total + self.rsu_total + self.uav_total + self.suffix_len
         
-        veh_dim = 5
-        rsu_dim = 5  # 统一为5维：pos_x, pos_y, cache_util, queue, energy
-        uav_dim = 5  # 统一为5维：pos_x, pos_y, queue, cache_util, energy
-        
-        rsu_total = self.num_rsus * rsu_dim
-        uav_total = self.num_uavs * uav_dim
-        
-        best_suffix = 8
-        best_veh_len = -1
-        
-        for suffix in possible_suffixes:
-            useful_len = len(flat) - suffix
-            if useful_len <= 0:
-                continue
+        if len(flat) != expected_len:
+            # 尝试自动检测中央资源状态是否存在
+            len_with_central = self.veh_total + self.rsu_total + self.uav_total + self.global_dim + STATE_DIM_CENTRAL
+            len_without_central = self.veh_total + self.rsu_total + self.uav_total + self.global_dim
             
-            rem_len = useful_len - rsu_total - uav_total
-            if rem_len > 0 and rem_len % veh_dim == 0:
-                best_suffix = suffix
-                best_veh_len = rem_len
-                break
+            if len(flat) == len_with_central:
+                self.suffix_len = self.global_dim + STATE_DIM_CENTRAL
+            elif len(flat) == len_without_central:
+                self.suffix_len = self.global_dim
+            # 注: 不再打印警告，静默处理
         
-        if best_veh_len == -1:
-            # Fallback to 8 if no match found, to let it fail naturally or handle it
-            print(f"WARNING: Could not determine correct suffix for state len {len(flat)}. Defaulting to 8.")
-            best_suffix = 8
-            best_veh_len = len(flat) - 8 - rsu_total - uav_total
-        
-        if best_veh_len < 0:
-            best_veh_len = 0
-        if best_veh_len % veh_dim != 0:
-            # Truncate to nearest lower multiple of veh_dim to avoid reshape failure
-            best_veh_len = (best_veh_len // veh_dim) * veh_dim
-
-        # print(f"DEBUG: flat.shape={flat.shape} suffix={best_suffix} veh_len={best_veh_len}")
-        
-        useful_len = len(flat) - best_suffix
-        
-        # Extract vehicle part
-        veh_len = best_veh_len
-        veh = flat[:veh_len]
-        
-        # Extract RSU part
-        rsu_start = veh_len
-        rsu_end = rsu_start + rsu_total
-        rsu = flat[rsu_start:rsu_end]
-        
-        # Extract UAV part
-        uav_start = rsu_end
-        uav_end = uav_start + uav_total
-        uav = flat[uav_start:uav_end]
+        # 切分状态向量
+        idx = 0
+        veh = flat[idx:idx + self.veh_total]
+        idx += self.veh_total
+        rsu = flat[idx:idx + self.rsu_total]
+        idx += self.rsu_total
+        uav = flat[idx:idx + self.uav_total]
+        # idx += self.uav_total  # remaining is global + central, not used in heuristic
         
         return (
-            veh.reshape(-1, veh_dim) if veh_len > 0 else np.zeros((0, veh_dim), dtype=np.float32),
-            rsu.reshape(-1, rsu_dim),
-            uav.reshape(-1, uav_dim),
+            veh.reshape(self.num_vehicles, self.veh_dim),
+            rsu.reshape(self.num_rsus, self.rsu_dim),
+            uav.reshape(self.num_uavs, self.uav_dim),
         )
 
     def select_action(self, state: np.ndarray) -> np.ndarray:
         """
-        Generate action vector.
+        Generate action vector based on heuristic rules.
+        
         Action structure (OptimizedTD3):
         [
           offload_prob_local, offload_prob_rsu, offload_prob_uav,  (3)
@@ -136,62 +126,13 @@ class DynamicOffloadHeuristic:
         """
         veh_states, rsu_states, uav_states = self._parse_state(state)
         
-        # We need to generate ONE action vector for the whole system?
-        # Wait, OptimizedTD3 agent generates one global action vector.
-        # But this heuristic should probably generate actions per vehicle?
-        # The environment expects a single action vector that represents the "Central Agent" decision?
-        # OR does it expect per-vehicle actions?
-        
-        # OptimizedTD3Wrapper.decompose_action expects a single 1D array.
-        # And it extracts:
-        # offload_preference = base_segment[:3]
-        # rsu_selection = ...
-        # uav_selection = ...
-        
-        # This implies the action sets GLOBAL probabilities/preferences for ALL vehicles?
-        # Yes, SingleAgentTrainingEnvironment applies these preferences to ALL vehicles 
-        # (unless overridden by specific logic, but here it seems global).
-        
-        # So we need to calculate AVERAGE preference across all vehicles.
-        
-        local_scores = []
-        rsu_scores = []
-        uav_scores = []
-        
-        # Helper class for node state
-        class NodeState:
-            def __init__(self, s, is_veh=False):
-                # s: [x, y, (z), cache, queue, energy]
-                # Normalized values
-                self.queue = s[3] if is_veh else s[3] # Index 3 is queue for all?
-                # Vehicle: x, y, vel, queue, energy
-                # RSU: x, y, cache, queue, energy, (cpu)
-                # UAV: x, y, z, cache, energy, (cpu) -> Wait, UAV index 3 is cache?
-                # Let's check indices in _parse_state or environment.
-                # Vehicle: 0:x, 1:y, 2:vel, 3:queue, 4:energy
-                # RSU: 0:x, 1:y, 2:cache, 3:queue, 4:energy, 5:cpu
-                # UAV: 0:x, 1:y, 2:z, 3:cache, 4:energy, 5:cpu
-                
-                if is_veh:
-                    self.queue = s[3]
-                else:
-                    # RSU/UAV queue is index 3?
-                    # RSU: index 3 is queue. Correct.
-                    # UAV: index 3 is cache? No.
-                    # UAV: x, y, z, cache, energy.
-                    # UAV doesn't have queue in state?
-                    # OptimizedTD3Wrapper:
-                    # uav_state = [x, y, z, cache, energy]
-                    # It seems UAV queue is NOT in state?
-                    # Or maybe index 4?
-                    pass
-
-        # Calculate average queue load
+        # Calculate average queue load across all vehicles
+        # Vehicle state: [x, y, vel, queue, energy] -> queue is index 3
         avg_veh_queue = np.mean(veh_states[:, 3]) if len(veh_states) > 0 else 0
         
-        # Decision logic
-        # If load is high, prefer RSU/UAV
-        # If load is low, prefer Local
+        # Decision logic based on Nath & Wu 2020:
+        # If vehicle queue load is high, prefer offloading to RSU/UAV
+        # If load is low, prefer local processing
         
         offload_prob_local = 1.0
         offload_prob_rsu = 0.0
@@ -203,26 +144,24 @@ class DynamicOffloadHeuristic:
             offload_prob_uav = 0.3
         
         # RSU selection: prefer RSU with lowest queue (index 3)
-        # RSU state (5维): [pos_x, pos_y, cache_util, queue, energy]
+        # RSU state (5D): [pos_x, pos_y, cache_util, queue, energy]
         rsu_queues = rsu_states[:, 3]  # queue is index 3
-        # Softmax (negative queue)
+        # Softmax over negative queue (lower queue = higher probability)
         rsu_probs = np.exp(-5.0 * rsu_queues)
         rsu_probs /= (np.sum(rsu_probs) + 1e-6)
         
         # UAV selection: prefer UAV with lowest energy consumption (index 4)
-        # UAV state (5维): [pos_x, pos_y, queue, cache_util, energy]
+        # UAV state (5D): [pos_x, pos_y, queue, cache_util, energy]
         uav_energy = uav_states[:, 4]  # energy is index 4
         uav_probs = np.exp(-5.0 * uav_energy)
         uav_probs /= (np.sum(uav_probs) + 1e-6)
         
-        # Construct action
-        # 3 (offload) + num_rsus + num_uavs + 10 (control)
-        
+        # Construct action: 3 (offload) + num_rsus + num_uavs + 10 (control)
         action = np.concatenate([
             [offload_prob_local, offload_prob_rsu, offload_prob_uav],
             rsu_probs,
             uav_probs,
-            np.zeros(10, dtype=np.float32) # Control params (ignored by heuristic usually)
+            np.zeros(10, dtype=np.float32)  # Control params (not used by heuristic)
         ])
         
         return action.astype(np.float32)
@@ -238,3 +177,6 @@ class DynamicOffloadHeuristic:
             # Truncate
             action = action[:action_dim]
         return action
+
+
+__all__ = ["DynamicOffloadHeuristic"]

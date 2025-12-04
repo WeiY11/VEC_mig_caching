@@ -1,0 +1,1435 @@
+--- Page 1 ---
+IEEETRANSACTIONSONSERVICESCOMPUTING,VOL.18,NO.4,JULY/AUGUST2025 2143
+Joint Task Offloading and Migration Optimization in
+UAV-Enabled Dynamic MEC Networks
+LiangWang ,Member,IEEE,BingnanShen ,LianboMa ,SeniorMember,IEEE,YaoZhang ,
+YingnanZhao ,HongzhiGuo ,Member,IEEE,ZhiwenYu ,SeniorMember,IEEE,
+andBinGuo ,SeniorMember,IEEE
+Abstract—UAV-enabledmulti-accessedgecomputing(MEC)is gaming,whichrequirehighQualityofService(QoS)[1].How-
+expandingpossibilitiesforintegratedspace-air-groundnetworks, ever, mobile devices struggle with processing these tasks due
+especiallyinthe5Geraandbeyond.Inthisscenario,tasksfrom tolimitedbatterylifeandcomputationalpower.Inrecentyears,
+mobile users (MUs) are offloaded to nearby UAVs for execution, Multi-access Edge Computing (MEC) [2] has emerged as an
+withresultsreturneduponcompletion.However,theunpredictable
+effectivesolutionbybringingcomputationalresourcescloserto
+mobility of MUs, coupled with dynamic network conditions and
+MobileUsers(MUs)throughedgeserversatthenetwork’sedge,
+fluctuatingresourceavailability,candegradethereliabilityofcom-
+suchasbasestationsandaccesspoints.Offloadingtaskstothese
+municationlinks,leadingtoincreaseddeliverylatency,particularly
+edgeserverscanenhanceQoSforMUsinacost-effectiveand
+fortasksinvolvinglargecomputationalresults.Tomeetstringent
+QoSrequirements,adaptivetaskmigrationacrossUAVsisessential energy-efficientmanner.
+to minimize latency. To address this issue, in this paper, we first Unfortunately,conventionalMECsystemswithincellularnet-
+investigate Computation Task MiGration (CTMiG) problem in worksrelyoncostlyterrestrialinfrastructurewithfixedservice
+UAV-enableddynamicMECnetworks,focusingonjointoptimiza- ranges,makingthemunsuitableforruralorhotspotareaswith
+tionoftask-serving(offloadingandmigration)decisionstoreduce fluctuatingdemands.UAV-enabledMEC[3],[4]addressesthese
+latencyforallMUs.WeproposetheILCTSalgorithm,animitation limitations by deploying MEC servers on UAVs, enhancing
+learning-basedjointoptimizationmethodthatadaptivelyadjusts
+flexibility, coverage, and computation. For instance, in areas
+scheduling strategies in response to environmental changes. An
+wheregroundinfrastructureisdamagedorunavailable,station-
+improved PPO algorithm is first proposed to train a policy and
+ary UAVs can act as aerial base stations, providing essential
+generateexpertdata,followedbygenerativeadversarialimitation
+communicationsupportfordispersedMUs.
+learning to imitate the data and continuously explore new ones
+throughonlinelearningtoenhancethepolicy.Experimentalresults In UAV-enabled MEC networks, on-demand UAVs allow
+demonstratethatouralgorithmachievessuperiorperformancein MUstooffloadtasksandreceiveresultsuponcompletion.For
+training accuracy and average latency compared to other repre- continuously moving MUs, tasks may remain on the serving
+sentativemethods. UAV if deadlines are met, or results can be forwarded via
+multi-hop links when necessary. However, as MUs move, the
+IndexTerms—Computationtaskmigration,UAV,multi-access
+effectivenessoftheinitiallyselectedUAVmaydegradedueto
+edgecomputing,imitationlearning.
+increaseddistance,higherload,orvaryingchannelconditions.
+On one hand, dynamic task arrivals and fluctuating resource
+availability(e.g.,resourceoccupancyandrelease)canmakethe
+I. INTRODUCTION
+initialoffloadingdecisionsuboptimal.Specifically,theoriginal
+THE rise of wireless technologies and mobile devices has servingUAVisselectedbasedontheglobalresourceavailability
+fueled the growth of computationally intensive, latency- at the time; however, once the tasks are completed and the
+sensitive applications like real-time video analysis and online associatedcomputationalresourcesarereleased,theUAVmay
+nolongerbetheoptimalchoice.Ontheotherhand,themobility
+of MUs and changing network conditions can degrade con-
+Received 8 January 2025; revised 26 May 2025; accepted 27 May 2025.
+nectivityandcommunicationreliability,significantlyimpacting
+Dateofpublication4June2025;dateofcurrentversion8August2025.This
+work was supported in part by the National Natural Science Foundation of QoS,particularlyfortaskswithlargedatasizes.
+ChinaunderGrant62332014,andinpartbytheNaturalScienceFoundationof Considerable Result Sizes: Applications like video editing,
+ShaanxiProvinceforDistinguishedYoungScholarsunderGrant2023-JC-JQ- filecompression,andreconnaissanceoftengeneratelargetask
+54.(Correspondingauthor:LiangWang.)
+results, exceeding hundreds of megabytes, making download
+LiangWang,BingnanShen,YaoZhang,andBinGuoarewiththeSchool
+delays a critical issue. This stands in stark contrast to the
+ofComputerScience,NorthwesternPolytechnicalUniversity,Xi’an710129,
+China(e-mail:liangwang0123@gmail.com). common assumption in many studies that feedback processes
+LianboMaiswiththeCollegeofSoftware,NortheasternUniversity,Shenyang requirenegligiblecommunicationresources[5],[6].Therefore,
+110819,China. selecting the optimal transmission path for downloading large
+YingnanZhaoiswiththeCollegeOfComputerScienceAndTechnology,
+outputsiscrucialtominimizingoveralldelay.
+HarbinEngineeringUniversity,Harbin150001,China.
+HongzhiGuoiswiththeSchoolofCybersecurity,NorthwesternPolytechnical Wireless Link Instability: Wireless channel conditions in
+University,Xi’an710129,China. UAV-enabledMECnetworksarepronetoinstabilityduetofac-
+ZhiwenYuiswiththeSchoolofComputerScienceandTechnology,Harbin torssuchasrelativemovement,Dopplershift,andenvironmental
+EngineeringUniversity,Harbin150001,China,andalsowiththeSchoolofCom-
+conditions,whichcandisruptresultdelivery.AsshowninFig.1,
+puterScience,NorthwesternPolytechnicalUniversity,Xi’an710129,China.
+a small quadrotor UAV network using the 802.11a standard
+DigitalObjectIdentifier10.1109/TSC.2025.3576644
+1939-1374©2025IEEE.Allrightsreserved,includingrightsfortextanddatamining,andtrainingofartificialintelligenceandsimilartechnologies.
+Personaluseispermitted,butrepublication/redistributionrequiresIEEEpermission.Seehttps://www.ieee.org/publications/rights/index.htmlformoreinformation.
+Authorized licensed use limited to: SOUTHWEST JIAOTONG UNIVERSITY. Downloaded on November 23,2025 at 08:41:22 UTC from IEEE Xplore. Restrictions apply.
+
+--- Page 2 ---
+2144 IEEETRANSACTIONSONSERVICESCOMPUTING,VOL.18,NO.4,JULY/AUGUST2025
+migration targets must be carefully selected by considering
+latenciesinuploading,execution,migration,anddownloading.
+Whileservice-orientedmigrationminimizesdisruption,itisless
+suitableforcomputationtasksthatprioritizeexecutionanddeliv-
+eryoptimizationindynamicconditions.Thus,existingservice
+migration methods do not fully address the unique challenges
+ofcomputationtaskmigrationinUAV-enabledMECnetworks.
+To bridge this gap, we investigate the practical problem of
+Computation Task MiGration (CTMiG) in UAV-enabled dy-
+namicMECnetworks,focusingonreal-timejointoptimization
+oftaskoffloadingandmigrationdecisionstominimizelatency
+across all MUs. By integrating task offloading and migration
+into the task-serving decision-making process throughout the
+executionlifecycle,weproposeaunifiedapproachtooptimize
+Fig.1. Amotivationexampleofcomputationtaskmigration. both.TheCTMiGproblempresentsseveralchallenges:1)Bal-
+ancingtaskoffloadingandmigrationtospecificUAVs,avoiding
+exhibitsadecreaseinAir-to-Ground(A2G)transmissionrates resource wastage from frequent migrations while preventing
+withincreasingdistance,alongwithsignificantfluctuations[7]. QoSdegradationfrominfrequentones.2)Optimizinglatencies
+In[8],itisdemonstratedthattheA2Gratedropssharplyfrom in uploading, computation, migration, and downloading amid
+14 Mbps to 2 Mbps as the distance increases from 300 to network fluctuations and workload balancing. 3) The CTMiG
+325 meters, resulting in higher downlink delays. While both problemsharessimilaritieswiththeNP-hardCollegeAdmission
+Air-to-Air (A2A) and A2G path loss increase with distance, Problem,whereeachUAVservesmultipleMUs,andeachMU
+A2A path loss shows less variation, with a maximum twofold selects one UAV. The dynamic nature of task arrivals adds
+difference [9], meaning the A2A channel used for migration complexity, requiring advanced online scheduling algorithms
+providesahighertransmissionratethantheA2Gchannelused beyondtraditionalheuristics.Thecontributionsofthisworkcan
+fordownloading. be (cid:2) summarizedasfollows:
+Therefore, migrating tasks to a more appropriate UAV is To the best of our knowledge, this study is the first to
+essentialtomaintainefficientexecutionandensuretimelyresult addressthefeedback-awarejointoffloadingandmigration
+delivery [10]. In UAV-enabled MEC networks, dynamic task problemindynamicUAV-enabledMECnetworks.Andwe
+migrationiscrucialformeetingstringentQoSrequirementsby modeltheCTMiGproblemasacontinuous-timeMarkov
+reducinglatencyandpositioningtasksclosertoMUs.Toillus- (cid:2) decisionprocess.
+trate,thisstudypresentsamotivationalexampleandcategorizes We propose ILCTS, a generative adversarial imitation
+computationtasksintotwotypesbasedonlatencyrequirements: learningalgorithmforoffloadingandmigrationdecisions
+stringent(hard)andflexible(soft)delayconstraints.Thisclassi- byimitatingexpertpolicies.Expertpoliciesaregenerated
+ficationfacilitatesprecisetaskperformanceoptimizationacross using an improved Proximal Policy Optimization (PPO)
+diversescenarios. algorithmtocreateofflinedatawhenrelevantdataisscarce.
+Motivation Example: As illustrated in Fig. 1, five UAVs Theagentusesadversarialtrainingtomimicexpertactions
+collaboratetoprovidecomputationservicestotwogroundMUs andrefineitspolicythroughonlinelearning,utilizingboth
+inadisasterassistancescenario.ASoftware-DefinedNetwork- (cid:2) existingandnewdata.
+ing(SDN)controller,withglobalnetworkinformation,makes We conduct extensive simulations to validate the effec-
+real-timedecisionsontaskoffloadingandmigration.Upontask tiveness of the proposed ILCTS, which achieves lower
+arrival,theSDNcontrollerevaluatescommunicationconditions, averagedeliverydelayandimprovednetworkadaptability
+UAVcapabilities,andperiodicallyreportedworkloaddistribu- comparedtorepresentativebaselinemethods.
+tiontodeterminetheoptimaloffloadingstrategy.Initially,MU Theremainderofthispaperisorganizedasfollows:SectionII
+1’stask,withasoftdelayrequirement,isoffloadedtoUAV1, reviews related work; Section III introduces the system model
+whileMU2’stask,withaharddelayrequirement,isassigned and problem formulation; Section IV presents the proposed
+to UAV 3. As the MUs move, the SDN controller monitors imitationlearning-basedalgorithm,ILCTS;SectionVprovides
+task progress and deadlines, migrating tasks if necessary. For simulationresults;andSectionVIconcludesthepaper.
+instance,ifMU2’staskrisksmissingitsdeadline,itismigrated
+fromUAV3toUAV5,optimizingQoS.Thecontrollerselects
+the migration path (UAV 3 → UAV 4 → UAV 5) to minimize II. RELATEDWORK
+cost. UAV-EnabledMEC:TraditionaledgecomputingreliesonBS
+Dynamicmigrationofcomputationtasksremainsakeychal- asservers,butemergingIoTapplicationsrequiremoreflexible
+lengeinUAV-enabledMECnetworks.Mostexistingstudiesfo- architectures, making UAVs ideal for computation-intensive
+cusonservice-orientedmigration,whichaimstomaintainseam- tasks in UAV-enabled MEC networks due to their adaptabil-
+less service continuity by relocating active services, including ity and rapid deployment [13], [14]. However, UAV mobility,
+state,sessiondata,andongoingconnections,acrosscomputing dynamic wireless variations, energy constraints, and evolving
+nodesasmobileusersmovebeyondthecoverageoftheircurrent topologies require adaptive solutions and real-time decision-
+edgeservers[11],[12].Incontrast,computationtaskmigration making to ensure reliable task execution. In [15], Hu et al.
+involvestransferringtaskstomoresuitableedgenodestoenable propose an algorithm to minimize the maximum latency for
+efficientexecution,improvedresourceutilization,andtimelyre- groundusersbyoptimizingUAVtrajectory,userassociation,and
+sultdeliveryindynamicenvironments.ToensureQoSforMUs, offloadingratio.Similarly,in[16],theauthorsaimtomaximize
+Authorized licensed use limited to: SOUTHWEST JIAOTONG UNIVERSITY. Downloaded on November 23,2025 at 08:41:22 UTC from IEEE Xplore. Restrictions apply.
+
+--- Page 3 ---
+WANGetal.:JOINTTASKOFFLOADINGANDMIGRATIONOPTIMIZATIONINUAV-ENABLEDDYNAMICMECNETWORKS 2145
+the minimum throughput for MUs by jointly optimizing UAV explicitly considers the entire data transmission path, encom-
+trajectory, bandwidth allocation, and user association. Xiong passing task uploads, migration among UAV servers, and the
+etal.focusonminimizingenergyconsumptioninUAV-assisted downloadofcomputationresults.
+edgecomputingnetworksbyjointlyoptimizingtaskoffloading, Task Offloading in MEC: Task offloading in MEC involves
+bit allocation, and UAV trajectory [17]. Zhang et al. present transferring tasks to edge or remote cloud servers to improve
+amulti-UAV-enabledMECarchitecture,wheremultipleUAVs performance, reduce latency, and optimize energy usage. Var-
+providecommunicationandcomputationservicestoIoTdevices ious studies have explored strategies to optimize this process.
+unabletoaccessgroundedgeclouds,withafocusonachieving Mukherjee et al. use a distributed deep neural network to op-
+min-max fairness in energy consumption [18]. In a similar timize task offloading, addressing computing bottlenecks and
+vein, Han et al. aim to minimize overall energy consumption UAV-userchannellimitations[25].Tianetal.developasatisfac-
+in a multi-UAV-assisted MEC system by jointly optimizing tionmodelincorporatingtasklatencyandenergyconservation,
+UAV-deviceassociations,UAVdeployments,andflighttrajecto- using a K-means algorithm to optimize task offloading and
+ries[19].Heetal.formulateajointoptimizationproblemfortask UAV scheduling in UAV-enabled MEC systems [26]. Wang
+offloading,resourceallocation,andUAVtrajectoryplanningto et al. propose the SSGT algorithm for pre-offloading tasks in
+maximize the QoE for mobile users while considering UAV multi-UAV MEC systems, aiming to balance utility between
+energy consumption constraints [20]. However, existing stud- UAV-MECserversandmobileusers[27].Mobilityandchannel
+ies often overlook the dynamic nature of UAV-based wireless capacity are also critical factors in task offloading strategies.
+networksandfailtoaccountforthelatencyassociatedwithre- Zhao et al. explore task offloading in vehicular edge comput-
+sultdownloading,leavingthetaskmigrationissueinadequately ing, introducing a DDPG algorithm combined with a mobility
+addressed. detection algorithm to make offloading decisions as vehicles
+Service Migration in MEC: Efficient service migration in leave RSU coverage [28]. Similarly, Zheng et al. propose a
+MECiscriticalformaintaininguninterruptedservicedelivery, locationpredictionschemebasedonpedestrianmovementand
+particularlygiventhelimitedcoverageofedgeserversandthe vehicle-following models, integrated with a deep Q-learning-
+mobility of users [11], [12]. Service migration methodologies basedneuralnetworkfortaskoffloading[29].InUAV-assisted
+typically employ techniques such as live migration, container- edgecomputing,optimizingoffloadingefficiencyrequiresinte-
+based migration, and stateful migration to relocate active ser- grating UAV trajectory control with computation strategies to
+viceswithminimaldisruption.Tooptimizemigrationdecisions, meet dynamic network requirements. Du et al. introduce the
+numerous studies have explored user mobility prediction. For MA-TACOschemebutdonotfullyaddresstheQoSchallenges
+example,Chenetal.[21]proposeadata-drivenframeworkthat posed by user mobility, highlighting the need for integrated
+utilizeshistoricalWiFitracesformobility-awareservicemigra- migrationdecisions[30].
+tion, while Zhao et al. [22] develop an LSTM-based predictor Inadditiontoperformanceenhancement,effectiveMECof-
+toimprovethesuccessrateofmigration.Xuetal.[23]present floading must address key objectives such as profitability and
+a service management strategy that considers both delay and security. Wang et al. introduce a market-based pricing mecha-
+mobility, applying probabilistic methods to minimize service nismtoincentivizeedgeresourceutilizationinnon-competitive
+latencyandmigrationcosts.Despitetheseadvances,accurately environments [31].Dbouketal.proposeasecuread-hocedge
+predictingusertrajectoriesremainschallengingduetothediffi- cloudarchitectureleveragingWi-FiDirectandgeneticoptimiza-
+cultyinacquiringlarge-scale,high-precisiondatasetsnecessary tion for context-aware offloading [32]. Xiao et al. formulate a
+for training deep learning models. Furthermore, Xu et al. [24] max-minoptimizationframeworkthatjointlyoptimizesoffload-
+propose a path selection method aimed at reducing network ingdecisions,powercontrol,andcomputationparametersunder
+providercostsandimprovinguserQoEduringmigration.How- security constraints in vehicular networks [33]. Li et al. focus
+ever, their approach is limited by its reliance on only the start onprofit-driven,security-awaretaskallocationinECCenviron-
+and end points of user trajectories, overlooking intermediate mentsbydynamicallyassigningtaskstoedgeorcloudservers
+locationsandthedynamiccharacteristicsofwirelessnetworks. based on service requirements and security levels [34]. While
+Currentresearchonservicemigrationprimarilytargetscon- thesestudiesprimarilyfocusontaskoffloading,inUAV-enabled
+tinuouslyconnected,latency-sensitiveapplicationssuchasVR, MECscenarios,whereenvironmentalfactorsimpactreliability,
+AR,andautonomousdriving.Thesestudiesfrequentlyassume integrating offloading and migration decisions is essential for
+that the computational outputs are relatively small, thereby enhancinguserQoS.
+simplifyingoroverlookingtheimpactofdownloaddelaysand
+dynamic transmission paths [5], [6]. While such assumptions
+areoftenvalidforreal-timeapplicationsproducinglightweight
+III. SYSTEMMODELANDPROBLEMFORMATION
+outputs, they may limit the applicability of existing models in This section begins by introducing the system model under
+scenariosinvolvingsubstantialoutputdataorcomplex,dynamic considerationinthisstudyandthenformallydefinesourprob-
+networkconditions.Forinstance,tasksinvolvingvideostream lem.TableIsummarizesthesymbolsandnotations.
+analysis, sensor fusion, or data mining can generate outputs
+ranging from several megabytes to multiple gigabytes. High-
+A. SystemModel
+resolutionvideoanalytics(e.g.,1080por4K)isarepresentative
+example where the download of results introduces significant Fig. 2 illustrates the system architecture and the dynamic
+latency.Insuchcases,efficientpathselectionbecomescritical workflowoftaskoffloadingandmigration.Inthissetup,aUAV-
+to minimize end-to-end delays. Distinct from existing studies, enabled wireless-powered MEC system is considered, where
+thispaperaddressesthechallenges associatedwithcomputing UAVs,each integrated withan MEC server, provide computa-
+task migration in highly dynamic UAV-enabled communica- tionalservicestoasetofM MUs.TheUAVsandMUsarede-
+tion networks, without relying on user mobility prediction. It notedbythesetsU ={1,2,...,U}andM={1,2,...,M},
+Authorized licensed use limited to: SOUTHWEST JIAOTONG UNIVERSITY. Downloaded on November 23,2025 at 08:41:22 UTC from IEEE Xplore. Restrictions apply.
+
+--- Page 4 ---
+2146 IEEETRANSACTIONSONSERVICESCOMPUTING,VOL.18,NO.4,JULY/AUGUST2025
+TABLEI have a computationally intensive task Γ , such as processing
+i
+DEFINITIONSOFNOTATIONS high-definition3Droadmaps,whichcanbeoffloadedtoaUAV
+for execution. Task generation times of all MUs are randomly
+distributedoverthetimehorizonT,witheachMU’staskarriving
+independently.Tocapturethestochasticnatureoftaskgenera-
+tion,taskarrivalsaremodeledasaPoissonprocess,i.e.,awidely
+adoptedassumptionincommunication systems.Tasksarecat-
+egorized based on their latency constraints: hard delay tasks,
+which must be processed and returned within a strict deadline
+dl ,andsoftdelaytasks,whichcantoleratesomelatencyatthe
+i
+expenseofdegradedQoSasdelayincreases[38].EachtaskΓ
+i
+ischaracterizedbythetupleΓ =(cid:4)ds ,μ ,res ,ξ (cid:5),whereds
+i i i i i i
+istheinputdatasizeinbits,μ isisthecomputationaldemand
+i
+inCPUcyclespersecond(Hz),res representstheoutputdata
+i
+size,andξ indicateswhetherthetaskhasahardorsoftdelay
+i
+requirement.Ifξ =1,taskΓ isclassifiedashavingaharddelay
+i i
+requirement; otherwise, it is considered a soft delay task. The
+maximum delivery deadline χ for returning the computation
+i
+resultoftaskΓ isdefinedasfollows:
+i
+(cid:2)
+dl , ifξ =1;
+χ = i i (1)
+i dl +Δt , ifξ =0;
+i i i
+wheredl representsthedeadlinefortaskΓ andΔt denotesthe
+i i i
+maximum allowable delay beyond this deadline for soft delay
+tasks.Withinthisextendedtime,thetaskremainsvalid,though
+itsperformancemaybedegraded.
+Task Offloading and Migration: To offload the computation
+task Γ , MU i must upload the task to the MEC system via
+i
+an accessible UAV j ∈U. At each time slot t, MU i may be
+within the coverage area of multiple UAVs, represented by
+Fig.2. Thesystemarchitectureandworkflow. the set Ut. Among these UAVs, we adopt the widely used
+i
+proximity-based UAV association scheme, which assigns the
+respectively.Tofacilitateperformanceanalysis,thesystemop- MUtothenearestUAV[39].Letxt representtheassociation
+i,j
+erates over a finite time horizon T, which is discretized into indicator between UAV j ∈Ut and MU i∈M at time slot t,
+i
+T equal time slots, represented as T ={0,1,2,...,T −1}, where xt =1 indicates that MU i is connected to UAV j;
+i,j
+with each time slot having a fixed duration τ. The wireless and xt =0 otherwise. Formally, the association indicator is
+i,j
+communicationchannelsbetweenMUsandUAVs,aswellasthe determineddirectlyasfollows:
+inter-UAVcommunicationlinks,aremodeledastime-varying. (cid:3) (cid:3)
+Whilechannelconditionsfluctuateatthebeginningofeachtime xt =argmin (cid:3)locmu,locuav(cid:3), (2)
+i,j i,t j
+slot,theyareassumedtoremainconstantthroughouttheduration j∈Ut
+i
+of the slot. This quasi-static assumption is justified due to the (cid:4)
+typicallyshortdurationτofthetimeslots.Thesystemleverages where
+j∈Ut
+xt
+i,j
+=1,∀i∈M,t∈T,ensuringthateachMU
+a SDN architecture [35], [36], which allows for centralized connectstoo i nlyoneUAVatanygiventime.
+control of network operations and resource management. The TooptimizeworkloaddistributioninUAV-enablededgecom-
+SDNcontrollercollectsreal-timesysteminformation,including putingnetworks,theSDNcontrollerdynamicallyselectsUAVs
+thegeographicallocationsandoperationalstatusesofMUsand fortaskexecutionbasedonresourceavailability,energystatus,
+UAVs,aswellascurrentchannelconditions,tooptimizenetwork andproximitytotheMU.Computationresourcesareallocated
+performancedynamically.Concretely,leveragingcontrolplane onaFirst-Come,First-Served(FCFS)basis,withUAVsbeing
+protocols such as OpenFlow-like mechanisms [37], the SDN selectedonlyiftheypossesssufficientcapacity,withoutconsid-
+controller periodically requests status updates and configura- eringtaskpriorityorpreemption.IftheinitiallyassociatedUAV
+tionsfromUAVsandMECservers. lacks adequate resources, the task is rerouted to an alternative
+During the time horizon T, UAVs remain stationary at pre- UAVwithinthenetwork.Consequently,tasksmaybeexecuted
+defined positions with a fixed altitude h, where each UAV either by the directly connected UAV or, via traffic redirec-
+j ∈U is located at locuav. The UAVs’ key parameters, in- tion, by another UAV. The SDN controller orchestrates task
+j
+cluding CPU clock speed (cid:3) j (cycles per second, 1GHz= transmission by dynamically selecting optimal paths based on
+109cyclespersecond), computation intensity ρ (CPU cycles real-timenetworktopology,linkquality,andtrafficload.Toen-
+j
+per bit), and wireless coverage radius rad , define their com- hanceenergyefficiency,UAVswithlimitedresidualenergyare
+j
+putationalcapacityandcommunicationrange.Incontrast,MUs assigned reduced routing parameters, e.g., transmission rates,
+are continuously moving through the system but are assumed throughselectiveadjustmentsbytheSDNcontroller,enabling
+to remain static within each time slot. The position of MU i themtoconserveenergyandrecharge.Thisdiscouragesfurther
+at time slot t is denoted by locmu. Each MU i is assumed to taskassignmentsandpromotesenergy-awarescheduling.
+i,t
+Authorized licensed use limited to: SOUTHWEST JIAOTONG UNIVERSITY. Downloaded on November 23,2025 at 08:41:22 UTC from IEEE Xplore. Restrictions apply.
+
+--- Page 5 ---
+WANGetal.:JOINTTASKOFFLOADINGANDMIGRATIONOPTIMIZATIONINUAV-ENABLEDDYNAMICMECNETWORKS 2147
+As the MU moves, the associated UAV may change during communication,theA2G/G2Apathlossisprimarilyinfluenced
+taskexecution,potentiallyleadingtoincreaseddownlinktrans- bytheLoSprobability.Asaltitudeincreases,theLoSprobability
+missionsbetweentheconnectedUAVandtheUAVperforming P (d ,h)risessharply,reducingpathlossduetoimproved
+LoS ag
+thetask.TomaintainQoSrequirements,theSDNcontrollermust LoS.Athigheraltitudes,however,P (d ,h)stabilizes,and
+LoS ag
+managetaskmigration,whichinvolvesdynamicallyswitching pathlossisdominatedbyfree-spaceattenuationratherthanLoS
+the serving UAV during task execution. In this context, task conditions.Thehorizontaldistanced alsoincreasespathloss,
+ag
+migration can be understood as re-offloading the task to a assignalpropagationlengthenswithdistance.Additionally,an
+different UAV to ensure optimal performance. We define a increaseincarrierfrequencyf raisesthepathloss,particularly
+c
+binary matrix Yt ={0,1}M×U to represent the task serving byimpactingtheinitialtermsinthepathloss(4),duetohigher
+status,includingbothoffloadingandmigrationindicators,across frequenciesbeingmoresusceptibletoattenuation.
+MUsandUAVs.Theservingstatusindicatorvariableyt ∈Yt ForAir-to-Air(A2A)communication,whichtypicallyoccurs
+i,j
+signifies whether UAV j is serving MU i’s task at time slot t. in open environments with prevalent LoS conditions, the free-
+Specifically, yt =1 signifies that UAV j is serving the task spacepathlossmodelisused:
+i,j
+of MU i; otherwise, yt =0. Each task is processed by only
+i,j (cid:4) PL (d)=32.45+20logf +20logd, (6)
+oneUAVatanygiventime,ensuring yt =1,∀i∈M. A2A c
+j∈U i,j
+AUAV’staskcapacityislimitedbyitscomputationalcapacity, wheredrepresentsthedistancebetweenUAVs,andf (inMHz)
+c
+asdefinedbytheconstraint: isthecarrierfrequency.ThismodelassumesclearLoSbetween
+(cid:5)
+UAVs, with minimal interference from obstacles. Building on
+yt μ ≤(cid:3) , ∀j ∈U, (3)
+i,j i j thepathlossmodelanddatatransmissionratecalculationmeth-
+i∈M ods outlined in [43], we present a generalized framework that
+which guarantees that the cumulative resource demands of all accounts for the various communication channels involved in
+servedtasksdonotexceedtheUAV’savailableresources.
+datatransmission.Thetransmissionratebetweensourcenodei
+CommunicationModel:WiFiisawidelyadoptedcommuni-
+anddestinationnodej duringtimeslottisexpressedas:
+cationtechnologyincommercialUAVs,particularlyforshort- (cid:11) (cid:12)
+rangetransmissions[40].Leveragingitsprevalence,wemodel TRt =B(t)log 1+ E i10 − 1 P 0 L , (7)
+UAV-enabledMECnetworkcommunicationsusingWiFi,where i,j 2 B(t)σ2
+theCSMA/CAprotocolensuresthatonlyonedevicetransmits
+on the channel at a time. Under CSMA/CA, multiple UAVs whereB(t)istheavailableWiFibandwidthattimeslott,E iis
+contend for channel access, causing backoff delays and re- thetransmittingpowerofsourcenodei,andPLrepresentsthe
+transmissionsthatintroducelatencyandthroughputvariability. path lossbetween nodes iand j,and σ2 denotes theGaussian
+TheseeffectscanleadtofluctuatingperformanceindenseUAV noise power. The path loss PL depends on whether the com-
+deployments,complicatingprecisemodelingofcommunication munication occurs between two UAVs (A2A), in which case
+delays.Inthisstudy,weadoptanidealizedMAClayermodelto PL=PL ,orbetweenaUAVandagroundMU(A2G),where
+A2A
+focusonhigh-leveltaskoffloadingoptimization,asincorporat- PL=PL .
+A2G
+ingdetailedMAC-layerdynamicswouldsignificantlyincrease Note that, the scalability of UAV deployment in a UAV-
+complexityandexceedthescopeofthiswork.Weconsiderthis enabled MEC network depends on workload and communica-
+animportantdirectionforfutureresearch. tion overhead, which are influenced by bandwidth, processing
+Thepathlossdirectlyaffectsthesignalstrength,datathrough- capacity,andUAVdensity.Inourscenario,withalimitednum-
+put,andreliabilityofthewirelessconnection.Mathematically, ber of UAVs and MUs for applications like disaster assistance
+thepathlossforA2G/G2Acommunication[41]betweenaUAV and public safety, we assume ideal communication conditions
+andagroundMUismodeledasfollows: anddisregardtheoverhead ofreal-timeinformationcollection
+⎛ (cid:8) ⎞
+bytheSDNcontrollerUAVforsimplicity.
+PL (d ,h)=20log ⎝
+4πf
+c
+h2+d2
+ag⎠ Computational Service Latency Analysis: In dynamic en-
+A2G ag c vironments, the completion of an offloaded computation task
+involvesfourkeylatencycomponents:uploadlatency(fortrans-
++P (d ,h)η +(1−P (d ,h))η , (4) mitting input data), execution latency, migration latency (for
+LoS ag LoS LoS ag NLoS transferring unprocessed data), and result download latency.
+where h denotes the UAV’s altitude, d is the horizontal dis- For newly arrived tasks, the SDN controller estimates upload,
+ag
+tance between the UAV and the MU, f (in Hz) is the carrier execution, and download latencies to optimize task offloading
+c
+frequency, and c is the speed of light. The term P (d ,h) decisions.Forongoingtasks,thecontrollerperiodicallyevalu-
+LoS ag
+denotes the probability of a Line-of-Sight (LoS) link between atesallfourcomponentsateachtimeslottodynamicallyadjust
+theUAVandtheMU,givenby: taskmigrationdecisions.Next,weanalyzeeachoftheselatency
+componentsindetail.
+1
+P (d ,h)= , (5) (1) Task Upload Latency: This latency arises during the
+LoS ag 1+a∗exp(−b(arctan(h/d )−a))
+ag transmissionofataskfromanMUtoitspotentialservingUAV,
+where a and b are environment-specific parameters that adjust
+relayedthroughanintermediateconnectedUAV.Attimeslott,
+for a given MU i and its associated UAV j (i.e., xt =1), let
+theslopeandpositionoftheLoSprobabilitycurve.Thefactors i,j
+η and η represent the additional attenuation (in dB) Patht denotethetransmissionpathfromMUitoitspotential
+LoS NLoS i,j,k
+duetoLoSandNLoSconditions,respectively.Forasuburban servingUAVkviatheconnectedUAVj.Asoutlined,theSDN
+environment,typicalvaluesfortheseparametersarea=4.88, controllerselectsthetransmissionpathbasedonreal-timenet-
+b=0.43,η =0.1,andη =21[42].Inlow-altitudeUAV work conditions, utilizing strategies like shortest path routing.
+LoS NLoS
+Authorized licensed use limited to: SOUTHWEST JIAOTONG UNIVERSITY. Downloaded on November 23,2025 at 08:41:22 UTC from IEEE Xplore. Restrictions apply.
+
+--- Page 6 ---
+2148 IEEETRANSACTIONSONSERVICESCOMPUTING,VOL.18,NO.4,JULY/AUGUST2025
+Thetaskuploadlatency,denotedasLˆup ,iscalculatedbasedon where{s,s+1}representsconsecutivenodesalongthetrans-
+theassociationindicatorandtheserv i, i k n , g t variable,andisgiven mission path Patht k→o from UAV k to UAV o. Additionally,
+by Lmig representsthecumulativemigrationlatencyexperienced
+i,t−1
+(cid:5) (cid:5) ds byMUiuptothecurrenttimeslott,andthisvalueisloggedin
+Lˆup =xt yt i , (8) thesystem’soperationalrecords.
+i,k,t i,j i,k TRt
+k∈U {s,s+1}∈Patht s,s+1 (4)ResultDownloadLatency:Thisreferstothedelayassoci-
+i,j,k atedwithtransmittingthecomputationresultfromtheUAVthat
+wherext =1,yt representthepotentialUAVservingMUi completedthetaskbacktotheMU.Similartothetaskupload
+i,j i,k
+at time slot t, and TRt denotes the data transmission rate phase,thedownload latency, denoted as Lˆdown,fordelivering
+s,s+1 k,i,t
+betweenconsecutivetransmissionnodessands+1alongthe thecomputationresultfromUAVk(whichcompletedthetask)
+deliverypathPatht duringthesametimeslot. toMUiviatheconnectedUAVjattimeslott(wherext =1)
+i,j,k i,j
+(2) Task Execution Latency: For newly arriving tasks, task iscalculatedasfollows:
+execution latency is calculated based on the potential serving (cid:5) (cid:5) res
+Lˆdown =xt yt i , (13)
+UAVs and the full input data. In contrast, for ongoing tasks, k,i,t i,j i,k TRt
+the latency calculation must account for both the time already k∈U {s,s+1}∈Patht s,s+1
+k,j,i
+spent processing the partial input data and the estimated time
+requiredtoprocesstheremainingdata.Attimeslott,foranewly
+wherePatht
+k,j,i
+representsthedeliverypathfromUAVk,which
+offloadedtaskΓ i offloadedfromMUi,theinvolvedexecution completedtaskΓ i ,toMUi,withthedatarelayedthroughthe
+latencywithrespecttothepotentialservingUAVkiscalculated connectedUAVj attimeslott.Thetransmissionratebetween
+asbelow: consecutive nodes s and s+1 along this path is denoted by
+(cid:5) ds ∗ρ TR s t ,s+1 ,whileres i referstothesizeofthecomputationresult.
+Lˆcomp = yt ∗ i k, (9)
+i,k,t i,k μ
+k∈U i B. ProblemFormulation
+where yt denotes the potential serving UAV for task Γ at Asdiscussed,ateachtimeslott,theSDNcontrollerevaluates
+i,k i
+timet,ds isthetask’sdatasize,μ representsthecomputation task-serving decisions for newly arrived tasks by considering
+i i
+demand,andρ isUAVk’scomputationalpower. theestimateduploadlatency,execution latency,anddownload
+k
+If Γ is an ongoing task, the SDN controller periodically latency to select the most suitable UAV for offloading. For
+i
+calculatesitsexecutionlatencyateachtimeslot.Attimeslott, ongoingtasks,thecontrollerevaluatestheneedformigrationand
+assumingthetaskremainsonthecurrentservingUAVkwithout selectsatargetUAVifrequired.Themigrationtriggercondition
+migrating,theestimatedexecutionlatencyLˆcompisgivenby: isbasedonthecumulativetimealreadyspent(includingupload,
+i,k,t
+partialexecution,andmigrationlatency)andtheestimatedtime
+(cid:5) dst∗ρ tocompletethetask(coveringremainingexecution,futuremi-
+Lˆcomp = yt ∗ i k +la , (10)
+i,k,t i,k μ comp gration, and download latency). If the total of these times is
+k∈U i expected to exceed the task’s deadline, migration is initiated.
+wheredstrepresentstheremainingdatatobeprocessedfortask Formally, for a task Γ
+i
+offloaded by MU i, the expected total
+Γ ,andla i denotestheexecutiontimealreadyspentbefore latencyLˆ attimeslottiscalculatedas:
+i comp i,t
+thecurrenttimeslott,calculatedasfollows:
+(cid:13) (cid:14) Lˆ =Lˆup +Lˆcomp+Lˆmig +Lˆdown, (14)
+(cid:5)t (cid:5) dsn−1−dsn ∗ρ i,t i,k,t i,k,t i,k,o,t k,i,t
+la comp = y i n ,o −1∗ i μ i o, (11) where k represent the serving UAV and o denote the potential
+n=1o∈U i migrationUAV.ToensureeachtaskmeetsitsQoSrequirements,
+whereyn−1
+representstheUAVservingtaskΓ duringtimeslot
+the SDN controller evaluates the total latency Lˆ
+i,t
+against the
+n−1. i,o i task’s specified deadline dl
+i
+. If Lˆ
+i,t
+≤dl
+i
+, no migration is
+(3)TaskMigrationLatency:Attimeslott,iftaskΓ i requires needed. However, if Lˆ i,t >dl i , the task must be migrated to
+migrationtoanotherUAVtosatisfyQoSrequirements,there- another UAV to maintain the required QoS. Considering that
+maininginputdatadst(forcontinuedexecution)andthepartial
+frequentmigrationleadstohigherresourceconsumption,such
+i
+resultobtainedsofarmustbetransferredtothenewlyassigned as increased use of bandwidth and CPU, we make a trade-off
+UAV. For simplicity, the partial result for task Γ i at time t is betweenQoSandcomputationalresourcesforsoftdelaytasks.
+representedasζ
+t
+×res
+i
+,where0<ζ
+t
+<1isaproportionality
+Specifically, for these tasks, we introduce a “completion pro-
+coefficient representing the fraction of the final output result. cess”indicatorΨt torelaxthemigrationtriggercondition.The
+i
+This process assumes that migration is completed within a indicatorofcompletionprocessiscalculatedas:
+single time slot. Since multiple migrations may occur during
+ds −dst
+task execution, the migration latency is calculated recursively. Ψt = i i, ξ =0. (15)
+Specifically,iftaskΓ ,currentlyservedbyUAVk,ismigrated i ds i
+i i
+toapotentialservingUAVoviatheselectedtransmissionpath
+TheSDNcontrollerevaluatesboththetaskcompletionprogress
+Patht at time slot t (where k (cid:9)=o), the migration latency
+k→o andtheestimatedlatencytodecidewhethertotriggeramigra-
+Lˆm i,k i , g o,t isgivenby tion. Specifically, for soft delay tasks (ξ i =0), if the comple-
+(cid:5) dst+ζ ×res tion progress exceeds a predefined threshold, Ψt i ≥ς, and the
+Lˆm i,k i , g o,t = i TRt t i +Lm i,t i − g 1 (12) totallatencyLˆ i,t <dl i +Δt i ,migrationisnotrequired.Con-
+{s,s+1}∈Patht
+k→o
+s,s+1 sequently,themigrationtriggerconditionisadjusted:migration
+Authorized licensed use limited to: SOUTHWEST JIAOTONG UNIVERSITY. Downloaded on November 23,2025 at 08:41:22 UTC from IEEE Xplore. Restrictions apply.
+
+--- Page 7 ---
+WANGetal.:JOINTTASKOFFLOADINGANDMIGRATIONOPTIMIZATIONINUAV-ENABLEDDYNAMICMECNETWORKS 2149
+isinitiatedifthesecriteriaarenotsatisfied;otherwise,itremains
+unchanged.
+(cid:2)
+Lˆ ≤dl , ξ =1;
+i,t i i (16)
+Lˆ ≤dl +Δt andΨt ≥ς, ξ =0.
+i,t i i i i
+Problem Definition: Here, we formally define our studied
+Computation Task MiGration (CTMiG) problem in UAV-
+enabled dynamic MEC networks. Consider a UAV-enabled
+wireless-powered MEC system consisting of a set of UAVs
+U ={1,2,...,U}andMUsM={1,2,...,M},whereUAVs
+arestationedatfixedlocationswhileMUsmovecontinuously.
+OverafinitetimehorizonT ={0,1,2,...,T −1},eachMU
+stochastically generates a computationally intensive task Γ ,
+i
+categorized as either a hard or soft delay task, which must
+Fig.3. ThearchitectureofourproposedapproachILCTS.
+be offloaded to the UAVs for execution. The SDN controller,
+serving as a centralized coordinator, is responsible for mak-
+ingreal-timetask-servingdecisions(offloadingandmigration)
+and reduces the need for extensive exploration. It leverages
+withinthedynamicnetwork,withtheobjectiveofmaximizing
+GAN-based techniques to refine task-serving decisions. How-
+QoS for the MUs. Mathematically, the problem is formulated
+ever,acquiringexpertdataischallengingduetolimiteddatasets
+asanonlinedecision-makingchallenge,aimingtominimizethe
+andhighcollectioncosts.Toaddressthis,wedevelopanoffline
+averagelatencyacrossallMUswhileensuringthatalltasksmeet
+expertpolicyusinganimprovedPPOalgorithm,chosenforits
+their respective deadlines. The CTMiG problem is formally
+stability,efficiency,simplicity,andflexibilityintaskmigration
+statedasfollows:
+within UAV-enabled dynamic MEC networks. PPO generates
+(cid:5)M expert-like trajectories from the current policy, enabling real-
+1
+P1: argmin L time adaptation to environmental changes. In complex envi-
+M i
+{ y
+i
+t
+,j
+∈Yt } i=0 ronments, GANs enable the agent to explore unknown states,
+⎧ learningoptimalbehaviorsthroughexplorationandrefinement,
+⎪⎪⎪⎪⎨ y i t ,j =
+(cid:4)
+(cid:4) {0
+j
+,
+∈
+1
+U
+}
+y
+,
+i t
+∀
+,j
+i
+=
+∈M
+1,∀
+,
+i
+j
+∈
+∈
+M
+U,t∈T u
+in
+lt
+g
+im
+an
+a
+d
+te
+m
+ly
+i
+s
+g
+u
+r
+r
+a
+p
+ti
+a
+o
+s
+n
+si
+d
+n
+e
+g
+c
+e
+i
+x
+si
+p
+o
+e
+n
+r
+s
+t
+.
+limitationsinreal-timetaskoffload-
+s.t: ⎪⎪⎪⎪⎩ (cid:2) i∈M
+L
+i
+y i
+≤
+t ,j μ
+d
+i
+l
+i
+≤
+,
+(cid:2) 1 j ,∀
+ξ
+i
+j
+=
+∈
+1
+U
+;
+(17)
+of
+T
+tw
+h
+o
+ep
+m
+r
+a
+o
+i
+p
+n
+o
+c
+s
+o
+ed
+m
+I
+p
+L
+o
+C
+n
+T
+en
+S
+ts
+a
+.
+lgorithm,illustratedinFig.3,consists
+L ≤dl +Δt , ξ =0. 1)OfflineDesignofExpertPolicies:Ontheleftside,expert
+i i i i
+policiesareoffline-designedandtrainedusinganimprovedPPO
+whereL denotestheactualservicelatencyexperiencedbythe algorithm.Themodelinteractswiththeenvironmenttogather
+i
+taskoffloadedbyMUiattheendofthetimehorizonT.This experience,andonceitconverges,itgeneratesstate-actionpairs
+valueservesastherealizedlatency,reflectingthetrueoutcome thatconstitutetheexpertdata.
+ofthepreviouslyestimatedlatency. 2) Online Agent Policy: On the right, the agent trained us-
+ProblemComplexityAnalysis:TheCTMiGproblemwead- ing GAIL is shown. The agent’s discriminator interacts with
+dress is analogous to the College Admission Problem (CAP), theenvironmentinreal-time,collectingnewstate-actionpairs.
+where multiple MUs, akin to students, compete for resources Thesenewlyacquiredpairs,combinedwiththosefromtheexpert
+fromasetofUAVs,whichfunctionsimilarlytouniversities.In data, generate a learning signal (or “reward”) that iteratively
+eachdecision-makinground,UAVsallocateresourcestoenable refinestheagent’spolicytobetterreplicateexpertbehavior.This
+MUs to access the network and offload tasks, with each MU processenhancestheagent’sabilitytogeneralizebyintegrating
+selecting a single UAV. This scenario mirrors the CAP, which explorationintothelearningcycle.
+involvesoptimizingtheallocationoflimitedresources(compa- The combination of PPO and GAIL is driven by PPO’s
+rabletouniversityadmissionslots),aknownNP-hardcombina- abilitytoregulatepolicyupdatesthroughitsclippedobjective,
+torialproblem.Astheproblemcomplexityincreases,traditional whichstabilizesGAIL’srewardsignalandenhancesadversarial
+meta-heuristic algorithms encounter performance bottlenecks. learning.
+Toaddressthesechallenges,weproposeanimitationlearning-
+basedapproach,whichwillbeelaborateduponinthefollowing
+section. B. MarkovDecisionProcessFormulation
+First of all, we transfer our studied CTMiG problem as a
+IV. IMITATIONLEARNING-BASEDAPPROACH Markov Decision Process (MDP), to capture the interactions
+between agent and the environment. Specifically, the MDP is
+A. AlgorithmOverview representedbythetuple(cid:4)S,A,P,R(cid:5),withtheelementsdefined
+Imitation learning, combining expert guidance with explo- asfollows:
+(cid:2)
+ration,providesaneffectivesolutiontodynamictaskscheduling StateS:ThestatesetofthemodeledMDP,denotedasS,
+challenges. In this paper, we propose ILCTS, a GAIL-based is defined as S (cid:2){si t =(S 1 ,S 2 ,S 3),t∈{0,1,2,...}},
+algorithm designed to solve the CTMiG problem. ILCTS out- where si describes the system’s operational state when
+t
+performstraditionalreinforcementlearningmethodsinstability makingantask-serving(offloadingormigration)decision
+andperformance,acceleratestrainingusingexpertknowledge, for MU i at time slot t. Specifically, si consists of three
+t
+Authorized licensed use limited to: SOUTHWEST JIAOTONG UNIVERSITY. Downloaded on November 23,2025 at 08:41:22 UTC from IEEE Xplore. Restrictions apply.
+
+--- Page 8 ---
+2150 IEEETRANSACTIONSONSERVICESCOMPUTING,VOL.18,NO.4,JULY/AUGUST2025
+components: S 1,representing theMUdomain,whichin- Topreventexcessiverewardaccumulation,regularizationfac-
+cludes details about newly arrived and ongoing tasks of- torsH 1 =100andH 2 =20areintroducedaspartofthereward
+floadedfromMUs,suchasMUspatialpositions,required shaping mechanism. These factors help stabilize the learning
+computational resources,inputdatasizes,taskdeadlines, process by scaling and distributing the rewards appropriately.
+andothertask-relatedcharacteristics;S 2,representingthe This reward function is a preliminary design for the studied
+MECserverdomain,whichcapturesthespatialpositionsof problem.However,itscomplexitymaylimittheabilitytocapture
+UAVs,theiravailablecomputationalresources,andcurrent allaspectsofthetask,whichraisesconcernsabouttheconver-
+workloads; and S 3, representing the communication do- genceoftraditionalreinforcementlearningmethods.Toaddress
+main,whichreflectsthecurrentconditionsofthewireless these limitations, we propose an optimized solution based on
+communicationchannels. generativeadversarialimitationlearningtoimprovetheoverall
+(cid:2)
+Action A: The action set, denoted as A(cid:2){ai |ai ∈ performanceandconvergence.
+t t
+{0,1,2,...,U}}, defines the decision made by the SDN
+controller at time slot t for MU i, determining the UAV
+C. OfflineDesignofExpertPolicies
+to which the task of MU i will be migrated or offloaded,
+i.e.,switchingtheservingUAV.Specifically,ai =0indi- We assume the existence of an expert in the UAV-enabled
+t
+catesthattheUAVcurrentlyservingMUi’staskremains MEC system who possesses complete real-time visibility and
+unchangedduringtimeslott. detailed knowledge of policies, functioning as an oracle— a
+(cid:2)
+StateTransitionProbabilityP:Thestatetransitionprob- commonassumptioninimitationlearning.Toaddressthechal-
+abilitydistributionisdefinedasP :S×A×S →[0,1], lenges posed by limited expert data, we propose an improved
+andtheinitialstatedistributionp
+0
+:S →[0,1]character- PPO algorithm, termed IPPO, tailored for expert policy con-
+izesthelikelihoodofthesystembeingintheinitialstatesi. struction. This algorithm incorporates an optimized network
+0
+Ateachtimeslott,thesystemtransitionsfromstatesi to architecture and a sliding window mechanism for collecting
+t
+si+1 asaresultoftakingactionai,withthetransitionprob- expert trajectories, which are subsequently used to train the
+ab t ilitygivenbyP(si+1 |si,ai), t where{i,i+1}∈M. agent’spolicyinthefollowingstage.
+(cid:2) Reward: The reward t func t tion t R={ri,i∈M,t∈T}, The standard PPO algorithm, an extension of the Policy
+denoted as ri :S×A→R, maps sta t te-action pairs to Gradient method, improves performance in continuous state
+t and action spaces. It independently optimizes the policy and
+real-valuedrewards.Itcapturestheimmediaterewardre-
+valuenetworkswhentheyhaveseparateparameters.Thepolicy
+ceivedbytheSDNcontrolleraftermakingatask-serving
+decision(offloadingormigration)aiforMUiattimeslott network’sobjectivefunctionis:
+t (cid:21)
+byobservingthestatesi
+t
+.Ourgoalistominimizetheoverall (cid:5)M (cid:19)
+averagelatencyforallMUsbysolvingthecorresponding J (θ )=E min (cid:14)i(θ )Aˆi,
+ppo e t t e t
+MDP.Specifically,itaimstoselecttheoptimalactionsat
+i=0
+eachtimeslottomaximizetheexpectedcumulativereward (cid:22)
+(cid:4) (cid:4) (cid:20)
+R t (cid:2)E[ t n=0 M i=0 γnr n i], where variable γ ∈[0,1] is clip((cid:14)i(θ ),1−ε,1+ε)Aˆi , (19)
+the discounted factor. To mitigate the issue of sparse re- t e t
+wards, where the agent only receives feedback after task
+completion,arewardshapingmechanismisintroducedto T(cid:5)−t−1 (cid:13) (cid:14)
+providemorefrequentfeedbackduringtaskexecution.The Aˆi t = (γλ)l r t i +l +γV(si t+l+1 )−V(si t+l ) ,
+rewardfunctionisdesignedasbelow: l=0
+(20)
+⎧(cid:19) (cid:20)
+(cid:4)
+⎪⎪⎨ (cid:19) − M 1 M i=(cid:20)0 L i /H 1 , Alltaskscompleted; whereE t istheexpectedvalueovertime,θ e denotesthepolicy
+r t i= ⎪⎪⎩ χ i −Lˆ i,t /χ i H 2 , Taskexecutionprocess; v p e a r r s a u m s e o te l r d s, p (cid:14) o i t l ( ic θ y e , ) a is nd the Aˆ a i c i t s io t n he pr a o d b v a a b n il t i a t g y e ra f t u io nc u t n io d n e , r γ the is n t e h w e
+0, Noactiontaken. t
+discountfactor,usedtocontrolthediscountingoffuturerewards,
+(18) while λ is the smoothing parameter in generalized advantage
+Next,weofferadetailedexplanationoftherewardfunction
+estimation,whichbalancesthetrade-offbetweenshort-termand
+construction, based on three specific scenarios. 1) When an long-termreturns.Theclippingfunctionclip((cid:14)i(θ ),1−ε,1+
+actionisexecuted,andtheepisodeends,alloffloadedtasksare ε)(withεtypicallysetto0.2[44])stabilizesp t olic e yupdatesby
+completed. At this point, the actual latencies of the tasks are restricting(cid:14)i(θ )totherange[1−ε,1+ε].Thevaluenetwork’s
+calculated. Since the goal is to minimize latency, the reward t e
+objectivefunctionis:
+is assigned as the negative of the average latency across all
+(cid:13) (cid:14)
+offloadedtasks.2)Duringtaskexecutionprocess,ateachtime L(ψ )=E [ V (si)−V 2 ], (21)
+slot t, the SDN controller must make task-serving decisions e t ψe t target
+(offloading or migration) for each MU i in the system. As the where ψ represents the value network parameters, V (si) is
+actual latency L i for taskΓ i is unknown untilcompletion, the the estim e ated state value, and V target is the true rewa ψ r e d. T t his
+estimated latency Lˆ is used. To incentivize the reduction of functionmeasuresthemeansquarederrorbetweentheestimated
+i,t
+latencyforthecurrentMU,therewardincreasesproportionally valueandthetruereward.
+to the difference between the estimated latency and the max- Inthiswork,weproposeaspecializedneuralnetworkmodel
+imum deadline χ , encouraging a greedy approach. 3) When tailoredforcomputationtaskservingdecision-making,asshown
+i
+the action ai =0 (i.e., no offloading or migration occurs), the in Fig. 4. In our model, the UAV-enabled MEC network is
+t
+correspondingrewardiszero. representedasagraph,whereUAVsserveasnodesandwireless
+Authorized licensed use limited to: SOUTHWEST JIAOTONG UNIVERSITY. Downloaded on November 23,2025 at 08:41:22 UTC from IEEE Xplore. Restrictions apply.
+
+--- Page 9 ---
+WANGetal.:JOINTTASKOFFLOADINGANDMIGRATIONOPTIMIZATIONINUAV-ENABLEDDYNAMICMECNETWORKS 2151
+Algorithm1:IPPOAlgorithm.
+Input:policyparamsθ ,valueparamsψ ,replaybufferG;
+e e
+Output:optimalθ∗;
+e
+1:fori_episode=0,1,...do
+2: Initializeenvironment,t=0,obtainthestates 0;
+3: whilenotdonedo
+4: foriinrange(M)do
+5: Obtainthestatesi;
+t
+6: Chooseanactionai basedonpolicyθold;
+t e
+7: ifG isfullthen
+8: ComputeadvantageestimatesAˆi based
+t
+on
+9: thevaluefunctionL(ψ );
+e
+10: fork =0toK do
+Fig.4. Thedesignedneuralnetworkmodel. 11: OptimizeJ (θ );
+PPO e
+12: endfor
+linksfunctionasedges.Wedeviseahybridgraphneuralnetwork 13: θold ←θ ;
+e e
+thatextracts features fromstatecomponents S 2 and S 3 within 14: ψ e old ←ψ e ;
+theMDP.ThishybridmodelcombinesaGraphConvolutional 15: Updateηbasedθoldandψold;
+e e
+Network (GCN), which effectively captures local structural 16: endif
+information, with a Graph Gaussian Mixture Model (GMM), 17: endfor
+adept at modeling probabilistic relationships. This integration 18: t=t+1;
+enhancesthemodel’sabilitytorepresentcomplexnetworkchar- 19: endwh(cid:4)ile
+acteristics, thereby improving decision-making for the target 20: if− 1 M L forthisepisode<=ηthen
+M i=0 i
+mission.Additionally,theMUdomainstateS 1isrepresentedas 21: Collecttheepisode’strajectoriesintoG;
+alow-dimensionalvector,facilitatingfeatureextractionthrough 22: endif
+a simple feedforward (FF) neural network. Subsequently, an- 23:endfor
+otherFFisemployedtofusethefeaturesobtainedfromthetwo
+extractionmodules.Thepolicyandvaluenetworksshareiden-
+tical neural network architectures but maintain distinct model
+according tothe objective function, performing K updates for
+parameters, allowing them to generate corresponding actions
+each batch of size N . Finally, it copies the current policy
+andvaluefunctions. batch
+networkparametersθ toθoldandthevaluenetworkparameters
+InstandardPPOalgorithms,trajectorybatchesareaggregated e e
+ψ toψold.
+beforeparameterupdates,whichcanintroducelow-qualitydata e e
+Theprocessofcollectingdatafromexpertpoliciesusingthe
+thatdegradesmodelperformance.Toaddressthisissue,wepro-
+IPPO algorithm is outlined as follows. Initially, Algorithm 1
+poseaslidingwindowmechanism.Aftereachparameterupdate,
+is employed to execute the IPPO model until convergence is
+theupdatedparametersθold andψold estimatetheaveragetask
+e e achieved. Upon successful training of the IPPO model, it is
+delayL .Insubsequenttrainingiterations,onlytrajectories
+eval utilized to predict the task-serving (offloading and migration)
+fromroundswherethetaskdelayisbelowapredefinedthreshold
+decisions for each MU’s computation tasks at a given state
+ηareaddedtotheexperiencepoolG.Oncethepoolreachesits
+si, resulting in the corresponding execution actions ai. This
+capacity,theparametersareupdated,andtheprocessisrepeated. t t
+process continues until all computation tasks are completed.
+Thethresholdηisdefinedas:
+Consequently, expert behavior, typically represented by state-
+(cid:23) (cid:24)
+η =L eval +min 30∗e−i_episode,30 . (22) s a t c a t t i e o - n ac tr t a io je n c p to a r ir ie s s(cid:25) s Ω i E ,a , i i(cid:26)s . g E e a n c e h ra tr te a d je , c c t o o n ry si e s n ti c n a g p o su f l s a e te q s u m en u c l e ti s p o le f
+t t
+This definition prevents trajectory collection from being re- state-actionpairscapturedduringtheexecutionoftasksbythe
+stricted solely to those exceeding L , which would limit expertmodel.
+eval
+sample diversity and increase the risk of local optima conver-
+gence. By including trajectories within a range around L ,
+eval
+D. OnlineAgentPolicy
+themethodpromotesbroaderexplorationandimprovesmodel
+robustness.Theempiricalvalueof30supportsdiversetrajectory Inpractice,theexpertmaynotcoverallscenarios,butimita-
+collection, especially in early training, while the exponential tionlearningcansurpassexpertperformancethroughadditional
+term 30∗e−i_episode adjusts the focus towards higher-quality exploration or policy refinement techniques like GAIL. GAIL
+trajectories as training progresses, thus balancing exploration enablestheagenttobothimitateandimproveexpertbehaviorvia
+andexploitationakintotheepsilon-greedystrategy. adversarial training. Although GAIL may face mode collapse
+The pseudo-code for the proposed IPPO algorithm is pre- and sensitivity to expert data, its efficiency in task migration,
+sentedinAlgorithm1,withitsfunctionalitydetailedasfollows. sample reduction, and mixed-action handling makes it valu-
+First, it initializes the network parameters θ e and ψ e , sets up ablefordynamicMECenvironments.Inthiscontext,theSDN
+the experience replay buffer, and resets the environment state. controller, modeled as an agent, makes real-time task-serving
+Next, sample data is collected using the policy network, and decisions based on operational status and channel conditions
+theadvantagefunctionAˆiiscomputedusingthevaluenetwork. from each UAV. By learning from expert demonstrations, the
+t
+Subsequently, the network parameters θ and ψ are updated SDNcontrolleroptimizesonlinedecision-making.Theagent’s
+e e
+Authorized licensed use limited to: SOUTHWEST JIAOTONG UNIVERSITY. Downloaded on November 23,2025 at 08:41:22 UTC from IEEE Xplore. Restrictions apply.
+
+--- Page 10 ---
+2152 IEEETRANSACTIONSONSERVICESCOMPUTING,VOL.18,NO.4,JULY/AUGUST2025
+training,knownastheILCTS(ImitationLearning-basedCom- where l 2 denote the learning rate of the generator’s policy
+putationTaskServing)algorithm,isdetailedasfollows: network. The objective function of the value network in the
+Step 1. Neural Network Initialization: At the outset, the generatorisasfollows:
+agent network parameters are initialized. The agent refines its (cid:29)(cid:19) (cid:20) (cid:30)
+2
+policy by minimizing the discrepancy between its own state- L(ψ )=E V (si)−Rˆ , (27)
+action pairs and those of the expert. To facilitate this, two a ψa t
+networksareemployed:thegeneratorandthediscriminator.The
+discriminator network D φa , distinguishes between expert and whereV ψa (si t )isthevaluenetwork’spredictionforthestatesi t ),
+agent-generated behaviors. The generator comprises two key Rˆ istheactualexpectedreturn(whichcanbeobtainedthrough
+components: the policy network, which optimizes the agent’s Monte Carlo return or TD error estimation). The parameter
+decision-making, and the value network, which evaluates update process for the value network within the generator is
+the quality of the agent’s selected strategies. The agent thendefinedasfollows:
+selects actions ai,agent based on the observed state si, re-
+fining its policy t by aligning the distribution of its t state- ψ a ←ψ a −l 3 ∗∇ ψa L(ψ a ), (28)
+π ac θ t e i ( o a n i t ,e p x a p i e rs r , t|s π i t θ ) a . ( T a h i t e ,a d ge is n c t r | i s m i t ) i , na w to it r h ne th tw e o e rk xp is er e t m ’s p d lo i y st e r d ib t u o ti d o i n s- , n w e h t e w r o e rk l 3 . P re re p - r t e r s a e in n i t n s g th th e e le m ar o n d i e n l g , a r s at g e u o id f ed the by ge th n e er p at r o ev r io va u l s u ly e
+tinguishbetweenthestate-actionpairsgeneratedbytheexpert
+definedlossfunction,isnecessarytostabilizethediscriminator
+andthoseproducedbytheagent.Additionally,thevaluenetwork network.rˆdenotetherewardfunctionusedinGAIL.
+assesses the quality of the agent’s actions by comparing how (cid:19) (cid:20) (cid:19) (cid:20)
+closelytheyresembletheexpert’sstrategyversusitsownlearned rˆ si,ai,agent = logD si,ai,expert
+policy.Thelossfunctionforthisdiscriminatornetworkisdefined
+t t φa t t
+(cid:19) (cid:19) (cid:20)(cid:20)
+asbelow:
+−log 1−D s−ti,ai,agent (29)
+φa t
+L(φ )= −E [logD (si,ai,expert)]
+a ρ πθe (cid:27) (cid:19) φa t t (cid:19) (cid:20)(cid:20)(cid:28) Step 2. Action Execution: At time slot t, the agent selects
+−E ρ πθa log 1−D φa si t ,ai t ,agent , (23) o an bs a e c rv ti i o n n g f t o h r e M sta U te i s a i c , c t o h r e di a n g g en t t o p i r t o s c c e u s r s r e e s nt th p is ol i i n c p y u θ t a t . hr U o p u o g n h
+t
+where ρ [·] denotes the expected value of state-action tra- boththepolicyandvaluenetworks.Thepolicynetworkoutputs
+jectories
+π
+g
+θe
+enerated by the expert policy πθe, whereas ρ
+πθa
+[·] thepredictedactionai
+t
+,agent,whilethevaluenetworkcomputes
+represents the expected value of state-action trajectories gen- thecorrespondingvalueV ψa (si t ).
+erated by the agent’s policy πθa. Specifically, the term Step 3. Batch Data Collection: To train the policy network,
+−E [logD (si,ai,expert))] is designed to maximize the agenttrajectoriesaregatheredinmini-batches,witheachentry
+prob
+ρ
+a
+π
+b
+θe
+ility tha
+φ
+t
+a
+th
+t
+e d
+t
+iscriminator accurately identifies state-
+comprisingthestatesi,theagent’sactionai,agent,andthecor-
+t t
+action pairs generated by the expert policy as originating respondingexpertactionai,expert.SetthebatchsizetoN ,
+t batch
+from the expert. This incentivizes the generator to produce thesameasIPPO.Thecollectedbatchisthenutilizedtoupdate
+behaviors that closely align with those of the expert. The theneuralnetworksbyminimizingthelossfunctions,asdefined
+term−E [log(1−D (si,ai,agent))]aimstomaximizethe in(23),(25)and(27).
+probabili
+ρ
+ty
+πθa
+that the disc
+φ
+r
+a
+imi
+t
+nat
+t
+or correctly recognizes state- Step4.NetworkTraining:Atthisstage,thepolicynetworkis
+actionpairsgeneratedbythegeneratorasnotcomingfromthe trainedusingtheIPPOalgorithm.Inthisframework,thepolicy
+expert. This drives the generator to develop behaviors that are networkactsastheactor,selectingactionsbasedontheneural
+distinct from those of the expert, fostering differentiation. In network’soutputs,whilethevaluenetworkservesasthecritic,
+summary, the generator is encouraged to replicate expert be- assessingthequalityoftheseactions.Theactorupdatesitspolicy
+haviorwhilealsoensuringthatthediscriminatorcaneffectively by incorporating feedback from the critic, thereby refining its
+distinguish between expert-generated and generator-generated decision-makingprocess.
+behaviors.Theprocessforupdatingthediscriminatorparame- Thetrainingprocessenablestheagenttolearnanefficientpol-
+tersisasfollows: icyfortaskserving(offloadingandmigration)inUAV-enabled
+dynamic MEC networks. The pseudo-code for the proposed
+φ a ←φ a −l 1 ∗∇ φa L(φ a ), (24) ILCTSisprovidedinAlgorithm2.
+Time Complexity: In the training phase, ILCTS employs
+wherel 1 denotethelearningrateofthediscriminatornetwork.
+a generator and a discriminator in a GAN-like framework.
+Thegenerator’sobjectiveistoproducebehaviorthatthediscrim-
+The generator, trained using IPPO, comprises a policy and
+inatorcannotdistinguishfromtheexpert’sactions,refiningits
+value network. The policy network features a hybrid GNN
+policythroughfeedbackfromthediscriminator.Thegenerator’s
+and MLP. The GNN processes UAV domain features with
+policynetworkaimstomaximizetheexpectedreturn,asdefined
+an input and output dimension of 5, U nodes, and U(U−1)
+bythefollowingobjectivefunction: 2
+(cid:27) (cid:19) (cid:20)(cid:28)
+edges,yieldingasingle-layercomplexityofO(5E+25U)and
+J(θ )=E log 1−D (si,ai,agent) . L 1 =6 layers for a total complexity of O(L 1(5E+25U)).
+a (si t ,ai t ,agent)∼πθa φa t t The MLP for MU domain features has L 2 =2 layers, with
+A wo cc rk or i d s i d n e g fi ly n , e t d he as p f a o r l a l m ow et s e : r update process for the policy ( n 2 e 5 t- ) p ς 0 le = xit 8 y M of in O pu ( (cid:4) t a z L n = 2 d + 1 1 ς L ς z 2 + · 1 ς z = −1 4 ). o A utp s u e t co n n e d uro M ns L , P an f d us a es co fe m a - -
+tures into actions with L 3 =4 layers, ς 0 =5U +4 (cid:4) input, and
+θ a ←θ a +l 2 ·∇ θa J(θ a ), (26) ς L3 +1 =U +1outputneurons,withcomplexityO( z L = 3 + 1 1ς z ·
+Authorized licensed use limited to: SOUTHWEST JIAOTONG UNIVERSITY. Downloaded on November 23,2025 at 08:41:22 UTC from IEEE Xplore. Restrictions apply.
+
+--- Page 11 ---
+WANGetal.:JOINTTASKOFFLOADINGANDMIGRATIONOPTIMIZATIONINUAV-ENABLEDDYNAMICMECNETWORKS 2153
+Algorithm2:ILCTSAlgorithm. TABLEII
+RELEVANTPARAMETERSETTINGS:
+Input:ExperttrajectoriesΩ ,batchsizeN ,policy
+E batch
+paramsθ ,valueparasψ ,discriminatorparamsφ ,
+a a a
+learningrate[l 1 ,l 2 ,l 3];
+Output:optimalπθa;
+1:fori_episode=0,1,...do
+2: Initializeenvironment,t=0,obtainthestates 0;
+3: whilenotDoneConditiondo
+4: foriinrange(M)do
+5: Obtainthestatesi;
+t
+6: Chooseanagentactionai,agentbasedon
+t
+7: policyπθa;
+8: ifAbatchoftrajectoriesissampledthen
+9: Updateφ bygradient;
+a
+10: Computeestimatedrewardrˆ;
+11: Updateψ bygradient;
+a
+12: Updateθ usingthepolicygradient;
+a
+13: endif
+model is trained using the Adam optimizer. For expert poli-
+14: endfor
+15: t=t+1 cies,weutilizetheIPPOalgorithmtocollectstate-actionpairs
+from 100 episodes [46]. The IPPO algorithm converged after
+16: endwhile
+1,000episodes,followedby2,000additionalepisodestoensure
+17: Collectthetrajectories;
+stability, during which it consistently produces high-quality
+18:endfor
+state-action pairs. During the imitation learning process, the
+learning rates are set to 1e-4 for the policy network, 6e-4 for
+thevaluenetwork,and9e-5forthediscriminatornetwork.
+ς z−1). The value network mirrors
+(cid:4)
+the policy network, shar-
+Benchmarks: To evaluate our ILCTS algorithm, we use five
+ing a time (cid:4) complexity of O(max( z L = 2 + 1 1ς z ·ς z−1 ,L 1(5E+ rep (cid:2) resentativebenchmarkalgorithms,asdescribedbelow:
+25U))+ z L = 3 + 1 1ς z ·ς z−1(cid:4) ). The generator’s overall com- IPPO: The improved PPO algorithm for expert policies
+(cid:4) plexity is O(K·[max( z L = 2 + 1 1ς z ·ς z−1 ,L 1(5E+25U))+ (cid:2) proposedinthisstudy.
+z
+L
+=
+3 +
+1
+1ς
+z
+·ς z−1]),whereKisthenumberofIPPOupdates.The D
+tec
+D
+h
+Q
+ni
+N
+qu
+[
+e
+4
+,
+7
+D
+]:
+D
+W
+Q
+e
+N,
+ad
+to
+ap
+o
+t
+u
+t
+r
+h
+p
+e
+ro
+w
+b
+e
+l
+l
+e
+l
+m
+-kn
+b
+o
+y
+w
+u
+n
+si
+d
+n
+e
+g
+ep
+a n
+Q
+e
+-
+u
+le
+ra
+a
+l
+rn
+n
+i
+e
+n
+t
+g
+-
+discriminatorhasthesamestructureandcomplexityasthepolicy
+network. Thus, the total ILCTS complexity is (Q·T ·N ) workstructuresimilartoourapproachtoapproximateits
+timesthegenerator’scomplexity,whereQ,T,andN d b e a n tc o h te (cid:2) action-valuefunction.
+batch OLSA[48]:AmodifiedversionoftheOnlineLazySwitch-
+the maximum number of episodes, time slots, and batch size,
+ing algorithm, adapted for computation task migration in
+respectively.
+ourstudy.
+(cid:2)
+GBLM [43]: GBLM employs a greedy strategy to select
+V. PERFORMANCEEVALUATION
+theUAVwiththelowestlatencyforeachMU.
+(cid:2)
+Thissectionevaluatestheproposedsolutionthroughsimula- SR-CL [49]: A mobility-aware service migration frame-
+tions,detailingthesetupandresults.Experimentsareconducted work for multi-edge IoV systems, leveraging an actor-
+on a Windows server with an Intel Xeon Gold 6148 CPU critic-basedasynchronousdeepreinforcementlearningap-
+(2.40GHz),GeForceRTX3090GPU,and128GBRAM,using proach.
+Python3.8andPyTorch1.10.
+B. PerformanceResults
+A. ExperimentalSettings
+Training Performance with Different MU Scales: First, we
+We consider a UAV-enabled MEC system comprising 25 to conduct experiments to evaluate the training performance of
+50 UAVs providing services within a 2500×2500m2 area. fourreinforcementlearningalgorithms:ILCTS,DDQN,SR-CL,
+MUs are uniformly distributed and can offload tasks to the and IPPO, under varying numbers of MUs, ranging from 15
+UAVs. Following [45], wireless channel bandwidth fluctua- to 40. The normalized cumulative reward is used as the eval-
+tionsaremodeledusinganormaldistribution,andtheirimpact uation metric, referred to as the training score. The results
+on performance is evaluated under various conditions. Using are presented in Fig. 5. Among the evaluated methods, ILCTS
+BonnMotion-3.0.1,wegenerate1,000usermobilitytracesbased consistentlyachievesthehighesttrainingscoresacrossallMU
+on the Random Waypoint model with the default experimental scales, demonstrating its superior learning capability. This is
+settings.Andothermobilitypatternsarealsoevaluated subse- followedbyIPPOandSR-CL,withDDQNexhibitingthelowest
+quently. Tasks include soft and hard delay requirements, with performance.TheincorporationofGAILintoILCTSenhances
+tolerablelatencydeterminedbyinputdatasizes.Thethreshold its overall performance by enabling the agent to learn from
+ς forsoftdelaytasksdefaultsto50%.Otherparametersettings expertdemonstrationsandcontinuouslyrefineitspolicythrough
+aredetailedinTableII. exploration,resultinginamoreadaptablesolution.Incontrast,
+Weemploymulti-layerperceptionsandahybridgraphcon- SR-CLshowsunstableperformanceacrossdifferentMUscales,
+volutional neural network for imitation learning. The learning likely due to its sensitivity to hyper-parameters and limited
+Authorized licensed use limited to: SOUTHWEST JIAOTONG UNIVERSITY. Downloaded on November 23,2025 at 08:41:22 UTC from IEEE Xplore. Restrictions apply.
+
+--- Page 12 ---
+2154 IEEETRANSACTIONSONSERVICESCOMPUTING,VOL.18,NO.4,JULY/AUGUST2025
+Fig.5. TrainingperformancewithdifferentMUs. Fig.7. Trainingperformancewithdifferenthyper-parameters.
+initialization, etc. The experimental results of training perfor-
+mancearepresentedinFig.7,wherethetrainingscoreisutilized
+as the evaluation metric. Initially, we test different activation
+functions, using ReLU as the default in our experiment. As
+shown in Fig. 7(a), when compared to the Tanh and LReLU
+functions, ReLU is found to be the most suitable for our algo-
+rithm.
+As shown in Fig. 7(b), Orthogonal demonstrates superior
+performance. This is likely due to its ability to maintain the
+orthogonality of weight vectors, preserving the independence
+ofdifferentfeatureswithinthenetwork.Incontrast,Xavierand
+Fig.6. Slidingwindowandalgorithmruntime.
+He are designed to maintain the scale of activations and gra-
+dients during propagation. Withinour architecture, orthogonal
+robustness. The poor performance of DDQN can be attributed initializationprovedtobethemosteffective.
+toitschallengesinlearningaccuratevaluefunctionsincomplex As shown in Fig. 7(c), the MLP architecture exhibits the
+environments, compounded by instability in value estimation poorestperformance.Thepossiblereasonisthat,MLPsareadept
+andlimitedexploration. at capturing simple features from individual nodes, whereas
+Building on the principle of balancing exploration and ex- GNNs integrate node information and account for complex
+ploitation,theproposedIPPOalgorithmincorporatesasliding inter-noderelationships.GMM+GCNcombinesGCNandGMM
+windowmechanismtooptimizeoverallperformance.Toevalu- leveraging the strengths of both: GCN aggregates local neigh-
+ateitseffectiveness,weconductexperimentscomparingitwith borhood information, while GMM handles intricate inter-node
+thestandardPPOalgorithm,excludingtheslidingwindowcon- relationships.So,ahybridgraphneuralnetworkstructureyields
+figuration,using10MUs.Theexperimentalresults,presentedin thebestperformanceforcomputationtaskmigrationchallenges.
+Fig.6(a),showthattheIPPOalgorithmoutperformsthestandard Lastly, in Fig. 7(d), we evaluate the performance of several
+PPO, achieving a performance improvement of nearly 20% optimizers.TheresultsindicatethattheSGDoptimizerfailsto
+in our scenario. This enhancement effectively eliminates low- converge,likelyduetoitsdependenceonastableobjectivefunc-
+qualitydatathatwouldotherwisedegrademodelperformance. tionordatadistribution,whichisrareinreinforcementlearning
+Performance of Efficiency Testing: We analyze the running withnon-stationarydistributions.Asthepolicyevolvesduring
+timesofdifferentalgorithmsfordecision-makingineachtime training,thedatadistributioncontinuouslychanges.Incontrast,
+slot,varyingthenumberofMUsfrom10to80.Theexperimental theAdamoptimizeroutperformsNAdaminthistaskmigration
+resultsarepresentedinFig.6(b).TheOLSAalgorithmexhibits scenario,demonstratingbetteradaptability.Themomentumac-
+the longest running time, primarily due to its multiple rounds celeration strategy of NAdam fails to achieve convergence in
+of game matching. While the other algorithms demonstrate highlydynamicenvironments.
+comparable running efficiencies, ILCTS achieves a 15% im- Performance of Effectiveness Testing: We evaluate
+provementineffectiveness,asreportedlater,therebybalancing performance in terms of average latency by varying the
+computationalefficiencywithdecisionperformance.Incontrast, number of MUs from 10 to 80, as shown in Fig. 8(a). The
+therunningtimeoftheGBLMalgorithmincreasessignificantly ILCTS algorithm consistently achieves the lowest average
+as the scale of MUs grows, highlighting its limited scalability delay,outperformingIPPO,SR-CL,DDQN,OLSA,andGBLM.
+duetothegreedystrategyemployed. Overall, reinforcement learning algorithms surpass traditional
+Impact of Hyper-Parameters: Subsequently, we conduct methods. The OLSA algorithm underperforms due to its
+experiments to examine the impact of various hyper- limited responsiveness to dynamic changes, while the myopic
+parameter settings, such as the activation function, parameter decision-making of GBLM leads to suboptimal solutions,
+Authorized licensed use limited to: SOUTHWEST JIAOTONG UNIVERSITY. Downloaded on November 23,2025 at 08:41:22 UTC from IEEE Xplore. Restrictions apply.
+
+--- Page 13 ---
+WANGetal.:JOINTTASKOFFLOADINGANDMIGRATIONOPTIMIZATIONINUAV-ENABLEDDYNAMICMECNETWORKS 2155
+Fig.10. Performancewithdifferentchannelbandwidthfluctuations.
+Fig.8. EffectivenessevaluationbasedonnumberofMUs.
+Fig.11. Performancewitharrivalrateandthresholdς.
+Fig.9. Effectivenessevaluationforhard/softdelaytasks.
+trappingitinalocaloptimum.Consistentwithtrainingresults,
+DDQN performs the worst among reinforcement learning
+algorithms,mainlyduetoitsvaluefunctionoverestimationbias
+and difficulty with non-stationary environments. The superior
+performance of ILCTS over SR-CL can be attributed to its
+combinationofexpert-guidedlearning,adaptivestrategies,and
+continuouspolicyrefinement,makingitbettersuitedtohandle
+dynamicandcomplexenvironments.
+Furthermore, we measured the migration frequency during
+task execution, and the statistical results are presented in a
+histogram in Fig. 8(b), with the number of MUs set to 100.
+Fig.12. PerformancewithMUmobilitybehavior.
+The data shows that most task execution require an average
+of 2.79 migration frequencies. This indicates that in dynamic
+environments,multiplemigrationsmightbenecessarytomeet the number of MUs fixed at 10. The experimental results are
+theQoSrequirementsofMUs. presented in Fig. 11(a). Consistent with previous results, the
+AsshowninFig.9,thelatenciesoftheILCTSalgorithmare ILCTSalgorithmconsistentlyachievesthelowestlatencyacross
+presentedforbothhardandsoftdelaytasks,encompassingtask all arrival rate conditions, outperforming IPPO, SR-CL, and
+uploadinglatency,computationlatency,migrationlatency,and DDQN,whichperformslightlyworse.Incontrast,thetraditional
+downloading latency. The horizontal axis corresponds to the GBLM and OLSA algorithms exhibit the poorest performance
+taskindex.Migrationlatenciesforsoftdelaytasksaregenerally duetotheirlimitedfocusonoverallperformanceoptimization.
+lowerthanthoseforharddelaytasks.Specifically,theaverage Next,wealsoexaminetheimpactoftheexecutionprogress
+migration latency for hard delay tasks is 62.16 ms, while for thresholdς forsoftdelaytasks,varyingitfrom0.4to0.9while
+softdelaytasks,itis37.29ms.Thisdifferenceislargelydueto keepingthenumberofMUsconstant.AsshowninFig.11(b),
+thelowmigrationfrequencyforsoftdelaytasks,drivenbytheir increasing ς leads to higher average delays for MUs, likely
+completionprocessmechanism. becauselowerthresholdsbetterhandleuncertaintyindynamic
+ImpactofChannelBandwidthFluctuation:Wealsoexamine environments.Thisconfirmstheimportanceofintroducingςfor
+the impact of channel bandwidth fluctuations on performance softdelaytasks.Additionally,theILCTSalgorithmconsistently
+byvaryingthemeanandstandarddeviation,withthenumberof outperformstheotherbenchmarks.
+MUsfixedat10.Theresults,showninFig.10,demonstratethat ImpactofMUMobilityBehavior:Finally,weinvestigatethe
+our ILCTS approach consistently outperforms the benchmarks impact of MU mobility behavior on network performance. In
+acrossvaryingnetworkconditions,highlightingitsrobustness. additiontotheRandomWaypointModel(RWM),weincorpo-
+Among the evaluated methods, GBLM performs the worst, as ratethereal-worldGeoLifedataset[50]andtheHiddenMarkov
+itonlystrivesforlocaloptimizationofMUs’delay,neglecting Model(HMM)[51].TheGeoLifedatasetisapubliclyavailable
+overallperformanceimprovement. resourcecontainingGPStrajectorydatacollectedfrommobile
+ImpactofTaskArrivalRateandThresholdς:Weexaminethe devicestostudyhumanmobilitypatterns,whiletheHMMgener-
+impactoftaskarrivalrateonnetworkperformancebyvarying atesusermobilitytrajectoriesbasedonaHiddenMarkovframe-
+theparameterλinthePoissondistributionfrom1.0to8.0,with work.Weevaluatetheperformanceoftherelevantapproaches
+Authorized licensed use limited to: SOUTHWEST JIAOTONG UNIVERSITY. Downloaded on November 23,2025 at 08:41:22 UTC from IEEE Xplore. Restrictions apply.
+
+--- Page 14 ---
+2156 IEEETRANSACTIONSONSERVICESCOMPUTING,VOL.18,NO.4,JULY/AUGUST2025
+under these three mobility models, with the corresponding [11] Z.Gao,L.Yang,andY.Dai,“VRCCS-AC:Reinforcementlearningfor
+experimental results presented in Fig. 12. Notably, our pro- service migration in vehicular edge computing systems,” IEEE Trans.
+posedILCTSalgorithmconsistentlyoutperformsallbenchmarks ServicesComput.,vol.17,no.6,pp.4436–4450,Nov./Dec.2024.
+[12] S. Wang, R. Urgaonkar, M. Zafer, T. He, K. Chan, and K. K. Leung,
+acrosstheevaluatedmobilitybehaviors.Furthermore,thehigh-
+“Dynamicservicemigrationinmobileedgecomputingbasedonmarkov
+estaveragelatencyisobservedwiththeGeoLifedataset,which decisionprocess,”IEEE/ACMTrans.Netw.,vol.27,no.3,pp.1272–1288,
+can be attributed to the increased complexity of the mobility Jun.2019.
+traces,influencedbydiverseoutdoormovements(e.g.,commut- [13] N.Chengetal.,“Air-groundintegratedmobileedgenetworks:Architec-
+ture,challenges,andopportunities,”IEEECommun.Mag.,vol.56,no.8,
+ing,sightseeing,hiking,cycling)andlocation-basedattractions.
+pp.26–32,Aug.2018.
+[14] T.Zhang,Y.Xu,J.Loo,D.Yang,andL.Xiao,“Jointcomputationand
+communicationdesignforUAV-assistedmobileedgecomputinginIoT,”
+VI. CONCLUSION IEEETrans.Ind.Informat.,vol.16,no.8,pp.5505–5516,Aug.2020.
+[15] Q.Hu,Y.Cai,G.Yu,Z.Qin,M.Zhao,andG.Y.Li,“Jointoffloading
+Given the challenges of wireless communication instability andtrajectorydesignforUAV-enabledmobileedgecomputingsystems,”
+and the large sizes of computation results, dynamic task mi- IEEEInternetThingsJ.,vol.6,no.2,pp.1879–1892,Apr.2019.
+gration closer to MUs over unreliable channels is essential to [16] J.Lyu,Y.Zeng,andR.Zhang,“UAV-aidedoffloadingforcellularhotspot,”
+IEEETrans.WirelessCommun.,vol.17,no.6,pp.3988–4001,Jun.2018.
+meet stringent QoS requirements. This paper tackles the joint
+[17] J.Xiong,H.Guo,andJ.Liu,“TaskoffloadinginUAV-aidededgecom-
+taskoffloadingandmigrationprobleminUAV-enableddynamic puting:Bitallocationandtrajectoryoptimization,”IEEECommun.Lett.,
+MEC networks. We propose the ILCTS algorithm, which uses vol.23,no.3,pp.538–541,Mar.2019.
+anexpertmodeltrainedofflineviaanimprovedPPOalgorithm [18] Y.Zhang,Y.Gong,andY.Guo,“Energy-efficientresourcemanagementfor
+multi-UAV-enabledmobileedgecomputing,”IEEETrans.Veh.Technol.,
+togeneratestate-actionpairsforoffloadingandmigrationtasks.
+vol.73,no.8,pp.12026–12037,Aug.2024.
+Followingpre-training,theagentemploysgenerativeadversarial
+[19] S.Hanetal.,“Jointassociation,deploymentandflighttrajectoryoptimiza-
+imitationlearning foronline interaction withtheenvironment, tionforMulti-UAV-Enabledlarge-scalemobileedgecomputing,”IEEE
+refining its strategy through additional state-action pairs and Trans.MobileComput.,vol.23,no.12,pp.13207–13221,Dec.2024.
+expertdataforreal-timedecision-making.Performanceevalua- [20] L.Heetal.,“AnonlinejointoptimizationapproachforQoEmaximization
+inUAV-Enabledmobileedgecomputing,”inProc.IEEEConf.Comput.
+tions demonstrate that our algorithm significantly outperforms
+Commun.,2024,pp.101–110.
+alternativeapproaches. [21] W.Chenetal.,“MSM:Mobility-awareservicemigrationforseamless
+Future work will focus on the joint optimization of UAV provision: A data-driven approach,” IEEE Internet Things J., vol. 10,
+trajectories and task migration, taking into account key no.17,pp.15690–15704,Sep.2023.
+[22] Z.Zhaoetal.,“Reinforced-LSTMtrajectoryprediction-drivendynamic
+challengessuchasdynamicconstraints,queueingdelays,energy
+servicemigration:Acasestudy,”IEEETrans.Netw.Sci.Eng.,vol.9,no.4,
+efficiency. Additionally, we plan to develop hybrid strategies
+pp.2786–2802,Jul./Aug.2022.
+that adaptively balance expert imitation and autonomous [23] M. Xu et al., “PDMA: Probabilistic service migration approach for
+explorationbasedonenvironmentalfeedback,withthegoalof delay-awareandmobility-awaremobileedgecomputing,”Softw.:Pract.
+reducingrelianceonexpertdata. Experience,vol.52,no.2,pp.394–414,2022.
+[24] J.Xu,X.Ma,A.Zhou,Q.Duan,andS.Wang,“Pathselectionforseamless
+servicemigrationinvehicularedgecomputing,”IEEEInternetThingsJ.,
+vol.7,no.9,pp.9040–9049,Sep.2020.
+REFERENCES [25] M.Mukherjee,V.Kumar,A.Lat,M.Guo,R.Matam,andY.Lv,“Dis-
+tributeddeeplearning-basedtaskoffloadingforUAV-enabledmobileedge
+[1] J.Du,T.Lin,C.Jiang,Q.Yang,C.F.Bader,andZ.Han,“Distributed computing,”inProc.IEEEConf.Comput.Commun.Workshops,2020,
+foundation models for multi-modal learning in 6G wireless networks,” pp.1208–1212.
+IEEEWirelessCommun.,vol.31,no.3,pp.20–30,Jun.2024. [26] J.Tian,D.Wang,H.Zhang,andD.Wu,“Servicesatisfaction-orientedtask
+[2] M. Liu, G. Feng, Y. Sun, N. Chen, and W. Tan, “A network func- offloadingandUAVschedulinginUAV-enabledMECnetworks,”IEEE
+tion parallelism-enabled MEC framework for supporting low-latency Trans.WirelessCommun.,vol.22,no.12,pp.8949–8964,Dec.2023.
+services,” IEEE Trans. Services Comput., vol. 16, no. 1, pp. 40–52, [27] M.Wang,L.Zhang,P.Gao,X.Yang,K.Wang,andK.Yang,“Stackelberg-
+Jan./Feb.2023. game-basedintelligentoffloadingincentivemechanismforamulti-UAV-
+[3] Z.Chen,Y.Yang,J.Xu,Y.Chen,andJ.Huang,“Taskoffloadingand assistedmobile-edgecomputingsystem,”IEEEInternetThingsJ.,vol.10,
+resourcepricingbasedongametheoryinUAV-Assistededgecomputing,” no.17,pp.15679–15689,Sep.2023.
+IEEETrans.ServicesComput.,vol.18,no.1,pp.440–452,Jan./Feb.2025. [28] L. Zhao et al., “Meson: A mobility-aware dependent task offloading
+[4] B.Chen,H.Zhou,J.Yao,andH.Guan,“RESERVE:Anenergy-efficient schemeforurbanvehicularedgecomputing,”IEEETrans.MobileCom-
+edgecloudarchitectureforintelligentmulti-UAV,”IEEETrans.Services put.,vol.23,no.5,pp.4259–4272,May2024.
+Comput.,vol.15,no.2,pp.819–832,Mar./Apr.2022. [29] D. Zheng et al., “Resource optimization for task offloading with real-
+[5] H.Linetal.,“Dynamicservicemigrationinultra-densemulti-accessedge timelocationpredictioninpedestrian-vehicleinteractionscenarios,”IEEE
+computingnetworkforhigh-mobilityscenarios,” EURASIPJ. Wireless Trans.WirelessCommun.,vol.22,no.11,pp.7331–7344,Nov.2023.
+Commun.Netw.,vol.2020,no.1,2020,Art.no.191. [30] X.Du,X.Li,N.Zhao,andX.Wang,“Ajointtrajectoryandcomputation
+[6] TZHe,A.N.Toosi,andR.Buyya,“Efficientlarge-scalemultiplemigration offloadingschemeforUAV-MECnetworksviamulti-agentdeepreinforce-
+planningandschedulinginSDN-enablededgecomputing,”IEEETrans. mentlearning,”inProc.IEEEInt.Conf.Commun.,2023,pp.5438–5443.
+MobileComput.,vol.23,no.6,pp.6667–6680,Jun.2024. [31] Q. Wang, S. Guo, J. Liu, C. Pan, and L. Yang, “Profit maximization
+[7] E. Yanmaz, R. Kuschnig, and C. Bettstetter, “Channel measurements incentivemechanismforresourceprovidersinmobileedgecomputing,”
+over802.11a-basedUAV-to-groundlinks,”inProc.IEEEGLOBECOM IEEETrans.ServicesComput.,vol.15,no.1,pp.138–149,Jan./Feb.2022.
+Workshops,2011. [32] T.Dbouk,A.Mourad,H.Otrok,H.Tout,andC.Talhi,“Anovelad-hoc
+[8] K.Shafafietal.,“UAV-Assistedwirelesscommunications:Anexperimen- mobileedgecloudofferingsecurityservicesthroughintelligentresource-
+talanalysisofA2GandG2Achannels,”inProc.Int.Conf.Simul.Tools aware offloading,” IEEE Trans. Netw. Service Manag., vol. 16, no. 4,
+Techn.,Cham,Switzerland,SpringerNature,2023. pp.1665–1680,Dec.2019.
+[9] U. Erdemir, B. Kaplan, ˙I. Hokelek, A. Görçin, and H. A. Çırpan, [33] H.Xiao,J.Zhao,J.Feng,L.Liu,Q.Pei,andW.Shi,“Jointoptimization
+“Measurement-basedchannelcharacterizationforA2AandA2Gwireless ofsecuritystrengthandresourceallocationforcomputationoffloading
+dronecommunicationsystems,”inProc.IEEE97thVeh.Technol.Conf., invehicularedgecomputing,”IEEETrans.WirelessCommun.,vol.22,
+2023,pp.1–6. no.12,pp.8751–8765,Dec.2023.
+[10] Z.Fan,Y.Lin,Y.Ai,andH.Xu,“Adaptivetaskmigrationstrategywith [34] Z. Li et al., “Profit maximization for security-aware task offloading in
+delayriskcontrolandreinforcementlearningforemergencymonitoring,” edge-cloudenvironment,”J.ParallelDistrib.Comput.,vol.157,pp.43–55,
+Sci.Rep.,vol.14,no.1,2024,Art.no.17606. 2021.
+Authorized licensed use limited to: SOUTHWEST JIAOTONG UNIVERSITY. Downloaded on November 23,2025 at 08:41:22 UTC from IEEE Xplore. Restrictions apply.
+
+--- Page 15 ---
+WANGetal.:JOINTTASKOFFLOADINGANDMIGRATIONOPTIMIZATIONINUAV-ENABLEDDYNAMICMECNETWORKS 2157
+[35] Z. Zhou et al., “An air-ground integration approach for mobile edge Lianbo Ma (Senior Member, IEEE) received the
+computing in IoT,” IEEE Commun. Mag., vol. 56, no. 8, pp. 40–47, PhDdegreeinmechanicalandelectronicengineering
+Aug.2018. fromtheUniversityofChineseAcademyofSciences,
+[36] J.Du,C.Jiang,A.Benslimane,S.Guo,andY.Ren,“SDN-basedresource Beijing,China,in2015.Heiscurrentlyaprofessor
+allocationinedgeandcloudcomputingsystems:Anevolutionarystackel- withNortheasternUniversity.Hehaspublishedmore
+bergdifferentialgameapproach,”IEEE/ACMTrans.Netw.,vol.30,no.4, than90journalarticles,books,andrefereedconfer-
+pp.1613–1628,Aug.2022. ence papers. His current research interests include
+[37] A.Hermosilla,A.M.Zarca,J.B.Bernabe,J.Ortiz,andA.Skarmeta, computationalintelligenceandmachinelearning.
+“Security orchestration and enforcement in NFV/SDN-aware UAV de-
+ployments,”IEEEAccess,vol.8,pp.131779–131795,2020.
+[38] Y.Pengetal.,“Computingandcommunicationcost-awareservicemi-
+grationenabledbytransferreinforcementlearningfordynamicvehicular
+edgecomputingnetworks,”IEEETrans.MobileComput.,vol.23,no.1, YaoZhangreceivedthePhDdegreeintelecommu-
+pp.257–269,Jan.2024. nicationengineeringfromXidianUniversity,Xi’an,
+[39] Electronic design, 2013. [Online]. Available: https://www. China, in 2020. He is currently a PostDoctoral re-
+electronicdesign.com/ searcher with Northwestern Polytechnical Univer-
+[40] N. Cheng et al., “Space/aerial-assisted computing offloading for IoT sity,Xi’an,China.Hewasaresearchassistantand
+applications:Alearning-basedapproach,”IEEEJ.Sel.AreasCommun., post-doctoralfellowwiththeHongKongPolytechnic
+vol.37,no.5,pp.1117–1129,May2019. University,in2019and2021,respectively.Hiscur-
+[41] S.Zhuetal.,“UAV-enabledcomputationmigrationforcomplexmissions: rentresearchinterestsincludepervasivecomputing,
+A reinforcement learning approach,” IET Commun., vol. 14, no. 15, mobileedgecomputingandedgeAI,andnetworked
+pp.2472–2480,2020. autonomousdriving.
+[42] A. Al-Hourani, S. Kandeepan, and S. Lardner, “Optimal LAP altitude
+for maximum coverage,” IEEE Wireless Commun. Lett., vol. 3, no. 6,
+pp.569–572,Dec.2014.
+[43] X. Chen et al., “Dynamic service migration and request routing for YingnanZhaoreceivedthePhDdegreeincomputer
+microserviceinmulticellmobile-edgecomputing,”IEEEInternetThings
+science from the Harbin Institute of Technology,
+J.,vol.9,no.15,pp.13126–13143,Aug.2022.
+Harbin,China,in2023.Heiscurrentlyanassociate
+[44] J.Schulman,F.Wolski,P.Dhariwal,andA.Radford,“Proximalpolicy professorwiththeSchoolofComputerScienceand
+optimizationalgorithms,”2017,arXiv:1707.06347.
+Technology,HarbinEngineeringUniversity,China.
+[45] C.Yan,L.Fu,J.Zhang,andJ.Wang,“AcomprehensivesurveyonUAV His research interests include deep reinforcement
+communication channel modeling,” IEEE Access, vol. 7, pp. 107769– learningandmobileedgecomputing.
+107792,2019.
+[46] Z. Yan, P. Cheng, Z. Chen, B. Vucetic, and Y. Li, “Two-dimensional
+taskoffloadingformobilenetworks:Animitationlearningframework,”
+IEEE/ACMTrans.Netw.,vol.29,no.6,pp.2494–2507,Dec.2021.
+[47] S. Khamari, A. Rachedi, T. Ahmed, and M. Mosbah, “Adaptive deep
+reinforcementlearningapproachforservicemigrationinMEC-Enabled Hongzhi Guo (Member, IEEE) received the PhD
+vehicular networks,” in Proc. IEEE Symp. Comput. Commun., 2023, degrees in computer science and technology from
+pp.1075–1079. the Harbin Institute of Technology, in 2011. He is
+[48] B.Gao,Z.Zhou,F.Liu,F.Xu,andB.Li,“Anonlineframeworkforjoint currentlyanassociateprofessorwiththeSchoolof
+networkselectionandserviceplacementinmobileedgecomputing,”IEEE Cybersecurity, Northwestern Polytechnical Univer-
+Trans.MobileComput.,vol.21,no.11,pp.3836–3851,Nov.2022. sity. His research interests cover edge computing,
+[49] Z. Chen, S. Huang, G. Min, Z. Ning, J. Li, and Y. Zhang, “Mobility- SAGSIN,IoTsecurity,AIsecurity,5Gsecurity,etc.
+aware seamless service migration and resource allocation in multi- Hehasbeenactivelyjoiningthesocietyactivities,like
+edge IoV systems,” IEEE Trans. Mobile Comput., to be published, servingasassociateeditorsforIEEETransactionson
+doi:10.1109/TMC.2025.3540407. VehicularTechnology(Jan.2021-present),Frontiers
+[50] Y.Zheng,X.Xie,andW.Y.Ma,“GeoLife:Acollaborativesocialnetwork- inCommunicationsandNetwork(Jan.2021-present).
+ingserviceamonguser,locationandtrajectory,”IEEEDataEng.Bull.,
+vol.33,no.2,pp.32–39,Feb.2010.
+[51] S.Qiao,D.Shen,X.Wang,N.Han,andW.Zhu,“Aself-adaptiveparameter
+selectiontrajectorypredictionapproachviahiddenmarkovmodels,”IEEE
+Trans.Intell.Transp.Syst.,vol.16,no.1,pp.284–296,Feb.2015. Zhiwen Yu (Senior Member, IEEE) received the
+PhDdegreeincomputersciencefromNorthwestern
+PolytechnicalUniversity,Xi’an,China,in2006.He
+Liang Wang (Member, IEEE) received the PhD is currentlyaprofessorandthevice-deanwiththe
+degree from the Shenyang Institute of Automation SchoolofComputerScience,NorthwesternPolytech-
+(SIA), Chinese Academy of Sciences, Shenyang, nicalUniversity,Xi’an,China.HewasanAlexander
+China,in2014.Heiscurrentlyaprofessorwiththe Von Humboldt fellow with Mannheim University,
+SchoolofComputerScience,NorthwesternPolytech- Germany, and a research fellow with Kyoto Uni-
+nicalUniversity,Xi’an,China.Hisresearchinterests versity,Kyoto,Japan.Hisresearchinterestsinclude
+includeubiquitouscomputing,mobilecrowdsensing, ubiquitouscomputingandHCI.
+andcrowdcomputing.
+BingnanShenreceivedthebachelor’sdegreeincom- BinGuo(SeniorMember,IEEE)receivedthePhD
+puterscienceandtechnologyfromGuangxiUniver- degree in computer science from Keio University,
+sity,Nanning,China,inJune2022.Heiscurrently Minato, Japan, in 2009, He was a postdoctoral re-
+workingtowardthemaster’sdegreeincomputerap- searcherwiththeInstitutTELECOMSudParis,Es-
+plicationtechnologywithNorthwesternPolytechni- sonne,France.HeiscurrentlyaprofessorwithNorth-
+cal University, Xi’an, China. His current research westernPolytechnicalUniversity,Xi’an,China.His
+interestisedgecomputingandInternetofThings. researchinterestsincludeubiquitouscomputing,mo-
+bilecrowdsensing,andHCI.
+Authorized licensed use limited to: SOUTHWEST JIAOTONG UNIVERSITY. Downloaded on November 23,2025 at 08:41:22 UTC from IEEE Xplore. Restrictions apply.

@@ -917,6 +917,8 @@ class SingleAgentTrainingEnvironment:
         self._reward_ema_delay: Optional[float] = None
         self._reward_ema_energy: Optional[float] = None
         self._episode_counters_initialized = False
+        self._current_episode_step = 0  # 🔧 修复：初始化episode步数计数器，避免benchmark测试时未初始化
+        self._step_counter = 0  # 🔧 修复：初始化全局步数计数器
         
         print(f"✓ {self.algorithm}训练环境初始化完成")
         print(f"✓ 算法类型: 单智能体")
@@ -1236,10 +1238,10 @@ class SingleAgentTrainingEnvironment:
                 pass
         
         # 🔍 诊断日志：监控卸载决策分布
+        step_count = getattr(self, '_step_counter', 0)
+        self._step_counter = step_count + 1
+        
         if actions_dict is not None and 'offload_preference' in actions_dict:
-            step_count = getattr(self, '_step_counter', 0)
-            self._step_counter = step_count + 1
-            
             if step_count % 50 == 0:
                 offload_pref = actions_dict['offload_preference']
                 # 兼容字典和numpy数组格式
@@ -1835,7 +1837,98 @@ class SingleAgentTrainingEnvironment:
             'rsu_offload_ratio': rsu_offload_ratio,
             'uav_offload_ratio': uav_offload_ratio,
             'episode_progress': episode_progress,
+            # 🔧 问题6修复: 添加中央资源管理增强奖励指标
+            **self._calculate_central_resource_reward_components(),
         }
+    
+    def _calculate_central_resource_reward_components(self) -> Dict[str, float]:
+        """
+        计算中央资源管理的增强奖励分量
+        
+        🔧 问题6修复: 将Wrapper中的增强奖励逻辑集成到训练流程
+        
+        包括:
+        - 资源利用率奖励: 鼓励70-90%的利用率
+        - 公平性奖励: 使用Jain's fairness index
+        
+        Returns:
+            包含增强奖励分量的字典
+        """
+        result = {
+            'resource_utilization_reward': 0.0,
+            'fairness_reward': 0.0,
+            'vehicle_utilization': 0.0,
+            'rsu_utilization': 0.0,
+            'uav_utilization': 0.0,
+        }
+        
+        if not self.central_resource_enabled:
+            return result
+        
+        resource_pool = getattr(self.simulator, 'resource_pool', None)
+        if resource_pool is None:
+            return result
+        
+        try:
+            resource_state = resource_pool.get_resource_state()
+            
+            # 提取利用率
+            vehicle_util = resource_state.get('vehicle_utilization', 0.0)
+            rsu_util = resource_state.get('rsu_utilization', 0.0)
+            uav_util = resource_state.get('uav_utilization', 0.0)
+            
+            result['vehicle_utilization'] = float(vehicle_util)
+            result['rsu_utilization'] = float(rsu_util)
+            result['uav_utilization'] = float(uav_util)
+            
+            # 🎯 资源利用率奖励（目标70-90%）
+            def utilization_reward(util: float) -> float:
+                """计算单个资源的利用率奖励"""
+                if 0.7 <= util <= 0.9:
+                    return 0.1  # 良好利用率奖励
+                elif util > 0.95:
+                    return -0.2  # 过载惩罚
+                elif util < 0.3:
+                    return -0.1  # 资源浪费惩罚
+                else:
+                    return 0.0
+            
+            util_reward = (utilization_reward(vehicle_util) + 
+                          utilization_reward(rsu_util) + 
+                          utilization_reward(uav_util)) / 3.0
+            result['resource_utilization_reward'] = float(util_reward)
+            
+            # 🎯 公平性奖励（Jain's fairness index）
+            def fairness_metric(allocation: np.ndarray) -> float:
+                """计算Jain's公平性指数"""
+                if len(allocation) == 0:
+                    return 1.0
+                sum_x = np.sum(allocation)
+                sum_x2 = np.sum(allocation ** 2)
+                n = len(allocation)
+                if sum_x2 < 1e-9:
+                    return 1.0
+                return (sum_x ** 2) / (n * sum_x2)
+            
+            bandwidth_alloc = resource_state.get('bandwidth_allocation', np.array([]))
+            if isinstance(bandwidth_alloc, np.ndarray) and len(bandwidth_alloc) > 0:
+                bandwidth_fairness = fairness_metric(bandwidth_alloc)
+            else:
+                bandwidth_fairness = 1.0
+            
+            vehicle_compute = resource_state.get('vehicle_compute_allocation', np.array([]))
+            if isinstance(vehicle_compute, np.ndarray) and len(vehicle_compute) > 0:
+                compute_fairness = fairness_metric(vehicle_compute)
+            else:
+                compute_fairness = 1.0
+            
+            fairness_reward = 0.05 * (bandwidth_fairness + compute_fairness - 1.5)
+            result['fairness_reward'] = float(fairness_reward)
+            
+        except Exception:
+            pass  # 静默处理异常
+        
+        return result
 
     def _normalize_reward_value(self, reward: float) -> float:
         """将奖励值转换为无量纲比例，便于与其他指标对比。"""

@@ -289,14 +289,14 @@ class CollaborativeCacheManager:
         
         # 🎯 P0-1优化：根据节点类型设置容量和策略
         if self.node_type == "Vehicle":
-            self.cache_capacity = config.cache.vehicle_cache_capacity
-            policy_name = config.cache.vehicle_cache_policy.lower()
+            self.cache_capacity = getattr(config.cache, 'vehicle_cache_capacity', 100e6)
+            policy_name = getattr(config.cache, 'vehicle_cache_policy', 'LRU').lower()
         elif self.node_type == "UAV":
-            self.cache_capacity = config.cache.uav_cache_capacity
-            policy_name = config.cache.uav_cache_policy.lower()
+            self.cache_capacity = getattr(config.cache, 'uav_cache_capacity', 150e6)
+            policy_name = getattr(config.cache, 'uav_cache_policy', 'LFU').lower()
         else:  # RSU
-            self.cache_capacity = config.cache.rsu_cache_capacity
-            policy_name = config.cache.rsu_cache_policy.lower()
+            self.cache_capacity = getattr(config.cache, 'rsu_cache_capacity', 200e6)
+            policy_name = getattr(config.cache, 'rsu_cache_policy', 'HYBRID').lower()
         
         # 缓存存储
         self.cached_items: Dict[str, CachedItem] = {}
@@ -320,9 +320,9 @@ class CollaborativeCacheManager:
         self.collaboration_sync_interval = 300  # 5分钟同步一次
         self.last_sync_time = 0.0
         
-        # 🔧 修复：降低预取激进程度
-        self.prefetch_window_ratio = 0.03  # 预取窗口降至3%，减少资源占用
-        self.prefetch_threshold = 0.8      # 提高预取阈值，更加谨慎
+        # 🔧 优化：适度预取以提高命中率
+        self.prefetch_window_ratio = 0.08  # 预取窗口8%，平衡命中率与资源占用
+        self.prefetch_threshold = 0.7      # 适当降低预取阈值，提高缓存利用
         
         # 统计信息
         self.cache_stats = {
@@ -652,9 +652,9 @@ class CollaborativeCacheManager:
         # 计算缓存使用率
         usage_ratio = self.current_usage / self.cache_capacity
         
-        # 计算命中率
-        total_requests = self.cache_stats['hits'] + self.cache_stats['misses']
-        hit_rate = self.cache_stats['hits'] / total_requests if total_requests > 0 else 0.5
+        # 计算命中率 - 🔧 修复：使用正确的键名
+        total_requests = self.cache_stats['cache_hits'] + self.cache_stats['cache_misses']
+        hit_rate = self.cache_stats['cache_hits'] / total_requests if total_requests > 0 else 0.5
         
         # 🔥 自适应规则：
         # 1. 高使用率(>80%) → 提高frequency权重，保留高频内容

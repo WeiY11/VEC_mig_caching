@@ -1,0 +1,472 @@
+--- Page 1 ---
+Dynamic Computation Offloading and Resource
+Allocation for Multi-user Mobile Edge Computing
+Samrat Nath and Jingxian Wu
+Department of Electrical Engineering, University of Arkansas, Fayetteville, AR 72701, USA
+Email: {snath, wuj}@uark.edu
+Abstract—We study the problem of dynamic computation The efficiency of computation offloading relies critically
+offloading and resource allocation in mobile edge computing onhowthe limitedcommunication,power,andcomputational
+(MEC) systems consisting of multiple mobile users (MUs) with
+resources are managed in an MEC system. Various computa-
+stochastic task arrivals and wireless channels. Each MU can
+tion offloading strategies with different design objectives and
+execute its task either locally or remotely in an MEC server.
+The objective is to identifythe optimum schedulingscheme that resource allocation schemes have been studied extensively in
+can minimize the long-term average weighted sum of energy the literature [2]–[9]. Generally, the computation offloading
+consumption and delay of all MUs, under the constraints of approaches in MEC can be classified into two types, namely,
+limited transmission power per MU and limited computation
+partial computation offloading [2], [9], and binary compu-
+resources at the MEC server. The optimum design is performed
+tation offloading [3]–[8]. Specifically, in binary computation
+with respect to three decision parameters: whether to offload a
+given task, how much transmission power to be allocated for offloading, an MU can either execute its computational task
+offloading, andhow muchMEC resourcesto beallocated foran on the local device or offload that task entirely to the MEC
+offloaded task. We propose to solve the problem by developing server. On the other hand, in partial computation offloading,
+a dynamic scheduling strategy based on deep reinforcement
+the MU can offload fractional parts of the task and execute
+learning(DRL)withdeepdeterministicpolicygradient(DDPG).
+the rest of it locally, which offers more flexibility. In [2], an
+Simulationresultsshowthattheproposedalgorithmoutperforms
+other existing strategies such as deep Q-network (DQN). onlinealgorithmbasedonLyapunovoptimizationisdeveloped
+IndexTerms—mobileedgecomputing,computationoffloading, for joint radio and computational resource management for
+deep reinforcement learning, deep deterministicpolicy gradient multi-user MEC systems. The alternating direction method of
+multipliers(ADMM)isappliedtosolvethejointoptimization
+I. INTRODUCTION
+problem of computation offloading, resource allocation, and
+The ever-growing popularity of smart mobile devices contentcachingstrategyin[3].Aniterativesearchalgorithmis
+(SMDs) and the emergence of the Internet-of-Things (IoT) proposedtostudytheenergy-latencytradeoffforenergy-aware
+aredrivingthedevelopmentofmanynewapplicationssuchas offloadingin[4].Theschemedesignedin[8]jointlyminimizes
+onlineinteractivegaming,face recognition,virtual/augmented energy consumption, delay, and deadline penalty of all the
+reality,etc.Theseapplicationstypicallyrequireintensivecom- usersinamulti-channelMECsystem.However,mostofthese
+putationandhighenergyconsumption.However,anSMD has problems do not consider dynamic channel conditions and/or
+limited battery life and computational capacity (processing dynamictaskarrivals.Inpractice,theMECsystemshavetime-
+speed), which makes it difficult for the SMD to meet the varying stochastic channel conditions and task arrivals.
+stringent requirements of these mobile applications. Mobile The complicated joint computation offloading and resource
+edge computing (MEC) has recently emerged as a promising allocation in MEC is usually formulated as non-convex opti-
+technology to bridge the gap between the resource-limited mization problems, which are in general very challenging to
+SMDs and the computation-intensiveapplications [1]. solve. With the explosive growth of interest in deep neural
+Unlike conventional cloud computing systems, which rely
+networks (DNNs), researchers have recently started adopting
+on remote public clouds with high transmission latency,
+Deep Reinforcement Learning (DRL) algorithms to solve
+MEC offers computational capability within the radio access
+these problems [5]–[9]. The proposed solutions in [6], [7]
+network by deploying densely distributed high-performance
+exploits the Deep Q-Network (DQN) method [10], while [8],
+serversinproximitytomobileusers(MUs)[1].ItallowsMUs
+[9] utilizes the Deep Deterministic Policy Gradient (DDPG)
+to offload computational tasks to the MEC server connected
+algorithm[11].However,theworkin [8]assumesthe channel
+to a base station (BS) through the wireless network. MUs
+conditionsto be quasi-static, and no constrainton the compu-
+can significantly reduce the computation latency and energy
+tational capacity of the MEC server is considered in [9].
+consumptionthroughcomputationoffloadingandthusimprove
+In this paper, we propose to develop an online DRL-based
+the Quality of Experience (QoE) of mobile applications.
+scheme for dynamic computation offloading and resource
+Therefore, there have been growing interests on computation allocation in a resource-constrained multi-user MEC system
+offloading in MEC systems [1].
+by addressing three key questions: 1) whether a given task
+should be executed locally at an MU or offloaded to MEC?
+Theworkwassupported inpartbytheU.S.National Science Foundation
+(NSF)underAwardNumberECCS-1711087. 2) how much transmission power should be allocated to a
+978-1-7281-8298-8/20/$31.00 ©2020 IEEE
+1618439.0202.20024MOCEBOLG/9011.01
+:IOD
+|
+EEEI
+0202©
+00.13$/02/8-8928-1827-1-879
+| ecnerefnoC
+snoitacinummoC
+labolG
+EEEI
+0202
+-
+0202
+MOCEBOLG
+Authorized licensed use limited to: SOUTHWEST JIAOTONG UNIVERSITY. Downloaded on November 27,2025 at 05:19:56 UTC from IEEE Xplore. Restrictions apply.
+
+--- Page 2 ---
+givenMUfortaskoffloading?and3)howmuchcomputational BS serving N single-antenna MUs. The channel conditions
+resources should be allocated by the MEC server for a given betweentheBSandMUsaredescribedbytheM×N channel
+task?IntheproposedMECframework,thetimeisdividedinto matrix H t = [h 1,t ,··· ,h N,t], where h n,t ∈ CM×1 is the
+slots,andthechannelconditionsandtaskarrivalsareassumed channel vector of the n-th MU. The Gaussian Markov block
+to be time-varying and stochastic. The offloading decision, fadingautoregressivemodel[13]isadoptedtocharacterizethe
+power allocation, and computational resource allocation are temporal channel correlation between consecutive slots. The
+determined centrally by the BS at the beginning of each channel vector for the n-th MU can be expressed as
+(cid:3)
+time slot, and then the results are forwarded to the MU.
+Our objective is to design an online DRL-based solution for h n,t =ρ n h n,t−1+ 1−ρ2 n e t , (2)
+efficient computation offloading and resource allocation. We where ρ n is the normalizedchannelcorrelationcoefficientfor
+assume that the MEC server has a limited computation re- then-thMU,theerrorvectore t ∈CM×1 isuncorrelatedwith
+sourcecapacityandalltheMUshaveindividualconstraintson h n,t, and it is distributed such that e t ∼CN(0,σ e 2I M), with
+transmissionpower.Specifically,weformulateanoptimization I M being a size M identity matrix.
+problemtominimizethelong-termaverageofacostfunction, Denote the transmission power of the n-th MU at the t-th
+which is a weighted sum of energyconsumptionand delay of slot as p n,t ∈ [0,P n max], where P n max is the maximum trans-
+all MUs. We proposeto solve the problemby usinga DDPG- mission power of the n-th MU. The BS manages the uplink
+based method, which can deal with the continuous space transmissions of multiple single-antenna MUs by employing
+of optimization variables. Simulation results demonstrate that thelineardetectionalgorithmzero-forcing(ZF)[9],[14].With
+theproposedDDPG-basedsolutionoutperformsotherexisting theZFdetectorattheBS,thesignal-to-interference-plus-noise
+strategies such as DQN, which requires the discretization of ratio (SINR) for the signal from the n-th MU is
+the optimization variables. p
+II. SYSTEMMODELANDPROBLEM FORMULATION
+γ n,t = σ2[( √ P
+t
+T H
+t
+H n H ,t
+t
+√ P t)−1]nn , (3)
+Consider a multi-user MEC system with one 5G small- where σ2 is the noise power, P t = diag{p t } is a diagonal
+cell BS with M antennas, one MEC server, and a set of matrix with p t = [p 1,t ,··· ,p N,t]T on its main diagonal,
+N ≤ M mobile users denoted by N = {1,2,···,N}. The the operators AT and AH respectively represent the matrix
+BS is connected directly with the MEC server with a total transpose and Hermitian operations, and [A]mn denotes the
+computation capacity of F (in CPU cycles per second). The (m,n)-thelementofthematrixA. Thetransmissiondatarate
+system bandwidth is W (in Hz). We adopt a discrete-time from the n-th MU to the BS at slot t can be expressed as [9]
+m (in od s e e l c , o w nd h s e ) re an th d e i t n i d m e e xe d d om by ai T n i = s s { lo 0 t , te 1 d ,· w ·· it } h . equal length T s r n,t =W log 2 (1+γ n,t). (4)
+C. Computation Model
+A. Task Model
+Assume there are K computation-intensive heterogeneous
+Denotex
+n,t
+∈{0,1}asthecomputationoffloadingdecision
+tasks denoted by the set K (cid:2) {1,2,··· ,K}. Each task variableofthen-thMUatslott.Specifically,ifx n,t =1,then
+the n-th MU chooses to offload its current computation task
+k ∈K ischaracterizedbytwoparameters;b k (inbits)denotes to the MEC server via the wireless link; if x n,t =0, then the
+the size of computation input data (e.g. program codes and
+n-th MU chooses to execute its task locally. The computation
+input parameters) and d k (in cycles per second) denotes the offloadingdecisionvectorfor allMUs is representedbyx t (cid:2)
+a b m eg o in u n n i t n o g f o c f om ea p c u h ti t n im g e re s s l o o u t, rc e e a s ch req M u U ired req fo u r es t t h s e a ta s s i k n . gl A e t ta th sk e [x 1,t ,··· ,x N,t]T. Denote k t n ∈ K as the index of the task
+requestedby the n-th MU at the beginningof time slot t, and
+randomly from the set K, where one task may be requested
+by multiple users simultaneously. The popularity of each k t (cid:2)[k t 1,··· ,k t N]T as the task request vector.
+1) LocalExecution: Inthelocalexecutionapproach,then-
+task φ k,t is dynamic and follows Zipf distribution [12]. The th MU executesits computationtask kn locally using its own
+popularityprofile vector is defined as φ t (cid:2){φ k,t } k∈K. Given CPU.Letfl bethecomputationcapabi t lity(inCPUcyclesper
+the popularity rank of task k during slot t is z k,t ∈ K, the second) of n the n-th MU. Different MUs may have different
+popularity of the corresponding task can be expressed as computational capabilities. The computation time of task kn
+t
+z−η
+by local execution can then be expressed as
+φ k,t = (cid:2) K l= k 1 ,t z l − ,t η , (1) Tl = d k t n . (5)
+n,t fl
+where Zipf parameter η ≥ 0 controls the skewness of popu- n
+larity. As the value of η increases, the popularity difference The corresponding energy consumption is
+among the tasks becomes larger. E n l ,t =ζ n d k t n , (6)
+B. Communication Model where the coefficient ζ n denotes the energy consumption per
+The BS and the MUs form a multi-user multiple-input CPU cycle,whichdependsonthechiparchitectureattheMU
+multiple-output (MIMO) system, with M antennas at the device. We set ζ n =10−27(f n l)2 in this paper [15].
+Authorized licensed use limited to: SOUTHWEST JIAOTONG UNIVERSITY. Downloaded on November 27,2025 at 05:19:56 UTC from IEEE Xplore. Restrictions apply.
+
+--- Page 3 ---
+2) MEC Server Execution: In this approach, the MEC where E(·) denotes mathematical expectation. The optimiza-
+serverwillexecutethecomputationtaskonbehalfoftheMU. tion problem is formulated as follows.
+This approach is divided into three steps. First, the n-th MU P1: min C¯
+uploadsitstaskdataofsizeb kn totheBSthroughthewireless x,p,f
+t
+channel, and the BS forwards that data to the MEC server. s.t. (C1) x n,t ∈{0,1}, ∀n∈N, ∀t∈T
+Second, the MEC server allocates part of its computational (C2) p n,t ≤P n max, ∀n∈{n:x n,t =1}, ∀t∈T
+resources to execute the task. Finally, the MEC server returns (cid:4)
+N
+the execution results to the n-th MU. (C3) 1(x n,t =1)f n,t ≤F, ∀t∈T
+n=1
+In the first step, the transmission delay of task offloading
+by the n-th MU during slot t can be computed as (C4) T n,t ≤T s , ∀n∈N, ∀t∈T
+Here, (C3) represents the constraint that the total amount of
+b
+Tx = k t n . (7) allocated resources can not exceed the total computational
+n,t r
+n,t resourceoftheMECserver,and(C4)representstheconstraint
+The corresponding energy consumption of the first step is that each MU must execute its task either locally or in the
+MEC server within one time slot.
+p b
+E n x ,t =p n,t T n x ,t = n r ,t k t n . (8) The optimal solution of P1 requires knowledge of the sta-
+n,t tisticaldistributionofthechannelconditionandtask requests,
+In the second step during task execution, the processing which are in general not available in a practical system.
+delay incurred by the MEC server is Moreover,P1isamixed-integernonlinearprogrammingandit
+is very challenging to solve even if the statistical information
+d
+Tp = k t n , (9) is available. One possible way to overcome these challenges
+n,t f
+n,t is to adopt an online approach that can efficiently make
+wheref n,t denotesthecomputationalresource(inCPUcycles the decisions regarding computation offloading and resource
+per second) allocated to the n-th MU by the MEC server allocation in real-time by learning from past observations.
+during slot t. Denote f t (cid:2) [f 1,t ,··· ,f N,t]T as the MEC Hence,insteadofapplyingconventionaloptimizationmethods
+computational resource allocation vector for all the MUs. to solve the NP-hard problem P1, we propose a DRL-based
+In the final step, the n-th MU downloads the output data method to find the optimal x,p, and f.
+from the MEC server. For many applications, the size of the III. DRL-BASED SOLUTION FORCOMPUTATION
+computationoutputdataismuchsmallerthanthatoftheinput OFFLOADING AND RESOURCE ALLOCATION
+data, and the download data rate is also much higher than
+DRLisregardedasacombinationofreinforcementlearning
+the upload rate. Therefore, we do not consider the delay and
+(RL) and DNN. We first formulate P1 in the RL framework,
+energy consumption during this step [2]–[4], [6]–[9].
+and then present the proposed DRL-based solution.
+D. Problem Formulation A. RL Framework
+Given the computation offloading decision vector x, the Generally, the RL framework is well-suited for solving
+energy consumption and computation delay for the n-th MU complicated decision-making problems in real-time [16]. The
+during slot t can be computed, respectively, as framework consists of three key elements, state, action, and
+reward.AnRLagentinteractswiththeenvironmentindiscrete
+E n,t =1(x n,t =0)E n l ,t +1(x n,t =1)E n x ,t , (10) time domain. At each time step t, the agent’s behavior is
+T n,t =1(x n,t =0)T n l ,t +1(x n,t =1)(T n x ,t +T n p ,t ), (11) defined by a policy μ, which maps states to actions μ :
+where 1(E) is the indicator function with 1(E) = 1 if the s t → a t. After the RL agent selects an action a t according
+event E is true and 0 otherwise. to the policy μ, the environment returns a scalar reward r t
+and makes a transition from state s t to s t+1. The action-
+Define the overall cost of all MUs in the MEC system as valuefunctionQμ(s,a)(alsoknownasQ-function)represents
+(cid:4) (cid:4)
+C t = N n=1 E n,t+ N n=1 ω n T n,t , (12) t u h n e de e r xp th e e ct p ed oli i c n y fin μ ite w -h it o h ri i z n o it n ia d l i s s t c a o te un s te a d n a d c i c n u i m tia u l la a t c iv ti e on re a w : ard
+(cid:5) (cid:6)
+where the weight coefficient ω n (in W/sec) controls the (cid:4)
+tradeoffbetweenenergyand delayfor the n-th MU. Different Qμ (s,a)=E lim γtr t |s 0 =s,a 0 =a , (14)
+|T|→∞ t∈T
+MUs might have different delay requirements depending on
+the task. For MUs dealing with time-sensitive tasks, ω n can a w g h e e n r t e is γ to ∈ le [0 a , rn 1] th is e t o h p e ti d m is a c l o p u o n l t ic f y ac μ t ∗ or. su T c h h e th g a o t al of the RL
+be set to larger values to prioritize faster execution.
+The objective of this paper is to minimize the long-term μ∗ (s)=argmaxQ∗ (s,a), (15)
+average cost of the MEC system, which is defined as a
+(cid:5) (cid:4) (cid:6) where Q∗(s,a) is the optimal Q-function.
+1
+C¯ =E |T l | i → m ∞ |T| t∈T C t , (13) the To ke i y nt e e l r e p m re e t nt p s ro a b c l c e o m rdi P n 1 g t i o n t t h h e e s R y L ste f m ram m e o w de o l rk a , s w fo e ll d o e w fi s n . e
+Authorized licensed use limited to: SOUTHWEST JIAOTONG UNIVERSITY. Downloaded on November 27,2025 at 05:19:56 UTC from IEEE Xplore. Restrictions apply.
+
+--- Page 4 ---
+1) State: The state of a system is a set of parameters that andstatespaces.InDDPG,anactor-criticapproachisadopted
+can be used to describe a system. Hence, the system state at byusingtwoseparateDNNs,wheretheactornetworkμ(s|θμ)
+an arbitrary time slot t is defined as approximates the policy function μ, and the critic network
+Q(s,a|θQ)approximatestheQ-function.Here,θμandθQare
+s t (cid:2){k t ,H t }, (16)
+the parameters of the actor and critic networks, respectively.
+where the task request vector k t and the channel matrix H t In the proposed DDPG framework, a four-layer fully con-
+determinethestochasticityofsystem.Atthestartofeachslot, nected neural network with two hidden layers is considered
+k t is knownto the system, andthe channelreciprocitycan be for both the actor and critic networks. The dimensions of
+usedtoestimateH t fortheupcominguplinktransmission[9]. two hidden layers are 8N and 4N, respectively. The neural
+2) Action: Based on the observed state s t, the RL agent networksusetheReLuastheactivationfunctionforallhidden
+will select actionsa t based on the decisionvariablesin P1 as layers,while thefinaloutputlayerofthe actorusesa sigmoid
+a t (cid:2){x t ,p t ,f t }. (17) layertoboundtheactions.Ornstein-Uhlenbeckprocess[18]is
+adopted to generate random noise Δμ for action exploration,
+whichincludesthecomputationoffloadingdecisionvectorx t, while the adaptivemomentestimation (Adam)method[19] is
+thetransmissionpowervectorp t,andtheMECcomputational used for updating the neural network parameters. Details of
+resource allocation vector f t for each slot t∈T. the proposed solution are described in Algorithm 1.
+3) Reward: Given a particular state s t and an action a t
+at time slot t, it is evident that the overall system cost C t in
+(12)can be expressedby the cost functionC, which mapsthe
+state-action pair to a scalar reward r t such that IV. SIMULATIONRESULTS
+r t (cid:2)−C(s t ,a t)=−C t . (18)
+Simulation results are presented in this section to demon-
+Please note that although RL algorithms maximize the
+strate theperformanceofthe proposedalgorithmwithDDPG.
+expected discounted long-term reward, these algorithms can
+Unless specified otherwise, the default settings of the MEC
+also approximate the true expected long-term undiscounted system are set as follows: the number of MUs N = 6, the
+reward when γ →1 [17]. So, the average system cost in (13) number of antennas in BS M = 8, the coverage radius of
+isminimizedbyapplyingthepolicylearnedviatheRL agent. BS d m = 50m, the channel bandwidth W = 10 MHz, the
+Itisdifficulttoobtaintheexactsolutionofthe RLproblem
+computationalresource of MEC server F =5 GHz, the CPU
+in high-dimensionalstate and action spaces by directly maxi- frequencyof each MU fl =1 GHz, and the duration of time
+n
+mizingtheQ-function.We proposetotacklethischallengeby
+slot T s =1s.
+obtaininganapproximatesolutionoftheRLproblembyusing
+At the beginning of every episode, the channel vector of
+DRL with DDPG. Details are given in the next subsection.
+each MU is initialized as h n,0 ∼ CN(0,h 0(d 0 /d n)βI M),
+B. DRL with DDPG where h = −30 dB, d 0 = 1 m, the path-loss exponent β = 3
+A feasible method to solve the RL problem is the well- [9], d n (in meters) denotes the distance from MU n to the
+known Q-learning algorithm [16], which solves the optimal BS. In each episode, the locations of MUs are randomly set
+Q-function through a value iteration update approach as suchthattheyareuniformlyscatteredthroughoutthecoverage
+region,andthelocationsareindependentindifferentepisodes.
+Q(s t ,a t)←Q (cid:5) (s t ,a t) (cid:6) (19) The channel vectors h n,t, ∀n ∈ N are updated according
++α r t+γm at a + x 1 Q(s t+1 ,a t+1)−Q(s t ,a t) , a to nd (2 th ), e w er h r e o r r e v t e h c e to c r h e a t nn ∼ el CN cor ( r 0 e , la h t 0 io (d n 0 / co d e m ffi )β c I ie M nt ). ρ T n he = M 0 U .9 ’ 5 s
+where α is the learning rate. However, as the dimensions of maximumallowedtransmissionpowerP n max =2W, ∀n∈N,
+the state space and action space increase, the complexity of and the background noise power is σ2 = 10−9 W [9]. The
+solving (19) grows exponentially. DQN provides an efficient energy-delay tradeoff parameters are ω n =1 for all MUs.
+method to address this issue [10]. DQN exploits the architec- There are K = 4 computation tasks. We assume the
+ture of DNN in order to approximate the Q function with a data sizes of the computation tasks b k (in MB) is uniformly
+finite number of parameters in the neural network. However, distributed between [50,100] and the number of CPU cycles
+DQN can only handle discrete and low-dimensional action requiredtocompletethetasksd k (inGigacycles)isuniformly
+spaces, because finding the optimalvalue accordingto (15) is distributedbetween[0.1,0.5].Moreover,thepopularityprofile
+relatively simple with low-dimensional spaces. For problems φ t is modeled via a three-state Markov chain, represented
+withcontinuousactionandstatespaceslikeP1,theactionand by three different popularity profiles φ(1),φ(2), and φ(3)
+state spaces have to be discretized beforeapplyingDQN. The [20]. These profiles are modeled by Zipf distributions with
+complexitygrowsexponentiallywithdiscretizationlevels.The parametersη 1 =1,η 2 =1.2,andη 3 =1.5,respectively.So,at
+discretization in DQN also causes loss of precision. eachtimeslott,thepopularityprofileφ twillfollowoneofthe
+We propose to address this challenge by applying DDPG three states and each task k ∈ K will be assigned popularity
+[11],whichisappropriateforproblemswithcontinuousaction ranks z k,t randomly. The Markov transition probabilities are
+Authorized licensed use limited to: SOUTHWEST JIAOTONG UNIVERSITY. Downloaded on November 27,2025 at 05:19:56 UTC from IEEE Xplore. Restrictions apply.
+
+--- Page 5 ---
+Algorithm 1 Proposed Solution using DDPG
+Input: System model parameters, number of episodes K max,
+number of time steps in each episode T max, empty replay
+buffer R, mini-batch size B, update rate for target networks
+τ, learning rate for critic network αQ and actor network αμ.
+1: Initialization:
+2: Initialize actor network μ(s|θμ) and critic network
+Q(s,a|θQ)withrandomweightsθμandθQ,respectively,
+drawnfromauniformdistributionU[−3×10−3,3×10−3].
+3: Initialize associated target networks μ(cid:6) and Q(cid:6) with
+weights θμ(cid:2) ←θμ,θQ(cid:2) ←θQ.
+4: for each episode k =1,2,··· ,K max do
+5: Randomly generate an initial state s 1
+6: for each episode t=1,2,··· ,T max do
+7: Determine the decision vectors by selecting an
+actiona t =μ(s t |θμ)+Δμusingthecurrentpolicyμand Fig.1. Averagesystemcostv.s.thecapacity ofMECserver.
+explorationnoiseΔμ,whichisgeneratedbyfollowingthe
+Ornstein-Uhlenbeck process [18].
+8: Execute action a t and observe the reward r t = K max = 1500, the number of steps in each episode T max =
+−C(s t ,a t)=−C t and the new state s t+1. 100, the experiencereplay buffer size |R|=50000,the mini-
+9: Savethetransition(s t ,a t ,r t ,s t+1)intothereplay batchsizeB =128,thesoftupdaterateforthetargetnetworks
+buffer R. τ =10−3, and the learning rate for actor networkαμ =10−4
+10: Randomly sample a mini-batch of B transitions and critic network αQ =10−3.
+{(s(b),a(b),r(b),s(b) )}B from R. To evaluate the performance of policy μ∗ learned by the
+i i i i+1 b=1
+11: Update the critic network Q(s,a|θQ) by one-step proposed DDPG-based solution, testing results are averaged
+gradient descent as θQ ← θQ −αQ∇ θQ LQ, where the from1000episodes,witheachepisodeconsistingof100steps.
+loss LQ is Results obtained from the proposed DDPG-based algorithm
+(cid:4) (cid:7) (cid:8) (cid:9) arecomparedtothreebaselinestrategiesdescribedasfollows.
+LQ
+=
+1 B r(b) +γQ(cid:6) s(b) ,μ(cid:6) (s(b) |θμ(cid:2) )|θQ(cid:2)
+(1) Full Local: all MUs execute their tasks locally.
+B b=1 i i+1 i+1
+−Q(s(b),a(b)|θQ ) (cid:10) 2 . (20) (2)FullOffload:allMUsoffloadtheirtaskstotheMECserver.
+i i All MUs transmit with the maximumpower available and the
+12: Update the actor network μ(s,a|θQ) by using computationalresourceF isdistributeduniformlytoeachMU.
+one-step sampled policy gradient ascent as θμ ← θμ + (3)DQN-based Solution:DQN [10]can onlybe implemented
+αμ∇ θµ Jμ, where Jμ (cid:2)E s,a Qμ(s,a), and on systems with discrete state and action spaces. The support
+(cid:4)
+spacesforpandf arebothdiscretizeduniformlyintofiniteL
+∇ θµ Jμ ≈ B 1 B b=1 ∇ a Q(s( i b),a|θQ )| a=a i (b) × (21) l f e o v r e N ls e M ac U h s . . T W he e re a f r o b r i e tr , a t r h i e ly si s z e e t L of = the 3 a a c n t d ion ma sp in a t c a e in is th ( e 2L sa 2 m )N e
+∇
+θµ
+μ(s(
+i
+b)|θμ ).
+neural network architecture as mentioned in Section III-B. In
+addition,(cid:12)-greedyexplorationmethodisadoptedforexploring
+13: Update the target networks:
+the actions during network training with (cid:12)=0.01.
+θμ(cid:2) ←τθμ +(1−τ)θμ(cid:2) and θQ(cid:2) ←τθQ +(1− τ)θQ(cid:2) Fig. 1 shows the average system cost as a function of
+the resource capacity of the MEC server (F) with different
+14: end for
+algorithms. Since the MUs do not utilize the computational
+15: end for
+resource of the MEC server in the ‘Full Local’ approach, the
+Output: Optimal policy μ∗. performance remains constant regardless of F. The perfor-
+mance of all the other algorithms improves as F increases
+due to the extra computational resources from MEC. The
+given by the transition matrix
+⎡ ⎤ ⎡ ⎤ proposed DDPG-based algorithm achieves the best perfor-
+τ
+1,1
+τ
+1,2
+τ
+1,3
+0.5 0.3 0.2
+mance,followedby the DQN approach.Theperformancegap
+τ (cid:2)⎣τ 2,1 τ 2,2 τ 2,3 ⎦ = ⎣ 0.1 0.6 0.3 ⎦, (22) between the DDPG-based algorithm and DQN algorithm be-
+τ
+3,1
+τ
+3,2
+τ
+3,3
+0.25 0.35 0.4
+comeslargerasF increases.ThismeansthattheDDPG-based
+whereτ
+i,j
+indicatestransitionprobabilityfromstateitoj,for algorithm can better utilize the MEC resources. Although it
+i,j ∈{1,2,3}.Please notethatthese states are differentfrom may be possible to get better results by DQN approach with
+the system states defined in our problem formulation. a largernumberof discrete levels L, it will yield a very high-
+For learning the neural network parameters, we set the dimensional action space with prohibitively high complexity.
+hyper-parametersas follows: the number of training episodes Table I shows the effects of the number of MUs (N) on
+Authorized licensed use limited to: SOUTHWEST JIAOTONG UNIVERSITY. Downloaded on November 27,2025 at 05:19:56 UTC from IEEE Xplore. Restrictions apply.
+
+--- Page 6 ---
+TABLEI energyconsumptionanddelayofalltheMUs.ADDPG-based
+EFFECTOFNUMBEROFMUS(N)ONAVERAGESYSTEMCOSTC¯
+(W) method has been proposed to solve the problem. Simulation
+results have demonstratedthat the proposedalgorithmoutper-
+N FullOffload FullLocal DQN ProposedDDPG
+forms existing approaches such as DQN.
+4 2.42 1.99 1.74 1.52
+5 3.19 2.39 2.04 1.70 REFERENCES
+6 4.05 2.78 2.63 2.52
+[1] P. Mach and Z. Becvar, “Mobile edge computing: A survey on ar-
+chitecture andcomputation offloading,” IEEECommunications Surveys
+Tutorials, vol.19,no.3,pp.1628–1656, Mar.2017.
+[2] Y.Mao,J.Zhang,S.H.Song,andK.B.Letaief,“Stochasticjointradio
+and computational resource management for multi-user mobile-edge
+computing systems,” IEEE Transactions on Wireless Communications,
+vol.16,no.9,pp.5994–6009, Sep.2017.
+[3] C. Wang, C. Liang, F. R. Yu, Q. Chen, and L. Tang, “Computation
+offloading and resource allocation in wireless cellular networks with
+mobile edge computing,” IEEE Transactions on Wireless Communica-
+tions,vol.16,no.8,pp.4924–4938, Aug.2017.
+[4] J.Zhang,X.Hu,Z.Ning,E.C.-H.Ngai,L.Zhou,J.Wei,J.Cheng,and
+B.Hu, “Energy-latency tradeoff forenergy-aware offloading inmobile
+edge computing networks,” IEEE Internet of Things Journal, vol. 5,
+no.4,pp.2633–2645,2017.
+[5] L. Huang, S. Bi, and Y. J. Zhang, “Deep reinforcement learning
+for online computation offloading in wireless powered mobile-edge
+computing networks,” IEEETransactions onMobile Computing (Early
+Access),Jul.2019.
+[6] L.Huang,X.Feng,C.Zhang,L.Qian,andY.Wu,“Deepreinforcement
+learning-basedjointtaskoffloadingandbandwidthallocationformulti-
+user mobile edge computing,” Digital Communications and Networks,
+Fig.2. Tradeoffbetweenaverageenergyconsumptionandaveragedelaywith vol.5,no.1,pp.10–17,Feb.2019.
+tradeoff parameter ωn=ω∈[1,2]∀n∈N. [7] J. Wang, L.Zhao, J. Liu, and N. Kato, “Smart resource allocation for
+mobileedgecomputing:Adeepreinforcementlearningapproach,”IEEE
+Transactions onEmergingTopicsinComputing, 2019.
+the system cost averaged over time. As expected, the time- [8] S.Nath,Y.Li,J.Wu,andP.Fan,“Multi-usermulti-channelcomputation
+averaged system cost becomes larger as N increases. The offloading and resource allocation for mobile edge computing,” in
+Proc.IEEEInternationalConferenceonCommunications(ICC),Dublin,
+proposed DDPG-based solution has the best performance, Ireland, Jun.2020.
+followed by DQN, full local, and full offload, respectively. [9] Z.ChenandX.Wang,“Decentralizedcomputationoffloadingformulti-
+usermobileedgecomputing:Adeepreinforcementlearningapproach,”
+The full offload approach has the worst performance because
+arXivpreprintarXiv:1812.07394, 2018.
+the computation capacity at the MEC (F = 5 GHz) is [10] V.Mnih,K.Kavukcuoglu,D.Silver,A.Graves,I.Antonoglou,D.Wier-
+not sufficient to support the computation demands from all stra, and M. Riedmiller, “Playing atari with deep reinforcement learn-
+MUs, especially when N becomes larger. The DDPG-based ing,”arXivpreprintarXiv:1312.5602, 2013.
+[11] T. P. Lillicrap, J. J. Hunt, A. Pritzel, N. Heess, T. Erez, Y. Tassa,
+algorithmachieves4%-16.7%performanceimprovementcom- D.Silver,andD.Wierstra,“Continuouscontrolwithdeepreinforcement
+pared to its DQN-based counterpart. learning,” arXivpreprintarXiv:1509.02971, 2015.
+[12] K. Shanmugam, N. Golrezaei, A. G. Dimakis, A. F. Molisch, and
+Fig. 2 illustrates the tradeoffrelationship between the aver-
+G.Caire,“Femtocaching: Wireless content delivery throughdistributed
+age energyconsumptionand the average delay of the system. caching helpers,” IEEE Transactions on Information Theory, vol. 59,
+Differenttradeoffpointsare obtainedbyvaryingthevaluesof no.12,pp.8402–8413, Dec.2013.
+ω n for all n ∈ N MUs. It is worth noting that we consider [13] H “E . f A fe . c S t u o r f aw fe e e e d r b a, ac T k .A d . e T la s y ift o s n is, am G. p K lif . y K -a a n r d ag -f i o an rw ni a d r i d s, r a e n la d y A n . e N tw al o l r a k n s at w ha i n th ,
+thetime-averagenottheensembleaverageacrossalltheMUs. beamforming,” IEEE Transactions on Vehicular Technology, vol. 60,
+Withlargerω n,theaveragedelayexperiencedbyalltheMUS no.3,pp.1265–1271,Mar.2011.
+[14] H. Q. Ngo, E. G. Larsson, and T. L. Marzetta, “Energy and spectral
+can be decreased at the cost of higher energy consumption.
+efficiency of very large multiuser mimo systems,” IEEE Transactions
+Moreover, the policy learned by DDPG demonstrates better onCommunications, vol.61,no.4,pp.1436–1449, Apr.2013.
+tradeoffperformancecomparedtothepolicylearnedbyDQN. [15] Y. Wen, W. Zhang, and H. Luo, “Energy-optimal mobile application
+execution: Taming resource-poor mobile devices with cloud clones,”
+Sinceboththe‘FullOffload’and‘FullLocal’approacheshave
+inProc.IEEEConferenceonComputerCommunications (INFOCOM),
+fixed policies, ω n doesn’t affect the decisions. Hence, these Orlando,FL,USA,Mar.2012,pp.2716–2720.
+approachesdo not demonstrate tradeoffrelationships between [16] R.S.SuttonandA.G.Barto,Reinforcementlearning:Anintroduction.
+Cambridge, MA,USA:MITpress,2018.
+energy consumption and delay.
+[17] D. Adelman and A. J. Mersereau, “Relaxations of weakly coupled
+stochasticdynamicprograms,”OperationsResearch,vol.56,no.3,pp.
+V. CONCLUSION
+712–727,2008.
+We have studied the problem of dynamic computation [18] G. E. Uhlenbeck and L. S. Ornstein, “On the theory of the brownian
+motion,”Physicalreview,vol.36,no.5,p.823,1930.
+offloading and resource allocation in MEC systems with
+[19] D.P.KingmaandJ.Ba,“Adam:Amethodforstochasticoptimization,”
+stochastic wireless channel conditions, where computation- arXivpreprintarXiv:1412.6980, 2014.
+intensive tasks at MUs can be executed either locally or [20] A.Sadeghi,F.Sheikholeslami,andG.B.Giannakis,“Optimaldynamic
+proactive caching via reinforcement learning,” in 19th International
+remotely in an MEC server. The problem was formulated
+WorkshoponSignal ProcessingAdvances inWireless Communications
+to minimize the long term average of the weighted sum of (SPAWC). Kalamata, Greece: IEEE,2018.
+Authorized licensed use limited to: SOUTHWEST JIAOTONG UNIVERSITY. Downloaded on November 27,2025 at 05:19:56 UTC from IEEE Xplore. Restrictions apply.

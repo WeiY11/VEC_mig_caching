@@ -229,7 +229,7 @@ class WirelessCommunicationModel:
         self.los_threshold = getattr(config.communication, 'los_threshold', 50.0)  # d_0 = 50m - 3GPP TS 38.901
         self.los_decay_factor = getattr(config.communication, 'los_decay_factor', 100.0)  # α_LoS = 100m
         # 🔧 修复问题7：调整为3GPP TR 38.901标准值（UMi-Street Canyon场景）
-        self.shadowing_std_los = getattr(config.communication, 'shadowing_std_los', 4.0)  # 3GPP标准：4 dB (LoS)
+        self.shadowing_std_los = getattr(config.communication, 'shadowing_std_los', 3.0)  # 🔧 修复：3GPP TR 38.901 UMi LoS = 3 dB
         self.shadowing_std_nlos = getattr(config.communication, 'shadowing_std_nlos', 7.82)  # 3GPP标准：7.82 dB (NLoS)
         
         # 🏢 建筑物遮挡模型参数（3GPP UMi场景）
@@ -286,8 +286,15 @@ class WirelessCommunicationModel:
         Returns:
             信道状态信息
         """
-        # 1. 计算距离 - 论文式(10)
-        distance = pos_a.distance_to(pos_b)
+        # 🔧 3GPP TR 38.901 标准：区分 2D 距离和 3D 距离
+        # - d_2D: 用于 LoS 概率计算（水平距离）
+        # - d_3D: 用于路径损耗计算（实际传播距离）
+        
+        # 1a. 计算 3D 距离（实际信号传播距离）
+        distance_3d = pos_a.distance_to(pos_b)
+        
+        # 1b. 计算 2D 水平距离（用于 LoS 概率）
+        distance_2d = pos_a.distance_2d_to(pos_b)
         
         # 🏢 判断链路类型和节点高度
         # 获取节点高度
@@ -304,15 +311,15 @@ class WirelessCommunicationModel:
         is_air_link = (tx_node_type == 'uav' or rx_node_type == 'uav')
         scenario = 'air' if is_air_link else 'ground'
         
-        # 2. 计算视距概率 - 3GPP标准式(11) + 遮挡模型
+        # 2. 计算视距概率 - 3GPP标准式(11)：使用 2D 水平距离
         los_probability = self._calculate_los_probability(
-            distance, tx_height=tx_height, rx_height=rx_height, scenario=scenario,
+            distance_2d, tx_height=tx_height, rx_height=rx_height, scenario=scenario,
             tx_pos=pos_a, rx_pos=pos_b
         )
         
-        # 3. 计算路径损耗 - 3GPP标准式(12)-(13) + 遮挡衰减
+        # 3. 计算路径损耗 - 3GPP标准式(12)-(13)：使用 3D 实际距离
         path_loss_db = self._calculate_path_loss(
-            distance, los_probability, tx_height=tx_height, scenario=scenario,
+            distance_3d, los_probability, tx_height=tx_height, scenario=scenario,
             tx_pos=pos_a, rx_pos=pos_b
         )
         
@@ -328,7 +335,7 @@ class WirelessCommunicationModel:
         interference_power = self._calculate_interference_power(pos_b)
         
         return ChannelState(
-            distance=distance,
+            distance=distance_3d,
             los_probability=los_probability,
             path_loss_db=path_loss_db,
             shadowing_db=shadowing_db,
@@ -387,31 +394,30 @@ class WirelessCommunicationModel:
                 return base_prob
         
         else:  # 地面链路（RSU-Vehicle）
-            # 受建筑物遮挡影响，且遮挡程度取决于空间位置
-            # 3GPP UMi模型 + 空间异质性
+            # 🔧 修复：使用 3GPP TR 38.901 UMi Street Canyon 标准公式
+            # P_LoS = (18/d) + exp(-d/36) * (1 - 18/d), for d > 18m
             
-            # 近距离内基本LoS
-            if distance <= 18:  # 3GPP标准：18m内LoS概率高
+            # 近距离内 LoS 概率为 1.0（3GPP 标准）
+            if distance <= 18:
                 return 1.0
             
-            # 🌍 计算局部建筑密度（空间异质性）
+            # 3GPP TR 38.901 UMi Street Canyon 标准公式
+            p_los_3gpp = (18.0 / distance) + math.exp(-distance / 36.0) * (1.0 - 18.0 / distance)
+            
+            # 🌍 空间异质性修正：不同区域建筑密度影响 LoS 概率
             local_density = self._get_local_building_density(tx_pos, rx_pos)
             
-            # 建筑密度影响的有效衰减距离
-            # 密集城区：衰减快（d_clutter小），郊区：衰减慢（d_clutter大）
-            d_clutter = 50.0 * (1.0 - 0.6 * local_density)  # 范围[20m, 50m]
+            # 建筑密度修正因子：密集区域 (density=1.0) 降低约 30%，郊区 (density=0) 无修正
+            density_factor = 1.0 - 0.3 * local_density
             
-            # 基础LoS概率（指数衰减）
-            base_prob = math.exp(-distance / d_clutter)
+            # 建筑高度修正：超高建筑 (>30m) 会额外降低 LoS 概率
+            height_factor = 1.0 - 0.15 * max(0.0, (self.avg_building_height - 15.0) / 30.0)
             
-            # 建筑高度修正：建筑越高，遮挡越严重
-            height_penalty = 1.0 - 0.3 * min(1.0, self.avg_building_height / 30.0)
+            # 综合修正后的 LoS 概率
+            los_prob = p_los_3gpp * density_factor * height_factor
             
-            # 最终概率
-            los_prob = base_prob * height_penalty
-            
-            # 限制在合理范围
-            return max(0.05, min(0.95, los_prob))  # 最小5%（极端NLoS），最大95%（近距离LoS）
+            # 限制在合理范围：最小 3%（极端 NLoS），最大 100%
+            return max(0.03, min(1.0, los_prob))
     
     def _get_local_building_density(self, tx_pos: 'Position' = None, rx_pos: 'Position' = None) -> float:
         """
@@ -513,8 +519,9 @@ class WirelessCommunicationModel:
         # LoS路径损耗 - 3GPP标准式(12)
         los_path_loss = 32.4 + 20 * math.log10(frequency_ghz) + 20 * math.log10(distance_km)
         
-        # NLoS路径损耗基础值 - 3GPP标准式(13)
-        nlos_path_loss_base = 32.4 + 20 * math.log10(frequency_ghz) + 30 * math.log10(distance_km)
+        # NLoS路径损耗基础值 - 3GPP TR 38.901 UMi-Street Canyon (距离指数 3.53)
+        # 🔧 修复：从 30*log10(d) 改为 35.3*log10(d)，符合 3GPP 标准 n=3.53
+        nlos_path_loss_base = 32.4 + 20 * math.log10(frequency_ghz) + 35.3 * math.log10(distance_km)
         
         # 🌍 计算局部建筑密度（用于NLoS衰减）
         local_density = self._get_local_building_density(tx_pos, rx_pos) if (tx_pos and rx_pos) else self.building_density

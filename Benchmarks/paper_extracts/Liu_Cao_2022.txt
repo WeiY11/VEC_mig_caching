@@ -1,0 +1,1507 @@
+--- Page 1 ---
+IEEETRANSACTIONSONWIRELESSCOMMUNICATIONS,VOL.21,NO.10,OCTOBER2022 8193
+Deep Learning Video Analytics Through Online
+Learning Based Edge Computing
+Heting Liu and Guohong Cao, Fellow, IEEE
+Abstract—Video analytics demand intensive computation
+1
+resources, which means long processing delay when running on
+2
+mobile devices. Although offloading computation to the cloud
+3
+can partially solve the problem, transferring videos to the cloud
+4
+introduceshightransmissiondelay.Withmobileedgecomputing,
+5
+computation can be offloaded to the nearby edge servers to
+6
+reducethedelay.However,thecomputationresourcesoftheedge
+7
+servers are usually limited and highly dynamic, and then server
+8
+selectionshouldbeadaptiveinordertoimprovetheperformance
+9
+of video analytics. Also, frame resolution should be selected to
+10
+achieveabettertradeoffbetweenaccuracyandframeprocessing
+11
+rate.Inthispaper,westudytheserverresource-awareoffloading
+12
+problem for video analytics, where the goal is to maximize the
+13
+utility which is a weighted function of accuracy and frame
+14
+processing rate. The major challenge to solve this problem is
+15
+the lack of server and network knowledge and the dynamic
+16 Fig.1. Anexampleofserverselection.
+systemenvironment.Toovercome thesechallenges,weformulate
+17
+the problem as a contextual Multi-armed Bandit problem, and
+18
+proposeaBayesianOptimizationbasedonlinelearningalgorithm
+19
+20 to gradually learn the server status and the optimal solution, To address this problem,many researchers [3], [4] proposeto 40
+and make it adaptablefor time-varying environments.Both the-
+21 offload the computation to edge servers which are deployed
+oretical analysisandevaluation resultsdemonstratethesuperior 41
+22 at the edge of the mobile network such as base stations
+performance of our proposed algorithm. 42
+23
+and access points, to support latency-sensitive applications of
+43
+IndexTerms—Mobileedgecomputing,videoanalytics,offload-
+24 nearby users.
+ing, online learning, Bayesian optimization. 44
+25 However, the computation resources of edge servers are
+45
+26
+I. INTRODUCTION usually limited and may be overloaded when accommodat-
+46
+27 OVER the past years, deep learning has shown great ing a large volume of tasks. Offloading computation to an 47
+28 promise to provide intelligent video analytics to appli- overloaded server may suffer from long processing time and 48
+29 cations such as augmented reality, virtual reality and mobile thus degrading the quality of video analytics. Fortunately, 49
+30 gaming. For example, Convolutional Neural Network (CNN) users may have multiple choices when offloading their com- 50
+31 models can be used to detect objects showing up in the video putations [5], [6]. For example in Fig. 1, the mobile user 51
+32 frames [1], [2], which facilitates the rendering of animations connectsto BS1. If server1is heavily loaded, the mobile user 52
+33 in augmentedreality. Deep learning models demand intensive can choose to offload its computation to server2 or server3 53
+34 computationresources,whichmeanslongdelaywhenrunning where more computation resources are available. Existing 54
+35 onmobiledevices.Onewaytosolvethisproblemistoupload workonvideoanalyticsfocusesonimprovingperformanceby 55
+36 videos to the cloud and let the powerful cloud server run the selectingdifferentdeeplearningmodelsoradjustingthevideo 56
+37 deep learning model. However, uploading videos to the cloud processing configurations such as resolution, frame rate [3], 57
+38 incursexcessivedatatransmissiondelay,whichmaynotwork [4],[7],[8],andnoneofthemconsiderstheproblemofserver 58
+39 well for many latency-sensitive video analytics applications. selection. Due to the variations of user requests in different 59
+regions, the available resources at edge servers are usually
+60
+Manuscript received 11 January 2021; revised 23 October 2021 and different and may change over time. Thus, it is important to
+61
+23 January 2022; accepted 28 March 2022. Date of publication 11 April
+makeadaptivedecisionsonwhichserverto offloadto achieve
+2022; date ofcurrent version 11October 2022. Thisworkwas supported in 62
+partbytheNationalScienceFoundationunderGrantCCF-2125208andGrant better service. 63
+CNS-1815465.Theassociateeditorcoordinatingthereviewofthisarticleand Incomputationoffloading,atypicalvideoanalyticsapplica-
+64
+approvingitforpublication wasZ.Cai.(Correspondingauthor:HetingLiu.)
+tionwouldreducetheframeresolutionbeforetransmittingitto
+The authors are with the Department of Computer Science and Engineer- 65
+ing, Pennsylvania State University, Pennsylvania, PA 16802 USA (e-mail: theservertosavebandwidthandfittheCNNmodel.Different 66
+hxl476@psu.edu; gxc27@psu.edu). frame resolutions lead to different accuracy and delays. For
+67
+Color versions of one or more figures in this article are available at
+example, frame with lower resolution has smaller data size
+https://doi.org/10.1109/TWC.2022.3164598. 68
+Digital ObjectIdentifier 10.1109/TWC.2022.3164598 andlowercomputationalcost,andthushaslowertransmission 69
+1536-1276©2022IEEE.Personaluseispermitted, butrepublication/redistribution requires IEEEpermission.
+Seehttps://www.ieee.org/publications/rights/index.html formoreinformation.
+Authorized licensed use limited to: SOUTHWEST JIAOTONG UNIVERSITY. Downloaded on November 27,2025 at 04:57:03 UTC from IEEE Xplore. Restrictions apply.
+
+--- Page 2 ---
+8194 IEEETRANSACTIONSONWIRELESSCOMMUNICATIONS,VOL.21,NO.10,OCTOBER2022
+and processing delay. However, using lower resolution also and spatial correlations of configurations. Besides selecting
+70 126
+degrades the accuracy. Thus, there is a tradeoff between configurations, Tan and Cao [11], [13] identified the special
+71 127
+accuracy and delay when selecting frame resolution, and characteristics of Neural Processing Unit (NPU) and pro-
+72 128
+the resolution selection also depends on the current server posed techniques to optimize accuracy or utility of video
+73 129
+resources and network conditions. analyticsthroughedge processingand NPU in mobile device.
+74 130
+Inthispaper,westudytheserverresources-awareoffloading Zhang et al. [10] considered the tradeoff between accuracy
+75 131
+problem for video analytics, in which we determine where to and bandwidth consumption of video analytics, and adjusted
+76 132
+run the computation (i.e., local device or one of the available the data rate to match the available bandwidth while max-
+77 133
+edge servers) and using what frame resolution, by addressing imizing the achievable accuracy. Tan et al. [14] designed
+78 134
+thefollowingchallenges.First,theuserdoesnothaveaccurate resource scheduling algorithms to minimize the processing
+79 135
+knowledge about the server resources and network condition, timeforvideoanalyticsundermemoryconstraintswhenusing
+80 136
+and collecting such information incurs extra communication multiple CNN models. Wang et al. [12] allocated bandwidth
+81 137
+cost. Second, the network condition and server resources are and adjusted the configuration for multiple video streams
+82 138
+highly dynamic. Moreover, the complex relationship among connected to the same edge node to balance the analytic
+83 139
+the accuracy, processing time, frame resolution and server accuracy and energy consumption while maintaining low
+84 140
+resources, makes it harder to find the optimal resolution latency. However, none of them considers the edge server
+85 141
+throughanalysis.To overcomethese challenges,weformulate resources.In mobile edgecomputing,the serverresourcesare
+86 142
+the server resource-aware offloading problem as a contextual typically limited and the available resources of edge servers
+87 143
+Multi-armed Bandit (MAB) problem [9], and develop an varyovertime, andthenserverselection becomesa challenge
+88 144
+online learning algorithm based on Bayesian Optimization to for edge-assisted video analytics.
+89 145
+graduallylearn the serverstatus andthe optimalsolution only Some recent work studied the server selection problem in
+90 146
+based on local observations. We further propose an adaptive edge computing [6], [15]–[19]. However, in these works the
+91 147
+Bayesian Optimization algorithm which can solve the bandit system information is assumed to be known. For example,
+92 148
+problem in dynamic environments. Poularakisetal.[6]consideredamulti-cellenvironmentwhere
+93 149
+The contributions of this paper are summarized as follows: userscanaccessmultipleservers,andtheydesignedacentral-
+94 150
+95 • We study the server resource-aware offloading problem izedmobileedgecomputingoperatorwhichknowstheloadof 151
+96 for video analytics. We formulate it as an optimization each server and decideswhere to executeeach requestso that 152
+97 problem,wherethe goalis to maximizethe utility which the number of served requests is maximized. Tan et al. [15] 153
+98 is a weighted function of accuracy and frame processing proposed an online job dispatching algorithm to choose a 154
+99 rate. nearbyedgeserverortheremotecloudforoffloadedjobswith 155
+100 • We propose an online learning algorithm based on the the aim to minimize the total weighted service response time, 156
+101 Bayesian Optimization framework to select server and where the status of the servers are known. Liu and Cao [19] 157
+102 resolutionusinglocalobservations,andmakeitadaptable proposedareinforcementlearningbasedserverselectionalgo- 158
+103 for time-varying environments. rithm to minimize the overall system cost by considering 159
+104 • We provide theoretical analysis and regret bound of the the communication, computation, and server switching cost, 160
+105 proposedalgorithm,andconductextensiveevaluationsto where the historical system information are known. Different 161
+106 demonstrate its superior performance. fromthem, we do notassume any prioriknowledgeaboutthe 162
+server resource and network condition. To overcome the lack
+The rest of paper is organized as follows. Section II 163
+107
+ofknowledgeonserverresourcesandthesystemenvironment,
+reviews related work. In Section III we formulate our server 164
+108
+in this work, we model the server resource-aware offloading
+resource-aware offloading problem. We present our online 165
+109
+problem as a contextual multi-armed bandit problem and
+learning based offloading algorithm in Section IV. Section V 166
+110
+solve it throughBayesian Optimization based onlinelearning.
+presents the evaluation results and Section VI concludes the 167
+111
+Although recent work [20] used MAB theory to solve the
+paper. 168
+112
+serverselection problem,they assume the reward of an action
+169
+isalinearfunctionofthecontexts,whichisnotsuitableforour
+170
+113
+II. RELATEDWORK
+problem. More importantly, the reward function may change
+171
+Researchers have proposed various offloading frameworks with time in our problem and then the classic algorithms do
+114 172
+for video analytics in the past several years [7], [8], [10]– not work well. Besides, we need not only to select server,
+115 173
+[12]. One of the major focuses of these works is how to but also to select the frame resolution since both affect the
+116 174
+select the best video processing configurations (e.g., frame performance.
+117 175
+resolution, frame sampling rate) to improve the quality of In summary, existing offloading frameworks for video ana-
+118 176
+video analytics. For example, Zhang et al. [7] proposed lytics do not consider the resource constraints of the edge
+119 177
+VideoStormwhich considersthe resourceand qualitytradeoff server. In this paper, we take limited edge server resources
+120 178
+withmulti-dimensionalconfigurationstomaximizetheperfor- into consideration when selecting servers for video analytics.
+121 179
+manceintermsofqualityanddelay.Jiang etal.[8]presented Although there are some existing server selection algorithms,
+122 180
+Chameleon, which can dynamically pick the configuration theymakestrongassumptionsoftheserverresourcesandthus
+123 181
+in a non-stationary environment to balance computational may not work well when the assumptions cannotbe satisfied.
+124 182
+resourcesconsumptionandaccuracyconsideringthe temporal Moreover,thesealgorithmscannotdealwiththetime-varying
+125 183
+Authorized licensed use limited to: SOUTHWEST JIAOTONG UNIVERSITY. Downloaded on November 27,2025 at 04:57:03 UTC from IEEE Xplore. Restrictions apply.
+
+--- Page 3 ---
+LIUANDCAO:DEEPLEARNINGVIDEOANALYTICSTHROUGHONLINELEARNINGBASEDEDGECOMPUTING 8195
+TABLEI
+NOTATIONSFORPROBLEMFORMULATION
+Fig.2. Anoverview oftheedge-assisted videoanalytics system.
+resourcesavailableattheedgeserver.Inthispaper,wepropose
+184
+a Bayesian Optimization based online learning algorithm to
+185
+selectserverandframeresolutionforvideoanalyticsinatime-
+186
+varying environment.
+187
+188 III. SYSTEMOVERVIEW AND PROBLEM FORMULATION
+Fig. 2 shows an overview of the edge-assisted video ana-
+189
+lytics system. Videos are generated locally and sampled with
+190
+a frame sampling rate f. The frames are first buffered before
+191
+being analyzed by a CNN model. We adopt the commonly
+192
+193 usedResNet-50CNNarchitecture[2],[21],whichrequiresthe be processed within a time constraint Tmax and the analytics 225
+194 whole frame (image) to be received before being processed. results p that are not returned within Tmax will be discarded. 226
+1 1 1 9 9 9 6 5 7 F w co o h n r e n t e h e a c e c t r e h d to e b d u p g ff r e e o r s c e e e d r s v s e fr r i a s t . m I l f e o , o ca f t fl l h l o e y ad o o i f r n fl g o o a i f s d fl s i o n e a g l d ec c t i o e t d n , t t o r t o h l e o le n o r e ffl d o o e a f c d id i t n h e g e s L c an o e d n t s x x tr i p i ai d n = e t. n 1 o x t i p i e f (cid:2) w = h m e 0 t (cid:2) h i e f r r∈ (cid:2)f R ra m m xm i (cid:2)e x i r r i ∈ i L s R i( p x m r m i o , c x r e r i ) s L s ≤ e i d (m T w (cid:2) m , i r t a h n ) x i . n > T th h p T e e m t t i o m a t x a e l ; 2 2 2 2 2 2 8 9 7
+198 controller chooses the edge server and the frame resolution numberofframesthatareactuallypr f o(cid:2)ces n sedi p s i=1 x i .Then 230
+199 which corresponds to a CNN model. If local processing is the video is processed at a rate of n i=1 x i . 231
+200 selected, the frames are resized to the required resolution of When resizing a video frame to resolution r, the accuracy 232
+201 the local CNN model. of the corresponding CNN model is denoted as A(r), which 233
+2 2 0 0 3 2 ma T ri h z e ed no in tat T io a n b s le u I s . e F d o i r n a th fr e am pr e ob i le w m ith fo r r e m so u l l u a t t i i o o n n r a , re if s i u t m is - c fr a a n m b e e s p is ro(cid:2)file n i= d 1 o(cid:2)ffl r in ∈ e R .T x p i h x e r i a A ve (r ra ) g / e(cid:2)ac n i= cu 1 r x ac p i y . of the processed 2 2 3 3 5 4
+204 processed locally, it takes T i p (0,r) to process the frame and As defined in (1), we aim to maximize the utility which 236
+205 receive the result. Suppose the time of frame i staying in the is a weighted function between frame processing rate and 237
+206 buffer is T i buf , its total delay is Li(0,r) = T i buf +T i p (0,r). accuracy, because they are the major factors that affect the 238
+207 If frame i is processed by server m, it takes T i trans(m,r) = quality of video analytics. Then, the server resource-aware 239
+208 si B (r) +T m c to transmit the frame and T i p (m,r) to process the offloading problem can be formulated as the following opti- 240
+buf mization problem:
+209 frame. Then, the total delay of frame i is Li(m,r)=T i + 241
+Ttrans(m,r)+T p (m,r). Note that the transmission time is
+210 i i (cid:2) (cid:2)
+2
+2
+1
+1
+2
+1 a
+th
+ff
+e
+e
+d
+ct
+a
+e
+t
+d
+as
+b
+i
+y
+ze
+t
+;
+h
+a
+e
+nd
+ne
+t
+t
+h
+w
+e
+o
+p
+r
+r
+k
+oc
+b
+e
+a
+s
+n
+s
+d
+in
+w
+g
+id
+ti
+t
+m
+h,
+e
+p
+i
+r
+s
+o
+a
+p
+f
+a
+f
+g
+e
+a
+c
+t
+t
+i
+e
+o
+d
+n
+b
+l
+y
+at
+t
+e
+h
+n
+e
+cy
+s
+,
+er
+a
+v
+n
+e
+d
+r max n
+f (cid:3)n
+x
+p
+i +α
+n i=1 (cid:2)r
+n
+∈R x
+x
+p i
+p
+xr i A(r)
+(1) 242
+resources and the task computation demands. i=1 i=1 i
+213 (cid:4) (cid:2) (cid:2)
+214 fra S m u e p s po ar s r e iv t i h n e g a f t ra t m he e d r e a v te ice is bu f f , fe t r h i e s t 1 im , a e nd in t t h er e v n al th b e e l t e w n e g e th n s.t. x p i =0,if (cid:2)m(cid:2)r∈R xm i xr i Li(m,r)>Tmax, ∀i
+215
+of the whole video is n · 1 . Let xm
+f
+and xr denote the
+x p
+i
+=1,if
+m r∈R
+xm
+i
+xr
+i
+Li(m,r)≤Tmax, ∀i 243
+216 f i i
+server selection indicator and resolution selection indicator, (2)
+217 (cid:3) 244
+218 respectively. xm i indicates which server (the local device or x m ≤1, ∀i (3)
+an edge server) is selected to process frame i. If xm = 1, i 245
+219 i m
+220 frame i is processed by node m; if xm i =0, the frame i will x m ∈{0,1}, ∀i,m (4)
+not be processed by node m. xr indicates which resolution (cid:3) i 246
+221 i
+frame i is resized to. If xr = 1, the frame i is resized x r ≤1, ∀i (5)
+222 i i 247
+223 to resolution r, and xr i = 0 otherwise. Since the video r∈R
+frames should be analyzed in real time, each frame should x r ∈{0,1}, ∀i,r (6)
+224 i 248
+Authorized licensed use limited to: SOUTHWEST JIAOTONG UNIVERSITY. Downloaded on November 27,2025 at 04:57:03 UTC from IEEE Xplore. Restrictions apply.
+
+--- Page 4 ---
+8196 IEEETRANSACTIONSONWIRELESSCOMMUNICATIONS,VOL.21,NO.10,OCTOBER2022
+TABLEII We dividethe timeintodiscretetimeslotsofthesame length,
+289
+NOTATIONSFORONLINELEARNINGALGORITHM denoted as t = 1,2,..., and let τ denote the length of
+290
+a time slot. The offloading controller performs the role of
+291
+the decision maker, which selects the server (local device or
+292
+edge server) and the resolution at the beginning of each time
+293
+slot. Selecting a server and a frame resolution is regarded
+294
+as an action, denoted as at = (m,r) for time slot t. Then
+295
+during time slot t, all the frames are resized to the selected
+296
+resolution and sent to the selected server to process. At the
+297
+beginningof each time slot, the offloadingcontrollercan also
+298
+observeacontextct foreachaction.Thecontextforanaction
+299
+at = (m,r) can be defined as ct = [r,f,Tmax,α]. At the
+300
+beginning,theoffloadingcontrollerhaslittleknowledgeabout
+301
+eachaction,andhastoselectactionsrandomlytoexploretheir
+302
+performance.Theframesareresizedtotheselectedresolution,
+303
+249 Parameter α controls the weight between frame processing and are either processed locally or offloaded to the selected 304
+250 rate and accuracy. The optimization variables are xm i and edgeserver.Theoffloadingcontrollerobservesarewardatthe 305
+251 xr i . Constraint (2) specifies that only frames whose results end of each time slot based on the returned analytics results. 306
+252 are received within the time constraint are counted as being Specifically, the reward is defined as a weighted sum of the 307
+253 processed. Each frame can only be offloaded to one server or accuracy and the real frame processing rate within that time 308
+254 processed locally, and we constrain the value of xm i in (3) slot.Herethelocaldevicecountsthenumberofframeswhose 309
+255 and (4). Similarly, one frame can only be resized to a certain analyticsresultsarereceivedduringtimeslotttomeasurethe 310
+256 resolution, and we constrain the value of xm i in (5) and (6). current frame processing rate, which is denoted by nt. nt is 311
+257 To solve this problem, we should know the transmission determinedbytheserverresources,networkcondition,andthe 312
+258 timeandtheprocessingtimeofeachframe,whichrequiresthe computationcomplexity.Theaverageaccuracycorrespondsto 313
+259 knowledge of server resources and network bandwidth. How- different resolutions is profiled offline and can be determined 314
+260 ever, the server resources and the network condition are not once the resolution is selected. Then the reward received of 315
+261 observable to the user and are dynamically changing, which time slot t is 316
+makes such a kind of knowledge hard to obtain. Although
+262
+263 t m h u e n u ic s a e t r io c n a s n w re i q th ues t t he thi s s er i v n e fo rs r , ma th ti i o s n a t p h p ro ro u a g c h h p i e s rio e d x i t c re c m o e m ly - yt = n τ t +αA(r), (7) 317
+264
+inefficient due to the high communication cost. Even with
+265 Withtimegoing,theoffloadingcontrolleraccumulatesknowl-
+such information, the relationship among utility, resolution 318
+266 edge of the actions, and it selects the server and resolution
+and server resource is difficult to model, and then it is hard 319
+267 based on the observed rewards in all previous time slots.
+to find an optimal solution through analysis. To address this 320
+268 If the reward function is known, the optimal action can be
+problem,in thenextsection,we transformit toa multi-armed 321
+269 simply selected according to:
+bandit problem and propose a learning based approach which 322
+270
+graduallylearnstheserverstatusandtheoptimalsolutiononly
+271
+based on local observations.
+a ∗ =argmaxyt, (8)
+323
+272 at∈A
+273
+IV. ONLINELEARNING BASED OFFLOADING ALGORITHM where A denotes the action space. However, due to many
+324
+unknownparameters(e.g.,the processingrate ofeachserver),
+In this section, we present our online learning based 325
+274
+it is generally hard to derive the reward function and thus
+serverresource-awareoffloadingalgorithmforvideoanalytics. 326
+275
+unable to choose the optimal action. To solve this problem,
+We first transform our problem into the contextual MAB 327
+276
+the offloading controller has to try out different actions to
+problemsinceMABiseffectiveinsolvingsequentialdecision 328
+277
+explore their performances and learn the reward function
+making problems under uncertainty. We then leverage the 329
+278
+online. At the same time, it exploits actions that are currently
+Bayesian Optimization technique to find the optimal solution. 330
+279
+proven to be good. One challenge of designing the learning
+331
+algorithm is to balance the exploration and exploitation so
+332
+A. Contextual Multi-Armed Bandit Framework
+280 thatthecumulativerewardcanbeoptimized.Duetotheserver
+333
+In MAB problems, a decision maker has to select a series resourcesandnetworkconditionsupdates,therewardfunction
+281 334
+of actions of unknownrewardswith the goalto maximize the is not static. Thus the older samples may be stale to learn the
+282 335
+totalrewardovertime[22].Thecontextualmulti-armedbandit current function. How to learn the function in a time-varying
+283 336
+problem is an extension to the classic MAB problem, where environmentis another challenge.
+284 337
+additional information related to each action is used by the As a measure of evaluating the decision strategy, for each
+285 338
+286
+learner to improve the decisions [23]. time slot, we define the regret Δt as the difference between
+339
+Our problem can be transformed into a contextual the utility of the optimalaction and thatof the actual selected
+287 340
+288
+multi-armed bandit problem (MAB) in the following way. actionat:Δt =y
+t
+∗−yt.AfterT rounds,thecumulativeregret
+341
+Authorized licensed use limited to: SOUTHWEST JIAOTONG UNIVERSITY. Downloaded on November 27,2025 at 04:57:03 UTC from IEEE Xplore. Restrictions apply.
+
+--- Page 5 ---
+LIUANDCAO:DEEPLEARNINGVIDEOANALYTICSTHROUGHONLINELEARNINGBASEDEDGECOMPUTING 8197
+over the objective function as a Gaussian Process (GP) [25],
+381
+which is the common choice for the prior distribution of
+382
+Bayesian Optimization. GP is an attractive choice because
+383
+it is analytical tractable and flexible in modeling nonlinear
+384
+functions. A GP(μ;k) can be fully specified by its mean
+385
+functionμandcovariance(orkernel)functionk.Letz denote
+386
+an arbitrary input that is from the set of all action-context
+387
+pairs Z. The mean function is expressed as μ(z) = E[f(z)],
+388
+which specifies the mean function value at input point z. The
+389
+covariance function is expressed as kz(z,z) = E[(f(z) −
+390
+μ(z))(f(z)−μ(z))], whichspecifiesthecorrelationbetween
+391
+any pair of input points z and z. We use the squared expo-
+Fig. 3. Processing rate vs. resolution, under different server computation 392
+resources. nentialkernel as our covariancefunction,which is a common 393
+choice for the covariance function. The squared exponential
+394
+kernel is defined as
+395
+can be expressed as the following:
+342 ||z−z||2
+(cid:3)T kz(z,z  )=exp(− 2l2 ), (10) 396
+343
+R(T)= Δt. (9)
+where l is called length-scale that determines how much the
+t=1 397
+two points z and z influence each other. Here the prior over
+An algorithm is called a no-regret algorithm if its expected 398
+344 regret is sub-linear in T, i.e., R(T) → 0 for T → ∞. f(·) is taken to be a zero-mean GP with covariance function 399
+345 T k as defined in (10).
+For example, the existing LinUCB algorithm [23] is known 400
+346 Suppose the collected observed rewards at round t are
+3 3 4 4 8 7 t c f o u la n s a c s c t i i h c o i n e L v i e o n f U su c C b o B - n l t i e a n x l e g t a s o r . ri r H t e h g o m r w e , t e i v t u e n a r, d ss e i u r n m s o o e u s m r t e h p e a ro s r s b e u l w e m m a p r , d tio b i n e s c s. a au I l n s i e n t e h o a e r f y [z t 1,. = .., [ z y t 1 ] , T . . .. W ,y h t e ] n T, a w n i e t w h p th o e int co z r t r + e 1 sp a o r n r d iv in es g , t i h n e pu j t o s in z t t di = s- 4 4 4 0 0 0 2 3 1
+349 tribution of the observations is given by
+350 some nonlinear relations (e.g., the relationship between the (cid:5) (cid:6) (cid:5) (cid:6) (cid:5) (cid:6) 404
+351 processing rate and the resolution as shown in Fig. 3), the y t ∼N( μ(z1:t) , K t+σ2I k t(zt+1) ),
+352
+reward function is nonlinear, making the LinUCB algorithm yt+1 μ(zt+1) kT
+t
+(zt+1) kz(zt+1,zt+1) 405
+353 notapplicable.Besides,LinUCBtreatsallthepreviousreward (11) 406
+samplesasequallyimportant,whichmaynotworkwellinour
+354
+355 problemwheretheenvironmentistime-varying.Inthefollow- where μ(z1:t)=[μ(z1),...,μ(zt)]T, K t is the kernel matrix 407
+356 ingsubsections,weapplyBayesianOptimizationtechniqueto [kz(z,z)]z,z∈zt , and k t(z)=[kz(z1,z),...,kz(zt,z)]T. Let 408
+357 address these challenges. D t = {(z1,y1),...,(zt,yt)} denote the collected obser- 409
+vations at round t. Using the Sherman-Morrison-Woodbury
+410
+formula [26], [27], we can arrive at the posterior predictive
+B. Bayesian Optimization Based Online Learning 411
+358 distribution of yt+1:
+412
+Bayesianoptimizationisastrategytooptimizeanunknown
+359
+360
+function that does not assume any functional forms [24]. yt+1 |D t,zt+1 ∼N(μ(zt+1 |D t),σ 2 (zt+1 |D t)). (12)
+413
+In Bayesian optimization, the objective function is treated
+361 Thus the posterior distribution over f(·) is a GP again. This
+as a black box and we can only query the function values 414
+362
+is one major computational benefit of GPs that the posterior
+with arbitrary inputs. Then the function value of a new input 415
+363
+inferencecanbeperformedinclosedform.Supposethemean,
+is estimated based on the past inputs and function values. 416
+364
+covarianceandvarianceoftheposteriordistributionatroundt
+Inourproblem,theobjectivefunctiontooptimizeisthereward 417
+365
+function as defined in (7), and the input query is an action-
+are denoted as μt(z), k t(z,z) and σ
+t
+2(z) respectively. These
+418
+366
+parameters are estimated as
+367
+contextpair. Formally,the reward functionyt is expressedas: 419
+368 yt =f(zt)+t, where zt =(at,ct), at is the selected action μt(z) = k t(z) T (K t+σ 2I) −1y t, (13)
+420
+3 3 6 7 9 0 a n n o d ise c : t  i t s ∼ the N c ( o 0 r , r σ es 2 p ), on w d h i i n c g h c i o s n u t s e e x d t. t  o t m is e z a e su ro re m th e e an de r v a i n a d ti o o m n k t(z,z  ) = kz(z,z  )−k t(z) T (K t+σ 2I) −1k t(z  ), (14) 421
+371 between the observed value and the real value. σ t 2 (z) = k t(z,z), (15) 422
+Since the reward function is unknown, the Bayesian Opti-
+372 where I is the t×t identity matrix.
+mization strategy treats it as a random function and uses 423
+373
+To decide which action to select next, we need to balance
+a prior distribution that captures beliefs about the behavior 424
+374
+the exploitation and exploration. In this work, we adopt the
+of the function. After gathering the function values at some 425
+375
+Upper Confidence Bound [23] algorithm based on the above
+inputs, the prior is updated to form the posterior distribution 426
+376
+posteriordistribution.Attimeslott,thealgorithmpicksaction
+over the function. The posterior distribution, in turn, is used 427
+377
+to determine the next input point. Based on the posterior
+at such that
+428
+378
+distribution,wecanfindwhichpointismorelikelytogivethe 1/2
+379 at =argmaxμt(at,ct)+β
+t
+σt(at,ct), (16)
+429
+380
+optimal function value. Here we define the prior distribution at∈A
+Authorized licensed use limited to: SOUTHWEST JIAOTONG UNIVERSITY. Downloaded on November 27,2025 at 04:57:03 UTC from IEEE Xplore. Restrictions apply.
+
+--- Page 6 ---
+8198 IEEETRANSACTIONSONWIRELESSCOMMUNICATIONS,VOL.21,NO.10,OCTOBER2022
+430
+where βt is an appropriateconstantthat controlsthe exploita- “older”sampledecreasesmorethanthatofa“newer”sample.
+482
+431
+tion and exploration rate. μt(·) and σt(·) are posterior mean Alargerλworksbetterforthescenarioswhereweemphasize
+483
+and standard deviation of the GP conditionedon the observa- the importance of recent samples.
+432 484
+433
+tions D t. This approach implicitly negotiates the exploration- With adaptive Bayesian optimization, the Online Learning
+485
+exploitation tradeoff: it exploits actions that achieve high based Server resource-aware Offloading algorithm (OLSO)
+434 486
+435
+average rewards (large μt(·)), and explores actions that are is given in Algorithm 1. At the beginning of each time
+487
+436
+uncertain (large σt(·)) to gather more information. slot, the controller observes the context for each action, and
+488
+uses posterior inference to predict the mean and variance
+489
+for each action-context pair. For each buffered frame, if the
+C. Adaptive Bayesian Optimization 490
+437
+time constraint is violated, the offloading controller deletes it
+Bayesian optimization based online learning works well 491
+438 fromthebuffer;otherwise,theoffloadingcontrollerresizesthe
+when the reward function f(·) is time-invariant. However, 492
+439 frame to the resolution and sends it to the server indicated by
+the environmentmay be highly dynamic in practice, resulting 493
+440
+in a quick change of the reward function. Thus the samples
+the action at =(m,r). At line 9, It and It+1 −1 denote the
+494
+441 firstframeandlastframeobservedin timeslott, respectively.
+become increasingly stale with time, and only recent samples 495
+442 If theresultis returnedwithin the time constraint,the number
+have relevantinformation.The informationcontainedin older 496
+443 of processed frame of this time slot is increased by 1. The
+samples may be misleading and not effective to learn the 497
+444 accuracy is set as A(r), which is the average accuracy of
+current function. To address this problem, we propose an 498
+445 the CNN model with image resolution r. At the end of
+adaptiveBayesianOptimizationapproachwhichcansolvethe 499
+446 this time slot, the controller calculates the reward as defined
+bandit problem in dynamic environment. 500
+447 in (7). The reward as well as the selected action-context
+To adapt the Bayesian Optimization framework to time- 501
+448
+varying environments, we extend the reward function to be a
+pair zt are saved to the data set D t. The running time of
+502
+449 OLSO depends on the Bayesian optimization (i.e., (13)-(15)).
+function of both action-context pair and time by augmenting 503
+450 The Bayesian optimization is performed iteratively as new
+451 t
+in
+h
+p
+e
+u
+i
+t
+np
+d
+u
+a
+t
+ta
+da
+b
+t
+e
+a
+co
+w
+m
+it
+e
+h
+s
+a
+z˜
+n
+=
+add
+[t
+i
+,
+ti
+z
+o
+]
+n
+.
+a
+T
+l
+o
+di
+a
+m
+pp
+e
+l
+n
+y
+si
+G
+on
+P
+t
+t
+.
+o
+S
+t
+p
+h
+e
+e
+ci
+a
+fi
+u
+c
+g
+a
+m
+lly
+e
+,
+n
+t
+t
+h
+ed
+e observationsarriveovertimewhichrequiresO(|D
+t
+|2)running
+5
+5
+0
+0
+5
+4
+4 4 4 5 5 5 3 4 2 i t c i n o m p m u e p , t o a s s p n i a t d e ce t k h , e e w r n n e e u l s d e e o fi n k n s e th t e a og p k e r e t o h rn d e e u r l c w t fu i s t n h p c a t k c io e er n n o e k f l s t k im i z n e t t o h a e n d d e s r p i a a v c c e t e io th o n e f - t D O im t (R e a ( t [ M 2 t 8 im + ], e 1 w ) s h | l D e o r t t e |2 t | ) . D , T w t | h h e d e e r a e n l o g R t o e r i s s it t h t h h m e et n h o u a t m a s l b n a e u r t m i o m b f e e d r a c o t o f a m r s e p a s l m o e l x p u i l t t e i y o s n o i s n f , 5 5 5 0 0 0 6 8 7
+455 and M is the total number of servers. In practice, since the
+context pairs. 509
+456 We use the Ornstein-Uhlenbeck temporal covariance func- maximum size of D t is limited, the oldest samples will be 510
+457 discarded. The computation efficiency can be improved to
+458 tion as ks, that is O(R(M +1)N2), where N is the maximum size of the data 511
+512
+459 ks =(1−λ) |t− 2 t| , λ∈[0,1]. (17) set. 513
+Then, the product kernel is the composite kernel in the
+460 D. Regret Analysis
+augmented input space, that is 514
+461
+In this subsection, we provide the theoretical regret bound
+515
+  
+462 k(z˜,z˜) = ks(t,t)kz(z,z ) of OLSO. As defined in Equation (9), the regret shows the 516
+463 = (1−λ) |t− 2 t| kz(z,z  ). (18) differencebetweenOLSOandtheoptimal.Beforeshowingthe 517
+regretbound,wedefinethemutualinformation,whichisakey
+518
+464 From Equation (18), we can see that the correlation of the quantity governing the regret bounds: I(y T;f) = H(y T)− 519
+465 input data (z˜ and z˜) is proportional to the similarity of their H(y T |f). I(y T;f) quantifies the reduction in uncertainty 520
+466 context, action, and generated time. Since the time intervals (measuredintermsofdifferentialShannonentropy[29])about 521
+4 4 6 6 8 7 a K(cid:7) re t = eve K nl t y ◦ s H pa t c , e w d, h t e h r e e n H ew t = ke [ r ( n 1 e − l m λ a ) t |i r − ix j|/ c 2 a ] n t i,j b = e 1 m . H od e i r fi e, ed ◦ a is s f be a c c o h m ie p v u ed ted by in re c v lo ea se li d ng fo y rm T. : I H n (N ou ( r μ c , a Σ se ) , ) t = he 1 2 e l n o t g ro |2 p π y e c Σ a | n . 5 5 2 2 3 2
+469 the Hadamard product.Similarly, we have k(cid:7) t(z)=k t(z)◦h t Referring to [25] we have 524
+4 4 7 7 0 1 w ne i w th m h t ea = na [( n 1 d − v λ ar ) i ( a t+ nc 1 e −i o ) f /2 f ] t t i= w 1 i . th In re a s n p a e l c o t g t y o w th it e h a ( c 1 t 3 io ) n -( - 1 c 5 o ) n , t t e h x e t I(yT;f)=H(yT)− 2 1 log|2πeσ 2I|. (21) 525
+pair z at time t are given by
+472 And
+526
+4 4 4 7 7 7 3 4 5 Intuit σ(cid:7) μ i (cid:7) v t 2 t e ( ( l z z y ) ) , = = the k k (cid:7) ( t e z ( n z , t ) r z i T ) e ( s − K(cid:7) i k(cid:7) n t t + ( h z t σ ) T 2 a I ( n ) K(cid:7) d − t 1 H y + t t , σ i 2 n I d ) i − ca 1 t k(cid:7) e t( t z h ) e , we ( ( i 2 1 g 0 9 h ) ) t H(yt) = = H H ( ( y y t t − − 1 1 ) ) + + H 1 2 ( lo y g t | ( y 2 t π − e 1 ( ) σ 2 +σ t 2 −1 (zt))),t∈[1, ( T 2 ] 2 . ) 5 5 2 2 7 8
+476
+of the corresponding samples in y t. A stale sample will be 529
+assigned less weight, and hence contributes less to the final Then we have
+477 530
+478 values of μ(cid:7) t(z) and σ(cid:7) t 2(z). From the above analysis, we can (cid:3)T (cid:3)T
+479 see that λ is a parameter to control the decreasing rate of the H(yt)= (H(yt−1)+log(2πe(σ 2 +σ t 2 −1 (zt)))/2), 531
+480 weights of historical samples. With a larger λ, the weights of t=1 t=1
+historical samples decrease faster, i.e., the importance of an (23)
+481 532
+Authorized licensed use limited to: SOUTHWEST JIAOTONG UNIVERSITY. Downloaded on November 27,2025 at 04:57:03 UTC from IEEE Xplore. Restrictions apply.
+
+--- Page 7 ---
+LIUANDCAO:DEEPLEARNINGVIDEOANALYTICSTHROUGHONLINELEARNINGBASEDEDGECOMPUTING 8199
+Algorithm 1 The OLSO Algorithm
+1 Initialization: GP Prior μ0, σ0; action space A; the set
+of historical data D 0 =∅; the weight parameter α.
+2 for t=1,2,...,T do
+3 for at ∈A do
+4 Observe context ct;
+5 Uses posterior inference to predict the mean and
+the variance for the current action-context pair
+zt =(at,ct) based on (19)-(20);
+6 end
+7 at =argmaxμ(cid:7) t(at,ct)+β t 1/2 σ(cid:7) t(at,ct); at∈A
+8 nt =0;
+9 for frame i=It,...,It+1 −1 do
+buf 10 if T i >Tmax then
+11 delete frame i from the buffer;
+12 else
+13 Resize frame i to resolution r and send it to
+server m indicated by at;
+14 end 15 if Received the result of frame i and Li <Tmax
+then
+16 nt =nt+1;
+17 end
+18 end
+19 Calculate yt based on (7);
+20 Augment data D t ={D t−1,(zt,yt)};
+21 end
+and thus
+533
+(cid:3)T
+2 2
+534 H(yT)= log(2πe(σ +σ t−1 (zt)))/2), (24)
+t=1
+From Eq.(21) we have 535
+(cid:3)T 1 −2 2 536 I(yT;f) = 2 log(1+σ σ t−1 (zt)) t=1
+1
+537 = 2 log|I+σ −2K T |. (25)
+538 where K(cid:7) T = [kz(z,z)]z,z∈Z is the kernel matrix defined
+over the context-action space. 539
+540 The corresponding maximum over any set of points z T =
+541 (z1,...,zT) is given by
+542 γT := max I(y T;f). (26) zT⊂Z:|zT|=T
+To derive the bound of regret, we first analyze the bound
+543
+544 of the maximum mutual information γT. For the purpose of
+analysis, we split the time horizon {1,...,T} into smaller 545 (cid:7)
+546 blocks of size N within which ft does not vary too much. (cid:7)
+The N is introduced as a tool in the analysis. Then we have 547
+the following lemma.
+548
+549
+Lemma 1: The maximum mutual information γT in the
+time-varying setting satisfies
+550
+T γT ≤( (cid:7) +1)(γ  N (cid:0)
+where γ
+(cid:7)3 +λN ). (27) 551 N
+(cid:0)
+is the maximum mutual information for the time-
+N 552
+invariant setting. 553 (cid:7)
+Proof: We assume that T/N is an integer, and then 554
+handle the general case. Considering the fact that the noise
+555
+sequence t is independent,and use the chain rule for mutual 556
+information, we have
+557
+T/
+I(y T;f)≤
+(cid:0) (cid:3)N
+I(y(i)
+i=1
+(cid:0)
+(i) ;f
+N (cid:0)
+), (28)
+N 558
+where
+y(i)
+(cid:0) = (y N (cid:0) ,...,y N(i−1)+1 (cid:0) ) contains the measure- Ni 559 ments in the ith block, and f (i)
+(cid:0)
+is defined analogously.
+N 560 Maximizing both sides over (z1,...,zT), we obtain
+561
+T γT ≤ (cid:7) γ
+N
+(cid:0) . (29) N 562
+To bound γ (cid:0) , we write the relevant covariance matrix as N 563
+K(cid:7) (cid:0) =K N (cid:0) ◦H N (cid:0) =K N (cid:0) +A N (cid:0) , where A N (cid:0) :=K N (cid:0) ◦(H N (cid:0) − N 564
+1
+(cid:0)
+),and1
+N (cid:0)
+isaN (cid:7)×N (cid:7) matrixofones.Sincethe(i,j)thentry
+N 565
+ofH (cid:0) −1 N (cid:0) N hasabsolutevalue1−(1−λ) |i− 2 j| ,whichisupper 566 boundedfor all λ∈[0,1] by λ|i−j|. And each entry of K
+(cid:0) N 567
+is between [0,1]. We can obtain the following bound on the 568
+Frobenius norm: ||A
+(cid:0)
+(cid:2)
+||2 ≤ (i−j)2λ2 ≤ N (cid:7)4λ2. Using
+N F i,j 569 theaboveinequality,weboundγN viaMirsky’stheorem[30],
+570
+[31], which is given as follows.
+571
+γ (cid:0) ≤ γ  N (cid:0) (cid:7) (cid:7)2 +Nlog(1+λN ) N 572
+≤ γ 
+(cid:0)
+(cid:7)3 +λN , (30)
+N 573
+where γ
+(cid:0)
+is the maximum mutual information for the time-
+N 574
+invariantsetting. Combining (29) and (30), we can obtain the
+575
+(cid:7)
+bound for γT. Since we consider the case that T/N is an
+576
+(cid:7)
+integer,we henceaddonetoT/N forgeneralcases. Thenwe
+577
+can get (27). (cid:2)
+578
+Based on the above definitions and lemma, similar to [32],
+579
+we can have the following theorem which provides regret 580
+bounds for our proposed algorithm. 581 Theorem 1: Suppose the domain Z ⊆ [0,c]d is compact 582 and convex, where d∈N, c>0. And suppose that the kernel 583
+kz(z,z) satisfies the following condition for some constants
+584 a,b>0 and all L≥0: 585
+Pr(supz∈Z | ∂
+∂
+f
+z
+(
+j
+z) |>L)<ae (−L/b)2 , j =1,...,d (31)
+586
+and set C1 =(cid:8) 8/log(1 + σ−2), βT = 2log(π2T2)/2δ +
+587 2dlog(cdbT2 log(daπ2T2)/2δ), the algorithm satisfies the
+588
+following: 589 (cid:8)
+RT ≤ C1TβTγT +2 (32)
+590
+with probability at least 1−δ, where N (cid:7) ∈{1,...,T}. 591
+Proof: To measure the bound of the distance between 592
+two points (action-context pairs) in the domain Z, we first 593
+discretize the domain Z with size (ht)d satisfying 594
+||z−[z]t ||≤cd/ht, ∀z ∈Z, (33)
+595
+where [z]t denotes the closest point in Z to z. 596
+Then, based on the results in [32], by analyzing three high 597 probability events regarding βt, we have |ft(z)−ft([z]t)| ≤ 598
+Authorized licensed use limited to: SOUTHWEST JIAOTONG UNIVERSITY. Downloaded on November 27,2025 at 04:57:03 UTC from IEEE Xplore. Restrictions apply.
+
+--- Page 8 ---
+8200 IEEETRANSACTIONSONWIRELESSCOMMUNICATIONS,VOL.21,NO.10,OCTOBER2022
+(cid:8)
+599
+Ltcd/ht, where Lt = b log(daπ2t2/2δ). By setting ht =
+600
+cdt2Lt, we have
+1
+601
+|ft(z)−ft([z]t)|≤
+t2
+(34)
+With the triangle inequality applied, the maximizing point
+602
+603
+z
+t
+∗ at time t is found to satisfy |ft(z
+t
+∗) − μ(cid:7) t−1([z
+t
+∗]t)| ≤
+604
+β
+t
+1/2 σ(cid:7) t−1([z
+t
+∗]t) + 1/t2. Then the instantaneous regret is
+bounded as follows:
+605
+606
+rt =ft(z
+t
+∗ )−ft(zt)≤2β
+t
+1/2 σ(cid:7) t−1(zt)+1/t 2 . (35)
+Finally, the cumulative regret is bounded as:
+607
+(cid:3)T
+608
+RT = rt
+t=1
+(cid:3)T
+609
+≤ (2β
+t
+1/2 σ(cid:7) t−1(zt)+1/t 2 )
+(cid:9)t=1
+(cid:10)
+(cid:10) (cid:3)T
+(cid:11)
+610
+≤ T 4βtσ(cid:7)
+t
+2
+−1
+(zt)+2
+t=1
+(cid:8)
+611
+≤ C1TβTγT +2. (36)
+(cid:2)
+612
+Forthesquaredexponentialkernel,from[25]wehaveγ
+(cid:0)
+=
+613 N
+O(logN (cid:7) )=O∗(1). The O∗ notationis a variantof O, where
+614
+log factors are suppressed. And thus we obtain
+615
+T 
+( +1)(γ
+(cid:7) N (cid:0)
+Fig.4. Accuracyandcomputation costvs.resolution.
+Fig.5. Examplesofserverresourcetraces.
+the available server resource (GPU or CPU). If GPU is used
+642
++λN
+(cid:7)3 )=O∗
+((
+T
++1)(1+λN
+(cid:7)3
+)). (37)
+attheserver,theframeprocessingratewillbehigherandthen
+643
+616 N (cid:7) N ouralgorithmmayoffloadmoreframestotheserver.However,
+644
+SettingN (cid:7) =I(λ−1/3), whereI(x) denotesthe integerwhich our algorithm does not change, and the only change is the 645
+617
+618
+is closest to x ∈ R. We find that γT behaves as O∗(λ1/3T) inputparameterwhichissimilarto changingotherparameters 646
+when λ ≥ 1/T3, and as O∗(1) when λ < 1/T3. Substitute related to the server workload. 647
+619
+Intheevaluation,therearethreeservers,andtheiravailable
+620
+these into Th√eorem 1, we obtain that the regret is bounded 648
+by O∗(max{ T,Tλ1/6}), which means our algorithm can CPU resources change with time. To emulate the dynamic 649
+621
+server resources status, we use a data trace collected based
+achievea sub-lineardeviationof the optimalsolution,i.e., the 650
+622
+on distributed datacenters from Bitbrains [34], which records
+regrets increases sub-linearly as time increases. 651
+623
+the CPU resources status of 1750 VMs. We randomly select
+652
+the data traces of several VMs and use their CPU resources
+624
+V. PERFORMANCE EVALUATIONS
+statusasthoseofourservers.Fig.5showssomesampletraces
+653
+654
+Inthissection,weevaluatetheperformanceoftheproposed
+625 of the server computation resources. To emulate the dynamic
+655
+algorithm (OLSO) and compare it with other algorithms.
+626 bandwidth environment, we use the bandwidth traces from
+656
+the dataset HSDPA [35]. Fig. 6 shows an example bandwidth
+657
+A. Evaluation Setup trace. Video frames processed by the local CNN model are
+627 658
+scaledto220×220,withthemeanprocessingtimeof180ms
+In the evaluation, the video frame resolution is set to 659
+628
+220 × 220, 280 × 280, 340 × 340, 400 × 400, and per frame. The time constraint for each frame is set to be 660
+629
+460 × 460 pixels respectively. We use a subset of videos 200 ms. In our experiment, the length of one time slot is set 661
+630
+fromthe FCVID dataset[33]to trainResNet-50CNN models
+to be one second.The GP priorμ0 and σ0 are set to be 0 and
+662
+631
+0.5 respectively, and the length-scale l is set to be 1. The
+for activity recognition. The average recognition accuracy 663
+632
+running time of the OLSO algorithm is less than 10 ms and
+with respect to different resolutions is profiled and shown in 664
+633
+it is negligible compared to the length of one time slot.
+Fig. 4. We profile the computation demand of CNN models 665
+634
+We compare our algorithm with the following algorithms:
+with different image resolutions by running these models 666
+635
+on a desktop, which includes the processing time and the • Local: All frames are processed locally using the local
+636 667
+corresponding CPU rate. Then the computation demand is CNN model with the lowest resolution.
+637 668
+estimatedastheaveragerequiredCPUcyclespervideoframe. • Accuracy-opt: This algorithm selects the highest resolu-
+638 669
+Here, we measure the computation demand by CPU cycles tionfor allframesto maximizeaccuracy.Itfirst explores
+639 670
+since the currentserver resource trace is based on CPU. Note allserversandthenstickstotheserverwiththeminimum
+640 671
+thatouroffloadingalgorithmcanautomaticallyadaptbasedon delay.
+641 672
+Authorized licensed use limited to: SOUTHWEST JIAOTONG UNIVERSITY. Downloaded on November 27,2025 at 04:57:03 UTC from IEEE Xplore. Restrictions apply.
+
+--- Page 9 ---
+LIUANDCAO:DEEPLEARNINGVIDEOANALYTICSTHROUGHONLINELEARNINGBASEDEDGECOMPUTING 8201
+Fig.6. Anexample ofbandwidth traces.
+Fig.9. Theperformanceratiorelativetotheoptimalalgorithmafteracertain
+numberoftimeslots.
+We tune the parameter λ and find that when λ ≥ 0.001,
+693
+the performance decreases significantly. Then we find the
+694
+best value of λ by grid search between 0 and 0.001. Fig. 7
+695
+shows the convergence of OLSO with λ to be 0, 0.0002,
+696
+0.0004,0.0006,0.0008,and0.001.Ingeneral,asmallerλputs
+697
+more weighton the historicaldata, and a largerλ emphasizes
+698
+more on the recent data. When λ = 0.0004, the algorithm
+699
+achievesthe lowestregretafter 100time slots, and itachieves
+Fig.7. Regretv.s.λ. 700
+a sub-linear increasing trend. Fig. 7(b) shows the average
+701
+regret per time slot of our algorithm as time goes. The first
+702
+several time slots have high regret because of exploration.
+703
+After100timeslots,theaverageregretpertimeslotreachesa
+704
+low level of less than 1. In the following experiments, we set
+705
+λ=0.0004.
+706
+In Fig. 8, we compare the cumulative regret and the
+707
+time-averaged regret under different number of available
+708
+servers. The number of servers affects the size of the action
+709
+space, and thus affects the performance of the OLSO algo-
+710
+rithm. From Fig. 8(a) we observe that when the number of
+711
+serversbecomeslarger,thecumulativeregretinthesametime
+712
+Fig.8. Regretvs.numberofservers. periodalsobecomeshigher.Thisisbecausewhenmoreservers
+713
+are available, it requires more exploration time, which leads
+714
+to longerconvergencetime and thushighercumulativeregret.
+• LinUCB:Thisalgorithmselects the serverandresolution 715
+673
+However, the OLSO algorithm always achieves a sub-linear
+based on the minimum upper confidence bound of the 716
+674
+increasing trend under different number of servers. From
+utility according to the classic MAB theory [23]. 717
+675
+Fig. 8(b), we can also observe that the time-averaged regret
+• Optimal: This algorithm assumes a priori knowledge 718
+676
+of all cases can reach a similar low level of less than 1,
+abouttheserverresources,networkbandwidth,etc.Itcal- 719
+677
+which verifies that our algorithm can finally achieve similar
+culates the utility of all possible combinations of server 720
+678
+performanceswiththe optimalsolutionundervaryingnumber
+andresolution,andthenchoosestheserverandresolution 721
+679
+of available servers. In the following experiments, we set the
+thatmaximize the utility. This algorithmis impossible in 722
+680
+number of servers to be four.
+practice, so it only providesa performanceupper bound. 723
+681
+InFig.9,wecompareOLSOwithotheralgorithmsinterms
+We use videos in the FCVID dataset for video analytics 724
+682 of performance ratio, which is the relative achieved utility
+and analyze their accuracy, processing rate and utility under 725
+683 comparedtothatoftheOptimal.Ascanbeseen,ouralgorithm
+the above algorithms. 726
+684 hasthehighestperformanceratioanditapproachestheoptimal
+727
+asthenumberoftimeslotsabove120.Atthebeginning,when
+728
+B. Regret Analysis and Performance Ratio
+685 the number of time slots (e.g., 20) is few, the performance
+729
+We first evaluate the regret of our algorithm (OLSO) and ratio of our algorithmis low. This is because it does not have
+686 730
+analyze how the key parameter λ and the number of servers prior knowledge about the server and the network condition,
+687 731
+influence the regret. To evaluate the influences of λ, we set and can only randomly select server and resolution to gather
+688 732
+the number of servers to be four, and α = 8. The network information.Throughexploration,ouralgorithmacquiresmore
+689 733
+latency is randomly and uniformlydistributed between 20 ms knowledge about the system and achieve better performance
+690 734
+and 50 ms. For simplicity, we compare the cumulative regret as time goes, and gradually approachesto the performanceof
+691 735
+and average regret per time slot with different values of λ. the Optimal algorithm.
+692 736
+Authorized licensed use limited to: SOUTHWEST JIAOTONG UNIVERSITY. Downloaded on November 27,2025 at 04:57:03 UTC from IEEE Xplore. Restrictions apply.
+
+--- Page 10 ---
+8202 IEEETRANSACTIONSONWIRELESSCOMMUNICATIONS,VOL.21,NO.10,OCTOBER2022
+Fig.10. Theimpactofframesamplingrates.
+LinUCB also learns more knowledge as time goes and than 18 fps), the buffer is always full and the processing rate
+737 781
+performs better as time goes, but it still underperforms our is restricted by the transmission and processing time of the
+738 782
+algorithm. This is because LinUCB assumes a linear rela- videoframes,andthustheutilityofallmethodsisnotaffected
+739 783
+tionship between context and reward, which may not be much by the frame sampling rate. In this case, selecting the
+740 784
+appropriate and then results in inaccurate learning results and highest resolution does not achieve the best utility since it
+741 785
+wrong decisions. Besides, our algorithm can better adapt to limits the frame processing rate. LinUCB and OLSO are able
+742 786
+environmentupdates,andthuscanbetterlearntheserverstatus toadjusttheresolutionthatcanachievebettertradeoffbetween
+743 787
+and make a better decision. Compared with other algorithms, accuracy and processing rate. Besides, LinUCB and OLSO
+744 788
+the Accuracy-optalgorithmcan achievea higher performance dynamicallyselecttheserverwithmoreresourcesandachieve
+745 789
+ratio at the beginning, but becomes worse as time goes. This higherframeprocessingrateasshowninFig.10(c).Thusthey
+746 790
+is because it only explores each server once and then sticks can achievebetter utility than Accuracy-opt.OLSO has better
+747 791
+to the server with the minimum delay at that time, and thus learning ability and thus outperforms the LinUCB algorithm.
+748 792
+achieves better performance at the beginning. However, the OLSO improves the utility by up to 14.3% compared to the
+749 793
+server resources change over time, and then its performance LinUCB algorithm.
+750 794
+may become worse over time. Moreover, the Accuracy-opt
+751
+algorithm does not select frame resolution dynamically based
+752
+753 on the server resources, and thus does not have a high D. The Impact of α 795
+performanceratio.Thelocalalgorithmgenerallyhastheworst
+754 Fig. 11 shows the impact of the weight parameter α on
+796
+performance because it always selects the lowest resolution
+755 the performances of different algorithms. We set the frame
+797
+and processes frames locally.
+756 sampling rate to be 15 fps, and the network latency is
+798
+uniformly distributed between 20 ms and 50 ms. As shown
+799
+C. The Impact of Frame Sampling Rate
+757 in Fig. 11(a), OLSO has the best performance if the Optimal
+800
+Fig. 10 shows the impacts of the frame sampling rate on algorithm is not considered, and the Local algorithm has the
+758 801
+differentalgorithms.Inthe evaluation,we setα=8.Thenet- worst performance. LinUCB outperforms Accuracy-opt when
+759 802
+work latency is randomly and uniformly distributed between α is small, but underperforms Accuracy-opt when α is large.
+760 803
+20msand50ms.AsshowninFig.10(a),theOLSOalgorithm When α is small, the frame processing rate has more weight
+761 804
+outperformsLocal,Accuracy-optandLinUCBalgorithms,and in calculating the utility. The Accuracy-opt algorithm selects
+762 805
+has similar utility to the Optimal algorithm. Fig. 10(b) shows the highest resolution which has the longest processing time
+763 806
+the corresponding recognition accuracy which is determined and transmission time, resulting in a low processing rate and
+764 807
+by the frame resolution, and thus it can partially reveal their hence lower utility. When α is large, the accuracy has more
+765 808
+resolution selection strategy when the frame sampling rates weight in calculating the utility. The Accuracy-opt algorithm
+766 809
+change. Fig. 10(c) shows the correspondingframe processing selects the highest resolution, resulting in higher utility, but it
+767 810
+rate achieved by these algorithms. When the sampling rate is still lower than our OLSO algorithm.
+768 811
+is low (e.g., 2 fps), the frame processing rate is limited by Fig.11(b)andFig.11(c)presentthecorrespondingaccuracy
+769 812
+the sampling rate since there are not always frames in the and frame processingrate achievedby these algorithmsunder
+770 813
+buffer to be processed, and then the utility is mainly affected different α. The Local and Accuracy-opt algorithms select
+771 814
+by accuracy. Thus, all algorithms except the Local algorithm fixedresolutionsandthustheiraccuracyandprocessingratedo
+772 815
+have similar performance as shown in Fig. 10(a), because all not change with α. As α increases, the accuracy of LinUCB,
+773 816
+of them tend to select higherresolution and thus they achieve OLSOandOptimalalsoincreases,becauseaccuracyhasmore
+774 817
+similar accuracy as shown in Fig. 10(b). The Local algorithm weightincalculatingutilityandthesealgorithmstendtoselect
+775 818
+has the lowest utility because it selects the lowest resolution higherresolutionsso that a better utility can be achieved.Our
+776 819
+which has the lowest accuracy. OLSO algorithm has similar performance with the Optimal
+777 820
+Whentheframesamplingrateincreases,theframeprocess- algorithmunderdifferentα,whichvalidatesthatouralgorithm
+778 821
+ing rate also increases and thus the utility of all algorithms canachievethebesttradeoffbetweenaccuracyandprocessing
+779 822
+improves. When the frame sampling rate is high (e.g., higher rate.
+780 823
+Authorized licensed use limited to: SOUTHWEST JIAOTONG UNIVERSITY. Downloaded on November 27,2025 at 04:57:03 UTC from IEEE Xplore. Restrictions apply.
+
+--- Page 11 ---
+LIUANDCAO:DEEPLEARNINGVIDEOANALYTICSTHROUGHONLINELEARNINGBASEDEDGECOMPUTING 8203
+Fig.11. Theimpactoftheweightparameter α.
+Fig. 12. Average utility of different approaches under different network Fig. 13. Average utility of different approaches under different network
+bandwidth. latency.
+E. The Impact of Network Condition also evaluate the performances under both small and large
+824 857
+α. The OLSO algorithm achieves the highest utility except
+The network condition affects the communication delay, 858
+825
+the Optimal algorithm under various network latency. Similar
+and thusaffectsthe performanceof the offloadingalgorithms. 859
+826
+to the reasons explained above, the performances of all the
+Fig.12comparestheperformanceofthefivealgorithmsunder 860
+827
+algorithmsexcepttheLocalalgorithmdecreaseasthenetwork
+various network bandwidth. We set the network latency to be 861
+828
+latency increases. When the network latency increases, fewer
+30 ms, the frame sampling rate to be 15 fps, and the weight 862
+829
+frames can be processed within the same time, thus lowering
+parameter α to be 6 and 20 respectively. As shown in the 863
+830
+the frame processing rate and then utility of these four
+figure, OLSO achieves higher utility compared with Local, 864
+831
+algorithms. Among all algorithms, Accuracy-opt is affected
+Accuracy-optandLinUCBunderallcases.Specifically,OLSO 865
+832
+most by the network latency. This is because Accuracy-opt
+improves the utility by up to 70.0% compared to the Local 866
+833
+always selects the highest frame resolution which takes more
+algorithm, and by up to 22.3% compared to the best baseline 867
+834
+time to process, and then more frames cannot be processed
+algorithm (i.e., LinUCB algorithm). The performance of the 868
+835
+within the time constraint when the network latency is high,
+Local algorithm remains the same under different network 869
+836
+hence decreasing its utility.
+bandwidth because it does not upload frames, and thus its 870
+837
+utility is not affected. The utility of the other four algorithms
+838
+increases as the bandwidth increases. This is because higher
+VI. CONCLUSION
+871
+839
+bandwidth results in lower transmission delay, and thus more In this paper, we studied the server resource-awareoffload-
+840 872
+frames can be processed within the same time, improving ingproblemforvideoanalytics,wherethegoalistomaximize
+841 873
+processing rate and then utility. theutilitywhichisaweightedfunctionofaccuracyandframe
+842 874
+Compare Fig. 12(a) and Fig. 12(b), we find that when processingrate.Toovercomethechallengeofunknownserver
+843 875
+the bandwidth is high, the Accuracy-opt algorithm has better resources and network condition, we formulated the problem
+844 876
+performanceunderalargerα.Thisisbecausewhenαislarge, asacontextualMABproblemandproposedanefficientonline
+845 877
+accuracy has more weight in calculating the utility and thus learning based offloading algorithm to solve it. The proposed
+846 878
+the Accuracy-opt algorithm achieves higher utility. However, algorithm selects server and resolution based on user’s local
+847 879
+when the bandwidth is low, the utility of Accuracy-opt drops observations, e.g., historical delay and accuracy. To make the
+848 880
+dramatically under small α. This is because Accuracy-opt algorithmadaptablefortime-varyingenvironments,we assign
+849 881
+always selects the highest resolution which takes more time different weights to samples collected at different time, e.g.,
+850 882
+to upload frames. When the bandwidth is low, more frames higher weights to more recent samples. Through extensive
+851 883
+cannot be processed within the time constraint, resulting in evaluations,wedemonstratedtheeffectivenessofourproposed
+852 884
+lower processing rate. algorithm. Specifically, our proposed algorithm improves the
+853 885
+Fig. 13 compares the performance of different algorithms utility by up to 70.0% compared to running video analytics
+854 886
+underdifferentnetworklatency.Wesetthenetworkbandwidth locally, and by up to 22.3% compared to the best offloading
+855 887
+to be 8 Mbps, the frame sampling rate to be 15 fps, and algorithm (i.e., LinUCB algorithm).
+856 888
+Authorized licensed use limited to: SOUTHWEST JIAOTONG UNIVERSITY. Downloaded on November 27,2025 at 04:57:03 UTC from IEEE Xplore. Restrictions apply.
+
+--- Page 12 ---
+8204 IEEETRANSACTIONSONWIRELESSCOMMUNICATIONS,VOL.21,NO.10,OCTOBER2022
+889 Asfuturework,wewillconductmorethoroughexperiments [22] P. Auer, N. Cesa-Bianchi, and P. Fischer, “Finite-time analysis of 959
+890 by considering other type of server resources (e.g., GPU) the multiarmed bandit problem,” Mach. Learn., vol. 47, nos. 2–3, 960
+and local resources (e.g., NPU [36]). Besides, other video pp.235–256,2002. 961
+891 [23] L. Li, W. Chu, J. Langford, and R. E. Schapire, “A contextual-bandit 962
+892 configurations (e.g., frame sampling rate) may affect the approach to personalized news article recommendation,” in Proc. 19th 963
+893 qualityofvideoanalytics,andthusshouldbeconsideredinour Int.Conf.WorldWideWeb,2010,pp.661–670. 964
+utilityformulation.Inadditiontovideoanalytics,theproposed [24] J.Snoek,H.Larochelle,andR.P.Adams,“PracticalBayesianoptimiza- 965
+894 tionofmachinelearningalgorithms,”inProc.Adv.NeuralInf.Process. 966
+895 algorithmcanalsobeappliedtoserverselectioninothercom- Syst.,2012,pp.1–9. 967
+896 putational extensive applications such as augmented/virtual [25] N.Srinivas,A.Krause,S.M.Kakade,andM.W.Seeger,“Information- 968
+reality. theoretic regretboundsforGaussianprocessoptimization inthebandit 969
+897 setting,” IEEE Trans. Inf. Theory, vol. 58, no. 5, pp.3250–3265, 970
+May2012. 971
+[26] C. Y. Deng, “A generalization of the Sherman–Morrison–Woodbury 972
+898 REFERENCES formula,”Appl.Math.Lett.,vol.24,no.9,pp.1561–1564,Sep.2011. 973
+[27] R.Zhu,Q.-G.Fei,D.Jiang,andZ.-F.Cao,“Dynamicsensitivityanalysis 974
+899 [1] S.Ren,K.He,R.Girshick, andJ.Sun,“FasterR-CNN:Towardsreal- based on Sherman–Morrison–Woodbury formula,” AIAA J., vol. 57, 975
+900 time object detection with region proposal networks,” in Proc. Adv. no.11,pp.4992–5001,Nov.2019. 976
+901 NeuralInf.Process.Syst.(NIPS),2015,pp.1–9. [28] V. Van Vaerenberg, M. Lázaro-Gredilla, and I. Santamaría, “Kernel 977
+902 [2] K. He, X. Zhang, S. Ren, and J. Sun, “Deep residual learning for recursiveleast-squarestrackerfortime-varyingregression,”IEEETrans. 978
+903 imagerecognition,”inProc.IEEEConf.Comput.Vis.PatternRecognit. NeuralNetw.Learn.Syst.,vol.23,no.8,pp.1313–1326,Aug.2012. 979
+904 (CVPR),Jun.2016,pp.770–778. [29] T. M. Cover and J. A. Thomas, Elements of Information Theory. 980
+905 [3] Q.Liu,S.Huang,J.Opadere,andT.Han,“Anedgenetworkorchestrator Hoboken, NJ,USA:Wiley,2012. 981
+906 for mobile augmented reality,” in Proc. IEEE INFOCOM, Apr. 2018, [30] R. A. Horn and C. R. Johnson, Matrix Analysis. Cambridge, U.K.: 982
+907 pp.756–764. CambridgeUniv.Press,2012. 983
+908 [4] L.Liu,H.Li,andM.Gruteser,“Edgeassistedreal-timeobjectdetection [31] L.Mirsky,“Inequalities andexistence theorems inthetheoryofmatri- 984
+909 for mobile augmented reality,” in Proc. ACM MobicCom, Aug. 2019, ces,”J.Math.Anal.Appl.,vol.9,no.1,pp.99–118,Aug.1964. 985
+910 pp.1–16. [32] I.Bogunovic,J.Scarlett,andV.Cevher,“Time-varyingGaussianprocess 986
+911 [5] X. Ge, S. Tu, G. Mao, C.-X. Wang, and T. Han, “5G ultra-dense banditoptimization,” inProc.Artif.Intell. Statist., 2016,pp.314–323. 987
+912 cellular networks,” IEEEWireless Commun.,vol.23,no.1,pp.72–79, [33] Y.-G. Jiang, Z. Wu, J. Wang, X. Xue, and S.-F. Chang, “Exploiting 988
+913 Feb.2016. feature and class relationships in video categorization with regularized 989
+914 [6] K. Poularakis, J. Llorca, A. M. Tulino, I. Taylor, and L. Tassiulas, deepneuralnetworks,”IEEETrans.PatternAnal.Mach.Intell.,vol.40, 990
+915 “Joint service placement and request routing inmulti-cell mobile edge no.2,pp.352–364,Feb.2017. 991
+916 computingnetworks,”inProc.IEEEINFOCOM,Apr.2019,pp.10–18. [34] S. Shen, V. Van Beek, and A. Iosup, “Statistical characterization 992
+917 [7] H. Zhang, G. Ananthanarayanan, P. Bodik, M. Philipose, P. Bahl, and of business-critical workloads hosted in cloud datacenters,” in Proc. 993
+918 M. J. Freedman, “Live video analytics at scale with approximation 15th IEEE/ACM Int. Symp. Cluster, Cloud Grid Comput., May 2015, 994
+919 and delay-tolerance,” in Proc. 14th USENIX Symp. Netw. Syst. Design pp.465–474. 995
+920 Implement. (NSDI),2017,pp.377–392. [35] H.Riiser,P.Vigmostad,C.Griwodz,andP.Halvorsen,“Commutepath 996
+921 [8] J. Jiang, G. Ananthanarayanan, P. Bodik, S. Sen, and I. Stoica, bandwidthtracesfrom3Gnetworks:Analysisandapplications,”inProc. 997
+922 “Chameleon: Scalable adaptation of video analytics,” in Proc. ACM MMSys,2013,pp.114–118. 998
+923 SIGCOMM,Aug.2018,pp.253–266. [36] T. Tan and G. Cao, “Efficient execution of deep neural networks on 999
+924 [9] T. Lu, D. Pál, and M. Pál, “Contextual multi-armed bandits,” in Proc. mobiledeviceswithNPU,”inProc.ACM/IEEEInt.Conf.Inf.Process. 1000
+925 13thInt.Conf.Artif.Intell. Statist.,2010,pp.485–492. SensorNetw.(IPSN),2021,pp.283–298. 1001
+926 [10] B. Zhang, X. Jin, S. Ratnasamy, J. Wawrzynek, and E. A. Lee,
+927 “AWStream: Adaptive wide-area streaming analytics,” in Proc. ACM
+928 SIGCOMM,Aug.2018,pp.236–252. Heting Liu received the B.S. degree in electrical 1002
+929 [11] T.TanandG.Cao,“FastVA:Deeplearningvideoanalyticsthroughedge engineering from Sun Yat-sen University, China, 1003
+930 processing and NPU inmobile,” inProc. IEEEINFOCOM, Jul. 2020, in2016.Sheiscurrently pursuingthePh.D.degree 1004
+931 pp.1947–1956. withtheDepartmentofComputerScienceandEngi- 1005
+932 [12] C. Wang, S. Zhang, Y. Chen, Z. Qian, J. Wu, and M. Xiao, “Joint neering, Pennsylvania State University, USA. Her 1006
+933 configuration adaptation and bandwidth allocation foredge-based real- research interests include edge computing, mobile 1007
+934 timevideoanalytics,”inProc.IEEEINFOCOM,Jul.2020,pp.257–266. cloud computing, wireless networks, and machine 1008
+935 [13] T.TanandG.Cao,“Deeplearningvideoanalyticsthroughedgecomput- learning. 1009
+936 ingandneuralprocessingunitsonmobiledevices,”IEEETrans.Mobile
+937 Comput.,earlyaccess,Aug.19,2021,doi:10.1109/TMC.2021.3105953.
+938 [14] T.TanandG.Cao,“Deeplearning video analytics onedgecomputing
+939 devices,” inProc.IEEESECON,Jul.2021,pp.1–9.
+940 [15] H. Tan, Z. Han, X.-Y. Li, and F. C. M. Lau, “Online job dispatching Guohong Cao (Fellow, IEEE) received the B.S. 1010
+941 andscheduling inedge-clouds,” inProc.IEEEINFOCOM,May2017, degree in computer science from Xi’an Jiaotong 1011
+942 pp.1–9. UniversityandthePh.D.degreeincomputerscience 1012
+943 [16] L.Tong,Y.Li,andW.Gao,“Ahierarchical edgecloudarchitecture for from The Ohio State University in 1999. Since 1013
+944 mobilecomputing,” inProc.IEEEINFOCOM,Apr.2016,pp.1–9. then, he has been with the Department of Com- 1014
+945 [17] V. Farhadi et al., “Service placement and request scheduling for data- puter Science and Engineering, Pennsylvania State 1015
+946 intensive applications in edge clouds,” in Proc. IEEE INFOCOM, University, where he is currently a Distinguished 1016
+947 Apr.2019,pp.1279–1287. Professor. He has published more than 200 papers 1017
+948 [18] Y. Liu, H. Xu, and W. C. Lau, “Online job scheduling with resource intheareasofwirelessnetworks,mobilecomputing, 1018
+949 packing on a cluster of heterogeneous servers,” in Proc. IEEE INFO- machinelearning,wirelesssecurityandprivacy,and 1019
+950 COM,Apr.2019,pp.1441–1449. the Internet of Things, which have been cited over 1020
+951 [19] H.LiuandG.Cao,“Deepreinforcementlearning-basedserverselection 20000times.HeisafellowoftheAAAS.Hehasreceivedseveralbestpaper 1021
+952 formobileedgecomputing,”IEEETrans.Veh.Technol.,vol.70,no.12, awards, the IEEE INFOCOM Test of Time Award and the NSF CAREER 1022
+953 pp.13351–13363,Dec.2021. Award. He has served on the editorial board of IEEE TRANSACTIONSON 1023
+954 [20] T. Ouyang, R. Li, X. Chen, Z. Zhou, and X. Tang, “Adaptive user- MOBILE COMPUTING, IEEE TRANSACTIONS ON WIRELESS COMMUNI- 1024
+955 managedserviceplacementformobileedgecomputing:Anonlinelearn- CATIONS, and IEEE TRANSACTIONSON VEHICULARTECHNOLOGY, and 1025
+956 ingapproach,” inProc.IEEEINFOCOM,Apr.2019,pp.1468–1476. has served on the organizing and technical program committees of many 1026
+957 [21] Z.Cheng, H. Sun, M.Takeuchi, and J.Katto, “Deep residual learning conferences, including the TPCChair/Co-Chair ofIEEESRDS,MASS,and 1027
+958 forimagecompression,” inProc.CVPRWorkshops,2019,pp.1–5. INFOCOM. 1028
+Authorized licensed use limited to: SOUTHWEST JIAOTONG UNIVERSITY. Downloaded on November 27,2025 at 04:57:03 UTC from IEEE Xplore. Restrictions apply.

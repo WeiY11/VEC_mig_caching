@@ -21,12 +21,14 @@ import numpy as np
 
 from Benchmarks.vec_env_adapter import VecEnvWrapper, _build_scenario_overrides
 from Benchmarks.reward_adapter import compute_reward_from_info
-from Benchmarks.cam_td3_uav_mec import CAMTD3Config, train_cam_td3
+# New algorithm implementations based on original papers
+from Benchmarks.nath_ddpg_mec import NathDDPGConfig, train_nath_ddpg
+from Benchmarks.liu_bayesian_optimization import LiuBOConfig, train_liu_bo
+from Benchmarks.zhang_ronet_nano import RoNetConfig, train_ronet
+from Benchmarks.wang_gail_ppo import WangGAILConfig, train_wang_gail
+# Original implementations (DDPG from Lillicrap)
 from Benchmarks.lillicrap_ddpg_vanilla import DDPGConfig, train_ddpg
-from Benchmarks.zhang_robust_sac import RobustSACConfig, train_robust_sac
 from Benchmarks.local_only_policy import LocalOnlyPolicy
-from Benchmarks.nath_dynamic_offload_heuristic import DynamicOffloadHeuristic
-from Benchmarks.liu_online_sa import SAConfig, OnlineSimulatedAnnealing
 from Benchmarks.run_compare_with_optimized_td3 import run_optimized_td3
 
 try:
@@ -66,18 +68,34 @@ def run_rl(algo: str, episodes: int, seed: int, env_cfg, max_steps_per_ep: int =
     env = VecEnvWrapper(**env_cfg)
     total_steps = max_steps_per_ep * episodes
     warmup_cap = max(total_steps // 2, 1000)
-    if algo == "td3":
-        cfg = CAMTD3Config(num_rsus=env_cfg["num_rsus"], num_uavs=env_cfg["num_uavs"])
+    
+    # Nath & Wu 2020 - DDPG for MEC offloading
+    if algo == "nath_ddpg":
+        cfg = NathDDPGConfig(num_mus=env_cfg.get("num_vehicles", 6))
         cfg.start_steps = min(cfg.start_steps, warmup_cap)
-        return train_cam_td3(env, cfg, max_steps=total_steps, seed=seed)
+        return train_nath_ddpg(env, cfg, max_steps=total_steps, seed=seed)
+    
+    # Liu & Cao 2022 - Bayesian Optimization
+    if algo == "liu_bo":
+        cfg = LiuBOConfig()
+        return train_liu_bo(env, cfg, max_steps=total_steps, seed=seed)
+    
+    # Zhang RoNet 2023 - DNN + Adversarial Training
+    if algo == "ronet":
+        cfg = RoNetConfig()
+        return train_ronet(env, cfg, max_steps=total_steps, seed=seed)
+    
+    # Wang 2025 - GAIL + Improved PPO
+    if algo == "wang_gail":
+        cfg = WangGAILConfig()
+        return train_wang_gail(env, cfg, max_steps=total_steps, seed=seed)
+    
+    # Original Lillicrap DDPG (baseline)
     if algo == "ddpg":
         cfg = DDPGConfig()
         cfg.start_steps = min(cfg.start_steps, warmup_cap)
         return train_ddpg(env, cfg, max_steps=total_steps, seed=seed)
-    if algo == "sac":
-        cfg = RobustSACConfig()
-        cfg.start_steps = min(cfg.start_steps, warmup_cap)
-        return train_robust_sac(env, cfg, max_steps=total_steps, seed=seed)
+    
     raise ValueError(f"Unsupported RL algo: {algo}")
 
 
@@ -306,7 +324,7 @@ def main():
     parser.add_argument("--episodes", type=int, default=50)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--groups", type=int, default=5, help="Number of data groups (seeds) per experiment comparison.")
-    parser.add_argument("--alg", nargs="+", default=["td3", "ddpg", "sac", "local", "heuristic"], help="Algorithms to run.")
+    parser.add_argument("--alg", nargs="+", default=["ippo", "ddpg", "sac", "local", "heuristic"], help="Algorithms to run.")
     parser.add_argument("--vehicles", type=int, default=12)
     parser.add_argument("--rsus", type=int, default=4)
     parser.add_argument("--uavs", type=int, default=2)
@@ -380,7 +398,7 @@ def main():
             group_runs = []
             for g in range(args.groups):
                 seed = args.seed + g
-                if alg in {"td3", "ddpg", "sac"}:
+                if alg in {"ippo", "ddpg", "sac"}:
                     out = run_rl(alg, episodes=args.episodes, seed=seed, env_cfg=cfg, max_steps_per_ep=args.max_steps)
                 elif alg == "local":
                     out = run_local(cfg, episodes=args.episodes, seed=seed, max_steps_per_ep=args.max_steps)
