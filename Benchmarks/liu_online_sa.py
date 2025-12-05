@@ -46,7 +46,7 @@ class OnlineSimulatedAnnealing:
         cand = np.clip(x + step, low, high)
         return cand
 
-    def search(self, evaluate_fn: Callable[[np.ndarray], float]) -> dict:
+    def search(self, evaluate_fn: Callable[[np.ndarray], float], progress: Callable[[int, int, float], None] | None = None) -> dict:
         temp = self.cfg.init_temp
         best = self.current
         best_score = evaluate_fn(best)
@@ -65,6 +65,11 @@ class OnlineSimulatedAnnealing:
                     best, best_score = cand, cand_score
             history.append(best_score)
             temp = max(self.cfg.min_temp, temp * self.cfg.cooling)
+            
+            # 进度回调
+            if progress is not None and (i % 10 == 0 or i == self.cfg.max_iters - 1):
+                progress(i + 1, self.cfg.max_iters, best_score)
+                
         return {"best_params": best, "best_score": best_score, "history": history}
 
     def select_action(self, state: np.ndarray = None) -> np.ndarray:

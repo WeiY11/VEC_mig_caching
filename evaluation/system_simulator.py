@@ -2846,12 +2846,13 @@ class CompleteSystemSimulator:
         
         # 🔧 修复：只统计有content_id的任务，避免统计扭曲
         # 不可缓存的任务不应该影响缓存命中率统计
+        # 🔧 修复v2：移除重复计数 - _register_cache_request已更新cache_hits/cache_misses
         self._register_cache_request(cache_hit)
         
-        # 更新统计
-        # Update statistics
+        # 更新节点级别滑动窗口统计（用于状态编码，不影响全局stats）
+        # Update node-level sliding window stats (for state encoding, does not affect global stats)
         if cache_hit:
-            self.stats['cache_hits'] += 1
+            # 🔧 已移除: self.stats['cache_hits'] += 1  # 重复计数
             # 🔧 新增：更新RSU缓存命中率统计（用于状态编码）
             if node_type == 'RSU':
                 node['cache_hits_window'] = node.get('cache_hits_window', 0) + 1
@@ -2867,7 +2868,7 @@ class CompleteSystemSimulator:
                     node['recent_cache_hit_rate'] = node['cache_hits_window'] / node['cache_requests_window']
                 self._propagate_cache_after_hit(content_id, node, agents_actions)
         else:
-            self.stats['cache_misses'] += 1
+            # 🔧 已移除: self.stats['cache_misses'] += 1  # 重复计数
             # 🔧 新增：更新RSU缓存统计（未命中）
             if node_type == 'RSU':
                 node['cache_requests_window'] = node.get('cache_requests_window', 0) + 1

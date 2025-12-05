@@ -26,12 +26,12 @@ from Benchmarks.nath_ddpg_mec import NathDDPGConfig, train_nath_ddpg
 from Benchmarks.liu_bayesian_optimization import LiuBOConfig, train_liu_bo
 from Benchmarks.zhang_ronet_nano import RoNetConfig, train_ronet
 from Benchmarks.wang_gail_ppo import WangGAILConfig, train_wang_gail
-# Original implementations (DDPG from Lillicrap, TD3 from Fujimoto)
+# Original implementations (DDPG from Lillicrap)
 from Benchmarks.lillicrap_ddpg_vanilla import DDPGConfig, train_ddpg
-from Benchmarks.fujimoto_td3_vanilla import TD3Config as VanillaTD3Config, train_vanilla_td3
+from Benchmarks.fujimoto_td3_vanilla import TD3Config, train_vanilla_td3
 from Benchmarks.local_only_policy import LocalOnlyPolicy
 from Benchmarks.nath_dynamic_offload_heuristic import DynamicOffloadHeuristic
-from Benchmarks.liu_online_sa import SAConfig, OnlineSimulatedAnnealing
+from Benchmarks.liu_online_sa import OnlineSimulatedAnnealing, SAConfig
 from Benchmarks.run_compare_with_optimized_td3 import run_optimized_td3
 
 try:
@@ -72,40 +72,53 @@ def run_rl(algo: str, episodes: int, seed: int, env_cfg, max_steps_per_ep: int =
     total_steps = max_steps_per_ep * episodes
     warmup_cap = max(total_steps // 2, 1000)
     
+    # 进度回调函数
+    def progress_callback(step: int, avg_reward: float, last_reward: float):
+        ep_num = len(env.env.episode_metrics.get('episode_rewards', [])) if hasattr(env, 'env') else step // max_steps_per_ep
+        print(f"  [{algo.upper()}] Step {step}/{total_steps} (Ep ~{ep_num}) Avg10: {avg_reward:.2f}", end="\r", flush=True)
+    
+    result = None
+    
     # Nath & Wu 2020 - DDPG for MEC offloading
     if algo == "nath_ddpg":
         cfg = NathDDPGConfig(num_mus=env_cfg.get("num_vehicles", 6))
         cfg.start_steps = min(cfg.start_steps, warmup_cap)
-        return train_nath_ddpg(env, cfg, max_steps=total_steps, seed=seed)
+        result = train_nath_ddpg(env, cfg, max_steps=total_steps, seed=seed, progress=progress_callback)
     
     # Liu & Cao 2022 - Bayesian Optimization
-    if algo == "liu_bo":
+    elif algo == "liu_bo":
         cfg = LiuBOConfig()
-        return train_liu_bo(env, cfg, max_steps=total_steps, seed=seed)
+        result = train_liu_bo(env, cfg, max_steps=total_steps, seed=seed, progress=progress_callback)
     
     # Zhang RoNet 2023 - DNN + Adversarial Training
-    if algo == "ronet":
+    elif algo == "ronet":
         cfg = RoNetConfig()
-        return train_ronet(env, cfg, max_steps=total_steps, seed=seed)
+        result = train_ronet(env, cfg, max_steps=total_steps, seed=seed, progress=progress_callback)
     
     # Wang 2025 - GAIL + Improved PPO
-    if algo == "wang_gail":
+    elif algo == "wang_gail":
         cfg = WangGAILConfig()
-        return train_wang_gail(env, cfg, max_steps=total_steps, seed=seed)
+        result = train_wang_gail(env, cfg, max_steps=total_steps, seed=seed, progress=progress_callback)
     
     # Original Lillicrap DDPG (baseline)
-    if algo == "ddpg":
+    elif algo == "ddpg":
         cfg = DDPGConfig()
         cfg.start_steps = min(cfg.start_steps, warmup_cap)
-        return train_ddpg(env, cfg, max_steps=total_steps, seed=seed)
+        result = train_ddpg(env, cfg, max_steps=total_steps, seed=seed, progress=progress_callback)
     
-    # Vanilla TD3 (Fujimoto et al. 2018) - pure implementation
-    if algo in ("vanilla_td3", "td3"):
-        cfg = VanillaTD3Config()
+    # Fujimoto TD3 (vanilla, 2018)
+    elif algo == "td3":
+        cfg = TD3Config()
         cfg.start_steps = min(cfg.start_steps, warmup_cap)
-        return train_vanilla_td3(env, cfg, max_steps=total_steps, seed=seed)
+        result = train_vanilla_td3(env, cfg, max_steps=total_steps, seed=seed, progress=progress_callback)
     
-    raise ValueError(f"Unsupported RL algo: {algo}")
+    else:
+        raise ValueError(f"Unsupported RL algo: {algo}")
+    
+    print()  # 换行
+    return result
+
+
 
 
 def run_local(env_cfg, episodes: int, seed: int, max_steps_per_ep: int = 200):
@@ -120,7 +133,9 @@ def run_local(env_cfg, episodes: int, seed: int, max_steps_per_ep: int = 200):
         "dropped_tasks": [],
         "cache_hit_rate": []
     }
-    for _ in range(episodes):
+    for ep in range(episodes):
+        if ep % 10 == 0 or ep == episodes - 1:
+            print(f"  [Local] Episode {ep+1}/{episodes}", end="\r", flush=True)
         state = env.reset()
         ep_r = 0.0
         # Accumulators
@@ -154,6 +169,7 @@ def run_local(env_cfg, episodes: int, seed: int, max_steps_per_ep: int = 200):
         ep_metrics["dropped_tasks"].append(cur_ep_dropped)
         ep_metrics["cache_hit_rate"].append(np.mean(cur_ep_cache_hits) if cur_ep_cache_hits else 0.0)
 
+    print()  # 换行
     return {"episode_rewards": ep_rewards, "episode_metrics": ep_metrics, "episodes": episodes}
 
 
@@ -169,7 +185,9 @@ def run_heuristic(env_cfg, episodes: int, seed: int, max_steps_per_ep: int = 200
         "dropped_tasks": [],
         "cache_hit_rate": []
     }
-    for _ in range(episodes):
+    for ep in range(episodes):
+        if ep % 10 == 0 or ep == episodes - 1:
+            print(f"  [Heuristic] Episode {ep+1}/{episodes}", end="\r", flush=True)
         state = env.reset()
         ep_r = 0.0
         # Accumulators
@@ -203,6 +221,7 @@ def run_heuristic(env_cfg, episodes: int, seed: int, max_steps_per_ep: int = 200
         ep_metrics["dropped_tasks"].append(cur_ep_dropped)
         ep_metrics["cache_hit_rate"].append(np.mean(cur_ep_cache_hits) if cur_ep_cache_hits else 0.0)
 
+    print()  # 换行
     return {"episode_rewards": ep_rewards, "episode_metrics": ep_metrics, "episodes": episodes}
 
 
@@ -252,8 +271,12 @@ def run_sa(env_cfg, episodes: int, seed: int):
         scores = [eval_once(params, idx) for idx in range(max(1, episodes // 5))]
         return float(np.mean(scores))
 
+    def sa_progress(iter_num: int, max_iters: int, best_score: float):
+        print(f"  [SA] Iter {iter_num}/{max_iters}, Best: {best_score:.2f}", end="\r", flush=True)
+    
     sa = OnlineSimulatedAnnealing(dim=3, bounds=[(0.0, 5.0)] * 3, cfg=SAConfig(seed=seed, max_iters=episodes))
-    res = sa.search(evaluate_fn)
+    res = sa.search(evaluate_fn, progress=sa_progress)
+    print()  # 换行
     
     # SA returns history of best scores. We map this to episode_rewards.
     ep_rewards = res["history"]
@@ -333,7 +356,7 @@ def main():
     parser.add_argument("--episodes", type=int, default=50)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--groups", type=int, default=5, help="Number of data groups (seeds) per experiment comparison.")
-    parser.add_argument("--alg", nargs="+", default=["vanilla_td3", "ddpg", "local"], help="Algorithms to run. Options: vanilla_td3, ddpg, nath_ddpg, liu_bo, ronet, wang_gail, local, heuristic, sa")
+    parser.add_argument("--alg", nargs="+", default=["ippo", "ddpg", "sac", "local", "heuristic"], help="Algorithms to run.")
     parser.add_argument("--vehicles", type=int, default=12)
     parser.add_argument("--rsus", type=int, default=4)
     parser.add_argument("--uavs", type=int, default=2)
@@ -407,7 +430,7 @@ def main():
             group_runs = []
             for g in range(args.groups):
                 seed = args.seed + g
-                if alg in {"ippo", "ddpg", "sac"}:
+                if alg in {"ippo", "ddpg", "sac", "td3"}:
                     out = run_rl(alg, episodes=args.episodes, seed=seed, env_cfg=cfg, max_steps_per_ep=args.max_steps)
                 elif alg == "local":
                     out = run_local(cfg, episodes=args.episodes, seed=seed, max_steps_per_ep=args.max_steps)
