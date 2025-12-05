@@ -30,8 +30,8 @@ network:
 # 通信参数配置 (3GPP标准)
 # -----------------------------------------------------------------------------
 communication:
-  bandwidth: 40.0e6 # 总带宽 40 MHz
-  carrier_frequency: 3.5e9 # 载波频率 3.5 GHz (NR n78频段)
+  bandwidth: 40000000.0 # 总带宽 40 MHz
+  carrier_frequency: 3500000000.0 # 载波频率 3.5 GHz (NR n78频段)
   noise_power: -100.0 # 噪声功率 (dBm)
   path_loss_exponent: 3.0 # 路径损耗指数
 
@@ -57,21 +57,21 @@ communication:
 # -----------------------------------------------------------------------------
 compute:
   # 总计算资源池 (Hz)
-  total_vehicle_compute: 18.0e9 # 18 GHz (12车辆共享)
-  total_rsu_compute: 50.0e9 # 50 GHz (4个RSU共享)
-  total_uav_compute: 14.0e9 # 14 GHz (2个UAV共享)
+  total_vehicle_compute: 18000000000.0 # 18 GHz (12车辆共享)
+  total_rsu_compute: 50000000000.0 # 50 GHz (4个RSU共享)
+  total_uav_compute: 14000000000.0 # 14 GHz (2个UAV共享)
 
   # CPU频率范围 (Hz)
-  vehicle_cpu_freq_min: 1.0e9
-  vehicle_cpu_freq_max: 2.0e9
-  rsu_cpu_freq: 12.5e9
-  uav_cpu_freq_min: 6.0e9
-  uav_cpu_freq_max: 8.0e9
+  vehicle_cpu_freq_min: 1000000000.0
+  vehicle_cpu_freq_max: 2000000000.0
+  rsu_cpu_freq: 12500000000.0
+  uav_cpu_freq_min: 6000000000.0
+  uav_cpu_freq_max: 8000000000.0
 
   # 能耗参数
-  vehicle_kappa: 1.5e-28 # 车辆功耗系数
-  rsu_kappa: 5.0e-32 # RSU功耗系数
-  uav_kappa: 8.89e-31 # UAV功耗系数
+  vehicle_kappa: 0.00000000000000000000000000015 # 车辆功耗系数 1.5e-28
+  rsu_kappa: 0.00000000000000000000000000000005 # RSU功耗系数 5.0e-32
+  uav_kappa: 0.000000000000000000000000000000889 # UAV功耗系数 8.89e-31
   vehicle_static_power: 5.0 # 车辆静态功耗 (W)
   rsu_static_power: 25.0 # RSU静态功耗 (W)
   uav_static_power: 2.5 # UAV静态功耗 (W)
@@ -84,11 +84,11 @@ compute:
 # -----------------------------------------------------------------------------
 task:
   arrival_rate: 3.5 # 任务到达率 (tasks/s)
-  data_size_min: 5.0e6 # 最小数据量 5 MB
-  data_size_max: 10.0e6 # 最大数据量 10 MB
+  data_size_min: 5000000.0 # 最小数据量 5 MB
+  data_size_max: 10000000.0 # 最大数据量 10 MB
   compute_density: 2.5 # 计算密度 (cycles/bit)
-  compute_cycles_min: 1.0e8 # 最小计算周期
-  compute_cycles_max: 5.0e9 # 最大计算周期
+  compute_cycles_min: 100000000.0 # 最小计算周期 1e8
+  compute_cycles_max: 5000000000.0 # 最大计算周期 5e9
   deadline_min: 1.0 # 最小截止时间 (s)
   deadline_max: 6.5 # 最大截止时间 (s)
   output_ratio: 0.05 # 输出/输入比例
@@ -111,7 +111,7 @@ queue:
 # 任务迁移配置
 # -----------------------------------------------------------------------------
 migration:
-  migration_bandwidth: 100.0e6 # 迁移带宽 (bps)
+  migration_bandwidth: 100000000.0 # 迁移带宽 (bps) 100 Mbps
   migration_threshold: 0.8 # 迁移阈值
   rsu_overload_threshold: 0.70 # RSU过载阈值
   uav_overload_threshold: 0.70 # UAV过载阈值
@@ -122,9 +122,9 @@ migration:
 # 缓存配置
 # -----------------------------------------------------------------------------
 cache:
-  vehicle_cache_capacity: 100.0e6 # 车辆缓存 100 MB
-  rsu_cache_capacity: 200.0e6 # RSU缓存 200 MB
-  uav_cache_capacity: 150.0e6 # UAV缓存 150 MB
+  vehicle_cache_capacity: 100000000.0 # 车辆缓存 100 MB
+  rsu_cache_capacity: 200000000.0 # RSU缓存 200 MB
+  uav_cache_capacity: 150000000.0 # UAV缓存 150 MB
   cache_replacement_policy: "HYBRID"
   cache_hit_threshold: 0.8
   enable_predictive_caching: true

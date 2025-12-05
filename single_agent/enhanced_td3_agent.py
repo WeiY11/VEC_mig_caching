@@ -112,25 +112,43 @@ class EnhancedTD3Agent:
             actor_input_dim = self.graph_encoder.output_dim
         
         # Actor主网络（不再需要手动添加central_state_dim）
-        # 🔧 v10优化: 5层深度网络 + Residual风格 + 更大容量
-        # 关键变化：增加网络深度和宽度，提升表达能力
-        self.actor = nn.Sequential(
-            nn.Linear(actor_input_dim, config.hidden_dim),
-            nn.LayerNorm(config.hidden_dim),
-            nn.GELU(),  # 🔧 v10: ReLU → GELU (更平滑梯度)
-            nn.Dropout(0.05),  # 🔧 v10: 轻微dropout防止过拟合
-            nn.Linear(config.hidden_dim, config.hidden_dim),
-            nn.LayerNorm(config.hidden_dim),
-            nn.GELU(),
-            nn.Linear(config.hidden_dim, config.hidden_dim),  # 🔧 v10: 第3层
-            nn.LayerNorm(config.hidden_dim),
-            nn.GELU(),
-            nn.Linear(config.hidden_dim, config.hidden_dim // 2),  # 🔧 v10: 第4层
-            nn.LayerNorm(config.hidden_dim // 2),
-            nn.GELU(),
-            nn.Linear(config.hidden_dim // 2, action_dim),  # 🔧 v10: 第5层
-            nn.Tanh(),
-        ).to(self.device)
+        # 🚀 v30: 可配置网络深度 - 默认使用3层轻量网络加速训练
+        use_shallow_network = os.environ.get('TD3_SHALLOW_NETWORK', '1').strip() in {'1', 'true', 'True'}
+        
+        if use_shallow_network:
+            # 🚀 v30: 3层轻量网络 (训练快2-3倍)
+            self.actor = nn.Sequential(
+                nn.Linear(actor_input_dim, config.hidden_dim),
+                nn.LayerNorm(config.hidden_dim),
+                nn.GELU(),
+                nn.Dropout(0.05),
+                nn.Linear(config.hidden_dim, config.hidden_dim // 2),
+                nn.LayerNorm(config.hidden_dim // 2),
+                nn.GELU(),
+                nn.Linear(config.hidden_dim // 2, action_dim),
+                nn.Tanh(),
+            ).to(self.device)
+            print(f"[EnhancedTD3] 🚀 v30: 使用3层轻量Actor网络 (hidden_dim={config.hidden_dim})")
+        else:
+            # 原始5层深度网络 (更强表达能力，训练较慢)
+            self.actor = nn.Sequential(
+                nn.Linear(actor_input_dim, config.hidden_dim),
+                nn.LayerNorm(config.hidden_dim),
+                nn.GELU(),
+                nn.Dropout(0.05),
+                nn.Linear(config.hidden_dim, config.hidden_dim),
+                nn.LayerNorm(config.hidden_dim),
+                nn.GELU(),
+                nn.Linear(config.hidden_dim, config.hidden_dim),
+                nn.LayerNorm(config.hidden_dim),
+                nn.GELU(),
+                nn.Linear(config.hidden_dim, config.hidden_dim // 2),
+                nn.LayerNorm(config.hidden_dim // 2),
+                nn.GELU(),
+                nn.Linear(config.hidden_dim // 2, action_dim),
+                nn.Tanh(),
+            ).to(self.device)
+            print(f"[EnhancedTD3] 使用5层深度Actor网络 (hidden_dim={config.hidden_dim})")
         
         # Target Actor
         self.target_graph_encoder = self._clone_network(self.graph_encoder)

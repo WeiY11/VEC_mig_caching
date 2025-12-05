@@ -297,8 +297,8 @@ _maybe_apply_reward_smoothing_from_env()
 
 def generate_timestamp() -> str:
     """生成时间戳"""
-    if config.experiment.use_timestamp:
-        return datetime.now().strftime(config.experiment.timestamp_format)
+    if getattr(config.experiment, 'use_timestamp', True):
+        return datetime.now().strftime(getattr(config.experiment, 'timestamp_format', '%Y%m%d_%H%M%S'))
     else:
         return ""
 
@@ -1002,6 +1002,7 @@ class SingleAgentTrainingEnvironment:
             'dropped': int(base.get('dropped_tasks', 0) or 0),
             'delay': float(base.get('total_delay', 0.0) or 0.0),
             'energy': float(base.get('total_energy', 0.0) or 0.0),
+            'static_energy': float(base.get('energy_static', 0.0) or 0.0),  # 🔧 新增：追踪静态能耗基线
             'generated_bytes': float(base.get('generated_data_bytes', 0.0) or 0.0),
             'dropped_bytes': float(base.get('dropped_data_bytes', 0.0) or 0.0),
         }
@@ -1015,6 +1016,7 @@ class SingleAgentTrainingEnvironment:
             'dropped': 0,
             'delay': 0.0,
             'energy': 0.0,
+            'static_energy': 0.0,  # 🔧 新增：静态能耗基线
             'generated_bytes': 0.0,
             'dropped_bytes': 0.0,
         }
@@ -1031,16 +1033,14 @@ class SingleAgentTrainingEnvironment:
         delta_delay = max(0.0, total_delay - baseline['delay'])
         delta_energy = max(0.0, total_energy - baseline['energy'])
         
-        # 🔧 修复：减去静态能耗，只奖励动态能耗
-        # 静态功率 = RSU静态 * num_rsus + UAV静态 * num_uavs
-        rsu_static = getattr(config.compute, 'rsu_static_power', 25.0)
-        uav_static = getattr(config.compute, 'uav_static_power', 2.5)
-        static_power = (self.num_rsus * rsu_static) + (self.num_uavs * uav_static)
-        time_slot = getattr(config.experiment, 'time_slot', 0.1)
-        static_energy_step = static_power * time_slot
+        # 🔧 优化：使用模拟器报告的实际静态能耗，而非估计值
+        # 从统计数据中获取实际累积的静态能耗
+        total_static_energy = float(stats.get('energy_static', 0.0) or 0.0)
+        baseline_static = baseline.get('static_energy', 0.0)
+        delta_static_energy = max(0.0, total_static_energy - baseline_static)
         
         # 确保不减成负数
-        dynamic_delta_energy = max(0.0, delta_energy - static_energy_step)
+        dynamic_delta_energy = max(0.0, delta_energy - delta_static_energy)
         
         delta_generated = max(0.0, total_generated - baseline['generated_bytes'])
         delta_loss_bytes = max(0.0, total_dropped_bytes - baseline['dropped_bytes'])
@@ -1064,11 +1064,15 @@ class SingleAgentTrainingEnvironment:
             'data_loss_ratio_bytes': loss_ratio,
         }
 
+        # 🔧 优化：保存实际静态能耗用于下一步计算
+        total_static_energy_current = float(stats.get('energy_static', 0.0) or 0.0)
+        
         self._reward_baseline = {
             'processed': total_processed,
             'dropped': total_dropped,
             'delay': total_delay,
             'energy': total_energy,
+            'static_energy': total_static_energy_current,  # 🔧 新增：记录静态能耗基线
             'generated_bytes': total_generated,
             'dropped_bytes': total_dropped_bytes,
         }
@@ -2457,22 +2461,41 @@ class SingleAgentTrainingEnvironment:
             vector = vector[:expected]
         vector = np.clip(vector, 0.0, 1.0)
         
-        idx = 0
-        bandwidth = self._normalize_allocation(
-            vector[idx:idx + self.num_vehicles], self.num_vehicles
-        )
-        idx += self.num_vehicles
-        vehicle_compute = self._normalize_allocation(
-            vector[idx:idx + self.num_vehicles], self.num_vehicles
-        )
-        idx += self.num_vehicles
-        rsu_compute = self._normalize_allocation(
-            vector[idx:idx + self.num_rsus], self.num_rsus
-        )
-        idx += self.num_rsus
-        uav_compute = self._normalize_allocation(
-            vector[idx:idx + self.num_uavs], self.num_uavs
-        )
+        # 🔧 修复: 支持压缩2维模式（AGGREGATED_CENTRAL模式）
+        # 2维: [带宽总量, 计算总量] -> 均匀分配到各节点
+        if expected == 2:
+            bw_total = float(vector[0]) if vector.size > 0 else 0.5
+            compute_total = float(vector[1]) if vector.size > 1 else 0.5
+            
+            # 均匀分配带宽到所有车辆
+            bandwidth = np.full(self.num_vehicles, bw_total / max(1, self.num_vehicles), dtype=np.float32)
+            bandwidth = bandwidth / np.sum(bandwidth) if np.sum(bandwidth) > 1e-6 else np.ones(self.num_vehicles) / self.num_vehicles
+            
+            # 均匀分配计算资源
+            vehicle_compute = np.full(self.num_vehicles, compute_total / max(1, self.num_vehicles), dtype=np.float32)
+            vehicle_compute = vehicle_compute / np.sum(vehicle_compute) if np.sum(vehicle_compute) > 1e-6 else np.ones(self.num_vehicles) / self.num_vehicles
+            
+            # RSU和UAV使用均匀分配
+            rsu_compute = np.ones(self.num_rsus, dtype=np.float32) / max(1, self.num_rsus)
+            uav_compute = np.ones(self.num_uavs, dtype=np.float32) / max(1, self.num_uavs)
+        else:
+            # 完整模式: 按顺序解析各部分
+            idx = 0
+            bandwidth = self._normalize_allocation(
+                vector[idx:idx + self.num_vehicles], self.num_vehicles
+            )
+            idx += self.num_vehicles
+            vehicle_compute = self._normalize_allocation(
+                vector[idx:idx + self.num_vehicles], self.num_vehicles
+            )
+            idx += self.num_vehicles
+            rsu_compute = self._normalize_allocation(
+                vector[idx:idx + self.num_rsus], self.num_rsus
+            )
+            idx += self.num_rsus
+            uav_compute = self._normalize_allocation(
+                vector[idx:idx + self.num_uavs], self.num_uavs
+            )
         
         return {
             'bandwidth': bandwidth,
@@ -3236,6 +3259,20 @@ def save_single_training_results(algorithm: str, training_env: SingleAgentTraini
                                 training_time: float,
                                 override_scenario: Optional[Dict[str, Any]] = None) -> Dict:
     """保存训练结果"""
+    
+    # 辅助函数：安全转换范围配置
+    def _safe_range_avg(range_val):
+        """安全计算范围平均值"""
+        if isinstance(range_val, (list, tuple)) and len(range_val) >= 2:
+            return (float(eval(str(range_val[0]))) + float(eval(str(range_val[1])))) / 2
+        return 0.0
+    
+    def _safe_range_std(range_val):
+        """安全计算范围标准差"""
+        if isinstance(range_val, (list, tuple)) and len(range_val) >= 2:
+            return (float(eval(str(range_val[1]))) - float(eval(str(range_val[0])))) / 4
+        return 0.0
+    
     # 生成时间戳
     timestamp = generate_timestamp()
     
@@ -3306,27 +3343,27 @@ def save_single_training_results(algorithm: str, training_env: SingleAgentTraini
         },
         # 🆕 添加计算能力参数
         'compute_config': {
-            'vehicle_cpu_freq': config.compute.vehicle_cpu_freq,
-            'rsu_cpu_freq': config.compute.rsu_cpu_freq,
-            'uav_cpu_freq': config.compute.uav_cpu_freq,
+            'vehicle_cpu_freq': getattr(config.compute, 'vehicle_cpu_freq', getattr(config.compute, 'vehicle_cpu_freq_max', 1e9)),
+            'rsu_cpu_freq': getattr(config.compute, 'rsu_cpu_freq', getattr(config.compute, 'rsu_cpu_freq_max', 10e9)),
+            'uav_cpu_freq': getattr(config.compute, 'uav_cpu_freq', getattr(config.compute, 'uav_cpu_freq_max', 5e9)),
             'vehicle_memory': getattr(config.compute, 'vehicle_memory', 4e9),
             'rsu_memory': getattr(config.compute, 'rsu_memory', 32e9),
             'uav_memory': getattr(config.compute, 'uav_memory', 16e9),
-            'vehicle_static_power': config.compute.vehicle_static_power,
-            'rsu_static_power': config.compute.rsu_static_power,
+            'vehicle_static_power': getattr(config.compute, 'vehicle_static_power', 2.0),
+            'rsu_static_power': getattr(config.compute, 'rsu_static_power', 20.0),
             'uav_static_power': getattr(config.compute, 'uav_static_power', 20.0),
         },
         # 🆕 添加任务和迁移参数
         'task_migration_config': {
-            'task_arrival_rate': config.task.arrival_rate,
-            'task_size_mean': sum(config.task.data_size_range) / 2,
-            'task_size_std': (config.task.data_size_range[1] - config.task.data_size_range[0]) / 4,
-            'task_cpu_cycles_mean': sum(config.task.compute_cycles_range) / 2,
-            'task_cpu_cycles_std': (config.task.compute_cycles_range[1] - config.task.compute_cycles_range[0]) / 4,
-            'task_deadline_mean': sum(config.task.deadline_range) / 2,
-            'cache_capacity_rsu': config.cache.rsu_cache_capacity,
-            'cache_capacity_uav': config.cache.uav_cache_capacity,
-            'migration_threshold': getattr(config.migration, 'threshold', 0.8),
+            'task_arrival_rate': float(config.task.arrival_rate) if hasattr(config.task, 'arrival_rate') else 1.0,
+            'task_size_mean': _safe_range_avg(getattr(config.task, 'data_size_range', [50000, 500000])),
+            'task_size_std': _safe_range_std(getattr(config.task, 'data_size_range', [50000, 500000])),
+            'task_cpu_cycles_mean': _safe_range_avg(getattr(config.task, 'compute_cycles_range', [1e8, 2e9])),
+            'task_cpu_cycles_std': _safe_range_std(getattr(config.task, 'compute_cycles_range', [1e8, 2e9])),
+            'task_deadline_mean': _safe_range_avg(getattr(config.task, 'deadline_range', [0.1, 1.0])),
+            'cache_capacity_rsu': float(getattr(config.cache, 'rsu_cache_capacity', 1e9)),
+            'cache_capacity_uav': float(getattr(config.cache, 'uav_cache_capacity', 500e6)),
+            'migration_threshold': float(getattr(config.migration, 'threshold', 0.8)),
         },
         'episode_rewards': training_env.episode_rewards,
         'episode_metrics': training_env.episode_metrics,
@@ -3344,8 +3381,8 @@ def save_single_training_results(algorithm: str, training_env: SingleAgentTraini
     
     print(f"📊 收集的配置参数:")
     print(f"   系统拓扑: {num_vehicles}车辆, {num_rsus}RSU, {num_uavs}UAV")
-    print(f"   网络配置: 带宽{config.network.bandwidth/1e6:.0f}MHz, 频率{config.communication.carrier_frequency/1e9:.1f}GHz")
-    print(f"   任务参数: 到达率{config.task.arrival_rate:.1f}, 数据量{sum(config.task.data_size_range)/2/1e6:.1f}MB")
+    print(f"   网络配置: 带宽{float(config.network.bandwidth)/1e6:.0f}MHz, 频率{float(config.communication.carrier_frequency)/1e9:.1f}GHz")
+    print(f"   任务参数: 到达率{float(config.task.arrival_rate):.1f}, 数据量{sum(config.task.data_size_range)/2/1e6:.1f}MB")
     
     # 使用时间戳文件名
     filename = get_timestamped_filename("training_results")

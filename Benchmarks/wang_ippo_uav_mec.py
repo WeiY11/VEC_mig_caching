@@ -52,12 +52,11 @@ class ActorCritic(nn.Module):
             nn.ReLU(),
         )
         
-        # Actor head (policy)
+        # Actor head (policy) - outputs mean before Tanh
         self.actor_mean = nn.Sequential(
             nn.Linear(h1, h2),
             nn.ReLU(),
             nn.Linear(h2, a_dim),
-            nn.Tanh(),  # Bound actions to [-1, 1], then scale
         )
         self.actor_log_std = nn.Parameter(torch.zeros(a_dim))  # Learnable log_std
         
@@ -81,34 +80,47 @@ class ActorCritic(nn.Module):
         Forward pass.
         
         Returns:
-            mean: Action mean
+            mean: Action mean (before Tanh)
             std: Action std
             value: State value V(s)
         """
         features = self.shared(s)
-        mean = self.actor_mean(features)
+        mean = self.actor_mean(features)  # Raw mean, Tanh applied during sampling
         std = torch.exp(self.actor_log_std.clamp(-20, 2))
         value = self.critic(features)
         return mean, std, value
     
+    def _tanh_log_prob_correction(self, log_prob: torch.Tensor, pre_tanh_action: torch.Tensor) -> torch.Tensor:
+        """
+        Apply Jacobian correction for Tanh transformation.
+        
+        log_prob_corrected = log_prob - sum(log(1 - tanh^2(a)))
+        """
+        # Numerically stable: log(1 - tanh^2(x)) = 2 * (log(2) - x - softplus(-2x))
+        correction = 2 * (np.log(2.0) - pre_tanh_action - nn.functional.softplus(-2 * pre_tanh_action))
+        return log_prob - correction.sum(dim=-1, keepdim=True)
+    
     def get_action(self, s: torch.Tensor, deterministic: bool = False) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """
-        Sample action from policy.
+        Sample action from policy with Tanh squashing.
         
         Returns:
-            action: Sampled action
-            log_prob: Log probability of action
+            action: Squashed action in [-1, 1]
+            log_prob: Corrected log probability
             value: State value
         """
         mean, std, value = self(s)
         
         if deterministic:
-            action = mean
+            action = torch.tanh(mean)
             log_prob = torch.zeros(s.shape[0], 1, device=s.device)
         else:
             dist = Normal(mean, std)
-            action = dist.sample()
-            log_prob = dist.log_prob(action).sum(dim=-1, keepdim=True)
+            pre_tanh_action = dist.sample()
+            log_prob = dist.log_prob(pre_tanh_action).sum(dim=-1, keepdim=True)
+            # Apply Tanh and correct log_prob
+            action = torch.tanh(pre_tanh_action)
+            log_prob = self._tanh_log_prob_correction(log_prob, pre_tanh_action)
         
         return action, log_prob, value
     
@@ -116,14 +128,26 @@ class ActorCritic(nn.Module):
         """
         Evaluate actions for PPO update.
         
+        Args:
+            s: States
+            a: Actions (already in [-1, 1] after Tanh)
+        
         Returns:
-            log_prob: Log probability of actions
+            log_prob: Corrected log probability of actions
             value: State values
-            entropy: Policy entropy
+            entropy: Policy entropy (approximate)
         """
         mean, std, value = self(s)
+        
+        # Inverse Tanh to get pre-tanh action (atanh with clamping for stability)
+        a_clamped = torch.clamp(a, -0.999, 0.999)
+        pre_tanh_action = torch.atanh(a_clamped)
+        
         dist = Normal(mean, std)
-        log_prob = dist.log_prob(a).sum(dim=-1, keepdim=True)
+        log_prob = dist.log_prob(pre_tanh_action).sum(dim=-1, keepdim=True)
+        log_prob = self._tanh_log_prob_correction(log_prob, pre_tanh_action)
+        
+        # Entropy is approximate (Gaussian entropy, not accounting for Tanh)
         entropy = dist.entropy().sum(dim=-1, keepdim=True)
         return log_prob, value, entropy
 
@@ -161,7 +185,7 @@ class TrajectoryBuffer:
             returns: Discounted returns (advantages + values)
         """
         rewards = np.array(self.rewards, dtype=np.float32)
-        values = np.array(self.values, dtype=np.float32).squeeze()
+        values = np.array(self.values, dtype=np.float32).reshape(-1)  # Safe reshape instead of squeeze
         dones = np.array(self.dones, dtype=np.float32)
         
         T = len(rewards)
@@ -442,8 +466,8 @@ def train_ippo(
         s = s2
         ep_r += r
         
-        # PPO update every rollout_steps or at episode end
-        if len(agent.buffer) >= cfg.rollout_steps or done:
+        # PPO update every rollout_steps or at episode end (with minimum buffer size)
+        if len(agent.buffer) >= cfg.rollout_steps or (done and len(agent.buffer) >= cfg.batch_size):
             agent.update()
         
         if done:

@@ -31,21 +31,30 @@ from .common_state_action import (
 
 
 def create_optimized_config() -> EnhancedTD3Config:
-    """创建精简优化配置 - 🚀 轻量化版本
+    """创建精简优化配置 - 🚀 GNN+TD3版本
     
-    🔧 2024-12-04 v25: 轻量化网络加速训练
+    🔧 2024-12-05 v30: 训练加速优化
     核心优化：
-    1. hidden_dim 256 (网络小了，训练快4倍)
-    2. batch_size 256 (适中批量)
-    3. gradient_steps 1 (每步只更新一次)
-    4. 简化注意力机制
+    1. 默认启用GNN (USE_GNN_ROUTER=1) - 提升缓存命中率与拓扑感知
+    2. hidden_dim 128 (更小网络)
+    3. batch_size 512 (更大批量提高GPU利用率)
+    4. gradient_steps 1 (每步只更新一次)
+    5. warmup_steps 1500 (减少预热时间)
+    6. buffer_size 100000 (减少内存占用)
     """
     import os
     
     # 🚀 从环境变量读取配置
     gradient_steps = int(os.environ.get('TD3_GRADIENT_STEPS', '1'))  # 默认1
-    batch_size = int(os.environ.get('TD3_BATCH_SIZE', '256'))  # 默认256
-    hidden_dim = int(os.environ.get('TD3_HIDDEN_DIM', '256'))  # 默认256
+    batch_size = int(os.environ.get('TD3_BATCH_SIZE', '512'))  # 🔧 v30: 256→512
+    hidden_dim = int(os.environ.get('TD3_HIDDEN_DIM', '128'))  # 🔧 v30: 256→128
+    buffer_size = int(os.environ.get('TD3_BUFFER_SIZE', '100000'))  # 🔧 v30: 200000→100000
+    warmup_steps = int(os.environ.get('TD3_WARMUP_STEPS', '1500'))  # 🔧 v30: 5000→1500
+    
+    # 🚀 v30: 默认启用GNN (简化版以保持速度)
+    use_gnn = os.environ.get('USE_GNN_ROUTER', '1').strip() in {'1', 'true', 'True'}
+    gat_heads = int(os.environ.get('GAT_NUM_HEADS', '4'))  # 保持4头以学习多种关系
+    gat_dim = int(os.environ.get('GAT_HIDDEN_DIM', '64'))  # 🔧 128→64 维度减半加速
     
     return EnhancedTD3Config(
         # ✅ 核心优化1：队列感知回放
@@ -56,23 +65,23 @@ def create_optimized_config() -> EnhancedTD3Config:
         migration_cong_coef=0.2,
         queue_metrics_ema_decay=0.8,
         
-        # ✅ 核心优化2：GNN注意力 (简化版)
-        use_gat_router=True,
-        num_attention_heads=4,    # 🔧 6→4 减少计算量
-        gat_hidden_dim=128,       # 🔧 192→128 网络更小
-        gat_dropout=0.1,          # 🔧 0.15→0.1
+        # ✅ 核心优化2：GNN注意力 (默认启用，提升拓扑感知能力)
+        use_gat_router=use_gnn,
+        num_attention_heads=gat_heads,
+        gat_hidden_dim=gat_dim,
+        gat_dropout=0.1,
 
         # 简化的训练配置
         use_distributional_critic=False,
-        use_entropy_reg=False,    # 🔧 关闭熵正则化，加速训练
+        use_entropy_reg=False,
         auto_tune_alpha=False,
         use_model_based_rollout=False,
 
-        # 🚀 v25 轻量化网络
-        hidden_dim=hidden_dim,    # 🔧 1024→256 网络小4倍
-        batch_size=batch_size,    # 🔧 512→256
-        buffer_size=200000,       # 🔧 v29: 100000→200000 增加Buffer容量
-        warmup_steps=5000,        # 🔧 v29: 200→5000 大幅增加预热，确保Buffer多样性
+        # 🚀 v30 轻量化网络
+        hidden_dim=hidden_dim,
+        batch_size=batch_size,
+        buffer_size=buffer_size,
+        warmup_steps=warmup_steps,
         gradient_steps=gradient_steps,
         
         # 性能优化
@@ -84,12 +93,12 @@ def create_optimized_config() -> EnhancedTD3Config:
         actor_lr=3e-4,
         critic_lr=3e-4,
 
-        # 🔧 v29: 增强探索参数，避免早期陷入局部最优
-        exploration_noise=0.45,   # 🔧 v29: 0.25→0.45 高初始噪声
-        noise_decay=0.9995,       # 🔧 v29: 0.998→0.9995 更慢衰减
-        min_noise=0.15,           # 🔧 v29: 0.08→0.15 较高最小噪声
+        # 探索参数
+        exploration_noise=0.35,   # 🔧 v30: 0.45→0.35 适中初始噪声
+        noise_decay=0.9995,
+        min_noise=0.10,           # 🔧 v30: 0.15→0.10
         target_noise=0.15,
-        noise_clip=0.4,           # 🔧 v29: 0.3→0.4 允许更大探索
+        noise_clip=0.4,
 
         # 奖励归一化
         reward_norm_beta=0.995,

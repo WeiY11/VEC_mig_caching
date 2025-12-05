@@ -68,16 +68,30 @@ class CentralResourcePool:
         Args:
             config: 系统配置对象
         """
+        def _to_float(val, default):
+            """将配置值转换为浮点数"""
+            if val is None:
+                return float(default)
+            if isinstance(val, str):
+                return float(eval(val))  # 处理 '40.0e6' 这样的科学计数法字符串
+            return float(val)
+        
+        def _to_int(val, default):
+            """将配置值转换为整数"""
+            if val is None:
+                return int(default)
+            return int(float(val) if isinstance(val, str) else val)
+        
         # 🎯 总资源池（从config读取）
-        self.total_bandwidth = getattr(config.network, 'bandwidth', 50e6)  # 50 MHz
-        self.total_vehicle_compute = getattr(config.compute, 'total_vehicle_compute', 2e9)  # 2 GHz
-        self.total_rsu_compute = getattr(config.compute, 'total_rsu_compute', 60e9)  # 60 GHz
-        self.total_uav_compute = getattr(config.compute, 'total_uav_compute', 8e9)  # 8 GHz
+        self.total_bandwidth = _to_float(getattr(config.network, 'bandwidth', None), 50e6)  # 50 MHz
+        self.total_vehicle_compute = _to_float(getattr(config.compute, 'total_vehicle_compute', None), 2e9)  # 2 GHz
+        self.total_rsu_compute = _to_float(getattr(config.compute, 'total_rsu_compute', None), 60e9)  # 60 GHz
+        self.total_uav_compute = _to_float(getattr(config.compute, 'total_uav_compute', None), 8e9)  # 8 GHz
         
         # 节点数量
-        self.num_vehicles = getattr(config.network, 'num_vehicles', 12)
-        self.num_rsus = getattr(config.network, 'num_rsus', 4)
-        self.num_uavs = getattr(config.network, 'num_uavs', 2)
+        self.num_vehicles = _to_int(getattr(config.network, 'num_vehicles', None), 12)
+        self.num_rsus = _to_int(getattr(config.network, 'num_rsus', None), 4)
+        self.num_uavs = _to_int(getattr(config.network, 'num_uavs', None), 2)
         
         # 🔄 当前分配状态（初始化为均匀分配）
         self.bandwidth_allocation = np.ones(self.num_vehicles) / self.num_vehicles  # 均匀分配
@@ -175,10 +189,17 @@ class CentralResourcePool:
         Returns:
             归一化后的分配向量
         """
-        arr = np.clip(arr, 0, 1)  # 确保非负且<=1
+        # 🔧 修复: 确保输入为numpy数组
+        if not isinstance(arr, np.ndarray):
+            arr = np.array(arr, dtype=np.float64)
+        else:
+            arr = arr.astype(np.float64)
+        
         n = len(arr)
         if n == 0:
             return arr
+        
+        arr = np.clip(arr, 0, 1)  # 确保非负且<=1
         
         # 🔧 修复: 应用最小保障，避免任何节点完全饥饿
         arr = np.maximum(arr, min_allocation)
@@ -1184,6 +1205,8 @@ class CompleteSystemSimulator:
             'energy_transmit_uplink': 0.0,  # 上行传输能耗
             'energy_transmit_downlink': 0.0,  # 下行传输能耗
             'energy_compute': 0.0,  # 计算能耗(焦耳)
+            'energy_static': 0.0,  # 静态能耗(焦耳) - 节点待机功耗
+            'energy_dynamic': 0.0,  # 动态能耗(焦耳) - 任务处理功耗
             'energy_cache': 0.0,  # 缓存命中能耗
             'delay_processing': 0.0,  # 计算阶段延迟
             'delay_waiting': 0.0,  # 排队等待延迟
@@ -2443,8 +2466,9 @@ class CompleteSystemSimulator:
                 # 计算静态能耗
                 static_energy = static_power * self.time_slot
                 
-                # 累加能耗
+                # 🔧 优化：分别累加静态能耗到 energy_compute 和 energy_static
                 self._accumulate_energy('energy_compute', static_energy)
+                self.stats['energy_static'] = self.stats.get('energy_static', 0.0) + static_energy
                 node['energy_consumed'] = node.get('energy_consumed', 0.0) + static_energy
 
             self._record_mm1_queue_length(node_type, node_idx, 0)
@@ -2573,10 +2597,14 @@ class CompleteSystemSimulator:
                 dynamic_power = kappa * (cpu_freq ** 3)
                 
                 # 计算本时隙消耗的能耗
-                step_energy = (dynamic_power + static_power) * incremental_service
+                dynamic_energy = dynamic_power * incremental_service  # 动态能耗
+                static_energy_part = static_power * incremental_service  # 静态能耗部分
+                step_energy = dynamic_energy + static_energy_part  # 总能耗
                 
-                # 累加能耗
+                # 🔧 优化：分别累加动态和静态能耗
                 self._accumulate_energy('energy_compute', step_energy)
+                self.stats['energy_static'] = self.stats.get('energy_static', 0.0) + static_energy_part
+                self.stats['energy_dynamic'] = self.stats.get('energy_dynamic', 0.0) + dynamic_energy
                 node['energy_consumed'] = node.get('energy_consumed', 0.0) + step_energy
 
             if task.get('remaining_cycles', 0.0) > 0.0:
@@ -2608,8 +2636,7 @@ class CompleteSystemSimulator:
                             cache_priority=task.get('priority', 0.5)
                         )
                         
-                        # DEBUG LOGGING
-                        print(f"[DEBUG] Content: {content_id}, Should: {should_cache}, Reason: {reason}")
+                        # 🔧 移除DEBUG打印（生产环境）
                         
                         if should_cache:
                             if 'cache' not in node:
@@ -2637,10 +2664,8 @@ class CompleteSystemSimulator:
                                 }
                                 # 更新热度
                                 cache_ctrl.update_content_heat(content_id)
-                                print(f"[DEBUG] Cached {content_id} at {node_type}")
-                    except Exception as e:
-                        print(f"[DEBUG] Cache error: {e}")
-                        pass
+                    except Exception:
+                        pass  # 🔧 移除DEBUG打印
 
             self.stats['completed_tasks'] += 1
             self.stats['processed_tasks'] = self.stats.get('processed_tasks', 0) + 1
@@ -2668,65 +2693,15 @@ class CompleteSystemSimulator:
             # P_dynamic = κ × f³，但 t_processing = C / f
             # 因此能耗应随频率增加而优化，而非暴涨
             
-            if node_type == 'RSU':
-                # RSU能耗参数
-                cpu_freq = node.get('cpu_freq', 12.5e9)  # 12.5 GHz
-                kappa = 5.0e-32  # W/(Hz)³
-                static_power = 25.0  # W
-                
-                # 🔧 修复: 增强配置一致性检查
-                if self.sys_config is not None and hasattr(self.sys_config, 'compute'):
-                    cpu_freq = getattr(self.sys_config.compute, 'rsu_cpu_freq', cpu_freq)
-                    kappa = getattr(self.sys_config.compute, 'rsu_kappa', kappa)
-                    static_power = getattr(self.sys_config.compute, 'rsu_static_power', static_power)
-                
-                # 🔧 修复v3：使用任务实际的compute_cycles计算处理时间和能耗
-                task_compute_cycles = float(task.get('compute_cycles', 1e9))
-                # 实际处理时间 = 计算周期 / CPU频率
-                task_processing_time = task_compute_cycles / cpu_freq
-                
-                # 动态功耗 = κ × f³
-                dynamic_power = kappa * (cpu_freq ** 3)
-                # 总能耗 = (动态功耗 + 静态功耗) × 实际处理时间
-                task_energy = (dynamic_power + static_power) * task_processing_time
-                
-            elif node_type == 'UAV':
-                # 🔧 优化: 统一从配置读取UAV能耗参数
-                # UAV能耗参数（包含悬停功耗）
-                
-                # 默认值：基于NVIDIA Jetson Xavier NX
-                default_cpu_freq = 3.5e9   # 3.5 GHz（匹配配置）
-                default_kappa3 = 8.89e-31  # W/(Hz)³
-                default_static = 2.5       # W
-                default_hover = 15.0       # W - 轻量级四旋翼（匹配配置）
-                
-                # 优先从配置读取
-                if self.sys_config is not None and hasattr(self.sys_config, 'compute'):
-                    cpu_freq = getattr(self.sys_config.compute, 'uav_cpu_freq', default_cpu_freq)
-                    kappa3 = getattr(self.sys_config.compute, 'uav_kappa3', default_kappa3)
-                    static_power = getattr(self.sys_config.compute, 'uav_static_power', default_static)
-                    hover_power = getattr(self.sys_config.compute, 'uav_hover_power', default_hover)
-                else:
-                    cpu_freq = node.get('cpu_freq', default_cpu_freq)
-                    kappa3 = default_kappa3
-                    static_power = default_static
-                    hover_power = default_hover
-                
-                # 🔧 修复v3：使用任务实际的compute_cycles
-                task_compute_cycles = float(task.get('compute_cycles', 1e9))
-                task_processing_time = task_compute_cycles / cpu_freq
-                
-                # 动态功耗 = κ × f³
-                dynamic_power = kappa3 * (cpu_freq ** 3)
-                # UAV总能耗 = (动态 + 静态 + 悬停) × 实际处理时间
-                task_energy = (dynamic_power + static_power + hover_power) * task_processing_time
-                
-            else:
-                # 其他节点类型使用简化模型
-                task_compute_cycles = float(task.get('compute_cycles', 1e9))
-                task_energy = 1e-9 * task_compute_cycles  # 简化：每cycle约1nJ
-            self._accumulate_energy('energy_compute', task_energy)
-            node['energy_consumed'] = node.get('energy_consumed', 0.0) + task_energy
+            # 🔧 修复v4：移除重复能耗计算
+            # 能耗已在每个时隙的增量处理阶段计算（第2581-2601行）
+            # 这里不再重复计算，避免能耗统计偏高
+            # 
+            # 原问题：任务可能需要多个时隙完成处理
+            # - 每个时隙会按实际处理的cycles计算增量能耗
+            # - 任务完成时又按完整cycles计算一次 → 重复！
+            # 
+            # 正确做法：只保留增量能耗计算，更准确反映实际处理过程
 
             # 🔧 修复：添加下行传输能耗（将处理结果传回车辆）
             # Fix: Add downlink transmission energy (return result to vehicle)
@@ -4370,18 +4345,18 @@ class CompleteSystemSimulator:
             prev_avg_energy = exec_summary['avg_energy_by_target'][target_key]
             exec_summary['avg_delay_by_target'][target_key] = ((target_count - 1) * prev_avg_delay + delay) / target_count
             exec_summary['avg_energy_by_target'][target_key] = ((target_count - 1) * prev_avg_energy + energy) / target_count
-        # 🔧 记录可视化事件 (缓存命中)
-        if 'step_events' in step_summary:
-            try:
-                v_id = int(vehicle['id'].split('_')[1])
-                step_summary['step_events'].append({
-                    'type': node_type.lower(),
-                    'vehicle_id': v_id,
-                    'target_id': node_idx
-                })
-            except (IndexError, ValueError):
-                pass
-            return True
+            # 🔧 记录可视化事件 (缓存命中)
+            if 'step_events' in step_summary:
+                try:
+                    v_id = int(vehicle['id'].split('_')[1])
+                    step_summary['step_events'].append({
+                        'type': node_type.lower(),
+                        'vehicle_id': v_id,
+                        'target_id': node_idx
+                    })
+                except (IndexError, ValueError):
+                    pass
+            return True  # 🔧 修复：确保缓存命中时在if cache_hit块内正确返回
 
         # 缓存未命中：计算上传开销
         # Cache miss: calculate upload overhead

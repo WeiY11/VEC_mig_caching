@@ -26,9 +26,12 @@ from Benchmarks.nath_ddpg_mec import NathDDPGConfig, train_nath_ddpg
 from Benchmarks.liu_bayesian_optimization import LiuBOConfig, train_liu_bo
 from Benchmarks.zhang_ronet_nano import RoNetConfig, train_ronet
 from Benchmarks.wang_gail_ppo import WangGAILConfig, train_wang_gail
-# Original implementations (DDPG from Lillicrap)
+# Original implementations (DDPG from Lillicrap, TD3 from Fujimoto)
 from Benchmarks.lillicrap_ddpg_vanilla import DDPGConfig, train_ddpg
+from Benchmarks.fujimoto_td3_vanilla import TD3Config as VanillaTD3Config, train_vanilla_td3
 from Benchmarks.local_only_policy import LocalOnlyPolicy
+from Benchmarks.nath_dynamic_offload_heuristic import DynamicOffloadHeuristic
+from Benchmarks.liu_online_sa import SAConfig, OnlineSimulatedAnnealing
 from Benchmarks.run_compare_with_optimized_td3 import run_optimized_td3
 
 try:
@@ -95,6 +98,12 @@ def run_rl(algo: str, episodes: int, seed: int, env_cfg, max_steps_per_ep: int =
         cfg = DDPGConfig()
         cfg.start_steps = min(cfg.start_steps, warmup_cap)
         return train_ddpg(env, cfg, max_steps=total_steps, seed=seed)
+    
+    # Vanilla TD3 (Fujimoto et al. 2018) - pure implementation
+    if algo in ("vanilla_td3", "td3"):
+        cfg = VanillaTD3Config()
+        cfg.start_steps = min(cfg.start_steps, warmup_cap)
+        return train_vanilla_td3(env, cfg, max_steps=total_steps, seed=seed)
     
     raise ValueError(f"Unsupported RL algo: {algo}")
 
@@ -324,7 +333,7 @@ def main():
     parser.add_argument("--episodes", type=int, default=50)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--groups", type=int, default=5, help="Number of data groups (seeds) per experiment comparison.")
-    parser.add_argument("--alg", nargs="+", default=["ippo", "ddpg", "sac", "local", "heuristic"], help="Algorithms to run.")
+    parser.add_argument("--alg", nargs="+", default=["vanilla_td3", "ddpg", "local"], help="Algorithms to run. Options: vanilla_td3, ddpg, nath_ddpg, liu_bo, ronet, wang_gail, local, heuristic, sa")
     parser.add_argument("--vehicles", type=int, default=12)
     parser.add_argument("--rsus", type=int, default=4)
     parser.add_argument("--uavs", type=int, default=2)
